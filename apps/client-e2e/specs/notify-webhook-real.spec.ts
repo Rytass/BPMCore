@@ -567,11 +567,15 @@ test.describe('notify webhooks in the designer (real backend)', () => {
         admin.getByRole('button', { name: '儲存草稿' }),
       ).toBeEnabled();
 
-      // FIELD: a number parameter only offers number fields and constants.
+      // FIELD: a number parameter offers number fields, constants and (since
+      // Phase 23 P5) an expression, but never 案件資訊, which has no number.
+      // `canBindNotifyWebhookExpression` withholds 運算式 only from
+      // stringArray parameters.
       await admin.getByPlaceholder('選擇來源').last().click();
       await expect(admin.getByRole('option')).toHaveText([
         '表單欄位',
         '固定值',
+        '運算式',
       ]);
       await admin.getByRole('option', { name: '表單欄位' }).click();
       await expect(admin.getByText(/發布前需修正/)).toHaveCount(0);

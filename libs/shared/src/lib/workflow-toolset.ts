@@ -1,5 +1,10 @@
 import { FormDefinitionSchema } from './form';
 import {
+  EXPRESSION_USAGE_POINTS,
+  ExpressionUsagePoint,
+  isExpressionUsagePoint,
+} from './expression-usage-point';
+import {
   ApproverResolver,
   ApproverResolverFallback,
   DecisionPolicy,
@@ -11,6 +16,7 @@ import {
   UserTaskNode,
   WorkflowEdge,
   WorkflowEdgeConditionOperator,
+  WorkflowExpressionDialect,
   WorkflowNode,
   WorkflowNodeTriggerMode,
   isFallbackCapableApproverResolverType,
@@ -420,7 +426,8 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
   },
   {
     name: 'set_initiator_policy_cel',
-    description: '直接設定發起人政策的 CEL 條件式（傳 null 代表清除/不限制）。',
+    description:
+      '直接設定發起人政策的 CEL 條件式（傳 null 代表清除/不限制）。寫入前系統會先做 LINT，未通過就不寫入；請先用 preview_expression（usagePoint: INITIATOR_POLICY）確認。',
     inputSchema: objectSchema({ cel: { type: ['string', 'null'] } }, ['cel']),
     kind: 'mutation',
   },
@@ -512,6 +519,32 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
     description:
       '列出職位（id、名稱），供指定 POSITION / ORG_UNIT_POSITION 簽核人時取得真實 positionId。',
     inputSchema: objectSchema({}, []),
+    kind: 'query',
+  },
+  {
+    name: 'get_expression_catalog',
+    description:
+      '取得某個運算式位置可用的根（form、initiator、lastDecision…）、綁定表單的欄位與可呼叫的函式（含宿主函式）。寫運算式前先呼叫，只使用目錄內的名稱。usagePoint：INITIATOR_POLICY（發起權限）、ENTRY_CONDITION（進入條件）、FLOW_CONDITION（連線條件）、APPROVER_RESOLVER（簽核人／知會對象運算式）、SERVICE_FORM_FIELD_VALUE（系統節點寫入欄位的值）、WEBHOOK_PAYLOAD。',
+    inputSchema: objectSchema(
+      { usagePoint: { enum: [...EXPRESSION_USAGE_POINTS], type: 'string' } },
+      ['usagePoint'],
+    ),
+    kind: 'query',
+  },
+  {
+    name: 'preview_expression',
+    description:
+      '由後端檢查（LINT）一個運算式；給 sample（例如 { "form": { "amount": 1200 } }）時再以樣本試算。不會寫入流程。連線條件請帶 edgeId，系統節點寫入欄位的值請帶 targetFieldKey。回傳 valid 與 issues（ERROR 會擋下發布與寫入，WARNING 只是提醒）。',
+    inputSchema: objectSchema(
+      {
+        edgeId: { type: ['string', 'null'] },
+        expression: { type: 'string' },
+        sample: { type: ['object', 'null'] },
+        targetFieldKey: { type: ['string', 'null'] },
+        usagePoint: { enum: [...EXPRESSION_USAGE_POINTS], type: 'string' },
+      },
+      ['expression', 'usagePoint'],
+    ),
     kind: 'query',
   },
   {
@@ -694,7 +727,51 @@ export interface WorkflowDirectory {
   ) => Promise<readonly WorkflowDirectoryItem[]>;
 }
 
+/**
+ * One expression the assistant wants checked, with what the backend needs to
+ * lint it the way publish does. `dialect` is the draft's.
+ */
+export interface WorkflowExpressionRequest {
+  readonly dialect: WorkflowExpressionDialect;
+  /** FLOW_CONDITION: the type of the node the edge leaves. */
+  readonly edgeSourceNodeType: string | null;
+  readonly expression: string;
+  /** SERVICE_FORM_FIELD_VALUE: the field the value is written to. */
+  readonly targetFieldKey: string | null;
+  readonly usagePoint: ExpressionUsagePoint;
+}
+
+/** A lint finding as the host reports it; `message` is the host's own copy. */
+export interface WorkflowExpressionFinding {
+  readonly code: string;
+  readonly message: string;
+  readonly severity: 'ERROR' | 'WARNING';
+}
+
+/**
+ * Host-injected expression tools (Phase 23 P4, ADR 22 §3.8). The browser
+ * never parses CEL: the React designer backs these with the designer-only
+ * `previewExpression` / `expressionCatalog` GraphQL queries. Without them the
+ * assistant cannot write any free-text expression (fail closed).
+ */
+export interface WorkflowExpressionTools {
+  readonly catalog: (usagePoint: ExpressionUsagePoint) => Promise<unknown>;
+  readonly evaluate: (
+    request: WorkflowExpressionRequest,
+    sample: Readonly<Record<string, unknown>>,
+  ) => Promise<unknown>;
+  readonly lint: (
+    request: WorkflowExpressionRequest,
+  ) => Promise<readonly WorkflowExpressionFinding[]>;
+}
+
 export interface ExecuteWorkflowToolOptions extends WorkflowCommandOptions {
+  /**
+   * Host-injected expression lint / preview / catalog. Every tool call that
+   * writes a free-text expression is linted through it first and refused on
+   * an error finding; without it such a call is refused outright.
+   */
+  readonly expressions?: WorkflowExpressionTools;
   /**
    * Host-injected organisation directory. When absent, directory query tools
    * report `available: false` so the assistant falls back to defaults.
@@ -740,6 +817,16 @@ export async function executeWorkflowTool(
 
     if (tool.kind === 'macro') {
       const macro = buildMacroCommand(toolName, input);
+      const macroRefusal = await lintWrittenExpressions(
+        state,
+        readMacroExpressions(macro),
+        options.expressions,
+      );
+
+      if (macroRefusal !== null) {
+        return { error: macroRefusal, ok: false };
+      }
+
       const result = applyWorkflowMacroCommand(state, macro, options);
 
       return finalizeMutation('macro', result);
@@ -750,6 +837,16 @@ export async function executeWorkflowTool(
       state,
       input,
     );
+    const refusal = await lintWrittenExpressions(
+      state,
+      readCommandExpressions(command),
+      options.expressions,
+    );
+
+    if (refusal !== null) {
+      return { error: refusal, ok: false };
+    }
+
     const result = applyWorkflowCommand(state, command, options);
 
     return finalizeMutation('mutation', result);
@@ -859,6 +956,31 @@ async function runQueryTool(
 
   if (toolName === 'list_positions') {
     return readDirectoryResult(options.directory?.listPositions());
+  }
+
+  if (toolName === 'get_expression_catalog') {
+    const usagePoint = readUsagePoint(input['usagePoint']);
+
+    return options.expressions
+      ? { available: true, catalog: await options.expressions.catalog(usagePoint) }
+      : { available: false };
+  }
+
+  if (toolName === 'preview_expression') {
+    const request = readPreviewRequest(state, input);
+    const sample = input['sample'];
+
+    if (!options.expressions) {
+      return { available: false };
+    }
+
+    return {
+      available: true,
+      findings: await options.expressions.lint(request),
+      ...(isRecord(sample)
+        ? { evaluation: await options.expressions.evaluate(request, sample) }
+        : {}),
+    };
   }
 
   if (toolName === 'search_members') {
@@ -1642,6 +1764,229 @@ function readNotifyChannels(
     : [];
 
   return channels.length > 0 ? channels : ['IN_APP'];
+}
+
+// ── Expression lint before a write (Phase 23 P4, ADR 22 §3.8) ──────────────
+
+/** An expression a command would write, before the draft's own context. */
+interface WrittenExpression {
+  readonly edgeId: string | null;
+  readonly expression: string;
+  readonly targetFieldKey: string | null;
+  readonly usagePoint: ExpressionUsagePoint;
+}
+
+function readResolverExpressions(
+  resolver: ApproverResolver | undefined,
+): readonly WrittenExpression[] {
+  return resolver?.type === 'EXPRESSION'
+    ? [
+        {
+          edgeId: null,
+          expression: resolver.expression,
+          targetFieldKey: null,
+          usagePoint: 'APPROVER_RESOLVER',
+        },
+      ]
+    : [];
+}
+
+function readActionExpressions(
+  action: ServiceAction,
+): readonly WrittenExpression[] {
+  switch (action.type) {
+    case 'SET_FORM_FIELD':
+      return [
+        {
+          edgeId: null,
+          expression: action.value,
+          targetFieldKey: readWholeFieldTarget(action.fieldPath),
+          usagePoint: 'SERVICE_FORM_FIELD_VALUE',
+        },
+      ];
+    case 'WEBHOOK':
+      return typeof action.payload === 'string'
+        ? [
+            {
+              edgeId: null,
+              expression: action.payload,
+              targetFieldKey: null,
+              usagePoint: 'WEBHOOK_PAYLOAD',
+            },
+          ]
+        : [];
+    default:
+      return readResolverExpressions(action.recipients);
+  }
+}
+
+/**
+ * The free-text expressions a primitive command writes. Structured edge
+ * conditions (`set_edge_condition`) are compiled by the system from a field,
+ * an operator and a value, so they are not free text and are not linted here.
+ */
+function readCommandExpressions(
+  command: WorkflowCommand,
+): readonly WrittenExpression[] {
+  switch (command.type) {
+    case 'setInitiatorPolicyCel':
+      return command.cel && command.cel.trim()
+        ? [
+            {
+              edgeId: null,
+              expression: command.cel,
+              targetFieldKey: null,
+              usagePoint: 'INITIATOR_POLICY',
+            },
+          ]
+        : [];
+    case 'setUserTaskApprover':
+      return readResolverExpressions(command.approverResolver);
+    case 'setServiceAction':
+      return readActionExpressions(command.action);
+    default:
+      return [];
+  }
+}
+
+function readMacroExpressions(
+  command: WorkflowMacroCommand,
+): readonly WrittenExpression[] {
+  switch (command.type) {
+    case 'insertApprovalStep':
+      return readResolverExpressions(command.approverResolver);
+    case 'insertNotification':
+      return readActionExpressions(command.action);
+    default:
+      return [];
+  }
+}
+
+/** The field a `SET_FORM_FIELD` path writes as a whole, or `null`. */
+function readWholeFieldTarget(fieldPath: string): string | null {
+  const segments = fieldPath
+    .split('.')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const fieldSegments =
+    segments[0] === 'form' || segments[0] === 'formData'
+      ? segments.slice(1)
+      : segments;
+
+  return fieldSegments.length === 1 && !/[[\]]/u.test(fieldSegments[0])
+    ? fieldSegments[0]
+    : null;
+}
+
+function readDraftDialect(
+  state: WorkflowDesignerState,
+): WorkflowExpressionDialect {
+  return state.definition.expressionDialect === 'cel-v2'
+    ? 'cel-v2'
+    : 'cel-legacy';
+}
+
+function readEdgeSourceNodeType(
+  state: WorkflowDesignerState,
+  edgeId: string | null,
+): string | null {
+  const edge =
+    edgeId === null
+      ? undefined
+      : state.definition.edges.find((candidate) => candidate.id === edgeId);
+  const source = edge
+    ? state.definition.nodes.find((node) => node.id === edge.source)
+    : undefined;
+
+  return source?.type ?? null;
+}
+
+function toExpressionRequest(
+  state: WorkflowDesignerState,
+  written: WrittenExpression,
+): WorkflowExpressionRequest {
+  return {
+    dialect: readDraftDialect(state),
+    edgeSourceNodeType: readEdgeSourceNodeType(state, written.edgeId),
+    expression: written.expression,
+    targetFieldKey: written.targetFieldKey,
+    usagePoint: written.usagePoint,
+  };
+}
+
+/**
+ * Lints every expression a tool call would write, in the draft's dialect,
+ * before anything changes. Returns the refusal, or `null` when the write may
+ * go ahead. Fails closed: no lint available, or a lint that cannot answer,
+ * refuses the write. Warnings do not.
+ */
+async function lintWrittenExpressions(
+  state: WorkflowDesignerState,
+  written: readonly WrittenExpression[],
+  tools: WorkflowExpressionTools | undefined,
+): Promise<string | null> {
+  if (written.length === 0) {
+    return null;
+  }
+
+  if (!tools) {
+    return '這個設計器沒有提供運算式檢查（LINT），所以不能寫入運算式。請改用結構化設定，或請使用者手動輸入。';
+  }
+
+  const results = await Promise.all(
+    written.map(
+      async (entry): Promise<readonly WorkflowExpressionFinding[] | null> => {
+        try {
+          return await tools.lint(toExpressionRequest(state, entry));
+        } catch {
+          return null;
+        }
+      },
+    ),
+  );
+
+  if (results.some((findings) => findings === null)) {
+    return '運算式檢查（LINT）暫時無法使用，沒有寫入。請稍後再試。';
+  }
+
+  const errors = results.flatMap((findings) =>
+    (findings ?? []).filter((finding) => finding.severity === 'ERROR'),
+  );
+
+  return errors.length > 0
+    ? `運算式沒有通過檢查（LINT），沒有寫入：${errors
+        .map((finding) => `${finding.message}（${finding.code}）`)
+        .join('、')}。請用 get_expression_catalog 確認可用的欄位與函式、用 preview_expression 修正後再寫入。`
+    : null;
+}
+
+function readUsagePoint(value: unknown): ExpressionUsagePoint {
+  if (!isExpressionUsagePoint(value)) {
+    throw new Error('usagePoint 必須是可用的運算式位置');
+  }
+
+  return value;
+}
+
+function readPreviewRequest(
+  state: WorkflowDesignerState,
+  input: Readonly<Record<string, unknown>>,
+): WorkflowExpressionRequest {
+  const expression = input['expression'];
+
+  if (typeof expression !== 'string' || !expression.trim()) {
+    throw new Error('expression 必須是非空字串');
+  }
+
+  return toExpressionRequest(state, {
+    edgeId: typeof input['edgeId'] === 'string' ? input['edgeId'] : null,
+    expression,
+    targetFieldKey:
+      typeof input['targetFieldKey'] === 'string'
+        ? input['targetFieldKey']
+        : null,
+    usagePoint: readUsagePoint(input['usagePoint']),
+  });
 }
 
 function readToolError(error: unknown): string {

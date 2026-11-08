@@ -67,6 +67,7 @@ apps/client/next-env.d.ts
 
 # Playwright run artifacts
 /test-results
+/apps/client-e2e/test-results
 /playwright-report
 
 .nx/migrate-runs

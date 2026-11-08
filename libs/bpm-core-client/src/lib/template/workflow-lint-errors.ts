@@ -1,7 +1,10 @@
 import {
+  ExpressionLintCode,
+  parseExpressionLintLine,
   readNodeFieldAccess,
   readNodeFillableFieldKeys,
   readFormFieldPathTopLevelKey,
+  UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE,
 } from '@rytass/bpm-core-shared';
 import type {
   WorkflowDefinition,
@@ -61,6 +64,16 @@ interface WorkflowLintCopy {
   readonly endEventMissing: string;
   readonly exclusiveSplitDefaultEdge: (name: string) => string;
   readonly exclusiveSplitOutgoingEdges: (name: string) => string;
+  /**
+   * One sentence per expression lint code (docs/24 §2.2); `subject` is the
+   * field, root or function the line names, or `null`. None may contain
+   * `'; '`, the separator the publish lint joins lines with.
+   */
+  readonly expressionLint: Readonly<
+    Record<ExpressionLintCode, (subject: string | null) => string>
+  >;
+  readonly expressionLintLine: (location: string, sentence: string) => string;
+  readonly expressionLocations: ExpressionLocationCopy;
   readonly fieldAccessAutoApprove: (name: string) => string;
   readonly fieldAccessDuplicate: (name: string, fieldKey: string) => string;
   readonly fieldAccessFillHidden: (name: string, fieldKey: string) => string;
@@ -79,8 +92,32 @@ interface WorkflowLintCopy {
     fieldKey: string,
   ) => string;
   readonly startEventCount: string;
+  readonly unknownExpressionDialect: string;
   readonly unknownNodeType: string;
   readonly unreachableNode: (name: string) => string;
+}
+
+// Where an expression the lint names sits, beyond the node and edge
+// expressions `readEarlyLocations` already names.
+interface ExpressionLocationCopy {
+  readonly fieldPath: (name: string) => string;
+  /**
+   * A DataSource binding of a form field (`schema.fields[i].dataSource
+   * .bindings[k].from.expression`) or of a table column
+   * (`schema.fields[i].columns[j]…`); `column` is `null` for a field.
+   */
+  readonly formBinding: (
+    field: string,
+    column: string | null,
+    parameter: string,
+  ) => string;
+  readonly initiatorPolicy: string;
+  /** A NOTIFY webhook parameter; `targetIndex` counts from 0. */
+  readonly notifyWebhookParameter: (
+    name: string,
+    targetIndex: number,
+    parameter: string,
+  ) => string;
 }
 
 // Where a condition that reads an approver-filled field too early sits, named
@@ -138,6 +175,65 @@ const WORKFLOW_LINT_COPY: Readonly<
       `One outgoing connection of the condition split "${name}" must have "Otherwise take this path" (其他情況走這條) turned on, so the flow has somewhere to go when no condition matches.`,
     exclusiveSplitOutgoingEdges: (name): string =>
       `The condition split "${name}" needs at least two outgoing connections, one of them with "Otherwise take this path" (其他情況走這條) turned on.`,
+    expressionLint: {
+      EXPR_APPROVER_READS_FORM: (): string =>
+        'the approvers come from the form, so whoever fills it in can choose them (warning).',
+      EXPR_COMPLEXITY_EXCEEDED: (): string =>
+        'the expression is too complex (too many parts or nested too deep). Split it into simpler conditions.',
+      EXPR_COMPREHENSION_NESTING: (): string =>
+        'all / exists / map / filter can be nested two levels deep at most.',
+      EXPR_COMPUTED_KEY: (): string =>
+        'it reads data through a computed key. Use a fixed field name or a string key, such as form["amount"].',
+      EXPR_DIVISOR_IS_FIELD: (): string =>
+        'it divides by a field. When the field is 0 the result is infinity, which still passes comparisons (warning).',
+      EXPR_FIELD_TYPE_MISMATCH: (subject): string =>
+        subject
+          ? `the type of the field "${subject}" does not support this operation.`
+          : 'the types in the expression do not match.',
+      EXPR_FIELD_UNKNOWN: (subject): string =>
+        subject
+          ? `it reads the field "${subject}", which the form does not have.`
+          : 'it reads a field the form does not have.',
+      EXPR_FUNCTION_NOT_ALLOWED: (subject): string =>
+        `only built-in functions can be used here, not "${subject ?? ''}".`,
+      EXPR_FUNCTION_NOT_REGISTERED: (subject): string =>
+        `it calls "${subject ?? ''}", which is not a registered function.`,
+      EXPR_HAS_NESTED_PARENT: (): string =>
+        'has() fails outright when the level above is missing. Check the level above first (warning).',
+      EXPR_HIDDEN_FIELD_COPIED: (subject): string =>
+        `it copies the store-only field "${subject ?? ''}" into a field people can see (warning).`,
+      EXPR_LAST_DECISION_UNAVAILABLE: (): string =>
+        'it reads lastDecision, but this connection leaves a node without an approval, so lastDecision is always empty here (warning). Read it on a connection leaving an approval node instead.',
+      EXPR_OPTIONAL_FIELD_WITHOUT_HAS: (subject): string =>
+        `it reads the optional field "${subject ?? ''}" without checking it with has() first, so it fails when the field is left empty (warning).`,
+      EXPR_OR_ABSORBS_ERROR: (): string =>
+        'when one side of || fails to read a field and the other side is true, the result is still true and the error is lost (warning).',
+      EXPR_PARSE_FAILED: (): string =>
+        'the expression has a syntax error and cannot be read.',
+      EXPR_RESERVED_PATH_SEGMENT: (subject): string =>
+        `a path or key uses the reserved name "${subject ?? ''}". Rename it.`,
+      EXPR_RESULT_TYPE_MISMATCH: (): string =>
+        'the result is not the type this place needs (a condition must be true or false).',
+      EXPR_ROOT_NOT_ALLOWED: (subject): string =>
+        subject
+          ? `it reads "${subject}", which is not available here.`
+          : 'it reads a name that is not available here.',
+      EXPR_WHOLE_FORM_REFERENCE: (subject): string =>
+        `it uses "${subject ?? 'form'}" as a whole value. Read named fields instead, such as form.amount.`,
+    },
+    expressionLintLine: (location, sentence): string =>
+      `${location}: ${sentence}`,
+    expressionLocations: {
+      fieldPath: (name): string =>
+        `The field the system node "${name}" writes`,
+      formBinding: (field, column, parameter): string =>
+        column === null
+          ? `The expression for the query parameter "${parameter}" of the field "${field}"`
+          : `The expression for the query parameter "${parameter}" of the column "${column}" in the table "${field}"`,
+      initiatorPolicy: 'The initiator rule (發起權限)',
+      notifyWebhookParameter: (name, targetIndex, parameter): string =>
+        `The expression for the parameter "${parameter}" of webhook ${targetIndex + 1} on the notify node "${name}"`,
+    },
     fieldAccessAutoApprove: (name): string =>
       `The approval node "${name}" has fields to fill in, so its timeout action cannot be "Auto approve" (自動核准); auto approval would not fill them in.`,
     fieldAccessDuplicate: (name, fieldKey): string =>
@@ -183,6 +279,8 @@ const WORKFLOW_LINT_COPY: Readonly<
     setFormFieldApproverFilled: (name, fieldKey): string =>
       `The system node "${name}" cannot write the field "${fieldKey}", which an approver fills in.`,
     startEventCount: 'The flow needs exactly one "Start" (開始) node.',
+    unknownExpressionDialect:
+      'The flow names an expression dialect this version does not know. Use cel-legacy or cel-v2.',
     unknownNodeType: 'Unknown type',
     unreachableNode: (name): string =>
       `"${name}" cannot be reached from "Start" (開始), so the flow never gets there. Make sure a chain of connections leads to it from "Start".`,
@@ -221,6 +319,63 @@ const WORKFLOW_LINT_COPY: Readonly<
       `條件分流「${name}」的輸出連線中，要有一條開啟「其他情況走這條」，其他條件都不符合時流程才有路可走。`,
     exclusiveSplitOutgoingEdges: (name): string =>
       `條件分流「${name}」往下至少要有兩條連線，且其中一條要開啟「其他情況走這條」。`,
+    expressionLint: {
+      EXPR_APPROVER_READS_FORM: (): string =>
+        '簽核人取自表單內容，填表人可以藉此指定簽核人（提醒）。',
+      EXPR_COMPLEXITY_EXCEEDED: (): string =>
+        '運算式太複雜（組成部分太多或巢狀太深），請拆成較簡單的條件。',
+      EXPR_COMPREHENSION_NESTING: (): string =>
+        'all／exists／map／filter 最多只能巢狀兩層。',
+      EXPR_COMPUTED_KEY: (): string =>
+        '用運算出來的鍵讀取資料，請改用固定的欄位名稱或字串鍵，例如 form["amount"]。',
+      EXPR_DIVISOR_IS_FIELD: (): string =>
+        '除數來自欄位，欄位為 0 時結果是無限大，比較時仍會成立（提醒）。',
+      EXPR_FIELD_TYPE_MISMATCH: (subject): string =>
+        subject
+          ? `欄位「${subject}」的型別不支援這個運算。`
+          : '運算式裡的型別不相符。',
+      EXPR_FIELD_UNKNOWN: (subject): string =>
+        subject
+          ? `讀取了表單沒有的欄位「${subject}」。`
+          : '讀取了表單沒有的欄位。',
+      EXPR_FUNCTION_NOT_ALLOWED: (subject): string =>
+        `這裡只能使用內建函式，不能呼叫「${subject ?? ''}」。`,
+      EXPR_FUNCTION_NOT_REGISTERED: (subject): string =>
+        `呼叫了未註冊的函式「${subject ?? ''}」。`,
+      EXPR_HAS_NESTED_PARENT: (): string =>
+        'has() 檢查的上一層不存在時會直接失敗，請先檢查上一層（提醒）。',
+      EXPR_HIDDEN_FIELD_COPIED: (subject): string =>
+        `把只存不顯示的欄位「${subject ?? ''}」複製到看得見的欄位（提醒）。`,
+      EXPR_LAST_DECISION_UNAVAILABLE: (): string =>
+        '讀取了 lastDecision，但這條連線的起點不是簽核關卡，這裡永遠沒有決策可讀，lastDecision 恆為空值（提醒）。請改在簽核關卡出去的連線上判斷。',
+      EXPR_OPTIONAL_FIELD_WITHOUT_HAS: (subject): string =>
+        `讀取選填欄位「${subject ?? ''}」前沒有先用 has() 確認，欄位沒填時會失敗（提醒）。`,
+      EXPR_OR_ABSORBS_ERROR: (): string =>
+        '|| 一側讀取欄位失敗、另一側成立時，結果仍是成立，錯誤會被吞掉（提醒）。',
+      EXPR_PARSE_FAILED: (): string => '運算式語法有誤，無法解析。',
+      EXPR_RESERVED_PATH_SEGMENT: (subject): string =>
+        `路徑或鍵使用了保留名稱「${subject ?? ''}」，請改名。`,
+      EXPR_RESULT_TYPE_MISMATCH: (): string =>
+        '運算結果的型別不符合這個位置的要求（例如條件必須是真或假）。',
+      EXPR_ROOT_NOT_ALLOWED: (subject): string =>
+        subject
+          ? `讀取了這裡不能使用的「${subject}」。`
+          : '讀取了這裡不能使用的名稱。',
+      EXPR_WHOLE_FORM_REFERENCE: (subject): string =>
+        `把「${subject ?? 'form'}」整個當成值使用，請改為讀取具名欄位，例如 form.amount。`,
+    },
+    expressionLintLine: (location, sentence): string =>
+      `${location}：${sentence}`,
+    expressionLocations: {
+      fieldPath: (name): string => `系統節點「${name}」寫入的欄位`,
+      formBinding: (field, column, parameter): string =>
+        column === null
+          ? `「${field}」欄位查詢條件「${parameter}」的運算式`
+          : `「${field}」表格「${column}」欄查詢條件「${parameter}」的運算式`,
+      initiatorPolicy: '發起權限條件',
+      notifyWebhookParameter: (name, targetIndex, parameter): string =>
+        `知會節點「${name}」第 ${targetIndex + 1} 個 Webhook 參數「${parameter}」的運算式`,
+    },
     fieldAccessAutoApprove: (name): string =>
       `簽核節點「${name}」有補填欄位，逾時處理不能選「自動核准」，自動核准不會補填。`,
     fieldAccessDuplicate: (name, fieldKey): string =>
@@ -256,6 +411,8 @@ const WORKFLOW_LINT_COPY: Readonly<
     setFormFieldApproverFilled: (name, fieldKey): string =>
       `系統節點「${name}」不能寫入由簽核人補填的欄位「${fieldKey}」。`,
     startEventCount: '流程必須有一個「開始」節點，而且只能有一個。',
+    unknownExpressionDialect:
+      '流程指定了這個版本不認得的運算式方言，請改為 cel-legacy 或 cel-v2。',
     unknownNodeType: '未知類型',
     unreachableNode: (name): string =>
       `從「開始」走不到節點「${name}」，流程永遠不會到這一關。請確認從「開始」一路都有連線接到它。`,
@@ -302,6 +459,9 @@ export function readWorkflowLintMessage(
     // line that merely contains a known one — a CEL error quoting it, say — is
     // left as written.
     const patterns = readWorkflowLintPatterns(definition, copy);
+    const expressionLocations = readFirstWins(
+      readExpressionLintLocations(definition, copy),
+    );
 
     return message
       .split('; ')
@@ -309,11 +469,149 @@ export function readWorkflowLintMessage(
         (segment): string =>
           translations.get(segment) ??
           readPatternTranslation(segment, patterns) ??
+          readExpressionLintTranslation(segment, expressionLocations, copy) ??
           segment,
       )
       .join('; ');
   } catch {
     return message;
+  }
+}
+
+/**
+ * One structured expression finding (`ExpressionLintIssue`, from
+ * `previewExpression`, `analyzeWorkflowExpressions` or the dialect upgrade
+ * check) as a designer sentence. With a definition whose expression the label
+ * names, the sentence starts with where it sits, as the publish lint lines
+ * do; without one (an expression field showing its own findings) it is the
+ * sentence alone. The code itself is never shown.
+ */
+export function readExpressionIssueMessage(
+  issue: Readonly<{
+    code: ExpressionLintCode;
+    label: string;
+    subject?: string | null;
+  }>,
+  definition: WorkflowDefinition | null | undefined = null,
+  language: WorkflowLintLanguage = DEFAULT_WORKFLOW_LINT_LANGUAGE,
+): string {
+  const copy = WORKFLOW_LINT_LANGUAGES.includes(language)
+    ? WORKFLOW_LINT_COPY[language]
+    : WORKFLOW_LINT_COPY[DEFAULT_WORKFLOW_LINT_LANGUAGE];
+  const sentenceFor = copy.expressionLint[issue.code] as
+    | ((subject: string | null) => string)
+    | undefined;
+  const sentence = sentenceFor
+    ? sentenceFor(issue.subject ?? null)
+    : copy.expressionLint.EXPR_PARSE_FAILED(null);
+
+  try {
+    const location = definition
+      ? readFirstWins(readExpressionLintLocations(definition, copy)).get(
+          issue.label,
+        )
+      : undefined;
+
+    return location === undefined
+      ? sentence
+      : copy.expressionLintLine(location, sentence);
+  } catch {
+    return sentence;
+  }
+}
+
+/** Where a DataSource binding expression sits in a form schema. */
+export interface FormBindingExpressionLintLine {
+  readonly bindingIndex: number;
+  readonly code: ExpressionLintCode;
+  /** `null` for a top-level field. */
+  readonly columnIndex: number | null;
+  readonly fieldIndex: number;
+  readonly subject: string | null;
+}
+
+const FORM_BINDING_EXPRESSION_LABEL_PATTERN =
+  /^schema\.fields\[(\d+)\](?:\.columns\[(\d+)\])?\.dataSource\.bindings\[(\d+)\]\.from\.expression$/u;
+
+/**
+ * The parts of a form-schema lint line for a DataSource `EXPRESSION` binding
+ * (`schema.fields[i](.columns[j]).dataSource.bindings[k].from.expression:
+ * EXPR_*[ <subject>]`, docs/24 §2.2), or `null` for any other line.
+ */
+export function parseFormBindingExpressionLintLine(
+  line: string,
+): FormBindingExpressionLintLine | null {
+  const parsed = parseExpressionLintLine(line);
+  const location = parsed
+    ? FORM_BINDING_EXPRESSION_LABEL_PATTERN.exec(parsed.label)
+    : null;
+
+  return parsed && location
+    ? {
+        bindingIndex: Number(location[3]),
+        code: parsed.code,
+        columnIndex: location[2] === undefined ? null : Number(location[2]),
+        fieldIndex: Number(location[1]),
+        subject: parsed.subject,
+      }
+    : null;
+}
+
+/**
+ * A DataSource binding expression finding as a builder sentence: where it
+ * sits (named by the labels the builder shows) and what is wrong, in the
+ * same wording as the template designer. The code itself is never shown.
+ */
+export function readFormBindingExpressionLintMessage(
+  issue: Readonly<{
+    code: ExpressionLintCode;
+    columnLabel: string | null;
+    fieldLabel: string;
+    parameterLabel: string;
+    subject?: string | null;
+  }>,
+  language: WorkflowLintLanguage = DEFAULT_WORKFLOW_LINT_LANGUAGE,
+): string {
+  const copy = WORKFLOW_LINT_LANGUAGES.includes(language)
+    ? WORKFLOW_LINT_COPY[language]
+    : WORKFLOW_LINT_COPY[DEFAULT_WORKFLOW_LINT_LANGUAGE];
+  const sentenceFor = copy.expressionLint[issue.code] as
+    | ((subject: string | null) => string)
+    | undefined;
+
+  return copy.expressionLintLine(
+    copy.expressionLocations.formBinding(
+      issue.fieldLabel,
+      issue.columnLabel,
+      issue.parameterLabel,
+    ),
+    sentenceFor
+      ? sentenceFor(issue.subject ?? null)
+      : copy.expressionLint.EXPR_PARSE_FAILED(null),
+  );
+}
+
+/**
+ * Where an expression label sits in this definition, in designer copy
+ * (`發起權限條件`, `「分流」出去的連線`…), or `null` for a label the definition
+ * does not hold.
+ */
+export function readExpressionLabelLocation(
+  label: string,
+  definition: WorkflowDefinition | null | undefined,
+  language: WorkflowLintLanguage = DEFAULT_WORKFLOW_LINT_LANGUAGE,
+): string | null {
+  const copy = WORKFLOW_LINT_LANGUAGES.includes(language)
+    ? WORKFLOW_LINT_COPY[language]
+    : WORKFLOW_LINT_COPY[DEFAULT_WORKFLOW_LINT_LANGUAGE];
+
+  try {
+    return (
+      readFirstWins(readExpressionLintLocations(definition, copy)).get(label) ??
+      null
+    );
+  } catch {
+    return null;
   }
 }
 
@@ -451,6 +749,7 @@ function readWorkflowLintTranslations(
   return [
     [WORKFLOW_LINT_MESSAGES.startEventCount(), copy.startEventCount],
     [WORKFLOW_LINT_MESSAGES.endEventMissing(), copy.endEventMissing],
+    [UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE, copy.unknownExpressionDialect],
     ...nodeTranslations,
     ...edgeTranslations,
     ...readApproverFilledFieldTranslations(
@@ -677,6 +976,133 @@ function readNodeReadEarlyLocations(
         ],
       ]
     : entry;
+}
+
+/**
+ * An expression lint line (`<label>: <code>[ <subject>]`, docs/24 §2.2) in
+ * designer copy, when the label names a place in this definition. A label it
+ * does not know leaves the line as the backend wrote it.
+ */
+function readExpressionLintTranslation(
+  segment: string,
+  locations: ReadonlyMap<string, string>,
+  copy: WorkflowLintCopy,
+): string | undefined {
+  const parsed = parseExpressionLintLine(segment);
+  const location = parsed ? locations.get(parsed.label) : undefined;
+
+  return parsed && location !== undefined
+    ? copy.expressionLintLine(
+        location,
+        copy.expressionLint[parsed.code](parsed.subject),
+      )
+    : undefined;
+}
+
+/**
+ * [label the backend lint uses, where it sits] for every expression and
+ * `SET_FORM_FIELD` path the definition holds. A node or edge that cannot be
+ * read adds none.
+ */
+function readExpressionLintLocations(
+  definition: WorkflowDefinition | null | undefined,
+  copy: WorkflowLintCopy,
+): readonly (readonly [string, string])[] {
+  const nodes = (
+    Array.isArray(definition?.nodes) ? definition.nodes : []
+  ).filter(isReadableNode);
+  const edges = (
+    Array.isArray(definition?.edges) ? definition.edges : []
+  ).filter(isReadableEdge);
+  const nodesById = readFirstWins(
+    nodes.map((node): readonly [string, WorkflowNode] => [node.id, node]),
+  );
+
+  return [
+    ['initiatorPolicyCel', copy.expressionLocations.initiatorPolicy],
+    ...nodes.flatMap(
+      (node): readonly (readonly [string, string])[] => [
+        ...readNodeReadEarlyLocations(node, copy),
+        [
+          `workflow.nodes.${node.id}.action.fieldPath`,
+          copy.expressionLocations.fieldPath(readNodeName(node, copy)),
+        ],
+        ...readNotifyWebhookExpressionLocations(node, copy),
+      ],
+    ),
+    ...edges.flatMap((edge): readonly (readonly [string, string])[] => {
+      const source = nodesById.get(edge.source);
+
+      return source
+        ? [
+            [
+              WORKFLOW_EXPRESSION_LABELS.edgeCondition(edge.id),
+              copy.readEarlyLocations.edge(readNodeName(source, copy)),
+            ],
+          ]
+        : [];
+    }),
+  ];
+}
+
+/**
+ * [label, where it sits] for each `EXPRESSION` binding of a NOTIFY node's
+ * webhooks, as `lintWorkflowWebhookTargets` labels them. A target or binding
+ * that cannot be read adds none.
+ */
+function readNotifyWebhookExpressionLocations(
+  node: WorkflowNode,
+  copy: WorkflowLintCopy,
+): readonly (readonly [string, string])[] {
+  const action: unknown =
+    node.type === 'serviceTask' && isRecord(node.data)
+      ? node.data['action']
+      : undefined;
+  const webhooks: unknown =
+    isRecord(action) && action['type'] === 'NOTIFY'
+      ? action['webhooks']
+      : undefined;
+
+  if (!Array.isArray(webhooks)) {
+    return [];
+  }
+
+  const name = readNodeName(node, copy);
+
+  return webhooks.flatMap(
+    (target: unknown, targetIndex): readonly (readonly [string, string])[] => {
+      const bindings: unknown = isRecord(target) ? target['bindings'] : null;
+
+      return Array.isArray(bindings)
+        ? bindings.flatMap(
+            (
+              binding: unknown,
+              bindingIndex,
+            ): readonly (readonly [string, string])[] => {
+              const from: unknown = isRecord(binding) ? binding['from'] : null;
+              const parameter: unknown = isRecord(binding)
+                ? binding['parameter']
+                : null;
+
+              return isRecord(from) &&
+                from['kind'] === 'EXPRESSION' &&
+                typeof parameter === 'string'
+                ? [
+                    [
+                      `workflow.nodes.${node.id}.action.webhooks[${targetIndex}].bindings[${bindingIndex}].from.expression`,
+                      copy.expressionLocations.notifyWebhookParameter(
+                        name,
+                        targetIndex,
+                        parameter,
+                      ),
+                    ],
+                  ]
+                : [];
+            },
+          )
+        : [];
+    },
+  );
 }
 
 function readNodeTranslations(

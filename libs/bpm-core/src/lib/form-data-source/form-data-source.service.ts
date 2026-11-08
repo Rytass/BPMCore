@@ -4,6 +4,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -20,6 +21,8 @@ import {
 } from '@rytass/bpm-core-shared/form';
 import { Repository } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
+import { ConditionService } from '../condition/condition.service';
+import { runExpressionOperation } from '../condition/expression-budget';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
@@ -34,6 +37,10 @@ import {
   BPMFormDataSourceForbiddenException,
 } from './form-data-source.errors';
 import {
+  createFormDataSourceExpressionEvaluator,
+  lintExpressionBindings,
+} from './form-data-source.expression';
+import {
   BPM_FORM_DATA_SOURCE_REGISTRY,
   BPMFormDataSource,
   BPMFormDataSourceDescriptor,
@@ -43,11 +50,13 @@ import {
   BPMFormDataSourceSearchResult,
 } from './form-data-source.types';
 import {
-  RowFieldValues,
   assertControlSupported,
   callProvider,
+  createTableColumnBindingPosition,
+  FormDataSourceBindingPosition,
   isRecord,
   isStringArray,
+  readBindingPositionRowValues,
   readBindingValues,
   readDescriptorErrors,
   readDynamicOptionField,
@@ -57,8 +66,20 @@ import {
   readSourceOrThrow,
   readUnresolvedValues,
   readWaitingForFieldKeys,
+  TOP_LEVEL_BINDING_POSITION,
   validateOptions,
   validateRequestedValues,
+} from './form-data-source.validation';
+
+/*
+ * `searchFormFieldOptions` takes the field's position explicitly (top level or
+ * table column), so a host calling it can build one without reaching into the
+ * validation module.
+ */
+export type { FormDataSourceBindingPosition } from './form-data-source.validation';
+export {
+  createTableColumnBindingPosition,
+  TOP_LEVEL_BINDING_POSITION,
 } from './form-data-source.validation';
 
 export interface BPMFormDataSourcePreviewInput {
@@ -116,6 +137,16 @@ export class FormDataSourceService {
     @InjectRepository(FormDefinitionVersionEntity)
     private readonly formDefinitionVersionRepository: Repository<FormDefinitionVersionEntity>,
     private readonly workflowEngineService: WorkflowEngineService,
+    // The injected service, never `new ConditionService()`: `EXPRESSION`
+    // bindings are linted and evaluated against the host's function registry
+    // (docs/23 P4／P5 交接). Optional so a hand-built service keeps working;
+    // without it an `EXPRESSION` binding cannot publish and fails closed.
+    // An explicit token: the `| null` union is emitted as `Object` in the
+    // constructor metadata, which Nest would look up, not find, and (being
+    // optional) silently inject as `undefined`.
+    @Optional()
+    @Inject(ConditionService)
+    private readonly conditionService?: ConditionService | null,
   ) {}
 
   listDescriptors(): readonly BPMFormDataSourceDescriptor[] {
@@ -140,6 +171,7 @@ export class FormDataSourceService {
           this.readFieldEnvironmentErrors(
             column,
             `schema.fields[${index}].columns[${columnIndex}].dataSource`,
+            { columns: field.columns, schema },
           ),
         );
       }
@@ -147,6 +179,7 @@ export class FormDataSourceService {
       return this.readFieldEnvironmentErrors(
         field,
         `schema.fields[${index}].dataSource`,
+        { columns: null, schema },
       );
     });
   }
@@ -154,6 +187,10 @@ export class FormDataSourceService {
   private readFieldEnvironmentErrors(
     field: FormFieldDefinition,
     path: string,
+    scope: {
+      readonly columns: readonly TableColumnDefinition[] | null;
+      readonly schema: FormDefinitionSchema;
+    },
   ): readonly string[] {
     if (!isFormDataSourceFieldDefinition(field)) {
       return [];
@@ -177,8 +214,25 @@ export class FormDataSourceService {
       source.descriptor,
       path,
     );
+    // The cel-v2 lint of every `EXPRESSION` binding (docs/24 §2.8): roots by
+    // position, built-in functions only, the bound form's field types, and
+    // a result that fits the parameter. It needs the descriptor for the
+    // parameter types, so it lives here with the other registry checks.
+    const expressionErrors = lintExpressionBindings({
+      columns: scope.columns,
+      conditionService: this.conditionService,
+      descriptor: source.descriptor,
+      path,
+      reference: field.dataSource,
+      schema: scope.schema,
+    });
 
-    return [...descriptorErrors, ...controlErrors, ...bindingErrors];
+    return [
+      ...descriptorErrors,
+      ...controlErrors,
+      ...bindingErrors,
+      ...expressionErrors,
+    ];
   }
 
   async previewFormFieldOptions(
@@ -195,7 +249,11 @@ export class FormDataSourceService {
       cursor: input.cursor ?? null,
       field,
       formData,
-      rowValues: this.parseRowValues(input.rowValuesJson),
+      position: this.readBindingPosition(
+        schema,
+        input.fieldKey,
+        input.rowValuesJson,
+      ),
       searchText: input.searchText ?? '',
     });
   }
@@ -213,7 +271,11 @@ export class FormDataSourceService {
       cursor: input.cursor ?? null,
       field,
       formData,
-      rowValues: this.parseRowValues(input.rowValuesJson),
+      position: this.readBindingPosition(
+        context.schema,
+        input.fieldKey,
+        input.rowValuesJson,
+      ),
       searchText: input.searchText ?? '',
     });
   }
@@ -230,7 +292,11 @@ export class FormDataSourceService {
       authContext,
       field,
       formData: this.parseFormData(input.formDataJson),
-      rowValues: this.parseRowValues(input.rowValuesJson),
+      position: this.readBindingPosition(
+        schema,
+        input.fieldKey,
+        input.rowValuesJson,
+      ),
       values: this.parseValues(input.valuesJson),
     });
   }
@@ -246,17 +312,36 @@ export class FormDataSourceService {
       authContext,
       field,
       formData: this.parseFormData(input.formDataJson),
-      rowValues: this.parseRowValues(input.rowValuesJson),
+      position: this.readBindingPosition(
+        context.schema,
+        input.fieldKey,
+        input.rowValuesJson,
+      ),
       values: this.parseValues(input.valuesJson),
     });
   }
 
-  async searchFormFieldOptions(input: {
+  /**
+   * One search is one expression operation (ADR 22 §3.2): its `EXPRESSION`
+   * bindings share one cumulative budget.
+   */
+  searchFormFieldOptions(input: {
     readonly authContext: BPMAuthContext;
     readonly cursor: string | null;
     readonly field: FormOptionFieldDefinition;
     readonly formData: Readonly<Record<string, unknown>>;
-    readonly rowValues?: RowFieldValues;
+    readonly position: FormDataSourceBindingPosition;
+    readonly searchText: string;
+  }): Promise<BPMFormDataSourceOptionResult> {
+    return runExpressionOperation(() => this.searchInOperation(input));
+  }
+
+  private async searchInOperation(input: {
+    readonly authContext: BPMAuthContext;
+    readonly cursor: string | null;
+    readonly field: FormOptionFieldDefinition;
+    readonly formData: Readonly<Record<string, unknown>>;
+    readonly position: FormDataSourceBindingPosition;
     readonly searchText: string;
   }): Promise<BPMFormDataSourceOptionResult> {
     const field = readDynamicOptionField(input.field);
@@ -266,7 +351,10 @@ export class FormDataSourceService {
       field,
       source.descriptor,
       input.formData,
-      input.rowValues,
+      input.position,
+      createFormDataSourceExpressionEvaluator({
+        conditionService: this.conditionService,
+      }),
     );
 
     // Waiting on a dependency is a state, not a failure: the caller needs the
@@ -280,6 +368,10 @@ export class FormDataSourceService {
         waitingForFieldKeys: readWaitingForFieldKeys(
           field,
           bindings.missingParameters,
+          {
+            formData: input.formData,
+            rowValues: readBindingPositionRowValues(input.position),
+          },
         ),
       };
     }
@@ -316,11 +408,21 @@ export class FormDataSourceService {
    * field has to show which of several selected options went dead. Provider
    * contract breaches and transport failures still throw.
    */
-  private async reportFormFieldOptionValues(input: {
+  private reportFormFieldOptionValues(input: {
     readonly authContext: BPMAuthContext;
     readonly field: FormOptionFieldDefinition;
     readonly formData: Readonly<Record<string, unknown>>;
-    readonly rowValues?: RowFieldValues;
+    readonly position: FormDataSourceBindingPosition;
+    readonly values: readonly string[];
+  }): Promise<BPMFormDataSourceResolveResult> {
+    return runExpressionOperation(() => this.reportInOperation(input));
+  }
+
+  private async reportInOperation(input: {
+    readonly authContext: BPMAuthContext;
+    readonly field: FormOptionFieldDefinition;
+    readonly formData: Readonly<Record<string, unknown>>;
+    readonly position: FormDataSourceBindingPosition;
     readonly values: readonly string[];
   }): Promise<BPMFormDataSourceResolveResult> {
     const field = readDynamicOptionField(input.field);
@@ -347,7 +449,10 @@ export class FormDataSourceService {
       field,
       source.descriptor,
       input.formData,
-      input.rowValues,
+      input.position,
+      createFormDataSourceExpressionEvaluator({
+        conditionService: this.conditionService,
+      }),
     );
 
     if (bindings.missingParameters.length > 0) {
@@ -359,6 +464,10 @@ export class FormDataSourceService {
         waitingForFieldKeys: readWaitingForFieldKeys(
           field,
           bindings.missingParameters,
+          {
+            formData: input.formData,
+            rowValues: readBindingPositionRowValues(input.position),
+          },
         ),
       };
     }
@@ -595,6 +704,28 @@ export class FormDataSourceService {
     throw new BPMFormDataSourceException(
       BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
     );
+  }
+
+  /**
+   * Where the queried field sits, read from the schema: a table column
+   * carries its row (empty when the caller sent none), a top-level field none.
+   * For a top-level field whatever the browser sent is dropped, so neither a
+   * `ROW_FIELD` nor an `EXPRESSION` binding's `row` root can read it there even
+   * if a schema got past the publish lint (ADR 22 §3.7: roots by position).
+   * Matches `readOptionField`, which prefers a top-level field of that key.
+   */
+  private readBindingPosition(
+    schema: FormDefinitionSchema,
+    fieldKey: string,
+    rowValuesJson: string | null | undefined,
+  ): FormDataSourceBindingPosition {
+    const isTopLevelField = schema.fields.some(
+      (candidate) => candidate.fieldKey === fieldKey,
+    );
+
+    return isTopLevelField
+      ? TOP_LEVEL_BINDING_POSITION
+      : createTableColumnBindingPosition(this.parseRowValues(rowValuesJson));
   }
 
   /**
@@ -841,7 +972,7 @@ const LINT_LINE_CODE_PATTERN = /^\S+\.dataSource (FORM_DATA_SOURCE_[A-Z_]+)$/u;
  * your administrator") for a binding the designer can fix themselves.
  */
 const LINT_BINDING_LINE_PATTERN =
-  /^schema\.fields\[\d+\](?:\.columns\[\d+\])?\.dataSource\.bindings /u;
+  /^schema\.fields\[\d+\](?:\.columns\[\d+\])?\.dataSource\.bindings(?: |\[\d+\]\.from\.expression: EXPR_)/u;
 
 function readBindingLintErrorCode(
   error: string,

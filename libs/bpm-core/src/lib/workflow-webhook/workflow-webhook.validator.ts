@@ -10,10 +10,21 @@ import {
   readNotifyWebhookTargetCatalogIssues,
   readNotifyWebhookTargets,
 } from '@rytass/bpm-core-shared/workflow-graph';
+import type { ConditionService } from '../condition/condition.service';
 import { BPM_WORKFLOW_WEBHOOK_ERROR_CODES } from './workflow-webhook.errors';
+import {
+  isNotifyWebhookExpressionSource,
+  lintNotifyWebhookExpressionBinding,
+} from './workflow-webhook-expression';
 import { BPMWorkflowWebhookEndpointEntry } from './workflow-webhook.types';
 
 export interface LintWorkflowWebhookTargetsInput {
+  /**
+   * Lints `EXPRESSION` bindings (ADR 22 §3.7) with the host's function
+   * registry: pass the injected `ConditionService`. Without it a target that
+   * has one cannot publish.
+   */
+  readonly conditionService?: Pick<ConditionService, 'lintExpression'> | null;
   readonly definition: WorkflowDefinition;
   readonly formSchema: FormDefinitionSchema;
   readonly hasEndpointSources: boolean;
@@ -79,6 +90,7 @@ export async function lintWorkflowWebhookTargets(
             ? []
             : [
                 lintTarget({
+                  conditionService: input.conditionService,
                   formSchema: input.formSchema,
                   isEndpointUrlAllowed: input.isEndpointUrlAllowed,
                   nodeId: node.id,
@@ -95,6 +107,7 @@ export async function lintWorkflowWebhookTargets(
 }
 
 async function lintTarget({
+  conditionService,
   formSchema,
   isEndpointUrlAllowed,
   nodeId,
@@ -102,6 +115,7 @@ async function lintTarget({
   target,
   targetIndex,
 }: {
+  readonly conditionService: LintWorkflowWebhookTargetsInput['conditionService'];
   readonly formSchema: FormDefinitionSchema;
   readonly isEndpointUrlAllowed?: LintWorkflowWebhookTargetsInput['isEndpointUrlAllowed'];
   readonly nodeId: string;
@@ -115,11 +129,36 @@ async function lintTarget({
   );
 
   const path = `workflow.nodes.${nodeId}.action.webhooks[${targetIndex}]`;
-  const catalogIssues = readNotifyWebhookTargetCatalogIssues({
-    endpoint: entry?.endpoint.descriptor ?? null,
-    formFields: formSchema.fields,
-    target,
-  }).map((issue) => readCatalogIssueMessage(issue, target, path));
+  const endpoint = entry?.endpoint.descriptor ?? null;
+  const catalogIssues = [
+    // The shared rules check everything but the expression itself (an unknown
+    // or missing parameter included); the expression is linted below.
+    ...readNotifyWebhookTargetCatalogIssues({
+      endpoint,
+      formFields: formSchema.fields,
+      target,
+    }).map((issue) => readCatalogIssueMessage(issue, target, path)),
+    // Only against an endpoint that is there and in use: a missing,
+    // disabled or deprecated one is the only issue its target reports.
+    ...(endpoint && !endpoint.disabled && !endpoint.deprecated
+      ? target.bindings.flatMap((binding, bindingIndex): readonly string[] => {
+          const from = binding.from;
+
+          return isNotifyWebhookExpressionSource(from)
+            ? lintNotifyWebhookExpressionBinding({
+                conditionService,
+                expression: from.expression,
+                formSchema,
+                label: `${path}.bindings[${bindingIndex}].from.expression`,
+                parameterType:
+                  endpoint.parameters.find(
+                    (parameter) => parameter.key === binding.parameter,
+                  )?.type ?? null,
+              })
+            : [];
+        })
+      : []),
+  ];
 
   // A saved endpoint whose URL a tightened allowlist no longer covers would
   // fail every delivery; say so now rather than after the case runs.

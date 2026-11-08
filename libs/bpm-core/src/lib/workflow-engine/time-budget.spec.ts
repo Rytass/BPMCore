@@ -43,4 +43,44 @@ describe('runWithinTimeBudget', (): void => {
     ).toThrow(TimeBudgetExceededError);
     expect(runWithinTimeBudget(() => 'next', 1000)).toBe('next');
   });
+
+  it('lets an outer budget interrupt work running under an inner one', (): void => {
+    // Had the inner budget fired first, its caller would catch it and the
+    // outer call would return 'swallowed' instead of throwing.
+    expect(() =>
+      runWithinTimeBudget((): string => {
+        try {
+          return runWithinTimeBudget((): string => {
+            for (;;) {
+              // Spins until interrupted.
+            }
+          }, 1000);
+        } catch {
+          // The outer interrupt must not be caught by the inner caller.
+          return 'swallowed';
+        }
+      }, 30),
+    ).toThrow(TimeBudgetExceededError);
+    expect(runWithinTimeBudget(() => 'next', 1000)).toBe('next');
+  });
+
+  it('keeps the outer work running after an inner interrupt', (): void => {
+    const outcome = runWithinTimeBudget((): string => {
+      const inner = ((): string => {
+        try {
+          return runWithinTimeBudget((): string => {
+            for (;;) {
+              // Spins until interrupted.
+            }
+          }, 20);
+        } catch (error: unknown) {
+          return error instanceof TimeBudgetExceededError ? 'inner' : 'other';
+        }
+      })();
+
+      return `${inner}|${runWithinTimeBudget(() => 'again', 1000)}`;
+    }, 1000);
+
+    expect(outcome).toBe('inner|again');
+  });
 });

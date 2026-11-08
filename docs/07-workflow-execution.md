@@ -196,6 +196,9 @@ W6 runtime 會優先執行 `edge.data.condition` 的 CEL expression，並保留�
 組成 CEL context。`lastDecision` 是 edge 來源節點上最新一筆決策（`LastDecisionContext`，形狀見 `docs/05` §3），
 該節點尚無決策時為 `null`，所以條件要寫成 `lastDecision != null && …`。XOR 判斷第一條符合條件的 outgoing edge；若都不符合，會走 `isDefault`。
 
+邊條件以案件 `workflowSnapshot.expressionDialect` 的方言評估（缺少＝`cel-legacy`），不讀模板目前的版本；評估失敗不會當成
+「不成立」而改走 default 邊，而是整個交易回滾（見 §9.2）。
+
 > 所有節點類型的 outgoing edge 都會先評估條件：條件成立的 edge 全部都會走（分叉），XOR 只取第一條。
 > 下方示意程式只描述 XOR 的情況。
 
@@ -533,8 +536,13 @@ async function applyDelegation(
 | `instance`  | `{ id, nodeId, state, templateId, templateVersionId, title }`；`nodeId` 為被委派任務所在的節點 |
 | `principal` | `{ memberId }`，即被代理的人                                                               |
 
-沒有 `subject`、`task`、`template` 根識別字。儲存規則時會檢查根識別字（未發佈，v0.16.2 之後），只允許上述六個；
+沒有 `subject`、`task`、`template` 根識別字。儲存規則時會檢查根識別字，只允許上述六個；
 不合法的規則不會被儲存。已經存在的錯誤規則不會被改動，執行期評估時仍會拋錯。
+
+**委派條件的方言**（未發佈，Phase 23 P1）：規則自己帶 `scopeConditionDialect`（資料庫欄位 `delegation_rules.scope_condition_dialect`，
+migration `DelegationScopeConditionDialect0000000030000` 把既有列設為 `cel-legacy`）。評估時讀規則本身的方言，與案件或模板的方言無關。
+`CreateDelegationRuleInput.scopeConditionDialect` 可選，後端缺省是 `cel-legacy`，更新時沿用規則原本的方言；後台委派頁建立新規則時送 `cel-v2`。
+儲存時以 `DELEGATION_CONDITION` 使用點 lint，cel-v2 規則必須回 bool，可以呼叫已註冊的宿主函式。
 
 ### 4.3 User Task 派工
 
@@ -970,6 +978,10 @@ ad-hoc 結案通知，標籤為「逾期終止」），案件終態為 `EXPIRED`
 | Approver resolver expression        | 同 entryCondition（無 `lastDecision`）                                     | 解出空集合 → 拋例外 |
 | Delegation scopeConditionCel        | `env`、`form`、`formData`、`initiator`、`instance`（含 `nodeId`）、`principal` | 條件為 false：規則不適用；執行期錯誤：拋 `BadRequestException` |
 
+上表的 CEL 評估點（表單欄位那列不是 CEL）遇到執行期錯誤（語法、缺 key、型別、預算、結果、函式失敗，見 §9.2）都是 fail closed：
+丟 `ExpressionRuntimeError`（`BadRequestException`），所在交易回滾，案件不前進。只有 NOTIFY webhook 的 `EXPRESSION` 參數例外，
+失敗記在 delivery 上，審批照常進行（§9.2）。
+
 ---
 
 ## 8. 流程完成判定
@@ -1035,6 +1047,52 @@ async function checkInstanceCompletion(instanceId) {
 - 自訂 dispatcher 不受 30 秒限制，請自行設定逾時，否則 mutation 會一直等待端點回應。
 - 內建案件歷程本來就不顯示這類服務節點紀錄，不受順序變動影響。
 - 不能遺失的 webhook 請改用知會節點，它有 outbox 與重試；`WEBHOOK` 服務節點與 ad-hoc 目標沒有。
+
+### 9.2 表達式方言、預算與 fail closed（未發佈，Phase 23）
+
+語法、lint 與使用點見 [docs/05](./05-conditions-cel.md)；本節只講引擎在執行時怎麼選方言、怎麼計時、失敗時怎麼處理。
+
+**每個評估點讀哪裡的方言**（方言缺少一律視為 `cel-legacy`）：
+
+| 評估點 | 方言來源 |
+| --- | --- |
+| 發起權限 `initiatorPolicyCel`（送出、可發起清單） | 所屬模板版本的 `workflowDefinition.expressionDialect`；式子空白時不讀方言 |
+| 節點 `entryCondition` | 案件 `workflowSnapshot`；式子空白時不讀方言 |
+| 邊條件、簽核人 `EXPRESSION`、服務節點 `WEBHOOK` payload、`SET_FORM_FIELD` 的值 | 案件 `workflowSnapshot` |
+| 委派規則 `scopeConditionCel` | 規則自己的 `scopeConditionDialect`（§4.2） |
+| Dry run | 送來的草稿定義；在預算外先 `prepareEngine(dialect)` 載入引擎 |
+| DataSource／NOTIFY webhook 的 `EXPRESSION` binding | 固定 `cel-v2`，沒有方言欄位 |
+
+- 案件用的是發起當下的快照，所以模板之後升級方言，不會改變進行中案件的路由。
+- 不認得的方言值（較新版本寫入或手改）不會改用 `cel-legacy` 猜測，評估時回 `EXPRESSION_SYNTAX_ERROR`。
+  只有真的有式子要評估時才讀方言，沒有運算式的版本不受影響。可發起清單遇到這種版本時只排除該模板並記 warn，
+  不讓整份清單失敗。發布時 `workflow-definition.validator.ts` 會先擋下未知方言。
+
+**預算**（`expression-budget.ts`）：單一式子 100 ms，同一次操作累計 250 ms，耗盡回 `EXPRESSION_BUDGET_EXCEEDED`，
+不會當成 `false`。「一次操作」的範圍：
+
+- 引擎的每個交易（`runEngineTransaction`）是一次操作，交易內所有評估共用 250 ms，包括交易內的委派條件與 DataSource 驗證。
+- 可發起清單的每個模板各自是一次操作，一個慢的模板不會用完其他模板的額度。
+- Dry run 是一次操作，外層另有 2 秒的整體上限（§9.1）。
+- NOTIFY webhook 每次 enqueue 另開一份預算，不佔交易的額度。
+
+引擎在開機時（`ConditionService.onApplicationBootstrap`）預熱兩種方言，冷啟動的載入成本不會落在第一筆案件的預算內；
+成功時寫一行 `code=EXPRESSION_WARM_UP_DONE cel-legacy=<ms>ms cel-v2=<ms>ms`，失敗的方言寫 `failed` 並另有
+`code=EXPRESSION_WARM_UP_FAILED` warn，預熱失敗不擋開機。
+
+**失敗一律 fail closed**：
+
+- 對外只有六個錯誤碼與 label（`EXPRESSION_SYNTAX_ERROR`、`EXPRESSION_MISSING_KEY`、`EXPRESSION_TYPE_ERROR`、
+  `EXPRESSION_BUDGET_EXCEEDED`、`EXPRESSION_INVALID_RESULT`、`EXPRESSION_FUNCTION_FAILED`），不含引擎原文與 context 值。
+- 錯誤是 `ExpressionRuntimeError`（繼承 `BadRequestException`）：交易回滾，案件、任務、token 與 `formData` 都不變。
+  邊條件失敗不會改走 default 邊。委派條件失敗依 §4.2：只有該規則正是要套用的那條時才讓派送失敗。
+- 宿主或內建函式失敗（丟錯、回 thenable、回傳型別不符、函式已下架）是 `EXPRESSION_FUNCTION_FAILED`，而且不會被
+  `||`、`&&`、`exists` 吸收：評估中只要有一次函式呼叫失敗，整次就判失敗。被短路而沒有執行的呼叫不算。
+- 函式從宿主移除後，引用它的進行中案件在評估時回 `EXPRESSION_FUNCTION_FAILED` 並回滾；宿主補回函式後同一案件可以繼續推進。
+- registry 本身讀不到（`list`／`get` 丟錯或回答形狀不對）時，所有式子都回 `EXPRESSION_FUNCTION_FAILED`，失敗不快取。
+- 例外：NOTIFY webhook 的 `EXPRESSION` 參數失敗時，delivery 記 `FAILED`（`WEBHOOK_PARAMETER_INVALID`，細節只有錯誤碼），
+  審批不回滾。DataSource 的 `EXPRESSION` 預算耗盡回 `FORM_DATA_SOURCE_TIMEOUT`，其他失敗回 `FORM_DATA_SOURCE_INVALID_BINDING`，
+  都不寫入 instance。
 
 ## 10. 並發策略
 

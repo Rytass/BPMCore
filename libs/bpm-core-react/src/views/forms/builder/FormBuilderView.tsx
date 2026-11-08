@@ -62,6 +62,7 @@ import {
   DateFieldDefinition,
   FORM_TABLE_MAX_ROWS,
   FormDataSourceBinding,
+  FormDataSourceBindingSource,
   FormDataSourceOptionFieldDefinition,
   FileUploadFieldDefinition,
   FormDefinitionSchema,
@@ -98,6 +99,7 @@ import {
   readCompatibleFormTableColumnBindingFields,
   readCompatibleFormDataSourceDescriptors,
   readFormDataSourceBinding,
+  readFormDataSourceBindingExpression,
   readFormDataSourceBindingValue,
   readFormSchemaLintMessage,
   readFormDataSourceBindingValueKind,
@@ -129,6 +131,10 @@ import {
   readFormTableRowBounds,
   readSelectOption,
 } from '@rytass/bpm-core-client/form';
+import {
+  parseFormBindingExpressionLintLine,
+  readFormBindingExpressionLintMessage,
+} from '@rytass/bpm-core-client/template';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { FormRenderer } from '../renderer/FormRendererView';
@@ -378,6 +384,10 @@ const PARAMETER_TYPE_LABELS: Readonly<
 const LINT_MISSING_PARAMETER_PATTERN =
   /^schema\.fields\[(\d+)\](?:\.columns\[(\d+)\])?\.dataSource\.bindings missing required parameter: (.+)$/u;
 
+/**
+ * A cel-v2 lint line of an `EXPRESSION` binding
+ * (`<path>.dataSource.bindings[<i>].from.expression: <code>[ <subject>]`).
+ */
 const LINT_UNKNOWN_PARAMETER_PATTERN =
   /^schema\.fields\[(\d+)\](?:\.columns\[(\d+)\])?\.dataSource\.bindings unknown parameter: (.+)$/u;
 
@@ -671,6 +681,9 @@ const EMPTY_UI_SCHEMA: FormUiSchema = {
 
 const STATIC_OPTION_SOURCE_ID = '__STATIC_OPTIONS__';
 const CONSTANT_BINDING_ID = '__CONSTANT__';
+const EXPRESSION_BINDING_ID = '__EXPRESSION__';
+/** A binding whose source kind this version does not know (a newer schema). */
+const UNSUPPORTED_BINDING_ID = '__UNSUPPORTED__';
 const ROW_FIELD_BINDING_PREFIX = '__ROW_FIELD__:';
 const UNBOUND_BINDING_ID = '__UNBOUND__';
 
@@ -1352,6 +1365,38 @@ export function FormBuilderView({
       return `${readLintTargetLabel(missing[1], missing[2])}尚未指定必要參數「${readLintParameterLabel(missing[1], missing[2], missing[3])}」的來源`;
     }
 
+    // `EXPR_*` lines get the shared per-code copy (the template designer's
+    // wording), placed by the labels this panel shows.
+    const expression = parseFormBindingExpressionLintLine(line);
+
+    if (expression) {
+      const fieldIndex = String(expression.fieldIndex);
+      const columnIndex =
+        expression.columnIndex === null
+          ? undefined
+          : String(expression.columnIndex);
+      const field = schema.fields[expression.fieldIndex];
+      const column = field ? readLintColumn(field, columnIndex) : undefined;
+      const parameterKey =
+        readLintBindingParameter(
+          fieldIndex,
+          columnIndex,
+          String(expression.bindingIndex),
+        ) ?? '';
+
+      return readFormBindingExpressionLintMessage({
+        code: expression.code,
+        columnLabel: column ? column.label || column.fieldKey : null,
+        fieldLabel: field ? field.label || field.fieldKey : '',
+        parameterLabel: readLintParameterLabel(
+          fieldIndex,
+          columnIndex,
+          parameterKey,
+        ),
+        subject: expression.subject,
+      });
+    }
+
     const unknown = LINT_UNKNOWN_PARAMETER_PATTERN.exec(line);
 
     if (unknown?.[1] && unknown[3]) {
@@ -1407,6 +1452,19 @@ export function FormBuilderView({
         (parameter) => parameter.key === parameterKey,
       )?.label || parameterKey
     );
+  }
+
+  function readLintBindingParameter(
+    fieldIndex: string,
+    columnIndex: string | undefined,
+    bindingIndex: string,
+  ): string | null {
+    const field = schema.fields[Number(fieldIndex)];
+    const target = field ? (readLintColumn(field, columnIndex) ?? field) : null;
+
+    return target && isFormDataSourceFieldDefinition(target)
+      ? (target.dataSource.bindings[Number(bindingIndex)]?.parameter ?? null)
+      : null;
   }
 
   function readLintColumn(
@@ -2558,22 +2616,27 @@ export function FormBuilderView({
         // Its own column rather than a second control stacked inside the
         // binding cell: a fixed value belongs beside the choice that asked
         // for it, not under it.
-        render: (row): ReactElement =>
-          readFormDataSourceBindingValueKind(
+        render: (row): ReactElement => {
+          const kind = readFormDataSourceBindingValueKind(
             readFormDataSourceBinding(field, row.parameter.key),
-          ) === 'CONSTANT' ? (
-            renderDataSourceConstantEditor(
+          );
+
+          if (kind === 'CONSTANT') {
+            return renderDataSourceConstantEditor(
               field,
               row.parameter.key,
               row.parameter.type,
               readFormDataSourceBinding(field, row.parameter.key),
               scope,
-            )
-          ) : (
+            );
+          }
+
+          return (
             <Typography color="text-neutral" variant="caption">
-              —
+              {kind === 'EXPRESSION' ? '見下方運算式' : '—'}
             </Typography>
-          ),
+          );
+        },
         title: '固定值',
       },
       {
@@ -2604,6 +2667,72 @@ export function FormBuilderView({
           showHeader
           size="sub"
         />
+        {renderDataSourceExpressionEditors(field, descriptor, scope)}
+      </div>
+    );
+  }
+
+  /**
+   * One text box per expression-bound condition, under the table: an
+   * expression needs a line of its own, not a table cell. The text is only
+   * edited here; the browser never parses or runs it (docs/24 §2.5). The
+   * backend checks it with「檢查全部動態選項設定」and at publish.
+   */
+  function renderDataSourceExpressionEditors(
+    field: FormDataSourceOptionFieldDefinition,
+    descriptor: FormDataSourceDescriptorRecord,
+    scope: DataSourceBindingScope,
+  ): ReactElement | null {
+    const parameters = descriptor.parameters.filter(
+      (parameter) =>
+        readFormDataSourceBindingValueKind(
+          readFormDataSourceBinding(field, parameter.key),
+        ) === 'EXPRESSION',
+    );
+
+    if (parameters.length === 0) {
+      return null;
+    }
+
+    return (
+      <div style={DATA_SOURCE_PARAMETERS_STYLE}>
+        {parameters.map((parameter) => {
+          const name = `${parameter.label ?? parameter.key} 的運算式`;
+
+          return (
+            <div
+              data-data-source-expression={parameter.key}
+              key={parameter.key}
+              style={DATA_SOURCE_PARAMETERS_STYLE}
+            >
+              <Typography color="text-neutral" variant="label-secondary">
+                {name}
+              </Typography>
+              {renderSettingsTextarea({
+                name,
+                onChange: (value): void =>
+                  updateDataSourceExpression(
+                    field,
+                    parameter.key,
+                    value,
+                    scope,
+                  ),
+                placeholder: scope.rowColumns
+                  ? '例如：row.plant == "" ? form.plant : row.plant'
+                  : '例如：form.chargeTo == "OTHER" ? "TW02" : form.plant',
+                rows: 2,
+                value:
+                  readFormDataSourceBindingExpression(field, parameter.key) ??
+                  '',
+              })}
+              <Typography color="text-neutral" variant="caption">
+                {scope.rowColumns
+                  ? '以 form.欄位代號 讀表單欄位、row.欄位代號 讀同列欄位；只能使用內建函式，結果須符合條件的型別。'
+                  : '以 form.欄位代號 讀表單欄位；只能使用內建函式，結果須符合條件的型別。'}
+              </Typography>
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -2660,7 +2789,16 @@ export function FormBuilderView({
       ),
       ...(parameter.type === 'STRING_ARRAY'
         ? []
-        : [{ id: CONSTANT_BINDING_ID, name: '固定常數' }]),
+        : [
+            { id: CONSTANT_BINDING_ID, name: '固定常數' },
+            // An expression yields one value, never a list (ADR 22 §3.7).
+            { id: EXPRESSION_BINDING_ID, name: '運算式' },
+          ]),
+      // Kept selectable only so the current choice can be shown; picking
+      // anything else replaces it.
+      ...(bindingId === UNSUPPORTED_BINDING_ID
+        ? [{ id: UNSUPPORTED_BINDING_ID, name: '不支援的來源（請重新設定）' }]
+        : []),
     ];
 
     return (
@@ -2726,6 +2864,14 @@ export function FormBuilderView({
 
     if (kind === 'ROW_FIELD') {
       return `隨同列「${readBindingSourceLabel(binding, scope)}」變動`;
+    }
+
+    if (kind === 'EXPRESSION') {
+      return '由運算式計算，隨引用的欄位變動';
+    }
+
+    if (binding) {
+      return '這個來源目前的版本不支援，選項無法載入';
     }
 
     if (!parameter.required) {
@@ -2857,12 +3003,31 @@ export function FormBuilderView({
     optionId: string | undefined,
     scope: DataSourceBindingScope,
   ): void {
+    // Re-picking the unsupported placeholder keeps the stored binding as is.
+    if (optionId === UNSUPPORTED_BINDING_ID) {
+      return;
+    }
+
     scope.commit(
       upsertFormDataSourceFieldBinding(
         field,
         parameterKey,
         readNextDataSourceBinding(parameterKey, parameterType, optionId),
       ),
+    );
+  }
+
+  function updateDataSourceExpression(
+    field: FormDataSourceOptionFieldDefinition,
+    parameterKey: string,
+    expression: string,
+    scope: DataSourceBindingScope,
+  ): void {
+    scope.commit(
+      upsertFormDataSourceFieldBinding(field, parameterKey, {
+        from: { expression, kind: 'EXPRESSION' },
+        parameter: parameterKey,
+      }),
     );
   }
 
@@ -3728,13 +3893,27 @@ function readDataSourceBindingOptionId(
     return UNBOUND_BINDING_ID;
   }
 
-  if (binding.from.kind === 'FIELD') {
-    return binding.from.fieldKey;
-  }
+  const from: FormDataSourceBindingSource = binding.from;
 
-  return binding.from.kind === 'ROW_FIELD'
-    ? `${ROW_FIELD_BINDING_PREFIX}${binding.from.columnKey}`
-    : CONSTANT_BINDING_ID;
+  // Exhaustive: a source kind from a newer schema is shown as unsupported,
+  // never as a constant it is not (docs/24 §2.8).
+  switch (from.kind) {
+    case 'FIELD':
+      return from.fieldKey;
+    case 'ROW_FIELD':
+      return `${ROW_FIELD_BINDING_PREFIX}${from.columnKey}`;
+    case 'CONSTANT':
+      return CONSTANT_BINDING_ID;
+    case 'EXPRESSION':
+      return EXPRESSION_BINDING_ID;
+    default:
+      return readUnsupportedBindingOptionId(from);
+  }
+}
+
+function readUnsupportedBindingOptionId(from: never): string {
+  void from;
+  return UNSUPPORTED_BINDING_ID;
 }
 
 function readDefaultDataSourceConstant(
@@ -3779,6 +3958,13 @@ function readNextDataSourceBinding(
 ): FormDataSourceBinding | null {
   if (!optionId || optionId === UNBOUND_BINDING_ID) {
     return null;
+  }
+
+  if (optionId === EXPRESSION_BINDING_ID) {
+    return {
+      from: { expression: '', kind: 'EXPRESSION' },
+      parameter: parameterKey,
+    };
   }
 
   if (optionId === CONSTANT_BINDING_ID) {

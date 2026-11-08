@@ -69,6 +69,7 @@ const FORM_IDS = {
   ACCESS: '30000000-0000-4000-8000-000000000003',
   DISCOUNT: '30000000-0000-4000-8000-000000000004',
   DYNAMIC_OPTIONS: '30000000-0000-4000-8000-000000000006',
+  DYNAMIC_OPTIONS_EXPRESSION: '30000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_OPTIONAL: '30000000-0000-4000-8000-000000000007',
   EXPENSE: '30000000-0000-4000-8000-000000000001',
   LEAVE: '30000000-0000-4000-8000-000000000002',
@@ -79,6 +80,7 @@ const FORM_IDS = {
 const FORM_VERSION_IDS = {
   ACCESS_V1: '31000000-0000-4000-8000-000000000003',
   DISCOUNT_V1: '31000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_EXPRESSION_V1: '31000000-0000-4000-8000-000000000011',
   DYNAMIC_OPTIONS_OPTIONAL_V1: '31000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_V1: '31000000-0000-4000-8000-000000000008',
   EXPENSE_ARCHIVED: '31000000-0000-4000-8000-000000000006',
@@ -91,20 +93,25 @@ const FORM_VERSION_IDS = {
 
 const TEMPLATE_IDS = {
   ACCESS: '50000000-0000-4000-8000-000000000003',
+  CEL_V2_EXPENSE: '50000000-0000-4000-8000-000000000012',
   DISCOUNT: '50000000-0000-4000-8000-000000000004',
   DYNAMIC_OPTIONS: '50000000-0000-4000-8000-000000000006',
+  DYNAMIC_OPTIONS_EXPRESSION: '50000000-0000-4000-8000-000000000011',
   DYNAMIC_OPTIONS_OPTIONAL: '50000000-0000-4000-8000-000000000007',
   EXPENSE: '50000000-0000-4000-8000-000000000001',
   LEAVE: '50000000-0000-4000-8000-000000000002',
   PURCHASE: '50000000-0000-4000-8000-000000000005',
   TABLE_PURCHASE: '50000000-0000-4000-8000-000000000008',
   WEBHOOK_EXPENSE: '50000000-0000-4000-8000-000000000010',
+  WEBHOOK_EXPRESSION: '50000000-0000-4000-8000-000000000013',
   WEBHOOK_LEAVE: '50000000-0000-4000-8000-000000000009',
 } as const;
 
 const TEMPLATE_VERSION_IDS = {
   ACCESS_V1: '51000000-0000-4000-8000-000000000003',
+  CEL_V2_EXPENSE_V1: '51000000-0000-4000-8000-000000000014',
   DISCOUNT_V1: '51000000-0000-4000-8000-000000000004',
+  DYNAMIC_OPTIONS_EXPRESSION_V1: '51000000-0000-4000-8000-000000000013',
   DYNAMIC_OPTIONS_OPTIONAL_V1: '51000000-0000-4000-8000-000000000009',
   DYNAMIC_OPTIONS_V1: '51000000-0000-4000-8000-000000000008',
   EXPENSE_ARCHIVED: '51000000-0000-4000-8000-000000000006',
@@ -113,6 +120,7 @@ const TEMPLATE_VERSION_IDS = {
   PURCHASE_DRAFT: '51000000-0000-4000-8000-000000000005',
   TABLE_PURCHASE_V1: '51000000-0000-4000-8000-000000000010',
   WEBHOOK_EXPENSE_V1: '51000000-0000-4000-8000-000000000012',
+  WEBHOOK_EXPRESSION_V1: '51000000-0000-4000-8000-000000000015',
   WEBHOOK_LEAVE_V1: '51000000-0000-4000-8000-000000000011',
 } as const;
 
@@ -473,6 +481,58 @@ const DYNAMIC_OPTIONS_FORM_SCHEMA = {
 } as const;
 
 /**
+ * Phase 23 P5: a cost center whose `plant` parameter is computed by an
+ * `EXPRESSION` binding (ADR 22 §3.7) from two fields, so changing either one
+ * re-queries the options. Charging another plant swaps TW01 and TW02.
+ * Evaluated only by the backend, from this stored schema.
+ */
+const DYNAMIC_OPTIONS_EXPRESSION_FORM_SCHEMA = {
+  fields: [
+    {
+      fieldKey: 'plant',
+      label: '申請廠別',
+      options: [
+        { label: '台中廠 TW01', value: 'TW01' },
+        { label: '台北廠 TW02', value: 'TW02' },
+      ],
+      required: true,
+      type: 'select',
+    },
+    {
+      fieldKey: 'chargeTo',
+      label: '費用負擔',
+      options: [
+        { label: '本廠負擔', value: 'SELF' },
+        { label: '由另一廠負擔', value: 'OTHER' },
+      ],
+      required: true,
+      type: 'select',
+    },
+    {
+      dataSource: {
+        bindings: [
+          {
+            from: {
+              expression:
+                'form.chargeTo == "OTHER" ? (form.plant == "TW01" ? "TW02" : "TW01") : form.plant',
+              kind: 'EXPRESSION',
+            },
+            parameter: 'plant',
+          },
+        ],
+        key: 'demo.cost-centers',
+        version: 1,
+      },
+      fieldKey: 'chargedCostCenter',
+      label: '負擔成本中心',
+      required: true,
+      type: 'select',
+    },
+  ],
+  schemaVersion: 1,
+} as const;
+
+/**
  * Companion form for `demo.cost-centers-optional-filter@1`. `costCategory` is an
  * optional field bound to the source's optional `category` parameter, so the
  * dynamic controls must stay usable while it is empty. `projectCostCenterNote`
@@ -626,6 +686,15 @@ const DYNAMIC_OPTIONS_FORM_UI_SCHEMA = {
     { fieldKey: 'costCenterAutocompleteMultiple', width: 'HALF' },
     { fieldKey: 'costCenterRadio', width: 'HALF' },
     { fieldKey: 'costCenterCheckbox', width: 'HALF' },
+  ],
+  schemaVersion: 1,
+} as const;
+
+const DYNAMIC_OPTIONS_EXPRESSION_FORM_UI_SCHEMA = {
+  layout: [
+    { fieldKey: 'plant', width: 'HALF' },
+    { fieldKey: 'chargeTo', width: 'HALF' },
+    { fieldKey: 'chargedCostCenter', width: 'FULL' },
   ],
   schemaVersion: 1,
 } as const;
@@ -1128,6 +1197,56 @@ const EXPENSE_WEBHOOK_WORKFLOW = withNotifyBranch(
     ],
   },
 );
+
+// NOTIFY webhook whose parameter is computed by an `EXPRESSION` binding
+// (ADR 22 §3.7): always cel-v2, `form` is its only root and only the nine
+// built-ins may be called. Seeded with the other webhook demos.
+const EXPENSE_WEBHOOK_EXPRESSION_WORKFLOW = withNotifyBranch(
+  createWorkflowDefinition({
+    approvalNodes: [
+      {
+        id: 'manager_review',
+        label: '直屬主管簽核',
+        resolver: {
+          baseFromInitiator: true,
+          fallback: { memberId: 'member-001', type: 'DIRECT' },
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+        x: 220,
+        y: 0,
+      },
+    ],
+  }),
+  {
+    afterNodeId: 'manager_review',
+    id: 'notify_erp_summary',
+    label: '通知 ERP（運算式摘要）',
+    recipients: { memberIds: [], type: 'DIRECT' },
+    webhooks: [
+      {
+        bindings: [
+          { from: { fieldKey: 'amount', kind: 'FIELD' }, parameter: 'amount' },
+          {
+            from: {
+              expression: 'trim(form.vendorName) + "／" + upper(form.paymentType)',
+              kind: 'EXPRESSION',
+            },
+            parameter: 'caseTitle',
+          },
+        ],
+        endpoint: { key: 'demo.purchase-approved', version: 1 },
+        id: 'webhook_seed_expense_erp_expression',
+      },
+    ],
+  },
+);
+
+// cel-v2 routing demo (ADR 22 §3.3): the definition opts in with
+// `expressionDialect`, and its edge conditions use what only cel-v2 has —
+// the host function `demo_costBand_v1` (apps/api `api-expression-functions.ts`),
+// `contains` and the `exists` macro. The default edge keeps every case routable.
+const CEL_V2_EXPENSE_WORKFLOW = createCelV2ExpenseWorkflow();
 
 const ACCESS_WORKFLOW = createWorkflowDefinition({
   approvalNodes: [
@@ -1694,6 +1813,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         'member-101',
       ),
       formDefinitionRow(
+        FORM_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+        '跨廠成本中心申請單（表達式）',
+        '用 EXPRESSION binding 由申請廠別與費用負擔計算 plant 參數。',
+        'member-101',
+      ),
+      formDefinitionRow(
         FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
         '專案成本中心申請單',
         '用 optional category parameter 驗證未填相依欄位時仍可查詢選項。',
@@ -1814,6 +1939,17 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
         null,
       ),
       formVersionRow(
+        FORM_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
+        FORM_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+        1,
+        'PUBLISHED',
+        DYNAMIC_OPTIONS_EXPRESSION_FORM_SCHEMA,
+        DYNAMIC_OPTIONS_EXPRESSION_FORM_UI_SCHEMA,
+        '2026-11-07T03:00:00.000Z',
+        'member-101',
+        null,
+      ),
+      formVersionRow(
         FORM_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
         FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
         1,
@@ -1879,6 +2015,12 @@ async function seedForms(queryRunner: QueryRunner): Promise<void> {
     'form_definitions',
     FORM_IDS.DYNAMIC_OPTIONS_OPTIONAL,
     FORM_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'form_definitions',
+    FORM_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+    FORM_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
   );
   await updateCurrentVersion(
     queryRunner,
@@ -1983,7 +2125,23 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         CATEGORY_IDS.FINANCE,
         'member-101',
       ),
+      templateRow(
+        TEMPLATE_IDS.WEBHOOK_EXPRESSION,
+        '供應商請款（運算式通知 ERP）',
+        '主管簽核後以 Webhook 通知 ERP；案件標題參數由運算式組出供應商與付款類型。',
+        '採購請款',
+        CATEGORY_IDS.FINANCE,
+        'member-101',
+      ),
       ]),
+      templateRow(
+        TEMPLATE_IDS.CEL_V2_EXPENSE,
+        '供應商請款（cel-v2 分流）',
+        '以 cel-v2 條件分流：demo_costBand_v1 判定高額送總經理，急件模治具或維修送製造部主管。',
+        '採購請款',
+        CATEGORY_IDS.FINANCE,
+        'member-101',
+      ),
       templateRow(
         TEMPLATE_IDS.ACCESS,
         'ERP / MES 權限申請',
@@ -2012,6 +2170,14 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         TEMPLATE_IDS.DYNAMIC_OPTIONS,
         '動態成本中心申請',
         '用 host-owned DataSource 驗證相依選項與歷史 snapshot。',
+        '採購請款',
+        CATEGORY_IDS.FINANCE,
+        'member-101',
+      ),
+      templateRow(
+        TEMPLATE_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+        '跨廠成本中心申請（表達式）',
+        '用 EXPRESSION binding 驗證依賴欄位變更、重新查詢與退回重送。',
         '採購請款',
         CATEGORY_IDS.FINANCE,
         'member-101',
@@ -2111,7 +2277,29 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         'member-101',
         null,
       ),
+      templateVersionRow(
+        TEMPLATE_VERSION_IDS.WEBHOOK_EXPRESSION_V1,
+        TEMPLATE_IDS.WEBHOOK_EXPRESSION,
+        1,
+        'PUBLISHED',
+        EXPENSE_WEBHOOK_EXPRESSION_WORKFLOW,
+        FORM_VERSION_IDS.EXPENSE_V1,
+        '2026-11-07T05:00:00.000Z',
+        'member-101',
+        null,
+      ),
       ]),
+      templateVersionRow(
+        TEMPLATE_VERSION_IDS.CEL_V2_EXPENSE_V1,
+        TEMPLATE_IDS.CEL_V2_EXPENSE,
+        1,
+        'PUBLISHED',
+        CEL_V2_EXPENSE_WORKFLOW,
+        FORM_VERSION_IDS.EXPENSE_V1,
+        '2026-11-07T04:00:00.000Z',
+        'member-101',
+        null,
+      ),
       templateVersionRow(
         TEMPLATE_VERSION_IDS.ACCESS_V1,
         TEMPLATE_IDS.ACCESS,
@@ -2153,6 +2341,17 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
         DYNAMIC_OPTIONS_WORKFLOW,
         FORM_VERSION_IDS.DYNAMIC_OPTIONS_V1,
         '2026-05-18T04:00:00.000Z',
+        'member-101',
+        null,
+      ),
+      templateVersionRow(
+        TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
+        TEMPLATE_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+        1,
+        'PUBLISHED',
+        DYNAMIC_OPTIONS_WORKFLOW,
+        FORM_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
+        '2026-11-07T04:00:00.000Z',
         'member-101',
         null,
       ),
@@ -2206,7 +2405,19 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
       TEMPLATE_IDS.WEBHOOK_EXPENSE,
       TEMPLATE_VERSION_IDS.WEBHOOK_EXPENSE_V1,
     );
+    await updateCurrentVersion(
+      queryRunner,
+      'approval_templates',
+      TEMPLATE_IDS.WEBHOOK_EXPRESSION,
+      TEMPLATE_VERSION_IDS.WEBHOOK_EXPRESSION_V1,
+    );
   }
+  await updateCurrentVersion(
+    queryRunner,
+    'approval_templates',
+    TEMPLATE_IDS.CEL_V2_EXPENSE,
+    TEMPLATE_VERSION_IDS.CEL_V2_EXPENSE_V1,
+  );
   await updateCurrentVersion(
     queryRunner,
     'approval_templates',
@@ -2236,6 +2447,12 @@ async function seedTemplates(queryRunner: QueryRunner): Promise<void> {
     'approval_templates',
     TEMPLATE_IDS.DYNAMIC_OPTIONS_OPTIONAL,
     TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_OPTIONAL_V1,
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'approval_templates',
+    TEMPLATE_IDS.DYNAMIC_OPTIONS_EXPRESSION,
+    TEMPLATE_VERSION_IDS.DYNAMIC_OPTIONS_EXPRESSION_V1,
   );
   await updateCurrentVersion(
     queryRunner,
@@ -3343,6 +3560,97 @@ function createWorkflowDefinition({
     edges,
     meta: { diagramVersion: 'manufacturing-seed-2026-05-18', schemaVersion: 1 },
     nodes,
+  };
+}
+
+/**
+ * The cel-v2 routing demo on the supplier payment form (`EXPENSE_FORM_SCHEMA`):
+ * after the manager, a HIGH cost band goes to the general manager, an urgent
+ * tooling or maintenance payment to the manufacturing head, and anything else
+ * ends. Every expression passes the cel-v2 publish lint against that form.
+ */
+function createCelV2ExpenseWorkflow(): Readonly<Record<string, unknown>> {
+  const base = createWorkflowDefinition({
+    approvalNodes: [
+      {
+        id: 'manager_review',
+        label: '直屬主管簽核',
+        resolver: {
+          baseFromInitiator: true,
+          fallback: { memberId: 'member-101', type: 'DIRECT' },
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        },
+        x: 220,
+        y: 0,
+      },
+      {
+        id: 'ceo_review',
+        label: '高額總經理核准',
+        resolver: { memberIds: ['member-001'], type: 'DIRECT' },
+        x: 700,
+        y: -160,
+      },
+      {
+        id: 'plant_review',
+        label: '急件製造部覆核',
+        resolver: { memberIds: ['member-501'], type: 'DIRECT' },
+        x: 700,
+        y: 160,
+      },
+    ],
+  });
+  const nodes = base['nodes'] as readonly Readonly<Record<string, unknown>>[];
+  const branch = (
+    id: string,
+    target: string,
+    data: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>> => ({
+    data,
+    id,
+    source: 'gateway_cost',
+    target,
+    type: 'smoothstep',
+  });
+  const edge = (source: string, target: string): Readonly<Record<string, unknown>> => ({
+    data: {},
+    id: `edge-${source}-${target}`,
+    source,
+    target,
+    type: 'smoothstep',
+  });
+
+  return {
+    ...base,
+    edges: [
+      edge('start', 'manager_review'),
+      edge('manager_review', 'gateway_cost'),
+      branch('edge-gateway_cost-ceo_review', 'ceo_review', {
+        condition: 'demo_costBand_v1(form.amount) == "HIGH"',
+        label: '高額（demo_costBand_v1）',
+      }),
+      branch('edge-gateway_cost-plant_review', 'plant_review', {
+        condition:
+          'form.reason.contains("急件") && ["tooling", "maintenance"].exists(t, t == form.paymentType)',
+        label: '急件模治具／維修',
+      }),
+      branch('edge-gateway_cost-end', 'end', {
+        isDefault: true,
+        label: '其他情況',
+      }),
+      edge('ceo_review', 'end'),
+      edge('plant_review', 'end'),
+    ],
+    expressionDialect: 'cel-v2',
+    nodes: [
+      ...nodes,
+      {
+        data: { direction: 'split', label: '金額與急件分流', triggerMode: 'AND' },
+        id: 'gateway_cost',
+        position: { x: 460, y: 0 },
+        type: 'exclusiveGateway',
+      },
+    ],
   };
 }
 

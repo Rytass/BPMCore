@@ -1,0 +1,244 @@
+A01 SAME | form.amount > 1000000 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A02 SAME | form.amount < 100000 | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+A03 SAME | form.region == 'TW' | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A04 SAME | form.region in ['TW', 'JP', 'KR'] | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A05 DIFF | form.email.contains('@example.com') | legacy: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] Unknown method: contains | v8: OK {"t":"boolean","v":"true"}
+A06 SAME | form.amount >= 100000 && form.amount <= 1000000 | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+A07 SAME | lastDecision != null && lastDecision.action == 'RETURNED' | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+A08 SAME | lastDecision != null && lastDecision.action == 'APPROVED' | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+A09 SAME | form.priority == 'urgent' | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A10 SAME | form.region == 'JP' ? 'JP_HEAD' : 'TW_HEAD' | legacy: OK {"t":"string","v":"TW_HEAD"} | v8: OK {"t":"string","v":"TW_HEAD"}
+A11 SAME | 'manager' in initiator.roles | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A12 SAME | 'admin' in subject.roles | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A13 SAME | form.amount > 100000 && initiator.org.code == 'FIN' | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A14 SAME | form.amount > 1000000 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A15 SAME | form.systemName == "cloud-console" | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A16 SAME | form.kind == 'general' | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A17 DIFF | form.price * 2 | legacy: OK {"t":"number","v":"5"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<double> * int
+
+>    1 | form.price * 2
+         ^
+A18 DIFF | form.amount + 1 | legacy: OK {"t":"number","v":"1500001"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<double> + int
+
+>    1 | form.amount + 1
+         ^
+A19 SAME | size(form.items) == 2 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A20 SAME | has(form.items) | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A21 SAME | form.tags != null && size(form.tags) > 0 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A22 DIFF | form.nothing == null || size(form.nothing) == 0 | legacy: ERR[PARSE] invalid_argument: null | v8: OK {"t":"boolean","v":"true"}
+A23 SAME | form.empty != null && form.empty != "" | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+A24 SAME | form.empty == null || form.empty == "" | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A25 SAME | form.tags != null && 'a' in form.tags | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A26 SAME | !(form.tags != null && 'z' in form.tags) | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A27 SAME | form.tags != [] | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A28 SAME | form.items[0].qty | legacy: OK {"t":"number","v":"3"} | v8: OK {"t":"number","v":"3"}
+A29 SAME | form.items[5].qty | legacy: ERR[MISSING_KEY] Identifier "5" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b"],"it | v8: ERR[MISSING_KEY] No such key: index out of bounds, index 5 >= size 2
+
+>    1 | form.items[5].qty
+         ^
+A30 SAME | form.items.exists(row, row.qty > 2) | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A31 SAME | form["sec"] | legacy: OK {"t":"string","v":"x"} | v8: OK {"t":"string","v":"x"}
+A32 SAME | form["hyphen-key"] | legacy: ERR[MISSING_KEY] Identifier "hyphen-key" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a" | v8: ERR[MISSING_KEY] No such key: hyphen-key
+
+>    1 | form["hyphen-key"]
+         ^
+A33 DIFF | form.items.size() | legacy: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] Unknown method: size | v8: OK {"t":"bigint","v":"2"}
+A34 SAME | form.items.name | legacy: ERR[MISSING_KEY] Identifier "name" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b"], | v8: ERR[MISSING_KEY] No such key: name
+
+>    1 | form.items.name
+                    ^
+A35 SAME | env.now != null | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A36 SAME | instance.state == "RUNNING" | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A37 SAME | initiator.memberId == "member-101" | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A38 SAME | form.flag == true | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+A39 DIFF | form.flag == false ? 1 : 0 | legacy: OK {"t":"number","v":"0"} | v8: OK {"t":"bigint","v":"0"}
+A40 SAME | form.kind == 'general' && form.amount > 0 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+B01 SAME | form.amount > 1000000.5 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+B02 SAME | form.amount > 1000000 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+B03 SAME | form.price > 2 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+B04 SAME | form.price == 2.5 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+B05 DIFF | form.amount * 2 | legacy: OK {"t":"number","v":"3000000"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<double> * int
+
+>    1 | form.amount * 2
+         ^
+B06 DIFF | form.amount - 1 | legacy: OK {"t":"number","v":"1499999"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<double> - int
+
+>    1 | form.amount - 1
+         ^
+B07 DIFF | form.amount / 2 | legacy: OK {"t":"number","v":"750000"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<double> / int
+
+>    1 | form.amount / 2
+         ^
+B08 DIFF | form.amount % 7 | legacy: OK {"t":"number","v":"5"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<double> % int
+
+>    1 | form.amount % 7
+         ^
+B09 SAME | form.price * 1.5 | legacy: OK {"t":"number","v":"3.75"} | v8: OK {"t":"number","v":"3.75"}
+B10 DIFF | 2 + form.price | legacy: OK {"t":"number","v":"4.5"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: int + dyn<double>
+
+>    1 | 2 + form.price
+         ^
+B11 SAME | form.amount + form.price | legacy: OK {"t":"number","v":"1500002.5"} | v8: OK {"t":"number","v":"1500002.5"}
+B12 SAME | form.amount + 0.5 | legacy: OK {"t":"number","v":"1500000.5"} | v8: OK {"t":"number","v":"1500000.5"}
+B13 DIFF | 1 == 1.0 | legacy: OK {"t":"boolean","v":"true"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: int == double
+
+>    1 | 1 == 1.0
+         ^
+B14 SAME | 1 < 1.5 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+B15 SAME | form.count == 0 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+B16 SAME | form.text + "!" | legacy: OK {"t":"string","v":"hello!"} | v8: OK {"t":"string","v":"hello!"}
+B17 SAME | "x" + form.text | legacy: OK {"t":"string","v":"xhello"} | v8: OK {"t":"string","v":"xhello"}
+B18 DIFF | form.text + 1 | legacy: ERR[OTHER] CelTypeError: addition operation cannot be applied to (string, uint) | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<string> + int
+
+>    1 | form.text + 1
+         ^
+B19 DIFF | form.amount / 0 | legacy: ERR[OTHER] Division by zero | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<double> / int
+
+>    1 | form.amount / 0
+         ^
+C01 DIFF | has(form.items) ? 1 : 0 | legacy: OK {"t":"number","v":"1"} | v8: OK {"t":"bigint","v":"1"}
+C02 DIFF | size(form.items) | legacy: OK {"t":"number","v":"2"} | v8: OK {"t":"bigint","v":"2"}
+C03 DIFF | 1 | legacy: OK {"t":"number","v":"1"} | v8: OK {"t":"bigint","v":"1"}
+C04 SAME | form.items | legacy: OK {"t":"list","v":[{"t":"map","v":{"qty":{"t":"number","v":"3"},"name":{"t":"string","v":"x"}}},{"t":"map","v":{"qty":{"t":"number","v":"1"},"name":{"t":"string","v":"y"}}}]} | v8: OK {"t":"list","v":[{"t":"map","v":{"qty":{"t":"number","v":"3"},"name":{"t":"string","v":"x"}}},{"t":"map","v":{"qty":{"t":"number","v":"1"},"name":{"t":"string","v":"y"}}}]}
+C05 SAME | form | legacy: OK {"t":"map","v":{"amount":{"t":"number","v":"1500000"},"price":{"t":"number","v":"2.5"},"region":{"t":"string","v":"TW"},"priority":{"t":"string","v":"urgent"},"kind":{"t":"string","v":"general"},"email":{"t":"string","v":"a@example.com"},"systemName":{"t":"string","v":"cloud-console"},"tags":{"t":"list","v":[{"t":"string","v":"a"},{"t":"string","v":"b"}]},"items":{"t":"list","v":[{"t":"map","v":{"qty":{"t":"number","v":"3"},"name":{"t":"string","v":"x"}}},{"t":"map","v":{"qty":{"t":"number","v":"1"},"name":{"t":"string","v":"y"}}}]},"empty":{"t":"string","v":""},"nothing":{"t":"null"},"flag":{"t":"boolean","v":"true"},"sec":{"t":"string","v":"x"},"text":{"t":"string","v":"hello"},"count":{"t":"number","v":"0"}}} | v8: OK {"t":"map","v":{"amount":{"t":"number","v":"1500000"},"price":{"t":"number","v":"2.5"},"region":{"t":"string","v":"TW"},"priority":{"t":"string","v":"urgent"},"kind":{"t":"string","v":"general"},"email":{"t":"string","v":"a@example.com"},"systemName":{"t":"string","v":"cloud-console"},"tags":{"t":"list","v":[{"t":"string","v":"a"},{"t":"string","v":"b"}]},"items":{"t":"list","v":[{"t":"map","v":{"qty":{"t":"number","v":"3"},"name":{"t":"string","v":"x"}}},{"t":"map","v":{"qty":{"t":"number","v":"1"},"name":{"t":"string","v":"y"}}}]},"empty":{"t":"string","v":""},"nothing":{"t":"null"},"flag":{"t":"boolean","v":"true"},"sec":{"t":"string","v":"x"},"text":{"t":"string","v":"hello"},"count":{"t":"number","v":"0"}}}
+C06 DIFF | form.constructor | legacy: OK {"t":"function"} | v8: ERR[MISSING_KEY] No such key: constructor
+
+>    1 | form.constructor
+              ^
+C07 DIFF | form.toString | legacy: OK {"t":"function"} | v8: ERR[MISSING_KEY] No such key: toString
+
+>    1 | form.toString
+              ^
+C08 DIFF | form.__proto__ | legacy: OK {"t":"map","v":{}} | v8: ERR[MISSING_KEY] No such key: __proto__
+
+>    1 | form.__proto__
+              ^
+C09 SAME | env | legacy: OK {"t":"map","v":{"now":{"t":"string","v":"2026-11-07T00:00:00.000Z"}}} | v8: OK {"t":"map","v":{"now":{"t":"string","v":"2026-11-07T00:00:00.000Z"}}}
+C10 DIFF | int(form.price) | legacy: ERR[OTHER] Macros int not recognized | v8: OK {"t":"bigint","v":"2"}
+C11 DIFF | string(form.amount) | legacy: ERR[OTHER] Macros string not recognized | v8: OK {"t":"string","v":"1500000"}
+C12 DIFF | double(form.amount) | legacy: ERR[OTHER] Macros double not recognized | v8: OK {"t":"number","v":"1500000"}
+C13 SAME | form["sec"+"ret"] | legacy: ERR[MISSING_KEY] Identifier "secret" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b" | v8: ERR[MISSING_KEY] No such key: secret
+
+>    1 | form["sec"+"ret"]
+         ^
+C14 SAME | form.count | legacy: OK {"t":"number","v":"0"} | v8: OK {"t":"number","v":"0"}
+D01 SAME | form.missing | legacy: ERR[MISSING_KEY] Identifier "missing" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b | v8: ERR[MISSING_KEY] No such key: missing
+
+>    1 | form.missing
+              ^
+D02 SAME | form.missing == null | legacy: ERR[MISSING_KEY] Identifier "missing" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b | v8: ERR[MISSING_KEY] No such key: missing
+
+>    1 | form.missing == null
+              ^
+D03 SAME | form.nothing == null | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+D04 SAME | form.nothing | legacy: OK {"t":"null"} | v8: OK {"t":"null"}
+D05 SAME | has(form.missing) | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+D06 SAME | has(form.nothing) | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+D07 DIFF | has(form.missing.deeper) | legacy: OK {"t":"boolean","v":"false"} | v8: ERR[MISSING_KEY] No such key: missing
+
+>    1 | has(form.missing.deeper)
+                  ^
+D08 SAME | form.missing.deeper == 1 | legacy: ERR[MISSING_KEY] Identifier "missing" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b | v8: ERR[MISSING_KEY] No such key: missing
+
+>    1 | form.missing.deeper == 1
+              ^
+D09 DIFF | form.nothing.deeper == 1 | legacy: ERR[OTHER] Cannot obtain "deeper" from non-object context: null | v8: ERR[MISSING_KEY] No such key: deeper
+
+>    1 | form.nothing.deeper == 1
+                      ^
+D10 DIFF | size(form.nothing) | legacy: ERR[PARSE] invalid_argument: null | v8: ERR[OTHER] found no matching overload for 'size(null)'
+
+>    1 | size(form.nothing)
+         ^
+D11 DIFF | 'a' in form.nothing | legacy: ERR[OTHER] CelTypeError: in operation cannot be applied to (string, null) | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: string in dyn<null>
+
+>    1 | 'a' in form.nothing
+         ^
+D12 DIFF | form.missing == 1 || form.amount > 0 | legacy: ERR[MISSING_KEY] Identifier "missing" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b | v8: OK {"t":"boolean","v":"true"}
+D13 DIFF | form.amount > 0 || form.missing == 1 | legacy: ERR[MISSING_KEY] Identifier "missing" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b | v8: OK {"t":"boolean","v":"true"}
+D14 SAME | form.amount < 0 && form.missing == 1 | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+D15 SAME | form.amount > 0 && form.missing == 1 | legacy: ERR[MISSING_KEY] Identifier "missing" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b | v8: ERR[MISSING_KEY] No such key: missing
+
+>    1 | form.amount > 0 && form.missing == 1
+                                 ^
+D16 DIFF | lastDecision.action == 'X' | legacy: ERR[OTHER] Cannot obtain "action" from non-object context: null | v8: ERR[MISSING_KEY] No such key: action
+
+>    1 | lastDecision.action == 'X'
+                      ^
+D17 SAME | lastDecision != null && lastDecision.action == 'X' | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+D18 DIFF | lastDecision.action == 'X' || lastDecision == null | legacy: ERR[OTHER] Cannot obtain "action" from non-object context: null | v8: OK {"t":"boolean","v":"true"}
+D19 SAME | form.nothing == form.missing | legacy: ERR[MISSING_KEY] Identifier "missing" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b | v8: ERR[MISSING_KEY] No such key: missing
+
+>    1 | form.nothing == form.missing
+                              ^
+E01 SAME | form.amount == "1500000" | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+E02 SAME | form.region < 'Z' | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+E03 SAME | 'b' > 'a' | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+E04 SAME | form.region == form.region | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+E05 SAME | form.tags == form.tags | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+E06 SAME | form.items[0] == form.items[0] | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+E07 DIFF | 1 < "x" | legacy: ERR[OTHER] CelTypeError: lessThan operation cannot be applied to (uint, string) | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: int < string
+
+>    1 | 1 < "x"
+         ^
+E08 SAME | [1,2] == [1,2] | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+E09 SAME | form.tags == ["a","b"] | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+E10 SAME | form.region != 'TW' ? 'x' : 'y' | legacy: OK {"t":"string","v":"y"} | v8: OK {"t":"string","v":"y"}
+E11 DIFF | form.text.startsWith("he") | legacy: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] Unknown method: startsWith | v8: OK {"t":"boolean","v":"true"}
+E12 DIFF | form.text.size() | legacy: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] Unknown method: size | v8: OK {"t":"bigint","v":"5"}
+E13 DIFF | form.text.matches("h.*o") | legacy: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] Unknown method: matches | v8: OK {"t":"boolean","v":"true"}
+E14 DIFF | form.text.substring(1, 3) | legacy: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] Unknown method: substring | v8: OK {"t":"string","v":"el"}
+E15 DIFF | form.text.lowerAscii() | legacy: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] Unknown method: lowerAscii | v8: OK {"t":"string","v":"hello"}
+E16 DIFF | form.amount > "x" | legacy: ERR[OTHER] CelTypeError: greaterThan operation cannot be applied to (uint, string) | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<double> > string
+
+>    1 | form.amount > "x"
+         ^
+F01 SAME | 'x' in ['x'] | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+F02 SAME | 'a' in form.tags | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+F03 SAME | 'k' in form.items[0] | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+F04 SAME | form.amount in [1500000] | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+F05 SAME | form.amount in [1500000.0] | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+F06 DIFF | 'ab' in form.text | legacy: ERR[OTHER] CelTypeError: in operation cannot be applied to (string, string) | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: string in dyn<string>
+
+>    1 | 'ab' in form.text
+         ^
+F07 SAME | 2 in [1, 2] | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+F08 DIFF | 2.0 in [1, 2] | legacy: OK {"t":"boolean","v":"true"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: double in list<int>
+
+>    1 | 2.0 in [1, 2]
+         ^
+F09 SAME | 'a' in [] | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+F10 SAME | 'manager' in initiator.roles && 'x' in form.tags | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+G01 SAME | has(form.amount) | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+G02 SAME | has(form.initiator) | legacy: OK {"t":"boolean","v":"false"} | v8: OK {"t":"boolean","v":"false"}
+G03 DIFF | has(form.items[0].name) | legacy: ERR[OTHER] has() does not support atomic expressions | v8: ERR[PARSE] has() invalid argument
+
+>    1 | has(form.items[0].name)
+             ^
+G04 DIFF | size(form.text) | legacy: OK {"t":"number","v":"5"} | v8: OK {"t":"bigint","v":"5"}
+G05 SAME | size(form.tags) == 2 | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+G06 DIFF | size("") | legacy: OK {"t":"number","v":"0"} | v8: OK {"t":"bigint","v":"0"}
+G07 DIFF | size(form.count) | legacy: ERR[PARSE] invalid_argument: 0 | v8: ERR[OTHER] found no matching overload for 'size(double)'
+
+>    1 | size(form.count)
+         ^
+H01 DIFF | true ? 1 : 2 | legacy: OK {"t":"number","v":"1"} | v8: OK {"t":"bigint","v":"1"}
+H02 DIFF | form.amount ? 1 : 2 | legacy: OK {"t":"number","v":"1"} | v8: ERR[NOT_BOOL] Ternary condition must be bool, got 'double'
+
+>    1 | form.amount ? 1 : 2
+              ^
+H03 SAME | form.flag ? 'a' : 'b' | legacy: OK {"t":"string","v":"a"} | v8: OK {"t":"string","v":"a"}
+H04 SAME | form.missing ? 'a' : 'b' | legacy: ERR[MISSING_KEY] Identifier "missing" not found in context: {"env":{"now":"2026-11-07T00:00:00.000Z"},"form":{"amount":1500000,"price":2.5,"region":"TW","priority":"urgent","kind":"general","email":"a@example.com","systemName":"cloud-console","tags":["a","b | v8: ERR[MISSING_KEY] No such key: missing
+
+>    1 | form.missing ? 'a' : 'b'
+              ^
+H05 SAME | form.amount > 1 ? form.amount > 2 : false | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+I01 DIFF | form.items.map(x, x.qty * 2).map(y, y + 1).exists(z, z > 1) | legacy: OK {"t":"boolean","v":"true"} | v8: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] no such overload: dyn<double> * int
+
+>    1 | form.items.map(x, x.qty * 2).map(y, y + 1).exists(z, z > 1)
+                           ^
+I02 SAME | form.items.all(x, x.qty > 0) | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+I03 SAME | form.items.exists_one(x, x.qty > 2) | legacy: OK {"t":"boolean","v":"true"} | v8: OK {"t":"boolean","v":"true"}
+I04 DIFF | form.items.filter(x, x.qty > 2).size() == 1 | legacy: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] Unknown method: size | v8: OK {"t":"boolean","v":"true"}
+I05 SAME | form.items.map(a, form.items.map(b, form.items.map(c, a.qty + b.qty + c.qty))) | legacy: OK {"t":"list","v":[{"t":"list","v":[{"t":"list","v":[{"t":"number","v":"9"},{"t":"number","v":"7"}]},{"t":"list","v":[{"t":"number","v":"7"},{"t":"number","v":"5"}]}]},{"t":"list","v":[{"t":"list","v":[{"t":"number","v":"7"},{"t":"number","v":"5"}]},{"t":"list","v":[{"t":"number","v":"5"},{"t":"number","v":"3"}]}]}]} | v8: OK {"t":"list","v":[{"t":"list","v":[{"t":"list","v":[{"t":"number","v":"9"},{"t":"number","v":"7"}]},{"t":"list","v":[{"t":"number","v":"7"},{"t":"number","v":"5"}]}]},{"t":"list","v":[{"t":"list","v":[{"t":"number","v":"7"},{"t":"number","v":"5"}]},{"t":"list","v":[{"t":"number","v":"5"},{"t":"number","v":"3"}]}]}]}
+I06 DIFF | form.text.matches("(a+)+$") | legacy: ERR[TYPE_OR_OVERLOAD_OR_UNKNOWN] Unknown method: matches | v8: OK {"t":"boolean","v":"false"}

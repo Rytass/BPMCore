@@ -108,7 +108,7 @@ export interface InstanceFormSectionProps {
     fieldKey: string,
     state: Pick<
       FormDataSourceFieldState,
-      'hasValue' | 'invalidValues' | 'status'
+      'hasValue' | 'invalidValues' | 'selectionExpired' | 'status'
     >,
   ) => void;
   /** Called when the user clicks "重新送出". */

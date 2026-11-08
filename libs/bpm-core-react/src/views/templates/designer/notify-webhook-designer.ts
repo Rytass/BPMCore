@@ -122,6 +122,15 @@ export function createNotifyWebhookBindingSource(
     return { kind: 'CONTEXT', path: 'instance.title' };
   }
 
+  // Starts from a field that fits, the way `FIELD` does, so the draft is
+  // never left with a blank expression the structural check refuses.
+  if (kind === 'EXPRESSION') {
+    const field =
+      readCompatibleFormFields(formFields, parameter.type)[0] ?? formFields[0];
+
+    return { expression: field ? `form.${field.fieldKey}` : '', kind };
+  }
+
   // A number starts empty rather than at 0, so typing does not append to a
   // value nobody chose; a required one is flagged until it is filled in.
   return {
@@ -133,6 +142,20 @@ export function createNotifyWebhookBindingSource(
           ? null
           : '',
   };
+}
+
+/**
+ * Whether a parameter can be bound to a cel-v2 expression over `form`
+ * (ADR 22 §3.7). An expression yields a scalar, so never a `stringArray`, and
+ * it reads the bound form, so not before one is bound. Kept apart from
+ * {@link readNotifyWebhookBindingKinds}, which lists the sources that need no
+ * backend check.
+ */
+export function canBindNotifyWebhookExpression(
+  type: NotifyWebhookParameterType,
+  formFields: readonly FormFieldDefinition[] | null,
+): boolean {
+  return type !== 'stringArray' && Boolean(formFields?.length);
 }
 
 const DECIMAL_PATTERN = /^-?\d+(\.\d+)?$/;

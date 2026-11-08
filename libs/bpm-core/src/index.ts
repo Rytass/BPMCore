@@ -6,6 +6,7 @@ export * from './lib/common';
 export * from './lib/condition';
 export * from './lib/database';
 export * from './lib/delegation';
+export * from './lib/expression-function';
 export * from './lib/form';
 export * from './lib/form-data-source';
 export * from './lib/identity';

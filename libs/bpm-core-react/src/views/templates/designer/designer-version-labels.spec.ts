@@ -1,5 +1,6 @@
 import {
   readFormVersionLabel,
+  readTemplateHeaderDescription,
   readTemplateVersionDescription,
 } from './designer-version-labels';
 
@@ -48,5 +49,16 @@ describe('readTemplateVersionDescription', () => {
 describe('readFormVersionLabel', () => {
   it('prefixes the form part', () => {
     expect(readFormVersionLabel('請款單', 1)).toBe('表單：請款單 v1');
+  });
+});
+
+describe('readTemplateHeaderDescription', () => {
+  it('appends the expression dialect to the version line', () => {
+    expect(readTemplateHeaderDescription('草稿 v2 · 已發布 v1', 'cel-v2')).toBe(
+      '草稿 v2 · 已發布 v1 · 運算式方言 cel-v2',
+    );
+    expect(
+      readTemplateHeaderDescription('尚未建立草稿 · 尚未發布', 'cel-legacy'),
+    ).toBe('尚未建立草稿 · 尚未發布 · 運算式方言 cel-legacy');
   });
 });

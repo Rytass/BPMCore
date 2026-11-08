@@ -1016,6 +1016,138 @@ describe('FormBuilderView field settings', () => {
     }
   });
 
+  it('binds a parameter to an expression written as text', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+      selectBindingOption(harness.container, 'plant', '__EXPRESSION__');
+
+      const textarea = harness.container.querySelector(
+        '[data-data-source-expression="plant"] textarea',
+      ) as HTMLTextAreaElement | null;
+
+      expect(textarea).not.toBeNull();
+      setControlValue(textarea as HTMLTextAreaElement, 'form.plant');
+
+      expect(
+        (
+          readField(harness.readSchema(), 'costCenter') as {
+            readonly dataSource: {
+              readonly bindings: readonly unknown[];
+            };
+          }
+        ).dataSource.bindings,
+      ).toEqual([
+        { from: { expression: 'form.plant', kind: 'EXPRESSION' }, parameter: 'plant' },
+      ]);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('keeps a binding source it does not know instead of rewriting it', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const unknownBinding = {
+      from: { kind: 'LOOKUP', table: 'plants' },
+      parameter: 'plant',
+    };
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          dataSource: {
+            bindings: [unknownBinding],
+            key: 'demo.cost-centers',
+            version: 1,
+          },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+
+      expect(harness.container.textContent).toContain('不支援的來源');
+      expect(
+        (
+          readField(harness.readSchema(), 'costCenter') as {
+            readonly dataSource: { readonly bindings: readonly unknown[] };
+          }
+        ).dataSource.bindings,
+      ).toEqual([unknownBinding]);
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('translates an expression lint line instead of showing its code', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    lintFormSchemaMock.mockResolvedValue({
+      errors: [
+        'schema.fields[0].dataSource.bindings[0].from.expression: EXPR_FIELD_UNKNOWN missing',
+      ],
+      valid: false,
+    });
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          dataSource: {
+            bindings: [
+              {
+                from: { expression: 'form.missing', kind: 'EXPRESSION' },
+                parameter: 'plant',
+              },
+            ],
+            key: 'demo.cost-centers',
+            version: 1,
+          },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+
+      await act(async (): Promise<void> => {
+        clickButton(harness.container, '檢查全部動態選項設定');
+      });
+
+      // The shared per-code copy (workflow-lint-errors.ts), placed by the
+      // labels the panel shows; no builder-only sentence any more.
+      expect(harness.container.textContent).toContain(
+        '「成本中心」欄位查詢條件「',
+      );
+      expect(harness.container.textContent).toContain(
+        '的運算式：讀取了表單沒有的欄位「missing」。',
+      );
+      expect(harness.container.textContent).not.toContain('EXPR_FIELD_UNKNOWN');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
   // A confirmation that warns about losing nothing only teaches people to
   // dismiss confirmations.
   it('retypes a column without confirmation when nothing is configured', async (): Promise<void> => {

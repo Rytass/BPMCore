@@ -212,6 +212,8 @@ V1 不支援 CEL、模板字串或多欄位組字，理由同 ADR 14：直接 bi
 （路徑 A 的 payload CEL 目前正有這個問題）。需要組字或換算時，由宿主在
 `buildRequest()` 內處理。
 
+> **部分由 ADR 22 §3.7 取代（2026-11-07）**：binding 新增 `EXPRESSION` 來源（cel-v2，root 只有 `form`，只允許內建函式）；在引擎交易內以獨立預算評估，失敗記該次投遞 `FAILED`，不回滾簽核交易。見 [ADR 22 §3.7](./22-expression-functions-adr.md)。
+
 **BPM 只送出有綁定的參數**，不附帶完整 `formData`，讓送出去的個資範圍由設計者明確
 決定。
 

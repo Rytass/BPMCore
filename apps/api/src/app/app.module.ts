@@ -23,6 +23,7 @@ import { ApiSessionService } from './api-session.service';
 import { ApiTaiwanBusinessCalendar } from './api-taiwan-business-calendar';
 import { ApiFormDataSourceRegistry } from './api-form-data-source';
 import { ApiDemoWebhookModule } from './api-demo-webhook.module';
+import { API_DEMO_EXPRESSION_FUNCTIONS } from './api-expression-functions';
 import {
   readApiSetting,
   readWebhookAllowedUrlPatterns,
@@ -110,6 +111,8 @@ import {
             process.env.BPM_ATTACHMENT_PUBLIC_BASE_URL,
           attachmentSignedUrlSecret: process.env.BPM_ATTACHMENT_SIGNING_SECRET,
           authContextFactory: buildApiBPMAuthContextFromExecutionContext,
+          // Demo host function for expressions; wrapper-app only.
+          expressionFunctions: API_DEMO_EXPRESSION_FUNCTIONS,
           // Database-managed webhook endpoints (ADR 18 §3.13). Needs both an
           // allowlist and an encryption key; outside production the demo ones
           // below let the back office point endpoints at the local receiver.

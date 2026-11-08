@@ -1,23 +1,23 @@
-import { createHash } from 'node:crypto';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   FormDataSourceOptionFieldDefinition,
   FormDataSourceValueSnapshot,
   FormDataSourceValueSnapshots,
   FormFieldOption,
-  FormFieldValue,
   TableFieldDefinition,
   isFormDataSourceFieldDefinition,
   isTableFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
+import { ConditionService } from '../condition/condition.service';
+import { runExpressionOperation } from '../condition/expression-budget';
 import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
   BPMFormDataSourceException,
 } from './form-data-source.errors';
+import { createFormDataSourceExpressionEvaluator } from './form-data-source.expression';
 import {
   BPM_FORM_DATA_SOURCE_REGISTRY,
-  BPMFormDataSourceDescriptor,
   BPMFormDataSourceRegistry,
   BPMFormDataSourceResolveFieldInput,
   BPMFormDataSourceSnapshotResolutionInput,
@@ -27,12 +27,16 @@ import {
   assertControlSupported,
   assertDescriptor,
   callProvider,
+  createTableColumnBindingPosition,
+  FormDataSourceBindingPosition,
   isRecord,
+  readBindingHash,
   readBindingValues,
   readDynamicOptionField,
   readMissingSourceCode,
   readOrderedResolvedOptions,
   readSourceOrThrow,
+  TOP_LEVEL_BINDING_POSITION,
   validateRequestedValues,
   validateResolveResult,
 } from './form-data-source.validation';
@@ -53,11 +57,38 @@ export class FormDataSourceValueResolverService
   constructor(
     @Inject(BPM_FORM_DATA_SOURCE_REGISTRY)
     private readonly registry: BPMFormDataSourceRegistry,
+    // Evaluates `EXPRESSION` bindings with the host's function registry, the
+    // same service the publish lint uses. Optional so a host that builds this
+    // resolver by hand keeps working; without it an `EXPRESSION` binding
+    // fails closed as `INVALID_BINDING`.
+    // An explicit token: the `| null` union is emitted as `Object` in the
+    // constructor metadata, which Nest would look up, not find, and (being
+    // optional) silently inject as `undefined`.
+    @Optional()
+    @Inject(ConditionService)
+    private readonly conditionService?: ConditionService | null,
   ) {}
 
-  async resolveFormDataOptionSnapshots(
+  /**
+   * One submit is one expression operation: every `EXPRESSION` binding of
+   * every field and table row shares one cumulative budget (ADR 22 §3.2,
+   * §3.7). Running out is `FORM_DATA_SOURCE_TIMEOUT`, thrown before the
+   * engine opens its transaction, so no instance is written.
+   */
+  resolveFormDataOptionSnapshots(
     input: BPMFormDataSourceSnapshotResolutionInput,
   ): Promise<FormDataSourceValueSnapshots> {
+    return runExpressionOperation(() =>
+      this.resolveFormDataOptionSnapshotsInOperation(input),
+    );
+  }
+
+  private async resolveFormDataOptionSnapshotsInOperation(
+    input: BPMFormDataSourceSnapshotResolutionInput,
+  ): Promise<FormDataSourceValueSnapshots> {
+    const expressions = createFormDataSourceExpressionEvaluator({
+      conditionService: this.conditionService,
+    });
     // One work item per dynamic value to resolve, top-level fields and table
     // cells alike. Flattening first keeps the concurrency limit a per-submit
     // budget rather than a per-field one, so a 100-row table does not turn one
@@ -68,7 +99,7 @@ export class FormDataSourceValueResolverService
       async (
         target,
       ): Promise<readonly [string, FormDataSourceValueSnapshot] | null> => {
-        const { field, rowValues, snapshotKey } = target;
+        const { field, position, snapshotKey } = target;
         const values = readDynamicFieldValues(field, target.value);
 
         if (values.length === 0) {
@@ -115,7 +146,8 @@ export class FormDataSourceValueResolverService
           field,
           descriptor,
           input.formData,
-          rowValues,
+          position,
+          expressions,
         );
 
         if (bindings.missingParameters.length > 0) {
@@ -124,7 +156,7 @@ export class FormDataSourceValueResolverService
           );
         }
 
-        const bindingHash = hashBindings(descriptor, bindings.values);
+        const bindingHash = readBindingHash(descriptor, bindings.values);
         const canReuseSnapshot =
           !input.revalidateAll &&
           descriptor.revalidationPolicy === 'WHEN_VALUE_OR_BINDINGS_CHANGE' &&
@@ -146,13 +178,15 @@ export class FormDataSourceValueResolverService
           ];
         }
 
-        const options = await this.resolveFormFieldOptions({
-          authContext: input.authContext,
-          field,
-          formData: input.formData,
-          rowValues,
-          values,
-        });
+        const options = await this.resolveFieldOptionsAt(
+          {
+            authContext: input.authContext,
+            field,
+            formData: input.formData,
+            values,
+          },
+          position,
+        );
         const snapshot: FormDataSourceValueSnapshot = {
           bindingHash,
           dataSourceKey: descriptor.key,
@@ -180,8 +214,34 @@ export class FormDataSourceValueResolverService
    * resolve query reports partial results instead, and must never share this
    * path — a half-resolved field cannot be written into an instance.
    */
-  async resolveFormFieldOptions(
+  resolveFormFieldOptions(
     input: BPMFormDataSourceResolveFieldInput,
+  ): Promise<readonly FormFieldOption[]> {
+    // The public contract (`BPMFormDataSourceResolveFieldInput`): only a table
+    // cell carries `rowValues`. This is the one place that reads the position
+    // from it; the submit path above passes the schema's own position.
+    return this.resolveFieldOptionsAt(
+      input,
+      input.rowValues
+        ? createTableColumnBindingPosition(input.rowValues)
+        : TOP_LEVEL_BINDING_POSITION,
+    );
+  }
+
+  private resolveFieldOptionsAt(
+    input: Omit<BPMFormDataSourceResolveFieldInput, 'rowValues'>,
+    position: FormDataSourceBindingPosition,
+  ): Promise<readonly FormFieldOption[]> {
+    // Joins the submit's operation when called from it, so a field's
+    // expressions are not given a second budget.
+    return runExpressionOperation(() =>
+      this.resolveFormFieldOptionsInOperation(input, position),
+    );
+  }
+
+  private async resolveFormFieldOptionsInOperation(
+    input: Omit<BPMFormDataSourceResolveFieldInput, 'rowValues'>,
+    position: FormDataSourceBindingPosition,
   ): Promise<readonly FormFieldOption[]> {
     const field = readDynamicOptionField(input.field);
     const source = readSourceOrThrow(this.registry, field.dataSource);
@@ -194,7 +254,10 @@ export class FormDataSourceValueResolverService
       field,
       source.descriptor,
       input.formData,
-      input.rowValues,
+      position,
+      createFormDataSourceExpressionEvaluator({
+        conditionService: this.conditionService,
+      }),
     );
 
     if (bindings.missingParameters.length > 0) {
@@ -231,8 +294,9 @@ export class FormDataSourceValueResolverService
  */
 interface DynamicResolutionTarget {
   readonly field: FormDataSourceOptionFieldDefinition;
+  /** From the schema walk: a table cell carries its row, a field none. */
+  readonly position: FormDataSourceBindingPosition;
   readonly previousValue: unknown;
-  readonly rowValues?: Readonly<Record<string, unknown>>;
   readonly snapshotKey: string;
   readonly value: unknown;
 }
@@ -263,6 +327,7 @@ function readDynamicResolutionTargets(
         ? [
             {
               field,
+              position: TOP_LEVEL_BINDING_POSITION,
               previousValue: input.previousFormData?.[field.fieldKey],
               snapshotKey: field.fieldKey,
               value: input.formData[field.fieldKey],
@@ -296,11 +361,11 @@ function readTableResolutionTargets(
     row
       ? dynamicColumns.map((column): DynamicResolutionTarget => ({
           field: column,
+          position: createTableColumnBindingPosition(row),
           previousValue: readOwnProperty(
             previousRows[rowIndex] ?? {},
             column.fieldKey,
           ),
-          rowValues: row,
           snapshotKey: `${field.fieldKey}[${rowIndex}].${column.fieldKey}`,
           value: readOwnProperty(row, column.fieldKey),
         }))
@@ -408,26 +473,6 @@ function readDynamicFieldValues(
   }
 
   return [value];
-}
-
-function hashBindings(
-  descriptor: BPMFormDataSourceDescriptor,
-  values: Readonly<Record<string, FormFieldValue>>,
-): string {
-  const orderedValues = descriptor.parameters.map((parameter) => [
-    parameter.key,
-    readOwnProperty(values, parameter.key) ?? null,
-  ]);
-
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        dataSourceKey: descriptor.key,
-        dataSourceVersion: descriptor.version,
-        values: orderedValues,
-      }),
-    )
-    .digest('hex');
 }
 
 function isSameFieldValue(left: unknown, right: unknown): boolean {

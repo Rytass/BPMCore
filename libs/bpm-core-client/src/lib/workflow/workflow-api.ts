@@ -10,7 +10,10 @@ import {
   isOrgUnitFieldDefinition,
   isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
-import { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import {
+  WorkflowDefinition,
+  WorkflowExpressionDialect,
+} from '@rytass/bpm-core-shared/workflow';
 import { requestGraphQl } from '../graphql-client';
 
 export type ApprovalInstanceState =
@@ -405,6 +408,11 @@ export interface DelegationRuleRecord {
   readonly revokedAt: string | null;
   readonly revokedByMemberId: string | null;
   readonly scopeConditionCel: string | null;
+  /**
+   * The dialect `scopeConditionCel` is evaluated with (ADR 22 §3.3). Rules
+   * written before the field existed read `cel-legacy`.
+   */
+  readonly scopeConditionDialect: WorkflowExpressionDialect;
   readonly scopeTemplateIds: readonly string[];
   readonly scopeType: DelegationScopeType;
   readonly startAt: string;
@@ -1424,6 +1432,7 @@ export async function listDelegationRules({
         revokedAt
         revokedByMemberId
         scopeConditionCel
+        scopeConditionDialect
         scopeTemplateIds
         scopeType
         startAt
@@ -1487,6 +1496,7 @@ export async function listDelegationRulesPage({
         revokedAt
         revokedByMemberId
         scopeConditionCel
+        scopeConditionDialect
         scopeTemplateIds
         scopeType
         startAt
@@ -1526,6 +1536,12 @@ export async function createDelegationRule(input: {
   readonly priority: number;
   readonly requiresConfirmation: boolean;
   readonly scopeConditionCel: string | null;
+  /**
+   * The dialect of `scopeConditionCel`. Omitted, the backend stores
+   * `cel-legacy`; the BPM views send `cel-v2` for new rules (ADR 22 §3.3).
+   * Fixed once the rule exists.
+   */
+  readonly scopeConditionDialect?: WorkflowExpressionDialect;
   readonly scopeTemplateIds: readonly string[];
   readonly scopeType: DelegationScopeType;
   readonly startAt: string | null;
@@ -1544,6 +1560,7 @@ export async function createDelegationRule(input: {
         revokedAt
         revokedByMemberId
         scopeConditionCel
+        scopeConditionDialect
         scopeTemplateIds
         scopeType
         startAt
@@ -1578,6 +1595,7 @@ export async function revokeDelegationRule({
         revokedAt
         revokedByMemberId
         scopeConditionCel
+        scopeConditionDialect
         scopeTemplateIds
         scopeType
         startAt

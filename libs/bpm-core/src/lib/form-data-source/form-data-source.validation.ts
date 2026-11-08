@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import {
+  FormDataSourceBindingSource,
   FormDataSourceOptionFieldDefinition,
   FormDataSourceReference,
   FormFieldOption,
@@ -11,6 +13,10 @@ import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
   BPMFormDataSourceException,
 } from './form-data-source.errors';
+import {
+  FormDataSourceExpressionEvaluator,
+  readExpressionBindingDependencies,
+} from './form-data-source.expression';
 import {
   BPMFormDataSource,
   BPMFormDataSourceControl,
@@ -166,11 +172,58 @@ export function assertParameterValue(
  */
 export type RowFieldValues = Readonly<Record<string, unknown>>;
 
+/**
+ * Where the field whose bindings are read sits in the schema. Decides which
+ * roots an `EXPRESSION` binding may read (docs/24 §2.3, §2.8: `form` at the
+ * top level, `form` and `row` in a table column) and whether a `ROW_FIELD`
+ * binding has a row at all. Passed explicitly by every caller, from the
+ * schema, never inferred from whether the browser sent row values.
+ */
+export type FormDataSourceBindingPosition =
+  | { readonly kind: 'TOP_LEVEL' }
+  | {
+      readonly kind: 'TABLE_COLUMN';
+      /** The row's cells; empty when the caller sent none (ADR 16 §3.5). */
+      readonly rowValues: RowFieldValues;
+    };
+
+export const TOP_LEVEL_BINDING_POSITION: FormDataSourceBindingPosition =
+  Object.freeze({ kind: 'TOP_LEVEL' });
+
+/** A table column's position; a row the caller did not send reads as empty. */
+export function createTableColumnBindingPosition(
+  rowValues: RowFieldValues | undefined,
+): FormDataSourceBindingPosition {
+  return { kind: 'TABLE_COLUMN', rowValues: rowValues ?? {} };
+}
+
+/** The row a position carries: only a table column has one. */
+export function readBindingPositionRowValues(
+  position: FormDataSourceBindingPosition,
+): RowFieldValues | undefined {
+  switch (position.kind) {
+    case 'TOP_LEVEL':
+      return undefined;
+    case 'TABLE_COLUMN':
+      return position.rowValues;
+    default:
+      return rejectUnknownBindingPosition(position);
+  }
+}
+
+function rejectUnknownBindingPosition(position: never): never {
+  void position;
+  throw new BPMFormDataSourceException(
+    BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
+  );
+}
+
 export function readBindingValues(
   field: FormDataSourceOptionFieldDefinition,
   descriptor: BPMFormDataSourceDescriptor,
   formData: Readonly<Record<string, unknown>>,
-  rowValues?: RowFieldValues,
+  position: FormDataSourceBindingPosition,
+  expressions?: FormDataSourceExpressionEvaluator,
 ): ResolvedBindingValues {
   const parameterByKey = new Map(
     descriptor.parameters.map(
@@ -191,20 +244,12 @@ export function readBindingValues(
       );
     }
 
-    // A `ROW_FIELD` source reads the sibling cell of the row this query belongs
-    // to. Without row values it reads as absent, which lands it in the
-    // "missing parameter" branch and is reported as a dependency to fill in —
-    // never as an error (ADR 16 §3.5).
-    const nextValue =
-      binding.from.kind === 'FIELD'
-        ? readFormDataValue(readOwnProperty(formData, binding.from.fieldKey))
-        : binding.from.kind === 'CONSTANT'
-          ? binding.from.value
-          : readFormDataValue(
-              rowValues
-                ? readOwnProperty(rowValues, binding.from.columnKey)
-                : undefined,
-            );
+    const nextValue = readBindingSourceValue(
+      binding.from,
+      formData,
+      position,
+      expressions,
+    );
 
     if (typeof nextValue === 'undefined') {
       return values;
@@ -239,6 +284,131 @@ export function readBindingValues(
 }
 
 /**
+ * The value one binding source feeds its parameter, `undefined` when it has
+ * none yet. Exhaustive on purpose: a source kind this version does not know
+ * (a schema written by a newer one, or around the lint) fails closed as
+ * `INVALID_BINDING` instead of being read as some other kind (docs/24 §2.8).
+ */
+function readBindingSourceValue(
+  from: FormDataSourceBindingSource,
+  formData: Readonly<Record<string, unknown>>,
+  position: FormDataSourceBindingPosition,
+  expressions: FormDataSourceExpressionEvaluator | undefined,
+): FormFieldValue | undefined {
+  const rowValues = readBindingPositionRowValues(position);
+
+  switch (from.kind) {
+    case 'FIELD':
+      return readFormDataValue(readOwnProperty(formData, from.fieldKey));
+    case 'CONSTANT':
+      return from.value;
+    // A `ROW_FIELD` source reads the sibling cell of the row this query
+    // belongs to. A top-level field has no row, and a cell the caller sent
+    // no row for reads as absent; either lands it in the "missing parameter"
+    // branch and is reported as a dependency to fill in — never as an error
+    // (ADR 16 §3.5).
+    case 'ROW_FIELD':
+      return readFormDataValue(
+        rowValues ? readOwnProperty(rowValues, from.columnKey) : undefined,
+      );
+    // Evaluated only here, for search, resolve and submit alike, and only
+    // from the schema the caller read from storage (ADR 22 §3.7).
+    case 'EXPRESSION':
+      if (!expressions) {
+        throw new BPMFormDataSourceException(
+          BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
+        );
+      }
+
+      return expressions.evaluate({
+        expression: from.expression,
+        formData,
+        isPresent: (value: unknown): boolean =>
+          isPresentFormDataValue(readFormDataValue(value)),
+        position,
+      });
+    default:
+      return rejectUnknownBindingSource(from);
+  }
+}
+
+function rejectUnknownBindingSource(from: never): never {
+  void from;
+  throw new BPMFormDataSourceException(
+    BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
+  );
+}
+
+/**
+ * The fields one waiting binding asks the filler to complete. `FIELD` names its
+ * field, `ROW_FIELD` its sibling column, and `EXPRESSION` the fields its AST
+ * reads: the ones still empty, or all of them when every one is filled and
+ * the expression still produced nothing.
+ */
+function readBindingWaitingKeys(
+  from: FormDataSourceBindingSource,
+  values: BindingWaitingValues | undefined,
+): readonly string[] | null {
+  switch (from.kind) {
+    case 'FIELD':
+      return [from.fieldKey];
+    case 'ROW_FIELD':
+      return [from.columnKey];
+    case 'CONSTANT':
+      return null;
+    case 'EXPRESSION': {
+      const dependencies = readExpressionBindingDependencies(from.expression);
+
+      if (dependencies === null) {
+        return null;
+      }
+
+      const isEmpty = (
+        source: Readonly<Record<string, unknown>> | undefined,
+        key: string,
+      ): boolean =>
+        !source ||
+        !isPresentFormDataValue(
+          readFormDataValueOrUndefined(readOwnProperty(source, key)),
+        );
+      const missing = values
+        ? [
+            ...dependencies.formFieldKeys.filter((key) =>
+              isEmpty(values.formData, key),
+            ),
+            ...dependencies.rowColumnKeys.filter((key) =>
+              isEmpty(values.rowValues, key),
+            ),
+          ]
+        : [];
+      const keys =
+        missing.length > 0
+          ? missing
+          : [...dependencies.formFieldKeys, ...dependencies.rowColumnKeys];
+
+      return keys.length > 0 ? keys : null;
+    }
+    default:
+      return rejectUnknownBindingSource(from);
+  }
+}
+
+/** A malformed value is not a filled one; it never throws here. */
+function readFormDataValueOrUndefined(value: unknown): FormFieldValue | undefined {
+  try {
+    return readFormDataValue(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The form and row values `readWaitingForFieldKeys` narrows an expression's dependencies with. */
+export interface BindingWaitingValues {
+  readonly formData: Readonly<Record<string, unknown>>;
+  readonly rowValues?: RowFieldValues;
+}
+
+/**
  * Names the fields the filler still has to complete before a query can run.
  * The renderer cannot derive this itself — it has no descriptor, so it cannot
  * tell a required parameter from an optional one and would disable a control
@@ -246,15 +416,20 @@ export function readBindingValues(
  *
  * A required parameter that no binding feeds, or one fed by a constant the
  * schema left empty, is a schema defect nobody can fix by typing, so it stays
- * an `INVALID_BINDING` rather than an endless wait.
+ * an `INVALID_BINDING` rather than an endless wait. So is an `EXPRESSION` that
+ * reads no field at all.
  *
  * A `ROW_FIELD` binding reports its column key. The renderer resolves that
  * against the columns of the table the cell sits in, which is the only place a
- * column key means anything (ADR 16 §3.1).
+ * column key means anything (ADR 16 §3.1). An `EXPRESSION` binding reports the
+ * keys its AST reads (`form.<key>` and `row.<key>`); with `values` given, only
+ * the ones still empty. The browser cannot work these out itself: it never
+ * parses CEL (docs/24 §2.5).
  */
 export function readWaitingForFieldKeys(
   field: FormDataSourceOptionFieldDefinition,
   missingParameters: readonly string[],
+  values?: BindingWaitingValues,
 ): readonly string[] {
   if (missingParameters.length === 0) {
     return [];
@@ -267,24 +442,57 @@ export function readWaitingForFieldKeys(
   const coveredParameters = new Set(
     waitingBindings.map((binding) => binding.parameter),
   );
-  const fieldKeys = waitingBindings.flatMap((binding) =>
-    binding.from.kind === 'FIELD'
-      ? [binding.from.fieldKey]
-      : binding.from.kind === 'ROW_FIELD'
-        ? [binding.from.columnKey]
-        : [],
+  const keysByBinding = waitingBindings.map((binding) =>
+    readBindingWaitingKeys(binding.from, values),
   );
 
   if (
     coveredParameters.size !== missing.size ||
-    fieldKeys.length !== waitingBindings.length
+    keysByBinding.some((keys) => keys === null)
   ) {
     throw new BPMFormDataSourceException(
       BPM_FORM_DATA_SOURCE_ERROR_CODES.INVALID_BINDING,
     );
   }
 
-  return [...new Set(fieldKeys)];
+  return [
+    ...new Set(
+      keysByBinding.flatMap((keys): readonly string[] => keys ?? []),
+    ),
+  ];
+}
+
+/**
+ * The binding hash a value snapshot is stamped with (ADR 15): the source
+ * reference and the parameter values in descriptor order, missing ones as
+ * `null`. Shared by every path that compares or writes one.
+ *
+ * The serialized bytes are a stored contract — every persisted snapshot's
+ * `bindingHash` was computed from them, and resubmit reuses a snapshot only
+ * when the hash matches — so this must never change shape; the golden fixture
+ * in `form-data-source.validation.hash.spec.ts` pins it. Only evaluated values
+ * are hashed, never an expression's text: an edit that leaves the result alone
+ * does not force a revalidation, just as a `FIELD` hashes its value and not its
+ * field key.
+ */
+export function readBindingHash(
+  descriptor: BPMFormDataSourceDescriptor,
+  values: Readonly<Record<string, FormFieldValue>>,
+): string {
+  const orderedValues = descriptor.parameters.map((parameter) => [
+    parameter.key,
+    readOwnProperty(values, parameter.key) ?? null,
+  ]);
+
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        dataSourceKey: descriptor.key,
+        dataSourceVersion: descriptor.version,
+        values: orderedValues,
+      }),
+    )
+    .digest('hex');
 }
 
 export function validateRequestedValues(

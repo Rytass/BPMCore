@@ -94,6 +94,9 @@ importers:
       '@hello-pangea/dnd':
         specifier: 18.0.1
         version: 18.0.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@marcbachmann/cel-js':
+        specifier: ^8.0.0
+        version: 8.0.0
       '@mezzanine-ui/core':
         specifier: 1.2.4
         version: 1.2.4(dayjs@1.11.23)(lodash@4.18.1)(luxon@3.7.2)(moment@2.31.0)
@@ -392,6 +395,9 @@ importers:
 
   libs/bpm-core:
     dependencies:
+      '@marcbachmann/cel-js':
+        specifier: ^8.0.0
+        version: 8.0.0
       '@nestjs/common':
         specifier: ^12.3.2
         version: 12.3.2(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -2177,6 +2183,11 @@ packages:
   '@lukeed/csprng@1.1.0':
     resolution: {integrity: sha512-Z7C/xXCiGWsg0KuKsHTKJxbWhpI3Vs5GwLfOean7MGyVFGqdRgBbAjOCh6u4bbjPc/8MJ2pZmK/0DLdCbivLDA==}
     engines: {node: '>=8'}
+
+  '@marcbachmann/cel-js@8.0.0':
+    resolution: {integrity: sha512-oaTrAziGr3zDLFiMt/yLU3nZuRMawyWQB5X1a0I7s9eGy3JYzX9l8ZXXHyMd64nzbeVFZTewuUShwsZQdK6UCA==}
+    engines: {node: '>=20.19.0'}
+    hasBin: true
 
   '@marijn/find-cluster-break@1.0.4':
     resolution: {integrity: sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ==}
@@ -11792,6 +11803,8 @@ snapshots:
       '@braidai/lang': 1.1.2
 
   '@lukeed/csprng@1.1.0': {}
+
+  '@marcbachmann/cel-js@8.0.0': {}
 
   '@marijn/find-cluster-break@1.0.4': {}
 

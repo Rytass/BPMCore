@@ -10,6 +10,18 @@ export class TimeBudgetExceededError extends Error {
 
 const RUN = new Script('run()');
 
+/*
+ * One context for every call. Creating a context costs about 180 us on Node 20
+ * and 24, reusing one about 50 us (measured 2026-11-07), and an operation's
+ * expression budget is charged for that time. The context only ever holds the
+ * `run` slot below; the work itself is a closure from the calling realm, so
+ * nothing an evaluation touches is left in the context for the next one.
+ */
+const SANDBOX: { run: (() => unknown) | null } = { run: null };
+
+// Contextifies SANDBOX in place; the returned object is SANDBOX itself.
+createContext(SANDBOX);
+
 const isScriptTimeout = (error: unknown): boolean =>
   typeof error === 'object' &&
   error !== null &&
@@ -28,15 +40,24 @@ export function runWithinTimeBudget<TResult>(
   work: () => TResult,
   timeoutMs: number,
 ): TResult {
+  // Calls nest (a dry run's budget wraps every expression budget inside it),
+  // so the slot is put back as it was rather than cleared. The outer `run()`
+  // has already been called by then; restoring only keeps the slot from
+  // holding a finished closure. An interrupt still unwinds through `finally`
+  // here, because this frame is outside the context being interrupted.
+  const previous = SANDBOX.run;
+
+  SANDBOX.run = work;
+
   try {
-    return RUN.runInContext(createContext({ run: work }), {
-      timeout: timeoutMs,
-    }) as TResult;
+    return RUN.runInContext(SANDBOX, { timeout: timeoutMs }) as TResult;
   } catch (error: unknown) {
     if (isScriptTimeout(error)) {
       throw new TimeBudgetExceededError();
     }
 
     throw error;
+  } finally {
+    SANDBOX.run = previous;
   }
 }

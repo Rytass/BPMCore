@@ -59,6 +59,7 @@ import {
   AutoComplete,
   Button,
   Icon,
+  InlineMessage,
   Input,
   Modal,
   PageHeader,
@@ -104,6 +105,7 @@ import {
   WorkflowEdge,
   WorkflowEdgeConditionOperator,
   WorkflowEdgeData,
+  WorkflowExpressionDialect,
   WorkflowNode,
   WorkflowNodeTriggerMode,
   ReturnBehavior,
@@ -201,6 +203,18 @@ import {
   withPreferClosestOrgUnit,
 } from './approver-resolver-model';
 import { readDryRunSampleFormData } from './dry-run-sample-data';
+import { DialectUpgradeModal } from './expression/DialectUpgradeModal';
+import { ExpressionField } from './expression/ExpressionField';
+import { useWorkflowExpressionReferences } from './expression/use-workflow-expression-references';
+import { createWorkflowExpressionTools } from './expression/workflow-expression-tools';
+import {
+  checkFormEditExpressionFields,
+  hasWorkflowEntryCondition,
+  isWorkflowEdgeExpressionCondition,
+  readWorkflowEdgeSourceNodeType,
+  setWorkflowEdgeExpressionCondition,
+  setWorkflowNodeEntryCondition,
+} from './expression/workflow-expression-edits';
 import {
   DryRunAssigneeDirectory,
   readDryRunAssigneeLabel,
@@ -212,6 +226,7 @@ import {
 } from './dynamic-form-resolver-options';
 import {
   readFormVersionLabel,
+  readTemplateHeaderDescription,
   readTemplateVersionDescription,
 } from './designer-version-labels';
 import {
@@ -401,14 +416,22 @@ const FLOW_CANVAS_GLOBAL_STYLE = `
 
 `;
 
+// The side panel sits in a fixed 420px grid column. A grid item's automatic
+// minimum width is its widest content, so without `minWidth: 0` and a
+// shrinkable track a long line in the edge condition form (the expression
+// field and its catalog) widened the panel past the viewport's right edge.
 const PANEL_STYLE: CSSProperties = {
   display: 'grid',
   gap: 12,
+  gridTemplateColumns: 'minmax(0, 1fr)',
+  minWidth: 0,
 };
 
 const FORM_STACK_STYLE: CSSProperties = {
   display: 'grid',
   gap: 12,
+  gridTemplateColumns: 'minmax(0, 1fr)',
+  minWidth: 0,
 };
 
 const DRY_RUN_RESULT_STYLE: CSSProperties = {
@@ -626,8 +649,15 @@ const INITIATOR_POLICY_MODE_OPTIONS: readonly InitiatorPolicyModeOption[] = [
 ];
 const INITIATOR_POLICY_CUSTOM_OPTION: InitiatorPolicyModeOption = {
   id: 'CUSTOM',
-  name: '既有自訂規則',
+  name: '自訂運算式',
 };
+const SERVICE_ACTION_TYPE_OPTIONS: readonly {
+  readonly id: 'NOTIFY' | 'SET_FORM_FIELD';
+  readonly name: string;
+}[] = [
+  { id: 'NOTIFY', name: '知會' },
+  { id: 'SET_FORM_FIELD', name: '寫入表單欄位' },
+];
 const DRY_RUN_MEMBER_ID = 'member-001';
 
 const FORM_EDIT_DRAWER_BODY_STYLE: CSSProperties = {
@@ -766,6 +796,14 @@ export function TemplateDesignerView({
     useState<Exclude<InitiatorPolicyMode, 'CUSTOM'> | null>(null);
   const [initiatorPolicyDraftOverride, setInitiatorPolicyDraftOverride] =
     useState<InitiatorPolicyDraft | null>(null);
+  // Phase 23 P4: the designer picked "自訂運算式" and edits the CEL directly,
+  // even when it still parses as one of the standard modes.
+  const [initiatorPolicyCustomDraft, setInitiatorPolicyCustomDraft] =
+    useState(false);
+  // The edge switched to a hand-written condition before any text was typed.
+  const [expressionEdgeId, setExpressionEdgeId] = useState<string | null>(
+    null,
+  );
   const flowCanvasRef = useRef<HTMLDivElement | null>(null);
   const [flowViewport, setFlowViewport] = useState<Viewport | undefined>(
     undefined,
@@ -804,6 +842,7 @@ export function TemplateDesignerView({
   // are injected here so the pure layer stays free of DOM concerns.
   const controller = useWorkflowDesignerController({
     directory,
+    expressionTools: createWorkflowExpressionTools,
     initialState: {
       definition:
         embedded && initialWorkflowDefinition != null
@@ -837,6 +876,8 @@ export function TemplateDesignerView({
   const workflowDefinition = controller.state.definition;
   const formDefinitionVersionId = controller.state.formDefinitionVersionId;
   const initiatorPolicyCel = controller.state.initiatorPolicyCel;
+  const expressionDialect: WorkflowExpressionDialect =
+    workflowDefinition.expressionDialect === 'cel-v2' ? 'cel-v2' : 'cel-legacy';
   const selectedNodeId = controller.state.selectedNodeId;
   const selectedEdgeIds = controller.state.selectedEdgeIds;
   const editingEdgeId = controller.state.editingEdgeId;
@@ -864,6 +905,15 @@ export function TemplateDesignerView({
         action,
         current.initiatorPolicyCel,
       ),
+    }));
+  // Free-text expression edits the command layer has no primitive for (entry
+  // conditions, hand-written edge conditions). Designer UI only.
+  const updateWorkflowDefinitionDirectly = (
+    update: (definition: WorkflowDefinition) => WorkflowDefinition,
+  ): void =>
+    controller.replaceState((current) => ({
+      ...current,
+      definition: update(current.definition),
     }));
   const setSelectedNodeId = (action: SetStateAction<string | null>): void =>
     controller.replaceState((current) => ({
@@ -941,6 +991,12 @@ export function TemplateDesignerView({
   // response for a more recent search. `memberOptions` accumulation is
   // order-insensitive (it only ever adds), so it does not need this guard.
   const memberSearchSequenceRef = useRef(0);
+  // Guards a designer load the same way: only the latest `refreshDesigner()`
+  // may seed the controller. Two loads overlap whenever the mount effect runs
+  // twice (React's development double-invoke) or a save lands while an earlier
+  // load is still out; the older answer arriving last used to reset the
+  // selection to the start node — dropping the edge the user had just opened.
+  const designerLoadSequenceRef = useRef(0);
   // Member ids the directory could not resolve, even asked for on their own.
   // They keep their 「未知會員」 placeholder and are not requested again for
   // the rest of the session, a transient failure included, unless a later
@@ -955,6 +1011,7 @@ export function TemplateDesignerView({
   orgUnitsRef.current = orgUnits;
   positionsRef.current = positions;
   const [dryRunModalOpen, setDryRunModalOpen] = useState(false);
+  const [dialectUpgradeOpen, setDialectUpgradeOpen] = useState(false);
   const [fieldAccessMatrixOpen, setFieldAccessMatrixOpen] = useState(false);
   const [dryRunRunning, setDryRunRunning] = useState(false);
   const [dryRunFormDataJson, setDryRunFormDataJson] = useState('{}');
@@ -969,8 +1026,15 @@ export function TemplateDesignerView({
   const [chatOpen, setChatOpen] = useState(false);
   const [formEditOpen, setFormEditOpen] = useState(false);
   const [formDraft, setFormDraft] = useState<FormDraft | null>(null);
-  const [formDraftDirty, setFormDraftDirty] = useState(false);
+  // The form edit last applied from the drawer and not saved yet. `formDraft`
+  // is the drawer's working copy; only an applied copy reaches publish and
+  // the field-removal check compares against it.
+  const [appliedFormDraft, setAppliedFormDraft] = useState<FormDraft | null>(
+    null,
+  );
+  const formDraftDirty = appliedFormDraft !== null;
   const [formDraftLoading, setFormDraftLoading] = useState(false);
+  const [formEditChecking, setFormEditChecking] = useState(false);
   const publishButtonText =
     hasUnsavedChanges || formDraftDirty
       ? '保存並發布'
@@ -1102,10 +1166,13 @@ export function TemplateDesignerView({
   );
   const initiatorPolicyDraft = useMemo(
     (): InitiatorPolicyDraft =>
-      initiatorPolicyDraftOverride ??
-      readInitiatorPolicyUiDraft(initiatorPolicyCel, initiatorPolicyModeDraft),
+      initiatorPolicyCustomDraft
+        ? { mode: 'CUSTOM', value: initiatorPolicyCel ?? '' }
+        : (initiatorPolicyDraftOverride ??
+          readInitiatorPolicyUiDraft(initiatorPolicyCel, initiatorPolicyModeDraft)),
     [
       initiatorPolicyCel,
+      initiatorPolicyCustomDraft,
       initiatorPolicyDraftOverride,
       initiatorPolicyModeDraft,
     ],
@@ -1184,7 +1251,18 @@ export function TemplateDesignerView({
   // An applied but unsaved form edit is what publish sends, so webhook field
   // choices and the publish check read that schema rather than the bound one.
   const webhookFormSchema: FormDefinitionSchema | null =
-    formDraftDirty && formDraft ? formDraft.schema : effectiveFormSchema;
+    appliedFormDraft?.schema ?? effectiveFormSchema;
+  // Phase 23 P4: which form fields the draft's expressions read (backend AST).
+  const {
+    references: expressionFieldReferences,
+    resolveCurrentReferences: resolveExpressionFieldReferences,
+  } = useWorkflowExpressionReferences(
+      { formDefinitionVersionId, initiatorPolicyCel, workflowDefinition },
+      !embedded && !loading,
+    );
+  const [formEditBlockedMessage, setFormEditBlockedMessage] = useState<
+    string | null
+  >(null);
 
   // Publish-only: an incomplete webhook can be saved as a draft, but the
   // backend would refuse to publish it (ADR 18 §4).
@@ -1298,6 +1376,8 @@ export function TemplateDesignerView({
    * then seed the controller with the draft / latest version.
    */
   async function refreshDesigner(): Promise<void> {
+    const loadSequence = ++designerLoadSequenceRef.current;
+
     setLoading(true);
     setError(null);
     // The notice describes an unsaved edit to the definition being replaced.
@@ -1312,6 +1392,11 @@ export function TemplateDesignerView({
         readTemplateDesigner(templateId as string),
         readOrganizationDirectory(),
       ]);
+
+      if (loadSequence !== designerLoadSequenceRef.current) {
+        return;
+      }
+
       const nextDraft =
         nextRecord.versions.find((version) => version.status === 'DRAFT') ??
         null;
@@ -1354,6 +1439,7 @@ export function TemplateDesignerView({
           : null,
       );
       setInitiatorPolicyDraftOverride(null);
+      setInitiatorPolicyCustomDraft(false);
       setSelectedNodeId(
         sourceVersion?.workflowDefinition.nodes[0]?.id ?? 'start',
       );
@@ -1361,11 +1447,15 @@ export function TemplateDesignerView({
       setEditingEdgeId(null);
       // Reset form draft so next open of the drawer reloads the latest version.
       setFormDraft(null);
-      setFormDraftDirty(false);
+      setAppliedFormDraft(null);
     } catch (requestError: unknown) {
-      setError(readTemplateErrorMessage(requestError, language));
+      if (loadSequence === designerLoadSequenceRef.current) {
+        setError(readTemplateErrorMessage(requestError, language));
+      }
     } finally {
-      setLoading(false);
+      if (loadSequence === designerLoadSequenceRef.current) {
+        setLoading(false);
+      }
     }
   }
 
@@ -1502,7 +1592,7 @@ export function TemplateDesignerView({
         throw new Error(issue);
       }
 
-      if (formDraftDirty && formDraft !== null) {
+      if (appliedFormDraft !== null) {
         await composeApprovalTemplateWithForm({
           category: record?.template.category ?? null,
           categoryId: record?.template.categoryId ?? null,
@@ -1515,15 +1605,15 @@ export function TemplateDesignerView({
           initiatorPolicyCel,
           notificationConfig: null,
           publish,
-          schema: formDraft.schema,
+          schema: appliedFormDraft.schema,
           slaDefaults: null,
           templateDescription: null,
           templateId: templateId ?? null,
           templateName: record?.template.name ?? '模板',
-          uiSchema: formDraft.uiSchema,
+          uiSchema: appliedFormDraft.uiSchema,
           workflowDefinition,
         });
-        setFormDraftDirty(false);
+        setAppliedFormDraft(null);
         setFormDraft(null);
         await refreshDesigner();
       } else {
@@ -1614,6 +1704,7 @@ export function TemplateDesignerView({
   }
 
   async function openFormEditDrawer(): Promise<void> {
+    setFormEditBlockedMessage(null);
     setFormEditOpen(true);
 
     if (formDraft !== null) {
@@ -1652,6 +1743,68 @@ export function TemplateDesignerView({
       setError(readTemplateErrorMessage(requestError, language));
     } finally {
       setFormDraftLoading(false);
+    }
+  }
+
+  /**
+   * Closes the form drawer without applying: the working copy falls back to
+   * the last applied edit (or is reloaded on the next open), so a discarded
+   * edit can neither be published nor become the baseline of the next
+   * field-removal check.
+   */
+  function discardFormEdit(): void {
+    setFormDraft(appliedFormDraft);
+    setFormEditBlockedMessage(null);
+    setFormEditOpen(false);
+  }
+
+  async function applyFormEdit(): Promise<void> {
+    if (formDraft === null) {
+      setFormEditOpen(false);
+
+      return;
+    }
+
+    const nextDraft = formDraft;
+
+    setFormEditChecking(true);
+
+    try {
+      const check = await checkFormEditExpressionFields(
+        webhookFormSchema?.fields.map((field) => field.fieldKey) ?? [],
+        nextDraft.schema.fields.map((field) => field.fieldKey),
+        resolveExpressionFieldReferences,
+      );
+
+      if (check.kind === 'blocked') {
+        setFormEditBlockedMessage(
+          `運算式還在讀取這些欄位，不能改名或刪除：${check.fields
+            .map((entry) => entry.fieldKey)
+            .join('、')}。請先修改引用它們的運算式。`,
+        );
+
+        return;
+      }
+
+      if (check.kind === 'unverified') {
+        setFormEditBlockedMessage(
+          `無法確認運算式是否還在讀取這些欄位：${check.fieldKeys.join(
+            '、',
+          )}。為避免運算式讀不到欄位，暫不套用改名或刪除，請稍後再試。`,
+        );
+
+        return;
+      }
+
+      setFormEditBlockedMessage(null);
+      setAppliedFormDraft(nextDraft);
+      controller.replaceState((current) => ({
+        ...current,
+        formSchema: nextDraft.schema,
+      }));
+      setFormEditOpen(false);
+    } finally {
+      setFormEditChecking(false);
     }
   }
 
@@ -1958,21 +2111,36 @@ export function TemplateDesignerView({
         <style>{SIDE_PANEL_GLOBAL_STYLE}</style>
         {!embedded ? (
           <PageHeader>
+            {/* ContentHeader renders only buttons, filters and a back link
+                as children and drops anything else (a Tag included), so the
+                dialect rides on its `description` line instead. */}
             <ContentHeader
-              description={readTemplateVersionDescription({
-                draftVersion: draft?.version ?? null,
-                hasPublishedVersion: Boolean(
-                  record?.template.currentVersionId,
-                ),
-                publishedVersion:
-                  record?.versions.find(
-                    (version) =>
-                      version.id === record.template.currentVersionId,
-                  )?.version ?? null,
-              })}
+              description={readTemplateHeaderDescription(
+                readTemplateVersionDescription({
+                  draftVersion: draft?.version ?? null,
+                  hasPublishedVersion: Boolean(
+                    record?.template.currentVersionId,
+                  ),
+                  publishedVersion:
+                    record?.versions.find(
+                      (version) =>
+                        version.id === record.template.currentVersionId,
+                    )?.version ?? null,
+                }),
+                expressionDialect,
+              )}
               onBackClick={handleBackToTemplates}
               title={record?.template.name ?? '流程設計器'}
             >
+              {expressionDialect === 'cel-legacy' ? (
+                <Button
+                  disabled={loading || saving}
+                  onClick={(): void => setDialectUpgradeOpen(true)}
+                  variant="base-secondary"
+                >
+                  升級到 cel-v2
+                </Button>
+              ) : null}
               {showAiAssistant ? (
                 <Button
                   disabled={!aiAssistantAvailable}
@@ -2279,8 +2447,27 @@ export function TemplateDesignerView({
         </SectionGroup>
         {renderEdgeSettingsModal(editingEdge)}
         {!embedded && showDryRun ? renderDryRunModal() : null}
+        {!embedded ? (
+          <DialectUpgradeModal
+            draft={{
+              formDefinitionVersionId,
+              initiatorPolicyCel,
+              workflowDefinition,
+            }}
+            onCancel={(): void => setDialectUpgradeOpen(false)}
+            onConfirm={(): void => {
+              setDialectUpgradeOpen(false);
+              updateWorkflowDefinitionDirectly((definition) => ({
+                ...definition,
+                expressionDialect: 'cel-v2',
+              }));
+            }}
+            open={dialectUpgradeOpen}
+          />
+        ) : null}
         <FieldAccessMatrixDrawer
           definition={workflowDefinition}
+          expressionReferences={expressionFieldReferences}
           formSchema={webhookFormSchema}
           language={language}
           onApply={(entries): string | null =>
@@ -2300,7 +2487,7 @@ export function TemplateDesignerView({
           <Drawer
             headerTitle="編輯表單"
             isHeaderDisplay
-            onClose={(): void => setFormEditOpen(false)}
+            onClose={discardFormEdit}
             open={formEditOpen}
             size="wide"
           >
@@ -2324,26 +2511,26 @@ export function TemplateDesignerView({
                   />
                 )}
               </div>
+              {formEditBlockedMessage ? (
+                <InlineMessage
+                  content={formEditBlockedMessage}
+                  severity="error"
+                />
+              ) : null}
               <div style={FORM_EDIT_DRAWER_FOOTER_STYLE}>
                 <Button
-                  disabled={formDraftLoading}
+                  disabled={formDraftLoading || formEditChecking}
+                  loading={formEditChecking}
                   onClick={(): void => {
-                    if (formDraft !== null) {
-                      setFormDraftDirty(true);
-                      controller.replaceState((current) => ({
-                        ...current,
-                        formSchema: formDraft.schema,
-                      }));
-                    }
-
-                    setFormEditOpen(false);
+                    void applyFormEdit();
                   }}
                   variant="base-primary"
                 >
                   套用
                 </Button>
                 <Button
-                  onClick={(): void => setFormEditOpen(false)}
+                  disabled={formEditChecking}
+                  onClick={discardFormEdit}
                   variant="base-secondary"
                 >
                   取消
@@ -2494,6 +2681,23 @@ export function TemplateDesignerView({
         </BPMFormField>
         {node.type === 'startEvent' ? renderStartEventPanel() : null}
         {node.type !== 'startEvent' ? renderNodeTriggerModePanel(node) : null}
+        {hasWorkflowEntryCondition(node) ? (
+          <ExpressionField
+            dialect={expressionDialect}
+            evaluable
+            formDefinitionVersionId={formDefinitionVersionId}
+            hintText="不符合時跳過這個節點；空白代表一律執行。"
+            label="進入條件"
+            name="entryCondition"
+            onChange={(condition): void =>
+              updateWorkflowDefinitionDirectly((definition) =>
+                setWorkflowNodeEntryCondition(definition, node.id, condition),
+              )
+            }
+            usagePoint="ENTRY_CONDITION"
+            value={node.data.entryCondition ?? ''}
+          />
+        ) : null}
         {node.type === 'userTask' ? renderUserTaskPanel(node) : null}
         {node.type === 'serviceTask' ? renderServiceTaskPanel(node) : null}
       </div>
@@ -2501,10 +2705,10 @@ export function TemplateDesignerView({
   }
 
   function renderStartEventPanel(): ReactElement {
-    const policyModeOptions =
-      initiatorPolicyDraft.mode === 'CUSTOM'
-        ? [...INITIATOR_POLICY_MODE_OPTIONS, INITIATOR_POLICY_CUSTOM_OPTION]
-        : [...INITIATOR_POLICY_MODE_OPTIONS];
+    const policyModeOptions = [
+      ...INITIATOR_POLICY_MODE_OPTIONS,
+      INITIATOR_POLICY_CUSTOM_OPTION,
+    ];
     const selectedInitiatorOrgUnit =
       initiatorPolicyDraft.mode === 'ORG_UNIT' ||
       initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION'
@@ -2538,7 +2742,7 @@ export function TemplateDesignerView({
         <BPMFormField
           hintText={
             initiatorPolicyDraft.mode === 'CUSTOM'
-              ? '這是舊版表達式規則；切換成標準選項後會改由 UI 管理。'
+              ? '以運算式判斷誰可以發起；切換成標準選項後會改由 UI 管理。'
               : undefined
           }
           label="發起權限"
@@ -2551,10 +2755,12 @@ export function TemplateDesignerView({
               if (option?.id === 'CUSTOM') {
                 setInitiatorPolicyModeDraft(null);
                 setInitiatorPolicyDraftOverride(null);
+                setInitiatorPolicyCustomDraft(true);
 
                 return;
               }
 
+              setInitiatorPolicyCustomDraft(false);
               const mode = readInitiatorPolicyMode(option?.id ?? null);
               const draft = readDefaultInitiatorPolicyDraft(mode);
 
@@ -2572,6 +2778,20 @@ export function TemplateDesignerView({
             )}
           />
         </BPMFormField>
+        {initiatorPolicyDraft.mode === 'CUSTOM' ? (
+          <ExpressionField
+            dialect={expressionDialect}
+            formDefinitionVersionId={formDefinitionVersionId}
+            hintText="可讀 subject（發起人的組織、職位）；空白代表所有人都能發起。"
+            label="發起權限運算式"
+            name="initiatorPolicyCel"
+            onChange={(value): void =>
+              setInitiatorPolicyCel(value.trim() ? value : null)
+            }
+            usagePoint="INITIATOR_POLICY"
+            value={initiatorPolicyCel ?? ''}
+          />
+        ) : null}
         {initiatorPolicyDraft.mode === 'ORG_UNIT' ||
         initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION' ? (
           <BPMFormField label="組織" name="initiatorOrgUnitId" required>
@@ -2855,6 +3075,38 @@ export function TemplateDesignerView({
             value={sourceChoice.selected}
           />
         </BPMFormField>
+        <BPMFormField
+          hintText="以運算式算出簽核人 id；結果必須是會員 id 的清單。"
+          label="以運算式指定"
+          name="approverResolverExpressionMode"
+        >
+          <Toggle
+            checked={resolver.type === 'EXPRESSION'}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+              const next = event.target.checked
+                ? ({ expression: '', type: 'EXPRESSION' } as const)
+                : readApproverSourcePick(resolver, 'DIRECT', positions);
+
+              if (next) {
+                updateUserTaskResolver(next);
+              }
+            }}
+          />
+        </BPMFormField>
+        {resolver.type === 'EXPRESSION' ? (
+          <ExpressionField
+            dialect={expressionDialect}
+            formDefinitionVersionId={formDefinitionVersionId}
+            label="簽核人運算式"
+            name="approverResolverExpression"
+            onChange={(expression): void =>
+              updateUserTaskResolver({ expression, type: 'EXPRESSION' })
+            }
+            required
+            usagePoint="APPROVER_RESOLVER"
+            value={resolver.expression}
+          />
+        ) : null}
         {resolver.type === 'DIRECT' ? (
           <BPMFormField
             hintText={readDecisionPolicyHint(node.data.decisionPolicy)}
@@ -3837,8 +4089,78 @@ export function TemplateDesignerView({
       }
     }
 
+    // Phase 23 P4: a SET_FORM_FIELD node gets its own editor, so the NOTIFY
+    // pickers below can never rewrite its action into a notification.
+    const actionTypePicker = (
+      <BPMFormField label="系統動作" name="serviceActionType" required>
+        <Select
+          clearable={false}
+          onChange={(option): void => {
+            if (!option || option.id === action.type) {
+              return;
+            }
+
+            updateServiceAction(
+              option.id === 'SET_FORM_FIELD'
+                ? { fieldPath: '', type: 'SET_FORM_FIELD', value: '' }
+                : {
+                    channels: ['IN_APP'],
+                    recipients: { memberIds: [], type: 'DIRECT' },
+                    type: 'NOTIFY',
+                  },
+            );
+          }}
+          options={[...SERVICE_ACTION_TYPE_OPTIONS]}
+          value={readSelectOption(SERVICE_ACTION_TYPE_OPTIONS, action.type)}
+        />
+      </BPMFormField>
+    );
+
+    if (action.type === 'SET_FORM_FIELD') {
+      const targetFieldOptions = readConditionFieldOptions(
+        selectedFormVersionOption?.schema ?? null,
+      );
+      const targetFieldKey = action.fieldPath.replace(/^form\./u, '');
+
+      return (
+        <>
+          {actionTypePicker}
+          <BPMFormField label="寫入欄位" name="serviceFieldPath" required>
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateServiceAction({
+                  ...action,
+                  fieldPath: option?.id ?? '',
+                })
+              }
+              options={[...targetFieldOptions]}
+              placeholder={
+                selectedFormVersionOption ? '選擇欄位' : '請先綁定表單版本'
+              }
+              value={readSelectOption(targetFieldOptions, targetFieldKey || null)}
+            />
+          </BPMFormField>
+          <ExpressionField
+            dialect={expressionDialect}
+            evaluable
+            formDefinitionVersionId={formDefinitionVersionId}
+            hintText="運算結果會寫進上面的欄位；畫面上一律以文字顯示。"
+            label="寫入的值"
+            name="serviceFieldValue"
+            onChange={(value): void => updateServiceAction({ ...action, value })}
+            required
+            targetFieldKey={targetFieldKey || null}
+            usagePoint="SERVICE_FORM_FIELD_VALUE"
+            value={action.value}
+          />
+        </>
+      );
+    }
+
     return (
       <>
+        {actionTypePicker}
         <BPMFormField
           hintText={
             runtimeRecipients
@@ -4013,6 +4335,9 @@ export function TemplateDesignerView({
       edge.data.conditionOperator ?? null,
     );
     const pathLabelIsIncomplete = !edge.data.isDefault && !edge.data.condition;
+    const expressionCondition =
+      !edge.data.isDefault &&
+      (expressionEdgeId === edge.id || isWorkflowEdgeExpressionCondition(edge));
 
     return (
       <div style={FORM_STACK_STYLE}>
@@ -4031,16 +4356,74 @@ export function TemplateDesignerView({
         </Typography>
         <Toggle
           checked={Boolean(edge.data.isDefault)}
+          inputProps={{ 'aria-label': '其他情況走這條' }}
           label="其他情況走這條"
           onChange={(event: ChangeEvent<HTMLInputElement>): void =>
             updateSelectedEdgeDefault(edge.id, event.target.checked)
           }
         />
+        {edge.data.isDefault ? null : (
+          <Toggle
+            checked={expressionCondition}
+            // Mezzanine renders the label beside the switch, not as its
+            // <label>, so the input needs its own accessible name.
+            inputProps={{ 'aria-label': '進階：自訂運算式' }}
+            label="進階：自訂運算式"
+            onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+              if (event.target.checked) {
+                setExpressionEdgeId(edge.id);
+                updateWorkflowDefinitionDirectly((definition) =>
+                  setWorkflowEdgeExpressionCondition(
+                    definition,
+                    edge.id,
+                    edge.data.condition ?? '',
+                  ),
+                );
+
+                return;
+              }
+
+              setExpressionEdgeId(null);
+              updateSelectedEdgeConditionState({
+                edgeId: edge.id,
+                fieldKey: null,
+                operator: null,
+                value: null,
+              });
+            }}
+          />
+        )}
+        {expressionCondition ? (
+          <ExpressionField
+            dialect={expressionDialect}
+            edgeSourceNodeType={readWorkflowEdgeSourceNodeType(
+              workflowDefinition,
+              edge.id,
+            )}
+            evaluable
+            formDefinitionVersionId={formDefinitionVersionId}
+            hintText="結構化條件（欄位＋判斷＋值）能表達時請優先使用；這裡的運算式由後端檢查。"
+            label="條件運算式"
+            name="edgeConditionExpression"
+            onChange={(condition): void =>
+              updateWorkflowDefinitionDirectly((definition) =>
+                setWorkflowEdgeExpressionCondition(
+                  definition,
+                  edge.id,
+                  condition,
+                ),
+              )
+            }
+            required
+            usagePoint="FLOW_CONDITION"
+            value={edge.data.condition ?? ''}
+          />
+        ) : null}
         {edge.data.isDefault ? (
           <Typography color="text-neutral" variant="body">
             其他條件都不符合時，流程會走這條線。
           </Typography>
-        ) : (
+        ) : expressionCondition ? null : (
           <>
             {!selectedFormVersionOption ? (
               <Typography color="text-neutral" variant="body">
@@ -4644,8 +5027,11 @@ function normalizeSingleIncomingTriggerModes(
 }
 
 function readFallbackWorkflowDefinition(): WorkflowDefinition {
+  // Phase 23 P4: a new template starts on cel-v2; an existing one keeps the
+  // dialect it was saved with (no field means cel-legacy).
   return {
     edges: [],
+    expressionDialect: 'cel-v2',
     meta: { schemaVersion: 1 },
     nodes: [
       {

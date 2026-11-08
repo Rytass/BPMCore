@@ -384,6 +384,9 @@ export function DelegationsView(): ReactElement {
         priority: 100,
         requiresConfirmation: false,
         scopeConditionCel: null,
+        // Phase 23 P4: new rules are written in cel-v2; stored rules keep
+        // their dialect.
+        scopeConditionDialect: 'cel-v2',
         scopeTemplateIds:
           selectedScopeType.id === 'TEMPLATE_LIST'
             ? scopeTemplates.map((template) => template.id)
@@ -818,7 +821,9 @@ function readScopeLabel(rule: DelegationRuleRecord): string {
     return `指定模板：${rule.scopeTemplateIds.length}`;
   }
 
-  return rule.scopeConditionCel ? `條件：${rule.scopeConditionCel}` : '條件式';
+  return rule.scopeConditionCel
+    ? `條件（${rule.scopeConditionDialect}）：${rule.scopeConditionCel}`
+    : '條件式';
 }
 
 function readScopeOptionFromValue(value: unknown): ScopeOption {
