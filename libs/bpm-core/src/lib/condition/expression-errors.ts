@@ -74,6 +74,12 @@ const MISSING_KEY_PATTERNS: readonly RegExp[] = [
 const STRING_LITERAL_PATTERN =
   /(?:(?<![A-Za-z0-9_])[rRbB]{1,2})?(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')/gu;
 
+/*
+ * A `[...]` whose content, string literals removed, still holds an identifier:
+ * an index or list element read from the context.
+ */
+const COMPUTED_INDEX_PATTERN = /\[[^\]]*[A-Za-z_]/u;
+
 /**
  * Whether `name` is written in the expression as an identifier, outside every
  * string literal. The engine reports the key it failed to find, and with a
@@ -81,10 +87,22 @@ const STRING_LITERAL_PATTERN =
  * not something the author wrote. Only a name the author wrote may be shown.
  * `name` has already passed {@link IDENTIFIER_PATTERN}, so it is safe in a regex.
  */
-const isWrittenIdentifier = (expression: string, name: string): boolean =>
-  new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'u').test(
-    expression.replace(STRING_LITERAL_PATTERN, ' '),
+const isWrittenIdentifier = (expression: string, name: string): boolean => {
+  const source = expression.replace(STRING_LITERAL_PATTERN, ' ');
+
+  // A computed index (`form.rates[form.currency]`) can make the engine report a
+  // context value as the missing key, and that value may happen to equal a name
+  // the author wrote (`rates`). No name is shown for such an expression. An
+  // index that holds only literals (`form["a-b"]`, `["a", "b"]`, `[0]`) is
+  // written by the author and does not count.
+  if (COMPUTED_INDEX_PATTERN.test(source)) {
+    return false;
+  }
+
+  return new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'u').test(
+    source,
   );
+};
 
 /**
  * Converts anything an evaluation threw into an {@link ExpressionRuntimeError}.
