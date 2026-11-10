@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
@@ -3611,3 +3611,306 @@ function createInMemoryManager(): {
     store: (entity: unknown): Map<string, ObjectLiteral> => storeFor(entity),
   };
 }
+
+describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
+  const NOTE_TEXT_SCHEMA = {
+    fields: [{ fieldKey: 'note', label: '備註', required: false, type: 'text' }],
+    schemaVersion: 1,
+  };
+  const NOTE_MONEY_FILTERABLE_SCHEMA = {
+    fields: [
+      {
+        fieldKey: 'note',
+        filterable: true,
+        label: '備註',
+        required: false,
+        type: 'money',
+      },
+    ],
+    schemaVersion: 1,
+  };
+  const AMOUNT_TWD_FILTERABLE_SCHEMA = {
+    fields: [
+      {
+        fieldKey: 'amountTwd',
+        filterable: true,
+        label: '金額',
+        required: false,
+        type: 'money',
+      },
+    ],
+    schemaVersion: 1,
+  };
+  const NOTE_UI_SCHEMA = {
+    layout: [{ fieldKey: 'note', width: 'FULL' }],
+    schemaVersion: 1,
+  };
+  const AMOUNT_TWD_UI_SCHEMA = {
+    layout: [{ fieldKey: 'amountTwd', width: 'FULL' }],
+    schemaVersion: 1,
+  };
+
+  interface HistoryRow {
+    readonly id: string;
+    readonly versionNumber: number;
+    readonly schema: unknown;
+  }
+
+  interface InstanceRow {
+    readonly id: string;
+    readonly formData: Readonly<Record<string, unknown>>;
+  }
+
+  /**
+   * In-memory manager whose `query` answers the guard's three SQL shapes from
+   * mutable state, so a test can change what the instances hold between steps.
+   * Instance rows return only the keys asked for; a missing key is left out.
+   */
+  function createFilterableManager(
+    history: readonly HistoryRow[],
+    instances: readonly InstanceRow[],
+  ): {
+    readonly manager: EntityManager;
+    readonly state: { history: readonly HistoryRow[]; instances: readonly InstanceRow[] };
+    readonly store: (entity: unknown) => Map<string, ObjectLiteral>;
+  } {
+    const state = { history, instances };
+    const { manager, store } = createInMemoryManager();
+
+    const query = (
+      sql: string,
+      params: readonly unknown[],
+    ): Promise<readonly unknown[]> => {
+      if (sql.includes('jsonb_object_agg')) {
+        const keys = params[1] as readonly string[];
+
+        return Promise.resolve(
+          state.instances.map((instance) => {
+            const picked = keys.filter((key) =>
+              Object.prototype.hasOwnProperty.call(instance.formData, key),
+            );
+
+            return {
+              form_data:
+                picked.length === 0
+                  ? null
+                  : Object.fromEntries(
+                      picked.map((key) => [key, instance.formData[key]]),
+                    ),
+              id: instance.id,
+            };
+          }),
+        );
+      }
+
+      if (sql.includes('"versionNumber", fv.schema')) {
+        return Promise.resolve(state.history);
+      }
+
+      if (sql.includes('FROM approval_templates WHERE id')) {
+        return Promise.resolve([{ name: '請款簽核' }]);
+      }
+
+      return Promise.reject(new Error(`unexpected SQL: ${sql}`));
+    };
+
+    Object.assign(manager, { query });
+
+    return { manager, state, store };
+  }
+
+  function composeFilterable(
+    schema: Readonly<Record<string, unknown>>,
+    uiSchema: Readonly<Record<string, unknown>>,
+    overrides: Partial<ComposeApprovalTemplateWithFormInput> = {},
+  ): ComposeApprovalTemplateWithFormInput {
+    return composeInput({
+      schemaJson: JSON.stringify(schema),
+      uiSchemaJson: JSON.stringify(uiSchema),
+      ...overrides,
+    });
+  }
+
+  it('refuses to publish a text-to-money change over stored values, and leaves the current version alone', async (): Promise<void> => {
+    const { manager, store } = createFilterableManager(
+      [{ id: 'fv-text', schema: NOTE_TEXT_SCHEMA, versionNumber: 1 }],
+      [{ formData: { note: 'abc' }, id: 'instance-1' }],
+    );
+    const service = createStoreBackedService(manager);
+
+    const v1 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_TEXT_SCHEMA, NOTE_UI_SCHEMA, { publish: true }),
+      'member-admin',
+    );
+    const templateId = v1.template.id;
+
+    await expect(
+      service.composeApprovalTemplateWithForm(
+        composeFilterable(NOTE_MONEY_FILTERABLE_SCHEMA, NOTE_UI_SCHEMA, {
+          publish: true,
+          templateId,
+        }),
+        'member-admin',
+      ),
+    ).rejects.toThrow(/無法啟用篩選/u);
+
+    expect(store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId']).toBe(
+      v1.templateVersion.id,
+    );
+  });
+
+  it('refuses the same change when publishing an existing draft directly', async (): Promise<void> => {
+    const { manager, store } = createFilterableManager(
+      [{ id: 'fv-text', schema: NOTE_TEXT_SCHEMA, versionNumber: 1 }],
+      [{ formData: { note: 'abc' }, id: 'instance-1' }],
+    );
+    const service = createStoreBackedService(manager);
+
+    const v1 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_TEXT_SCHEMA, NOTE_UI_SCHEMA, { publish: true }),
+      'member-admin',
+    );
+    const draft = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_MONEY_FILTERABLE_SCHEMA, NOTE_UI_SCHEMA, {
+        publish: false,
+        templateId: v1.template.id,
+      }),
+      'member-admin',
+    );
+
+    // The template draft is publishable only once its form version is
+    // published; compose leaves the form version as a draft.
+    const formVersionId = String(draft.templateVersion.formDefinitionVersionId);
+    const formVersion = store(FormDefinitionVersionEntity).get(formVersionId);
+
+    if (formVersion === undefined) {
+      throw new Error('form version was not stored');
+    }
+
+    formVersion['status'] = FormDefinitionVersionStatusEnum.PUBLISHED;
+
+    await expect(
+      service.publishApprovalTemplateVersion(draft.templateVersion.id),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('does not block saving the conflicting schema as a draft', async (): Promise<void> => {
+    const { manager } = createFilterableManager(
+      [{ id: 'fv-text', schema: NOTE_TEXT_SCHEMA, versionNumber: 1 }],
+      [{ formData: { note: 'abc' }, id: 'instance-1' }],
+    );
+    const service = createStoreBackedService(manager);
+
+    const v1 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_TEXT_SCHEMA, NOTE_UI_SCHEMA, { publish: true }),
+      'member-admin',
+    );
+
+    const draft = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_MONEY_FILTERABLE_SCHEMA, NOTE_UI_SCHEMA, {
+        publish: false,
+        templateId: v1.template.id,
+      }),
+      'member-admin',
+    );
+
+    expect(draft.published).toBe(false);
+  });
+
+  it('lets a new key through even when the old key holds dirty values', async (): Promise<void> => {
+    const { manager } = createFilterableManager(
+      [{ id: 'fv-text', schema: NOTE_TEXT_SCHEMA, versionNumber: 1 }],
+      [{ formData: { note: 'abc' }, id: 'instance-1' }],
+    );
+    const service = createStoreBackedService(manager);
+
+    const v1 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_TEXT_SCHEMA, NOTE_UI_SCHEMA, { publish: true }),
+      'member-admin',
+    );
+
+    const v2 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(AMOUNT_TWD_FILTERABLE_SCHEMA, AMOUNT_TWD_UI_SCHEMA, {
+        publish: true,
+        templateId: v1.template.id,
+      }),
+      'member-admin',
+    );
+
+    expect(v2.published).toBe(true);
+  });
+
+  it('publishes when the stored values are null, empty or missing', async (): Promise<void> => {
+    const { manager } = createFilterableManager(
+      [],
+      [
+        { formData: { amountTwd: null }, id: 'instance-1' },
+        { formData: { amountTwd: '' }, id: 'instance-2' },
+        { formData: {}, id: 'instance-3' },
+      ],
+    );
+    const service = createStoreBackedService(manager);
+
+    const result = await service.composeApprovalTemplateWithForm(
+      composeFilterable(AMOUNT_TWD_FILTERABLE_SCHEMA, AMOUNT_TWD_UI_SCHEMA, {
+        publish: true,
+      }),
+      'member-admin',
+    );
+
+    expect(result.published).toBe(true);
+  });
+
+  it('refuses a rollback to a filterable version whose stored values now conflict', async (): Promise<void> => {
+    const { manager, state, store } = createFilterableManager([], [
+      { formData: { note: null }, id: 'instance-1' },
+    ]);
+    const service = createStoreBackedService(manager);
+
+    const v1 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_TEXT_SCHEMA, NOTE_UI_SCHEMA, { publish: true }),
+      'member-admin',
+    );
+    const templateId = v1.template.id;
+
+    const v2 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_MONEY_FILTERABLE_SCHEMA, NOTE_UI_SCHEMA, {
+        publish: true,
+        templateId,
+      }),
+      'member-admin',
+    );
+    const v3 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_TEXT_SCHEMA, NOTE_UI_SCHEMA, {
+        publish: true,
+        templateId,
+      }),
+      'member-admin',
+    );
+
+    // Text lands in the instances while v3 (text) is current, and the
+    // history now shows a text version that holds instances.
+    state.instances = [{ formData: { note: 'abc' }, id: 'instance-1' }];
+    state.history = [
+      { id: 'fv-text', schema: NOTE_TEXT_SCHEMA, versionNumber: 1 },
+    ];
+
+    await expect(
+      service.rollbackApprovalTemplateVersion(v2.templateVersion.id),
+    ).rejects.toThrow(ConflictException);
+    expect(store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId']).toBe(
+      v3.templateVersion.id,
+    );
+
+    // The check is about instances sitting under a version of another type,
+    // not about their values. Once none sit under the text version, the same
+    // rollback goes through.
+    state.instances = [{ formData: { note: null }, id: 'instance-1' }];
+    state.history = [];
+
+    await service.rollbackApprovalTemplateVersion(v2.templateVersion.id);
+    expect(store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId']).toBe(
+      v2.templateVersion.id,
+    );
+  });
+});

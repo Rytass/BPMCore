@@ -6,6 +6,7 @@ export * from './dto/approval-template.input';
 export * from './dto/compose-approval-template.input';
 export * from './dto/expression-designer.dto';
 export * from './expression-designer.service';
+export * from './filterable-field-issue.object';
 export * from './template-observer.token';
 export * from './template.enums';
 export * from './template.module';

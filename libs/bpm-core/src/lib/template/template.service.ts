@@ -77,6 +77,7 @@ import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { FormService } from '../form/form.service';
 import { lintWorkflowWebhookTargets } from '../workflow-webhook/workflow-webhook.validator';
 import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
+import { assertTemplateFilterableFieldsEnabled } from './filterable-field-guard';
 import { ComposeApprovalTemplateWithFormInput } from './dto/compose-approval-template.input';
 import { ComposeApprovalTemplateWithFormObject } from './compose-approval-template.object';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
@@ -787,13 +788,14 @@ export class TemplateService {
       );
     }
 
-    await this.validatePublishableVersion(version, manager);
+    const formSchema = await this.validatePublishableVersion(version, manager);
 
     const run = (txManager: EntityManager): Promise<PublishedVersionResult> =>
       this.publishApprovalTemplateVersionWithManager(
         txManager,
         version,
         publishedByMemberId,
+        formSchema,
       );
 
     return manager
@@ -804,7 +806,8 @@ export class TemplateService {
   private async publishApprovalTemplateVersionWithManager(
     manager: EntityManager,
     version: ApprovalTemplateVersionEntity,
-    publishedByMemberId?: string,
+    publishedByMemberId: string | undefined,
+    formSchema: FormDefinitionSchema,
   ): Promise<PublishedVersionResult> {
     const templateRepository = manager.getRepository(ApprovalTemplateEntity);
     const versionRepository = manager.getRepository(
@@ -826,6 +829,15 @@ export class TemplateService {
     if (!template.isActive) {
       throw new ConflictException('Approval template is deactivated');
     }
+
+    // ADR 25 §5.4: a field that becomes filterable must not hold values the
+    // template's existing instances cannot satisfy. Checked here, inside the
+    // publish transaction, so the instances it reads are the ones it archives.
+    await assertTemplateFilterableFieldsEnabled(
+      manager,
+      template.id,
+      formSchema,
+    );
 
     const previousVersionId = template.currentVersionId;
 
@@ -875,6 +887,8 @@ export class TemplateService {
     // and is not linted again, since a rule tightened since could refuse it
     // (ADR 22 §5, docs/24 §1). The one check is that every function it calls
     // is still registered; without it every case would fail on evaluation.
+    // The filterable-field check (ADR 25 §5.4) is the exception: it reads the
+    // instances stored now, so it runs again inside the transaction below.
     const unregisteredFunctionErrors = this.lintRegisteredFunctions(
       target.workflowDefinition,
       target.initiatorPolicyCel,
@@ -907,6 +921,17 @@ export class TemplateService {
         if (!template.isActive) {
           throw new ConflictException('Approval template is deactivated');
         }
+
+        // The target becomes the current version again, so its filterable
+        // fields are checked against the instances stored now (ADR 25 §5.4).
+        await assertTemplateFilterableFieldsEnabled(
+          manager,
+          template.id,
+          await this.readFormSchemaOfVersion(
+            manager,
+            target.formDefinitionVersionId,
+          ),
+        );
 
         const previousVersionId = template.currentVersionId;
 
@@ -986,10 +1011,14 @@ export class TemplateService {
     }
   }
 
+  /**
+   * Returns the bound form schema so the publish can run the filterable-field
+   * check against it without loading the form version a second time.
+   */
   private async validatePublishableVersion(
     version: ApprovalTemplateVersionEntity,
     manager?: EntityManager,
-  ): Promise<void> {
+  ): Promise<FormDefinitionSchema> {
     if (!version.formDefinitionVersionId) {
       throw new BadRequestException(
         'Approval template version must bind a form definition version before publishing',
@@ -1080,6 +1109,8 @@ export class TemplateService {
     if (errors.length) {
       throw new BadRequestException(errors.join('; '));
     }
+
+    return formVersion.schema;
   }
 
   /** The cel-legacy publish lint, unchanged (docs/24 §1). */
@@ -1277,6 +1308,21 @@ export class TemplateService {
     return manager
       ? manager.getRepository(FormDefinitionVersionEntity)
       : this.formDefinitionVersionRepository;
+  }
+
+  private async readFormSchemaOfVersion(
+    manager: EntityManager,
+    formDefinitionVersionId: string | null,
+  ): Promise<FormDefinitionSchema | null> {
+    if (!formDefinitionVersionId) {
+      return null;
+    }
+
+    const formVersion = await manager
+      .getRepository(FormDefinitionVersionEntity)
+      .findOne({ where: { id: formDefinitionVersionId } });
+
+    return formVersion?.schema ?? null;
   }
 
   private async getTemplateOrThrow(

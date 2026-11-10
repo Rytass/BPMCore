@@ -13,6 +13,10 @@ import {
   TEXT_FIELD_PATTERN_ERROR_MESSAGE_MAX_LENGTH,
   TEXT_FIELD_PATTERN_MAX_LENGTH,
 } from '@rytass/bpm-core-shared/form';
+import {
+  isApprovalInstanceSortTimeField,
+  isFilterableFieldType,
+} from '@rytass/bpm-core-shared';
 import { isSubmittableOrgUnitValue } from './form-org-unit-value.validator';
 import { referencesTableInternals } from './form-table-reference';
 import { readExpressionBindingDependencies } from '../form-data-source/form-data-source.expression';
@@ -244,6 +248,7 @@ function lintFieldDefinition(
     ...lintOptionalString(field.readonlyWhen, `${path}.readonlyWhen`),
     ...lintFieldRequiredFlag(field, path),
     ...lintFieldHiddenFlag(field, path),
+    ...lintFilterableFlag(field, path, 'top-level'),
     ...(isSupportedFieldType(type) ? [] : [`${path}.type is not supported`]),
     ...lintConditionTableReferences(field, path, scope.tableFieldKeys),
   ];
@@ -371,6 +376,55 @@ function lintFieldHiddenFlag(
   return field.hidden && field.required === true
     ? [`${path}.hidden 為 true 時不可同時設為必填（required）`]
     : [];
+}
+
+/**
+ * `filterable` (ADR 25 §5.2): a boolean, and only on a type the approval list
+ * can filter on. A top-level field also may not reuse a sort-time key as its
+ * fieldKey, because a sort request would then be ambiguous. Table columns are
+ * never sorted, so the key rule does not reach them.
+ */
+function lintFilterableFlag(
+  field: Readonly<Record<string, unknown>>,
+  path: string,
+  placement: 'column' | 'top-level',
+): readonly string[] {
+  if (field.filterable === undefined) {
+    return [];
+  }
+
+  if (typeof field.filterable !== 'boolean') {
+    return [`${path}.filterable 必須是布林值`];
+  }
+
+  if (!field.filterable) {
+    return [];
+  }
+
+  const type = field.type;
+
+  // An unsupported type is already reported by the caller.
+  if (!isSupportedFieldType(type)) {
+    return [];
+  }
+
+  const typeErrors = isFilterableFieldType(type, placement)
+    ? []
+    : [
+        placement === 'column'
+          ? `${path}.filterable 不支援 ${type} 型別的表格欄位`
+          : `${path}.filterable 不支援 ${type} 型別的欄位`,
+      ];
+  const keyErrors =
+    placement === 'top-level' &&
+    typeof field.fieldKey === 'string' &&
+    isApprovalInstanceSortTimeField(field.fieldKey)
+      ? [
+          `${path}.fieldKey 為保留字（${field.fieldKey}），不可宣告為可篩選欄位`,
+        ]
+      : [];
+
+  return [...typeErrors, ...keyErrors];
 }
 
 /**
@@ -921,6 +975,7 @@ function lintTableColumn(
         `${path}.${conditionKey} is not supported for table columns`,
     ),
     ...lintFieldRequiredFlag(column, path),
+    ...lintFilterableFlag(column, path, 'column'),
     ...(Object.prototype.hasOwnProperty.call(column, 'hidden')
       ? [`${path}.hidden 不支援表格欄位`]
       : []),

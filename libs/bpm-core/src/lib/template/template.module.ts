@@ -9,6 +9,7 @@ import { ApprovalTemplateVersionEntity } from './approval-template-version.entit
 import { ComposeTemplateMutations } from './compose-template.mutations';
 import { ExpressionDesignerQueries } from './expression-designer.queries';
 import { ExpressionDesignerService } from './expression-designer.service';
+import { FilterableFieldQueries } from './filterable-field.queries';
 import { TemplateMutations } from './template.mutations';
 import { TemplateQueries } from './template.queries';
 import { TemplateService } from './template.service';
@@ -28,6 +29,7 @@ import { TemplateService } from './template.service';
     ComposeTemplateMutations,
     ExpressionDesignerQueries,
     ExpressionDesignerService,
+    FilterableFieldQueries,
     TemplateMutations,
     TemplateQueries,
     TemplateService,

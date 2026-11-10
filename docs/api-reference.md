@@ -1112,10 +1112,10 @@ definition snapshot rather than whatever version the template publishes today.
 |---|---|
 | Entities | `ApprovalTemplateEntity`, `ApprovalTemplateVersionEntity`, `ApprovalTemplateCategoryEntity` |
 | DTOs | `CreateApprovalTemplateInput`, `UpdateApprovalTemplateInput`, `UpdateApprovalTemplateDraftInput`, `CreateApprovalTemplateCategoryInput`, `UpdateApprovalTemplateCategoryInput`, `ComposeApprovalTemplateWithFormInput` |
-| Objects | `ComposeApprovalTemplateWithFormObject` (the client's result type is `ComposeApprovalTemplateWithFormResult`) |
+| Objects | `ComposeApprovalTemplateWithFormObject` (the client's result type is `ComposeApprovalTemplateWithFormResult`), `FilterableFieldIssueObject` (GraphQL `FilterableFieldIssue`, ADR 25; the result of the `filterableFieldIssues` query below) |
 | Functions | `parseWorkflowDefinitionJson()`, `lintWorkflowDefinition()`, `WorkflowDefinitionLintResult` (type), `EMPTY_WORKFLOW_DEFINITION` (unchanged, no dialect), `NEW_TEMPLATE_WORKFLOW_DEFINITION` (Phase 23 P4, not yet released: the same with `expressionDialect: 'cel-v2'`, what `createApprovalTemplate` now saves), `readUsagePointExpressions(definition, initiatorPolicyCel)` / `UsagePointExpression` / `ExpressionSource` (every expression of a definition with its label and use point) |
 | Designer expression tools (Phase 23 P4, not yet released) | `ExpressionDesignerService` and the `@BPMDesignerOnly()` queries `previewExpression(input: BPMPreviewExpressionInput)`, `expressionCatalog(input: BPMExpressionCatalogInput)`, `analyzeWorkflowExpressions(input: BPMWorkflowExpressionsInput)` and `previewWorkflowDialectUpgrade(input: BPMWorkflowExpressionsInput)`, registered in `TemplateModule`. They read the draft the designer sends (nothing is stored) and answer with `BPMExpressionPreview` / `BPMExpressionIssue` / `BPMExpressionEvaluation`, `BPMExpressionCatalog` / `BPMExpressionCatalogField` / `BPMExpressionCatalogFunction` / `BPMExpressionCatalogFunctionParameter`, `BPMWorkflowExpressions` / `BPMWorkflowExpressionAnalysis`, `BPMWorkflowDialectUpgradePreview` / `BPMWorkflowDialectDifference`. Their TypeScript export names (from `dto/expression-designer.dto.ts`): inputs `PreviewExpressionInput`, `ExpressionCatalogInput`, `WorkflowExpressionsInput`; objects `ExpressionPreviewObject`, `ExpressionIssueObject`, `ExpressionEvaluationObject`, `ExpressionCatalogObject`, `ExpressionCatalogFieldObject`, `ExpressionCatalogFunctionObject`, `ExpressionCatalogFunctionParameterObject`, `WorkflowExpressionsObject`, `WorkflowExpressionAnalysisObject`, `WorkflowDialectUpgradePreviewObject`, `WorkflowDialectDifferenceObject`; type `ExpressionPreviewMode`. Limits: `MAX_PREVIEW_EXPRESSION_LENGTH` (2 000), `MAX_PREVIEW_SAMPLE_CONTEXT_JSON_LENGTH` (8 192), `MAX_DESIGNER_WORKFLOW_DEFINITION_JSON_LENGTH` (1 MiB), `EXPRESSION_PREVIEW_MODES`; from `expression-designer.service.ts`: `MAX_DESIGNER_EXPRESSIONS` (500; a draft with more expressions is refused, not truncated), `DIALECT_UPGRADE_CHECK_TIME_LIMIT_MS` (2 000, the upgrade check's wall clock; past it the result is `complete: false`) and `EXPRESSION_PREVIEW_LABEL` (`'expression'`, the label preview findings carry). The catalog reads the host registry's `list()` in isolation: when it throws, `functionsAvailable` is `false` and only `code=EXPRESSION_CATALOG_UNAVAILABLE reason=registry` is logged. The upgrade check runs every expression through both engines (`runExpressionDifferential`) on a filled and an empty sample under a 2 s wall clock. `readLastDecisionIssues(expression, label, usagePoint, edgeSourceNodeType, dialect)` produces `EXPR_LAST_DECISION_UNAVAILABLE` |
-| Enums | `ApprovalTemplateListStatusEnum`, `ApprovalTemplateActivationStatusEnum`, `ApprovalTemplateCategoryStatusEnum`, `ApprovalTemplateVersionStatusEnum`, `BPMTemplateChangeActionEnum` |
+| Enums | `ApprovalTemplateListStatusEnum`, `ApprovalTemplateActivationStatusEnum`, `ApprovalTemplateCategoryStatusEnum`, `ApprovalTemplateVersionStatusEnum`, `BPMTemplateChangeActionEnum`, `FilterableFieldIssueKind` (GraphQL `FilterableFieldIssueKind`: `TYPE_CHANGED`, `INVALID_VALUES`; ADR 25) |
 | Service | `TemplateService` (injects `BPM_EXPRESSION_FUNCTION_REGISTRY` as `@Optional()`: publish checks every `cel-v2` function call through `assertPublishable`, falling back to the built-in names when no registry is bound; rollback checks only that the version's functions are still registered and does not lint again — not yet released) |
 | Token | `BPM_TEMPLATE_OBSERVER` + `BPMTemplateObserver` / `BPMTemplateChangedEvent` / `BPMTemplateChangeActionEnum` (host observes template changes, for audit) |
 | Module | `TemplateModule` |
@@ -1250,6 +1250,20 @@ audit sink must not be able to fail the mutation it observes.
 `rollbackApprovalTemplateVersion` now takes an optional trailing
 `rolledBackByMemberId`, supplied by the mutation from `@BPMCurrentMemberId()`,
 so the rollback event names an actor.
+
+**Filterable-field checks (ADR 25, not yet released).** Publishing a version (`publishApprovalTemplateVersion`, including the compose path) and rolling back (`rollbackApprovalTemplateVersion`) run `assertTemplateFilterableFieldsEnabled` on the version that becomes current. Any issue is a `ConflictException` (409) that lists each one: a type change against an older version that holds instances, or instance values that do not fit the type. The helpers are in `filterable-field-guard.ts`, which is not re-exported from the package index.
+
+The designer's read-only check is the `filterableFieldIssues` GraphQL query, guarded by `@BPMDesignerOnly()` (the answer names templates and instance ids):
+
+```graphql
+filterableFieldIssues(
+  templateId: ID            # both ids: only that template
+  formDefinitionId: ID      # only this id: every template on that form definition
+  schemaJson: String!       # the schema in the editor
+): [FilterableFieldIssue!]!
+```
+
+It returns `kind`, `path`, `label`, `fieldType`, `templateId`, `templateName`, `message`, `conflictVersionNumbers`, `invalidInstanceCount` and `sampleInstanceIds`. It blocks nothing, and it never returns stored values. Neither id given returns an empty list. `FilterableFieldQueries` is the resolver class; it is not exported from the package index, but the query is part of the schema.
 
 ## `@rytass/bpm-core-nestjs-module/workflow-engine`
 

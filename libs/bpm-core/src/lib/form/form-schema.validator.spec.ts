@@ -1735,4 +1735,177 @@ describe('form schema validator', () => {
       expect(result.errors).toContain('schema.fields[0].type is not supported');
     });
   });
+  describe('filterable fields (ADR 25 §5)', () => {
+    const layoutFor = (...fieldKeys: readonly string[]): string =>
+      JSON.stringify({
+        layout: fieldKeys.map((fieldKey) => ({ fieldKey, width: 'HALF' })),
+        schemaVersion: 1,
+      });
+
+    const tableLayout = JSON.stringify({
+      layout: [{ fieldKey: 'items', width: 'FULL' }],
+      schemaVersion: 1,
+    });
+
+    const lintOne = (field: Record<string, unknown>): readonly string[] =>
+      lintFormSchemaJson(
+        JSON.stringify({ fields: [field], schemaVersion: 1 }),
+        layoutFor(String(field['fieldKey'])),
+      ).errors;
+
+    it('accepts a filterable top-level field of each allowed type', (): void => {
+      const fields = [
+        { fieldKey: 'a', label: 'A', required: false, type: 'text' },
+        { fieldKey: 'b', label: 'B', required: false, type: 'textarea' },
+        { fieldKey: 'c', label: 'C', required: false, type: 'number' },
+        { fieldKey: 'd', label: 'D', required: false, type: 'money' },
+        { fieldKey: 'e', label: 'E', required: false, type: 'date' },
+        { fieldKey: 'f', label: 'F', required: false, type: 'datetime' },
+        { fieldKey: 'g', label: 'G', required: false, type: 'boolean' },
+        { fieldKey: 'h', label: 'H', required: false, type: 'org_unit' },
+        {
+          fieldKey: 'i',
+          label: 'I',
+          options: [{ label: 'X', value: 'x' }],
+          required: false,
+          type: 'select',
+        },
+      ].map((field) => ({ ...field, filterable: true }));
+
+      for (const field of fields) {
+        expect({ key: field.fieldKey, errors: lintOne(field) }).toEqual({
+          errors: [],
+          key: field.fieldKey,
+        });
+      }
+    });
+
+    it('rejects filterable on a top-level file_upload field (反向控制)', (): void => {
+      expect(
+        lintOne({
+          acceptedMimeTypes: ['application/pdf'],
+          fieldKey: 'receipt',
+          filterable: true,
+          label: 'Receipt',
+          required: false,
+          type: 'file_upload',
+        }),
+      ).toEqual([
+        'schema.fields[0].filterable 不支援 file_upload 型別的欄位',
+      ]);
+    });
+
+    it('rejects filterable on the table field itself', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              columns: [{ fieldKey: 'name', label: '品項', required: false, type: 'text' }],
+              fieldKey: 'items',
+              filterable: true,
+              label: '明細',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        tableLayout,
+      );
+
+      expect(result.errors).toEqual([
+        'schema.fields[0].filterable 不支援 table 型別的欄位',
+      ]);
+    });
+
+    it.each(['submittedAt', 'updatedAt', 'completedAt'])(
+      'rejects a filterable top-level field keyed %s, which sort uses',
+      (fieldKey): void => {
+        expect(
+          lintOne({
+            fieldKey,
+            filterable: true,
+            label: 'Time',
+            required: false,
+            type: 'datetime',
+          }),
+        ).toEqual([
+          `schema.fields[0].fieldKey 為保留字（${fieldKey}），不可宣告為可篩選欄位`,
+        ]);
+      },
+    );
+
+    it('accepts the same sort-time key when the field is not filterable (反向控制)', (): void => {
+      expect(
+        lintOne({
+          fieldKey: 'submittedAt',
+          filterable: false,
+          label: 'Time',
+          required: false,
+          type: 'datetime',
+        }),
+      ).toEqual([]);
+    });
+
+    it('rejects a non-boolean filterable flag', (): void => {
+      expect(
+        lintOne({
+          fieldKey: 'amount',
+          filterable: 'yes',
+          label: 'Amount',
+          required: false,
+          type: 'money',
+        }),
+      ).toEqual(['schema.fields[0].filterable 必須是布林值']);
+    });
+
+    it('accepts filterable table columns, of any column type', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              columns: [
+                { fieldKey: 'name', filterable: true, label: '品項', required: false, type: 'text' },
+                { fieldKey: 'qty', filterable: true, label: '數量', required: false, type: 'number' },
+                { fieldKey: 'price', filterable: true, label: '單價', required: false, type: 'money' },
+                { fieldKey: 'submittedAt', filterable: true, label: '時間', required: false, type: 'datetime' },
+              ],
+              fieldKey: 'items',
+              label: '明細',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        tableLayout,
+      );
+
+      expect(result.errors).toEqual([]);
+    });
+
+    it('rejects a filterable table column with a non-boolean flag', (): void => {
+      const result = lintFormSchemaJson(
+        JSON.stringify({
+          fields: [
+            {
+              columns: [
+                { fieldKey: 'qty', filterable: 1, label: '數量', required: false, type: 'number' },
+              ],
+              fieldKey: 'items',
+              label: '明細',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        }),
+        tableLayout,
+      );
+
+      expect(result.errors).toEqual([
+        'schema.fields[0].columns[0].filterable 必須是布林值',
+      ]);
+    });
+  });
 });

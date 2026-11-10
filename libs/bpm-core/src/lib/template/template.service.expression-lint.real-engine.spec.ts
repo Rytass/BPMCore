@@ -175,10 +175,18 @@ const createService = ({
     update: (): Promise<void> => Promise.resolve(),
   };
   const manager = {
-    getRepository: (target: unknown): ObjectLiteral =>
-      target === ApprovalTemplateEntity
-        ? { ...passThrough, findOne: () => Promise.resolve(template) }
-        : passThrough,
+    getRepository: (target: unknown): ObjectLiteral => {
+      if (target === ApprovalTemplateEntity) {
+        return { ...passThrough, findOne: () => Promise.resolve(template) };
+      }
+
+      if (target === FormDefinitionVersionEntity) {
+        // Rollback reads the target's form schema for the filterable-field check.
+        return { ...passThrough, findOne: () => Promise.resolve(formVersion) };
+      }
+
+      return passThrough;
+    },
   } as unknown as EntityManager;
 
   return new TemplateService(
