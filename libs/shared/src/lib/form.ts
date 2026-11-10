@@ -22,6 +22,13 @@ interface BaseFormFieldDefinition<TType extends string> {
   readonly description?: string;
   readonly fieldKey: string;
   /**
+   * 可篩選：列表查詢可依此欄位篩選（頂層欄位另可排序），見 ADR 25。勾選後此
+   * 欄位的 key 與型別在之後的版本不能再改，且值在每次寫入時都檢查型別
+   * （{@link checkFilterableFieldValue}）。可用型別見
+   * {@link isFilterableFieldType}；table 欄也可勾選。
+   */
+  readonly filterable?: boolean;
+  /**
    * 只存不顯示：值照存進 `form_data`，填寫、唯讀、重送畫面都不渲染；供宿主
    * 系統放技術欄位（單據編號、版本等）。不是權限邊界 — API 回傳的 `formData`
    * 仍包含這個值。條件（`visibleWhen` 等）仍可引用它；與 `visibleWhen` 同時

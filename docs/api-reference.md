@@ -2,7 +2,7 @@
 
 Canonical inventory of every export from every published BPMCore package. **This file is the contract.** Any change to a `libs/*/src/**` export — adding, removing, renaming, or changing the visibility of a symbol — must update this file in the same commit.
 
-Last verified against (2026-11-05): `libs/shared@0.19.0`, `libs/bpm-core-client@0.19.0`, `libs/bpm-core@0.19.0` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.19.0`. All four packages are one fixed version set, so these numbers move together.
+Last verified against (2026-11-11): `libs/shared@0.20.1`, `libs/bpm-core-client@0.20.1`, `libs/bpm-core@0.20.1` (`@rytass/bpm-core-nestjs-module`), `libs/bpm-core-react@0.20.1`. All four packages are one fixed version set, so these numbers move together.
 
 Versions are set by `nx release` at publish time. The numbers above are the last published ones, not the pending release.
 
@@ -334,6 +334,34 @@ Expression use points and lint codes (ADR 22, docs/24 §2.2–§2.3, Phase 23 P2
 | `formatExpressionLintIssue(issue)` / `parseExpressionLintLine(line)` / `ParsedExpressionLintLine` / `EXPRESSION_LINT_SUBJECT_PATTERN` | function / function / interface / const | The publish-lint line `<label>: <code>[ <subject>]` and its parser; a subject that is not an identifier is dropped, so a line never carries `'; '` |
 | `UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE` | const | `workflow.expressionDialect must be cel-legacy or cel-v2`, the line publish refuses an unknown dialect with |
 
+### Form field filters (root only, ADR 25)
+
+Approval-instance list filtering and sorting by form field, in `libs/shared/src/lib/form-filter.ts`, exported from the package root only (not yet released). The same functions decide every check: the write-time type check, the enable-time scan of old instances, the list query compiler and the designer's warnings.
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `FILTERABLE_FIELD_TYPES` / `FilterableFieldType` | const / type | Top-level types a designer may mark `filterable`: `autocomplete`, `boolean`, `checkbox`, `date`, `datetime`, `member`, `money`, `number`, `org_unit`, `radio`, `select`, `text`, `textarea`. `file_upload` and `table` are not allowed |
+| `FILTERABLE_TABLE_COLUMN_TYPES` | const | Table column types allowed to be `filterable`: every `TABLE_COLUMN_FIELD_TYPES` entry |
+| `isFilterableFieldType(type, placement?)` | function | Whether a type may be `filterable`; `placement` is `'top-level'` (default) or `'column'` |
+| `APPROVAL_INSTANCE_SORT_TIME_FIELDS` / `ApprovalInstanceSortTimeField` / `isApprovalInstanceSortTimeField()` | const / type / function | The sort keys that are not form fields: `submittedAt`, `updatedAt`, `completedAt`. A filterable fieldKey must not reuse one of them |
+| `APPROVAL_INSTANCE_FIELD_FILTER_OPERATORS` / `ApprovalInstanceFieldFilterOperator` | const / type | `EQUALS`, `NOT_EQUALS`, `IN`, `RANGE`, `CONTAINS` |
+| `readFilterOperatorsForFieldType(type)` | function | The operators a field type accepts (`textarea`: `CONTAINS` only; `boolean`: `EQUALS` only; date and datetime: no `IN`, no `CONTAINS`) |
+| `ApprovalInstanceFieldFilter` | interface | One condition: `fieldKey` (a top-level key, or `<tableKey>.<columnKey>`), `operator`, optional `values`, `from`, `to`. Values are strings |
+| `ApprovalInstanceSortDirection` / `ApprovalInstanceSort` | type / interface | `'ASC' \| 'DESC'`; a sort key with `field` and an optional `direction` |
+| `FilterableValueKind` / `readFilterableValueKind(type)` | type / function | How a stored value compares: `text`, `number` (also `money`), `date`, `datetime`, `boolean`, `option`, `member`, `org_unit`; `null` for a type that cannot be filtered |
+| `FilterableFieldPath` | interface | A filterable field or column as the list sees it: `path`, `tableKey`, `key`, `field`, `kind`, `label`, `staticOptions`, `usesOptionSnapshot` |
+| `readFilterableFieldPaths(schema)` | function | Every filterable field and column of a schema whose type allows it; a field marked with a disallowed type is skipped here (the lint reports it) |
+| `findFilterableFieldPath(schema, path)` | function | The `FilterableFieldPath` for one path, or `null` |
+| `isFilterableFieldSortable(path)` | function | Top-level and not `textarea`; table columns are never sortable |
+| `readFormFieldTypesByPath(schema)` | function | Type of every field and column by path, filterable or not; used for the history-type check |
+| `FilterableValueCheck` / `checkFilterableFieldValue(field, value)` | type / function | `empty`, `valid` or `invalid` (with `expected`) for one stored value. Missing and `null` are empty; `""` is empty for number, money, date, datetime and boolean; option and member fields accept a string or a string array |
+| `isCanonicalDate(value)` / `isCanonicalDateTime(value)` | function | `YYYY-MM-DD` (a real calendar date) / `YYYY-MM-DDTHH:mm:ss.sssZ` (the `Date#toISOString()` shape) |
+| `FilterableValueProblem` / `readFilterableValueProblems(paths, formData)` | interface / function | Every value in `formData` that does not fit a path, with the table row index when it is in a table |
+| `FilterableFieldIssue` | type | A reason a field cannot be enabled: `{ kind: 'TYPE_CHANGED', conflicts }` (an older version with instances stored another type) or `{ kind: 'INVALID_VALUES', invalidInstanceCount, samples }` |
+| `FILTERABLE_FIELD_ISSUE_SAMPLE_LIMIT` | const | 5: samples kept per issue (instance id, row index and expected type; never the stored value) |
+| `readFilterableFieldIssues({ schema, history, instances })` | function | The enable check as a pure function: the issues for the schema about to take effect, given older versions and the template's instances |
+| `describeFilterableFieldIssue(issue)` | function | The Chinese sentence for an issue, shared by the designer and the publish error. Stored values are never quoted in it, only instance ids and row numbers |
+
 ## `@rytass/bpm-core-shared/condition`
 
 Audit-condition evaluation context structures.
@@ -356,6 +384,7 @@ Form-schema definitions.
 |---|---|---|
 | `FormDefinitionSchema` | interface | Full form definition (fields + uiSchema) |
 | `FormFieldDefinition` | type | Union of all field-definition variants |
+| `BaseFormFieldDefinition.filterable` | property | `filterable?: boolean` (default off) on every field and table column definition, set by the form designer. A filterable field can be used in the approval-instance list's field filters, and a top-level one can be sorted on. Its key and type are locked once marked; values are type-checked on every write (ADR 25). Allowed types are in `FILTERABLE_FIELD_TYPES` and `FILTERABLE_TABLE_COLUMN_TYPES` (root). Not yet released |
 | `FormFieldValue` | type | Union of all field-value variants (cell value or table rows) |
 | `FormTableCellValue` | type | Primitive value contract for a flat field or a table cell |
 | `FormTableRowValue` | type | One table row: column key to cell value |
