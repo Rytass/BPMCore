@@ -7,7 +7,14 @@ import {
   useEffect,
   useState,
 } from 'react';
-import { Button, Input, Select, Textarea, Typography } from '@mezzanine-ui/react';
+import {
+  Button,
+  InlineMessage,
+  Input,
+  Select,
+  Textarea,
+  Typography,
+} from '@mezzanine-ui/react';
 import { PlusIcon, TrashIcon } from '@mezzanine-ui/icons';
 import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
 import {
@@ -101,6 +108,10 @@ export interface NotifyWebhookTargetsEditorProps {
   readonly targets: readonly NotifyWebhookTarget[];
 }
 
+/** Shown in place of the editor when the catalog has no usable endpoint. */
+export const NOTIFY_WEBHOOK_NO_ENDPOINTS_MESSAGE =
+  '目前沒有可用的 Webhook 端點，請洽 BPM 管理者或系統整合人員新增端點後再設定。';
+
 /**
  * Edits a NOTIFY node's webhook targets (ADR 18 §3.3). Parameters come from
  * the endpoint catalog, so the author only picks an endpoint and binds each
@@ -115,14 +126,26 @@ export function NotifyWebhookTargetsEditor({
 }: NotifyWebhookTargetsEditorProps): ReactElement | null {
   const activeEndpoints = catalog.filter((endpoint) => !endpoint.deprecated);
 
-  // A host without webhook endpoints never sees the section; a draft that
-  // already has targets keeps it, so they can still be read and removed.
-  if (
-    !targets.length &&
-    (catalogState === 'unavailable' ||
-      (catalogState === 'ready' && !activeEndpoints.length))
-  ) {
+  // A catalog that could not be loaded (a host without the webhook module,
+  // or a member the query refuses) hides the section. A draft that already
+  // has targets keeps it either way, so they can still be read and removed.
+  if (!targets.length && catalogState === 'unavailable') {
     return null;
+  }
+
+  // Loaded but empty: say so, rather than hiding the feature from an author
+  // who is looking for it. Endpoints come from the host's code or its back
+  // office, neither of which this lib can name, so the hint stays generic.
+  if (!targets.length && catalogState === 'ready' && !activeEndpoints.length) {
+    return (
+      <div style={EDITOR_STYLE}>
+        <Typography variant="label-primary-highlight">Webhook</Typography>
+        <InlineMessage
+          content={NOTIFY_WEBHOOK_NO_ENDPOINTS_MESSAGE}
+          severity="info"
+        />
+      </div>
+    );
   }
 
   function replaceTarget(index: number, next: NotifyWebhookTarget): void {
