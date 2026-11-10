@@ -75,6 +75,16 @@ jobs:
         with:
           credentials_json: ${{ secrets.GAR_JSON_KEY }}
       - uses: google-github-actions/setup-gcloud@v3
+      # Writes a kubeconfig holding a short-lived access token. `gcloud
+      # container clusters get-credentials` instead makes every kubectl call
+      # exec `gke-gcloud-auth-plugin` → `gcloud config config-helper`, which
+      # the latest gcloud crashes on with these credentials
+      # ("'Credentials' object has no attribute 'private_key_id'").
+      - uses: google-github-actions/get-gke-credentials@v3
+        with:
+          cluster_name: rytass-cluster
+          location: asia-east1
+          project_id: develop-server
       - name: Update GKE
         env:
           IMAGE_TAG: ${{ needs.tagging.outputs.tag }}
@@ -82,7 +92,6 @@ jobs:
           CLIENT_IMAGE: asia-east1-docker.pkg.dev/develop-server/bpm-core/client
         run: |-
           gcloud components install kubectl
-          gcloud container clusters get-credentials rytass-cluster --region asia-east1 --project develop-server
           sed -i "s|bpm-core/api:v0.0.0|bpm-core/api:$IMAGE_TAG|g" tools/deployment-staging.yml
           sed -i "s|bpm-core/client:v0.0.0|bpm-core/client:$IMAGE_TAG|g" tools/deployment-staging.yml
           kubectl apply -f tools/deployment-staging.yml
