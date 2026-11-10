@@ -4,7 +4,7 @@ How to embed `@rytass/bpm-core-react` into a host application that owns
 its own navigation chrome.
 
 > Audience: teams adopting BPMCore inside an existing admin console
-> (Shuttle, internal back-office, etc.) where there is already a
+> (an ERP, an internal back-office, etc.) where there is already a
 > sidebar, top bar, brand header, or design system that BPM views need
 > to live inside.
 

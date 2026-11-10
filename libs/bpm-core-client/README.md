@@ -320,7 +320,7 @@ to reset to the environment-based defaults.
 import { configureBPMClient } from '@rytass/bpm-core-client';
 
 configureBPMClient({
-  baseUrl: 'https://api.shuttle.example.com',
+  baseUrl: 'https://api.host.example.com',
   // Optional: inject your own fetch (e.g. node-fetch) or default headers.
   fetch: globalThis.fetch,
   headers: { 'X-Service-Token': process.env.BPM_SYNC_TOKEN ?? '' },

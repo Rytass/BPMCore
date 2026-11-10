@@ -456,7 +456,7 @@ must handle refresh, which means you actually want Pattern 1.
 
 ### Coexisting with a host's existing `<AuthProvider>`
 
-Many host applications (Shuttle, custom admin panels) already mount
+Many host applications (ERPs, custom admin panels) already mount
 their own `<AuthProvider>` at the root of the Next.js tree. BPM's
 `<AuthProvider>` (mounted indirectly via `<BPMNextProviders>`) is a
 **separate context** that only tracks BPM session state. The two do
@@ -1234,7 +1234,7 @@ Required environment variables for direct Vault loading:
 ### Sharing a Postgres cluster with the host
 
 Hosts that already run their own Postgres (and their own Vault path, e.g.
-`shuttle/develop`) need to decide where BPM's 25 tables live.
+`host-app/develop`) need to decide where BPM's 25 tables live.
 
 BPM has no connection-name option. Its repositories bind to the **default**
 TypeORM DataSource of the Nest application, and `BPMRootModule` has no
@@ -1266,13 +1266,13 @@ A dedicated BPM application wires its DataSource from its own Vault path:
 export class BPMApplicationModule {}
 ```
 
-If the host runs only one Vault path (e.g. `shuttle/develop`) and you
+If the host runs only one Vault path (e.g. `host-app/develop`) and you
 want to keep secrets there, expose `bpm_core/*` keys under the host
 path with a prefix and provide a custom factory that reads them — BPM
 doesn't require its own Vault path, only that the secrets are
 available to `buildTypeOrmModuleOptions`.
 
-Vault paths can be split independently: keep `shuttle/develop` for the
+Vault paths can be split independently: keep `host-app/develop` for the
 host and create `bpm_core/develop` for BPM secrets. BPM's helper reads
 its own path; the host's auth module reads its own. They do not
 interfere.

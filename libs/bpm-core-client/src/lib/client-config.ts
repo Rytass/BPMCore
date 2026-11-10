@@ -60,7 +60,7 @@ let currentConfig: BPMClientConfig = {};
  * import { configureBPMClient } from '@rytass/bpm-core-client';
  *
  * configureBPMClient({
- *   baseUrl: 'https://api.shuttle.example.com',
+ *   baseUrl: 'https://api.host.example.com',
  *   headers: { 'X-Service-Token': process.env.BPM_SYNC_TOKEN ?? '' },
  * });
  * ```

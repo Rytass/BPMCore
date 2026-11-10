@@ -233,7 +233,7 @@ mounted, provided the backend module is up to date. The standalone
 
 ### Mounting BPM under a non-root URL prefix
 
-If your host already owns the `/` namespace (Shuttle, an existing
+If your host already owns the `/` namespace (an ERP, an existing
 admin console, etc.), wrap the BPM tree in `<BPMRoutesProvider>` and
 override every internal cross-link to a prefixed path. The full
 `BPMRoutes` contract has **19 entries** — overriding only some leaves

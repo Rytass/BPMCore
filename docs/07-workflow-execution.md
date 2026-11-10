@@ -426,7 +426,7 @@ async function resolveApprovers(
     回 `ForbiddenException`：`簽核節點「{label}」需由職等 {N} 以上的成員簽核，不能轉簽給職等不足的成員`
     （`N` 為被取代者的職等）。臨時加簽／會簽的任務不受影響。
   - **SLA 升級（`ESCALATE`）不在此限**：它帶 `transferReason`，與 §4.4 的申請人轉交檢查相同，不經過這個檢查
-    （Shuttle 等宿主沒有開啟 SLA 排程）。
+    （部分宿主沒有開啟 SLA 排程）。
 
 #### 4.1.2 無主管時的改派（`fallback`）
 
