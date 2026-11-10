@@ -22,6 +22,12 @@ import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { ApprovalInstancePageInfoObject } from './approval-instance-page-info.object';
+import { ApprovalInstanceFieldFilterInput } from './dto/approval-instance-field-filter.input';
+import { ApprovalInstanceSortInput } from './dto/approval-instance-sort.input';
+import {
+  toApprovalInstanceFieldFilters,
+  toApprovalInstanceSorts,
+} from './dto/approval-instance-list-args';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
@@ -62,14 +68,23 @@ export class WorkflowEngineQueries {
     page: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
     pageSize: number | null,
+    @Args('fieldFilters', {
+      nullable: true,
+      type: () => [ApprovalInstanceFieldFilterInput],
+    })
+    fieldFilters: readonly ApprovalInstanceFieldFilterInput[] | null,
+    @Args('sort', { nullable: true, type: () => [ApprovalInstanceSortInput] })
+    sort: readonly ApprovalInstanceSortInput[] | null,
     @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<readonly ApprovalInstanceEntity[]> {
     return this.workflowEngineService.listApprovalInstances(
       currentAuthContext,
       {
+        fieldFilters: toApprovalInstanceFieldFilters(fieldFilters),
         page: page ?? undefined,
         pageSize: pageSize ?? undefined,
         searchText: searchText ?? undefined,
+        sort: toApprovalInstanceSorts(sort),
         state: state ?? undefined,
         templateId: templateId ?? undefined,
         view: view ?? undefined,
@@ -93,11 +108,17 @@ export class WorkflowEngineQueries {
     state: readonly ApprovalInstanceStateEnum[] | null,
     @Args('templateId', { nullable: true, type: () => String })
     templateId: string | null,
+    @Args('fieldFilters', {
+      nullable: true,
+      type: () => [ApprovalInstanceFieldFilterInput],
+    })
+    fieldFilters: readonly ApprovalInstanceFieldFilterInput[] | null,
     @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<number> {
     return this.workflowEngineService.countApprovalInstances(
       currentAuthContext,
       {
+        fieldFilters: toApprovalInstanceFieldFilters(fieldFilters),
         searchText: searchText ?? undefined,
         state: state ?? undefined,
         templateId: templateId ?? undefined,
@@ -126,14 +147,23 @@ export class WorkflowEngineQueries {
     page: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
     pageSize: number | null,
+    @Args('fieldFilters', {
+      nullable: true,
+      type: () => [ApprovalInstanceFieldFilterInput],
+    })
+    fieldFilters: readonly ApprovalInstanceFieldFilterInput[] | null,
+    @Args('sort', { nullable: true, type: () => [ApprovalInstanceSortInput] })
+    sort: readonly ApprovalInstanceSortInput[] | null,
     @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<ApprovalInstancePageInfoObject> {
     return this.workflowEngineService.readApprovalInstancePageInfo(
       currentAuthContext,
       {
+        fieldFilters: toApprovalInstanceFieldFilters(fieldFilters),
         page: page ?? undefined,
         pageSize: pageSize ?? undefined,
         searchText: searchText ?? undefined,
+        sort: toApprovalInstanceSorts(sort),
         state: state ?? undefined,
         templateId: templateId ?? undefined,
         view: view ?? undefined,

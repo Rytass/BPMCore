@@ -30,6 +30,7 @@ import { ApprovalInstanceSubmittedBy0000000027000 } from './0000000027000-approv
 import { NotificationUpdatedAt0000000028000 } from './0000000028000-notification-updated-at';
 import { ActivityLogSeq0000000029000 } from './0000000029000-activity-log-seq';
 import { DelegationScopeConditionDialect0000000030000 } from './0000000030000-delegation-scope-condition-dialect';
+import { ApprovalInstanceFormDataGin0000000031000 } from './0000000031000-approval-instance-form-data-gin';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -63,6 +64,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   NotificationUpdatedAt0000000028000,
   ActivityLogSeq0000000029000,
   DelegationScopeConditionDialect0000000030000,
+  ApprovalInstanceFormDataGin0000000031000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -96,3 +98,4 @@ export * from './0000000027000-approval-instance-submitted-by';
 export * from './0000000028000-notification-updated-at';
 export * from './0000000029000-activity-log-seq';
 export * from './0000000030000-delegation-scope-condition-dialect';
+export * from './0000000031000-approval-instance-form-data-gin';

@@ -7,6 +7,11 @@ import {
   readApproverFilledFieldKeys,
   readNodeFillableFieldKeys,
   readNodeRequiredFieldKeys,
+  readFilterableFieldPaths,
+  readFilterableValueProblems,
+  type ApprovalInstanceFieldFilter,
+  type ApprovalInstanceSort,
+  isApprovalInstanceSortTimeField,
 } from '@rytass/bpm-core-shared';
 import {
   FORM_TABLE_MAX_ROWS,
@@ -125,6 +130,13 @@ import {
 } from './adhoc.enums';
 import { AdhocTargetInput } from './dto/adhoc-target.input';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import {
+  ApprovalInstanceFieldFilterCompiler,
+  readStaticOptionsByPath,
+  type CompiledApprovalInstanceFieldFilters,
+  type CompiledApprovalInstanceOrder,
+} from './approval-instance-field-filter.compiler';
+import { ApprovalInstanceFilterableFieldPolicy } from './approval-instance-filterable-field.policy';
 import {
   createTimedTextFieldPatternTest,
   TextFieldPatternTimeoutError,
@@ -565,13 +577,22 @@ interface AdhocOperationContext {
   readonly task: TaskEntity;
 }
 
-interface ListApprovalInstancesOptions {
+export interface ListApprovalInstancesOptions {
+  /** ADR 25 §7: conditions on form fields. Needs `templateId` when not empty. */
+  readonly fieldFilters?: readonly ApprovalInstanceFieldFilter[];
   readonly page?: number;
   readonly pageSize?: number;
   readonly searchText?: string;
+  /** ADR 25 §7.5: sort keys in order; the list always ends with `id`. */
+  readonly sort?: readonly ApprovalInstanceSort[];
   readonly state?: readonly ApprovalInstanceStateEnum[];
   readonly templateId?: string;
   readonly view?: ApprovalInstanceListViewEnum;
+}
+
+interface FilteredApprovalInstanceQuery {
+  readonly orderBy: readonly CompiledApprovalInstanceOrder[];
+  readonly queryBuilder: SelectQueryBuilder<ApprovalInstanceEntity>;
 }
 
 interface WorkflowDashboardSummaryOptions {
@@ -598,6 +619,10 @@ const WORKFLOW_READ_ALL_PERMISSIONS = new Set([
 @Injectable()
 export class WorkflowEngineService {
   private readonly logger = new Logger(WorkflowEngineService.name);
+  private readonly approvalInstanceFieldFilterCompiler =
+    new ApprovalInstanceFieldFilterCompiler();
+  private readonly approvalInstanceFilterableFieldPolicy =
+    new ApprovalInstanceFilterableFieldPolicy();
 
   constructor(
     @InjectRepository(ApprovalInstanceEntity)
@@ -819,6 +844,9 @@ export class WorkflowEngineService {
     validateSubmittedFormData(formDefinitionVersion.schema, formData, {
       deferredFieldKeys,
     });
+    // The version an instance starts on is the template's current one, so
+    // its own schema already holds the filterable fields in force.
+    assertFilterableFormDataValues(formDefinitionVersion.schema, formData);
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
         authContext: authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
@@ -1064,6 +1092,10 @@ export class WorkflowEngineService {
           )
         : submittedFormData;
     validateSubmittedFormData(schema, formData, { deferredFieldKeys });
+    await this.assertCurrentFilterableFormDataValues(
+      instance.templateId,
+      formData,
+    );
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
         authContext,
@@ -1431,6 +1463,12 @@ export class WorkflowEngineService {
         }
 
         if (filledFormData !== null && changedFieldKeys.length > 0) {
+          await this.assertCurrentFilterableFormDataValues(
+            instance.templateId,
+            mergedFormData,
+            manager,
+          );
+
           // Merged into the shared `instance` before it is signed and before
           // the token moves on: the signature must cover the filled values, a
           // gateway after this node must route on them, and an end node saves
@@ -1958,6 +1996,11 @@ export class WorkflowEngineService {
         validateSubmittedFormData(resubmitSchema, formData, {
           deferredFieldKeys,
         });
+        await this.assertCurrentFilterableFormDataValues(
+          instance.templateId,
+          formData,
+          manager,
+        );
 
         if (!preparation) {
           assertNoUnresolvableDynamicValues(resubmitSchema, formData);
@@ -3733,25 +3776,85 @@ export class WorkflowEngineService {
     return instance;
   }
 
+  /**
+   * ADR 25 §6: a value written to a filterable field must fit its type, on
+   * every path that writes form data. The fields checked are the ones the
+   * template's *current* version marks filterable, not the instance's own
+   * snapshot: an older instance can be re-filled, resubmitted or written by a
+   * service task after a newer version enabled filtering on a field, and the
+   * enable check (ADR 25 §5.4) guarantees the type is the same in every version
+   * that holds instances, so the current definition judges the old value too.
+   */
+  private async assertCurrentFilterableFormDataValues(
+    templateId: string,
+    formData: Readonly<Record<string, unknown>>,
+    manager?: EntityManager,
+    serviceNodeLabel?: string,
+  ): Promise<void> {
+    const schema = await this.readCurrentFormSchema(templateId, manager);
+
+    assertFilterableFormDataValues(schema, formData, serviceNodeLabel);
+  }
+
+  /** The form schema of the template's current version, or `null` when there is none. */
+  private async readCurrentFormSchema(
+    templateId: string,
+    manager?: EntityManager,
+  ): Promise<FormDefinitionSchema | null> {
+    const templates = manager
+      ? manager.getRepository(ApprovalTemplateEntity)
+      : this.approvalTemplateRepository;
+    const template = await templates.findOne({ where: { id: templateId } });
+
+    if (!template?.currentVersionId) {
+      return null;
+    }
+
+    const versions = manager
+      ? manager.getRepository(ApprovalTemplateVersionEntity)
+      : this.approvalTemplateVersionRepository;
+    const version = await versions.findOne({
+      where: { id: template.currentVersionId },
+    });
+
+    if (!version?.formDefinitionVersionId) {
+      return null;
+    }
+
+    const formVersions = manager
+      ? manager.getRepository(FormDefinitionVersionEntity)
+      : this.formDefinitionVersionRepository;
+    const formVersion = await formVersions.findOne({
+      where: { id: version.formDefinitionVersionId },
+    });
+
+    return formVersion?.schema ?? null;
+  }
+
   async listApprovalInstances(
     scope?: WorkflowReadScope,
     options: ListApprovalInstancesOptions = {},
   ): Promise<readonly ApprovalInstanceEntity[]> {
-    const queryBuilder = await this.createFilteredApprovalInstanceQueryBuilder(
-      scope,
-      options,
-    );
+    const query = await this.createFilteredApprovalInstanceQuery(scope, options);
 
-    if (!queryBuilder) {
+    if (!query) {
       return [];
     }
 
-    queryBuilder.orderBy('"approvalInstance"."created_at"', 'DESC');
+    const { orderBy, queryBuilder } = query;
+
+    orderBy.forEach((order, index): void => {
+      if (index === 0) {
+        queryBuilder.orderBy(order.sql, order.direction);
+      } else {
+        queryBuilder.addOrderBy(order.sql, order.direction);
+      }
+    });
 
     if (shouldPaginateList(options)) {
       queryBuilder
-        .skip(readPageOffset(options.page, options.pageSize))
-        .take(normalizePageSize(options.pageSize));
+        .offset(readPageOffset(options.page, options.pageSize))
+        .limit(normalizePageSize(options.pageSize));
     }
 
     return queryBuilder.getMany();
@@ -3759,14 +3862,11 @@ export class WorkflowEngineService {
 
   async countApprovalInstances(
     scope?: WorkflowReadScope,
-    options: Omit<ListApprovalInstancesOptions, 'page' | 'pageSize'> = {},
+    options: Omit<ListApprovalInstancesOptions, 'page' | 'pageSize' | 'sort'> = {},
   ): Promise<number> {
-    const queryBuilder = await this.createFilteredApprovalInstanceQueryBuilder(
-      scope,
-      options,
-    );
+    const query = await this.createFilteredApprovalInstanceQuery(scope, options);
 
-    return queryBuilder ? queryBuilder.getCount() : 0;
+    return query ? query.queryBuilder.getCount() : 0;
   }
 
   async readApprovalInstancePageInfo(
@@ -3795,10 +3895,10 @@ export class WorkflowEngineService {
     };
   }
 
-  private async createFilteredApprovalInstanceQueryBuilder(
+  private async createFilteredApprovalInstanceQuery(
     scope?: WorkflowReadScope,
-    options: Omit<ListApprovalInstancesOptions, 'page' | 'pageSize'> = {},
-  ): Promise<SelectQueryBuilder<ApprovalInstanceEntity> | null> {
+    options: ListApprovalInstancesOptions = {},
+  ): Promise<FilteredApprovalInstanceQuery | null> {
     const queryBuilder =
       this.approvalInstanceRepository.createQueryBuilder('approvalInstance');
     const hasReadableInstances = this.applyReadableInstanceFilter(
@@ -3827,7 +3927,106 @@ export class WorkflowEngineService {
 
     applyApprovalInstanceSearchFilter(queryBuilder, options.searchText);
 
-    return queryBuilder;
+    const compiled = await this.compileApprovalInstanceFieldQuery(
+      scope,
+      templateId,
+      options,
+    );
+
+    compiled.conditions.forEach((condition): void => {
+      queryBuilder.andWhere(condition.sql, condition.parameters);
+    });
+    queryBuilder.setParameters(
+      compiled.orderBy.reduce<Readonly<Record<string, unknown>>>(
+        (all, order) => ({ ...all, ...order.parameters }),
+        {},
+      ),
+    );
+
+    return { orderBy: compiled.orderBy, queryBuilder };
+  }
+
+  /**
+   * The WHERE conditions and sort keys of the field filters and sort on the
+   * approval-instance list (ADR 25 §7). The template's current schema is read,
+   * and the static option lists of every version holding instances, only when
+   * a condition or a non-time sort key needs them.
+   */
+  private async compileApprovalInstanceFieldQuery(
+    scope: WorkflowReadScope | undefined,
+    templateId: string | null,
+    options: ListApprovalInstancesOptions,
+  ): Promise<CompiledApprovalInstanceFieldFilters> {
+    const fieldFilters = options.fieldFilters ?? [];
+    const sort = options.sort ?? [];
+    const needsSchema =
+      fieldFilters.length > 0 ||
+      sort.some((item) => !isApprovalInstanceSortTimeField(item.field));
+
+    if (needsSchema && !templateId) {
+      throw new BadRequestException('篩選或排序表單欄位時需要指定簽核範本');
+    }
+
+    const schema =
+      needsSchema && templateId
+        ? await this.readCurrentFormSchema(templateId)
+        : null;
+    // Only a name search (CONTAINS) reads option names; other conditions and
+    // sort keys need the current schema alone.
+    const needsOptionNames = fieldFilters.some(
+      (filter) => filter.operator === 'CONTAINS',
+    );
+    const staticOptionsByPath =
+      needsOptionNames && templateId
+        ? await this.readStaticOptionsByPathForTemplate(templateId, schema)
+        : readStaticOptionsByPath([]);
+
+    return this.approvalInstanceFieldFilterCompiler.compile({
+      alias: 'approvalInstance',
+      fieldFilters,
+      paths: this.approvalInstanceFilterableFieldPolicy.readFilterableFieldPaths(
+        scope,
+        schema,
+      ),
+      sort,
+      staticOptionsByPath,
+    });
+  }
+
+  /**
+   * Static option lists by field path, across the current schema and the form
+   * version of every template version that holds instances (ADR 25 §7.3): a
+   * CONTAINS on a retired option still matches its name.
+   */
+  private async readStaticOptionsByPathForTemplate(
+    templateId: string,
+    currentSchema: FormDefinitionSchema | null,
+  ): Promise<ReturnType<typeof readStaticOptionsByPath>> {
+    const held = await this.approvalInstanceRepository
+      .createQueryBuilder('approvalInstance')
+      .select('DISTINCT "approvalInstance"."template_version_id"', 'id')
+      .where('"approvalInstance"."template_id" = :templateId', { templateId })
+      .getRawMany<{ readonly id: string }>();
+    const templateVersions =
+      held.length === 0
+        ? []
+        : await this.approvalTemplateVersionRepository.find({
+            where: { id: In(held.map((row) => row.id)) },
+          });
+    const formVersionIds = templateVersions
+      .map((version) => version.formDefinitionVersionId)
+      .filter((id): id is string => id !== null);
+    const formVersions =
+      formVersionIds.length === 0
+        ? []
+        : await this.formDefinitionVersionRepository.find({
+            where: { id: In(formVersionIds) },
+          });
+
+    return readStaticOptionsByPath([
+      currentSchema,
+      ...formVersions.map((version) => version.schema),
+    ]);
   }
 
   private applyReadableInstanceFilter(
@@ -8132,6 +8331,13 @@ export class WorkflowEngineService {
         action.fieldPath,
         value,
       );
+
+      await this.assertCurrentFilterableFormDataValues(
+        instance.templateId,
+        updatedFormData,
+        manager,
+        node.data.label,
+      );
       // A service task runs inside this transaction, so it cannot call a host
       // provider to re-resolve the label. Rather than leave the previous
       // option snapshot describing a value that no longer exists, drop it: the
@@ -8833,6 +9039,40 @@ function readDataSourceFieldKeyAtPath(
   );
 
   return field && isFormDataSourceFieldDefinition(field) ? field.fieldKey : null;
+}
+
+/**
+ * Refuses form data whose filterable fields hold a value of the wrong type
+ * (ADR 25 §6). The list query reads these values with type guards, so a wrong
+ * value would silently fall out of every filter; refusing the write is what
+ * keeps filter results trustworthy.
+ */
+function assertFilterableFormDataValues(
+  schema: FormDefinitionSchema | null,
+  formData: Readonly<Record<string, unknown>>,
+  serviceNodeLabel?: string,
+): void {
+  const problems = readFilterableValueProblems(
+    readFilterableFieldPaths(schema),
+    formData,
+  );
+
+  if (problems.length === 0) {
+    return;
+  }
+
+  const details = problems
+    .map(
+      (problem) =>
+        `formData.${problem.rowIndex === null ? problem.path : problem.path.replace('.', `[${problem.rowIndex}].`)} must be ${problem.expected}`,
+    )
+    .join('; ');
+
+  throw new BadRequestException(
+    serviceNodeLabel
+      ? `系統節點「${serviceNodeLabel}」要寫入的表單值不符合可篩選欄位的型別（${details}），這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`
+      : `可篩選欄位的值型別不正確：${details}`,
+  );
 }
 
 /**

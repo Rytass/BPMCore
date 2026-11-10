@@ -1547,6 +1547,7 @@ describe('WorkflowEngineService', () => {
     ): ServiceFixture =>
       createServiceFixture({
         currentVersionId: 'template-version-1',
+        formSchema: options.formSchema,
         decisionTask: createTask({
           nodeId: 'task_finance',
           status: TaskStatusEnum.PENDING,
@@ -1608,6 +1609,43 @@ describe('WorkflowEngineService', () => {
       fixture.savedSingleActivityLogs
         .filter((log) => log.eventType === ActivityLogEventTypeEnum.TASK_CREATED)
         .map((log) => log.nodeId ?? '');
+
+    it('refuses a decision fill whose filterable value has the wrong type', async (): Promise<void> => {
+      const baseSchema = createFinanceTableFormSchema();
+      const formSchema: FormDefinitionSchema = {
+        ...baseSchema,
+        fields: [
+          ...baseSchema.fields,
+          {
+            fieldKey: 'reviewScore',
+            filterable: true,
+            label: '評分',
+            required: false,
+            type: 'number',
+          },
+        ],
+      };
+      const fixture = createDecideFixture({
+        formData: { amount: 10 },
+        formSchema,
+        workflow: createFieldAccessWorkflow({
+          financeFieldAccess: [
+            { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+            { display: 'SHOW', fieldKey: 'reviewScore', fill: 'OPTIONAL' },
+          ],
+        }),
+      });
+
+      await expectRejection(
+        decide(fixture, {
+          formDataJson:
+            '{"reviewScore":"ten","financeItems":[{"seq":1,"taxAmount":5}]}',
+        }),
+        BadRequestException,
+        '可篩選欄位的值型別不正確：formData.reviewScore must be number',
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
 
     it('stores filled values when the filling node approves', async (): Promise<void> => {
       const fixture = createDecideFixture();
@@ -4853,6 +4891,41 @@ describe('WorkflowEngineService', () => {
           action: 'SET_FORM_FIELD',
           clearedOptionSnapshot: 'costCenter',
         }),
+      }),
+    );
+  });
+
+  it('refuses a set-form-field value of the wrong type for a filterable field', async (): Promise<void> => {
+    const levelSchema = createApprovalLevelFormSchema({});
+    const filterableSchema: FormDefinitionSchema = {
+      ...levelSchema,
+      fields: levelSchema.fields.map((field) =>
+        field.fieldKey === 'amount' ? { ...field, filterable: true } : field,
+      ),
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: filterableSchema,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processFormDefinitionSnapshot: { schema: filterableSchema },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.amount',
+        value: '"很多"',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
+      new BadRequestException(
+        '系統節點「設定簽核層級」要寫入的表單值不符合可篩選欄位的型別' +
+          '（formData.amount must be number），' +
+          '這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值',
+      ),
+    );
+    expect(fixture.savedSingleActivityLogs).not.toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ action: 'SET_FORM_FIELD' }),
       }),
     );
   });
@@ -11692,10 +11765,51 @@ describe('WorkflowEngineService', () => {
       totalCount: 2,
       totalPages: 2,
     });
-    expect(fixture.rootInstanceQueryBuilder.skip).toHaveBeenCalledWith(0);
-    expect(fixture.rootInstanceQueryBuilder.take).toHaveBeenCalledWith(1);
+    expect(fixture.rootInstanceQueryBuilder.offset).toHaveBeenCalledWith(0);
+    expect(fixture.rootInstanceQueryBuilder.limit).toHaveBeenCalledWith(1);
+    expect(fixture.rootInstanceQueryBuilder.orderBy).toHaveBeenCalledWith(
+      '"approvalInstance"."created_at"',
+      'DESC',
+    );
+    expect(fixture.rootInstanceQueryBuilder.addOrderBy).toHaveBeenCalledWith(
+      '"approvalInstance"."id"',
+      'DESC',
+    );
     expect(fixture.rootInstanceQueryBuilder.getMany).toHaveBeenCalledTimes(1);
     expect(fixture.rootInstanceCount).toHaveBeenCalledTimes(2);
+  });
+
+  it('maps a time sort onto its column and refuses a field filter or form sort without a template', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    fixture.rootInstanceFind.mockResolvedValue([]);
+
+    await expect(
+      fixture.service.listApprovalInstances(undefined, {
+        sort: [{ direction: 'ASC', field: 'submittedAt' }],
+      }),
+    ).resolves.toEqual([]);
+    expect(fixture.rootInstanceQueryBuilder.orderBy).toHaveBeenCalledWith(
+      '"approvalInstance"."started_at"',
+      'ASC',
+    );
+
+    await expect(
+      fixture.service.listApprovalInstances(undefined, {
+        fieldFilters: [
+          { fieldKey: 'reason', operator: 'EQUALS', values: ['採購'] },
+        ],
+      }),
+    ).rejects.toThrow('篩選或排序表單欄位時需要指定簽核範本');
+    await expect(
+      fixture.service.listApprovalInstances(undefined, {
+        sort: [{ field: 'reason' }],
+      }),
+    ).rejects.toThrow('篩選或排序表單欄位時需要指定簽核範本');
   });
 
   it('filters readable approval instances with SQL EXISTS conditions instead of loading readable id lists', async (): Promise<void> => {
@@ -18215,8 +18329,16 @@ interface ApprovalInstanceQueryBuilderMock {
     ApprovalInstanceQueryBuilderMock,
     [string, 'ASC' | 'DESC']
   >;
-  readonly skip: jest.Mock<ApprovalInstanceQueryBuilderMock, [number]>;
-  readonly take: jest.Mock<ApprovalInstanceQueryBuilderMock, [number]>;
+  readonly addOrderBy: jest.Mock<
+    ApprovalInstanceQueryBuilderMock,
+    [string, 'ASC' | 'DESC']
+  >;
+  readonly limit: jest.Mock<ApprovalInstanceQueryBuilderMock, [number]>;
+  readonly offset: jest.Mock<ApprovalInstanceQueryBuilderMock, [number]>;
+  readonly setParameters: jest.Mock<
+    ApprovalInstanceQueryBuilderMock,
+    [Readonly<Record<string, unknown>>]
+  >;
 }
 
 interface OrgUnitQueryBuilderMock {
@@ -19239,7 +19361,23 @@ function createServiceFixture({
         return transactionalWebhookDeliveryRepository;
       }
 
-      return createRepository<ObjectLiteral>({});
+      // The write checks read the current form schema inside the transaction,
+      // so they see the same template chain as the fixture's direct repositories.
+      if (target === ApprovalTemplateEntity) {
+        return templateRepository;
+      }
+
+      if (target === ApprovalTemplateVersionEntity) {
+        return templateVersionRepository;
+      }
+
+      if (target === FormDefinitionVersionEntity) {
+        return formVersionRepository;
+      }
+
+      return createRepository<ObjectLiteral>({
+        findOne: (): Promise<null> => Promise.resolve(null),
+      });
     }),
     query: managerQuery,
   };
@@ -19256,7 +19394,9 @@ function createServiceFixture({
           return transactionalMembershipRepository;
         }
 
-        return createRepository<ObjectLiteral>({});
+        return createRepository<ObjectLiteral>({
+          findOne: (): Promise<null> => Promise.resolve(null),
+        });
       }),
       transaction,
     },
@@ -19415,12 +19555,20 @@ function createApprovalInstanceQueryBuilderMock(
       ApprovalInstanceQueryBuilderMock,
       [string, 'ASC' | 'DESC']
     >((): ApprovalInstanceQueryBuilderMock => queryBuilder),
-    skip: jest.fn<ApprovalInstanceQueryBuilderMock, [number]>(
+    addOrderBy: jest.fn<
+      ApprovalInstanceQueryBuilderMock,
+      [string, 'ASC' | 'DESC']
+    >((): ApprovalInstanceQueryBuilderMock => queryBuilder),
+    limit: jest.fn<ApprovalInstanceQueryBuilderMock, [number]>(
       (): ApprovalInstanceQueryBuilderMock => queryBuilder,
     ),
-    take: jest.fn<ApprovalInstanceQueryBuilderMock, [number]>(
+    offset: jest.fn<ApprovalInstanceQueryBuilderMock, [number]>(
       (): ApprovalInstanceQueryBuilderMock => queryBuilder,
     ),
+    setParameters: jest.fn<
+      ApprovalInstanceQueryBuilderMock,
+      [Readonly<Record<string, unknown>>]
+    >((): ApprovalInstanceQueryBuilderMock => queryBuilder),
   };
 
   return queryBuilder;

@@ -16,6 +16,20 @@ export enum ApprovalInstanceListViewEnum {
   SENT = 'SENT',
 }
 
+/** Operators of a field filter on the approval-instance list (ADR 25 §7.2). */
+export enum ApprovalInstanceFieldFilterOperatorEnum {
+  CONTAINS = 'CONTAINS',
+  EQUALS = 'EQUALS',
+  IN = 'IN',
+  NOT_EQUALS = 'NOT_EQUALS',
+  RANGE = 'RANGE',
+}
+
+export enum ApprovalInstanceSortDirectionEnum {
+  ASC = 'ASC',
+  DESC = 'DESC',
+}
+
 export enum WorkflowTokenStatusEnum {
   ACTIVE = 'ACTIVE',
   CONSUMED = 'CONSUMED',
@@ -113,6 +127,14 @@ registerEnumType(ApprovalInstanceStateEnum, {
 
 registerEnumType(ApprovalInstanceListViewEnum, {
   name: 'ApprovalInstanceListView',
+});
+
+registerEnumType(ApprovalInstanceFieldFilterOperatorEnum, {
+  name: 'ApprovalInstanceFieldFilterOperator',
+});
+
+registerEnumType(ApprovalInstanceSortDirectionEnum, {
+  name: 'ApprovalInstanceSortDirection',
 });
 
 registerEnumType(WorkflowTokenStatusEnum, {

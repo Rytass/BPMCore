@@ -56,13 +56,11 @@ describe('DelegationScopeConditionDialect0000000030000', (): void => {
     );
   });
 
-  it('is registered last in the migration list', (): void => {
+  it('is registered in the migration list', (): void => {
     const names = BPM_CORE_MIGRATIONS.map(
       (registered): string => registered.name,
     );
 
-    expect(names[names.length - 1]).toBe(
-      'DelegationScopeConditionDialect0000000030000',
-    );
+    expect(names).toContain('DelegationScopeConditionDialect0000000030000');
   });
 });
