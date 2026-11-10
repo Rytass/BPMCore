@@ -539,6 +539,8 @@ claim 的列不超過 5、並行峰值剛好 5」「單次掃描停在批量上�
 - `TemplateDesignerView.tsx` `renderServiceTaskPanel`：
   - 修正 `onChange` 整個覆寫 action 的寫法，改為只更新 `recipients`。
   - 知會對象改為非必填標示；新增「Webhook」區塊（catalog 為空時不顯示）。
+    （2026-11-10 變更：catalog 已載入但沒有可用端點時，改顯示「目前沒有可用的 Webhook 端點」
+    提示，見 ADR 18 §3.9；載入失敗時仍不顯示。）
   - Target 清單：endpoint `Select`、參數 binding 列（來源類型 + 值；表單欄位只列型別
     相容者）、刪除；切換 endpoint 時保留同名且相容的 binding。
   - 載入含 `deprecated` 或已下架 endpoint 的草稿時，顯示警告而不是清掉設定。

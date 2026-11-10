@@ -66,6 +66,29 @@ module:
 | `OPENAI_API_KEY`                    | `apps/client`                    | Designer AI assistant LLM key (optional).                                                                                                                                                                                                                                                                                                       |
 | `BPM_AI_ASSISTANT_ENABLED`          | `apps/client`                    | `'true'` to show the designer AI assistant.                                                                                                                                                                                                                                                                                                     |
 
+### NOTIFY webhook showcase (staging)
+
+`apps/api` registers a code-registered endpoint `showcase.toast`
+（「展示：右上角通知」）whose receiver lives in the same API process and pushes
+each delivery to signed-in browsers over Server-Sent Events; the client host
+shows it as a top-right Mezzanine `NotificationCenter` notification. Code:
+`apps/api/src/app/api-showcase-webhook*.ts` and
+`apps/client/src/app/_components/host-showcase-webhook-notifications.tsx`.
+Wrapper-host demo only — nothing of it is in the published packages.
+
+- On outside production; under `NODE_ENV=production` only with
+  `API_SHOWCASE_WEBHOOK_ENABLED=true`, which `tools/deployment-staging.yml` sets
+  on the api container. No Vault key: the signing secret is random per process,
+  since sender and receiver are the same process.
+- The endpoint calls `http://localhost:$PORT/showcase/webhook-notifications/deliveries`
+  inside the pod (registry endpoints are not held to the URL allowlist). The
+  ingress routes only `/showcase/webhook-notifications/stream` to the API; the
+  receiver stays unrouted.
+- The stream needs the API session cookie and is broadcast: every signed-in
+  browser connected to that process sees every delivery. The hub is in memory,
+  so with more than one replica a browser sees only its own replica's
+  deliveries.
+
 ### Rotating `BPM_WEBHOOK_SECRET_ENCRYPTION_KEY`
 
 The key encrypts every database-managed webhook endpoint's header values and

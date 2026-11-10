@@ -109,8 +109,9 @@ export const BPM_WORKFLOW_WEBHOOK_REGISTRY = Symbol('BPM_WORKFLOW_WEBHOOK_REGIST
 同時提供 `EmptyBPMWorkflowWebhookRegistry` 與 `StaticBPMWorkflowWebhookRegistry`，
 `BPMRootModule` 新增 `workflowWebhookRegistryProvider`（wiring time）與
 `workflowWebhookRegistry`（runtime value）兩個 optional 選項，解析順序比照
-`formDataSourceRegistry`。未註冊 registry 的宿主：Designer Catalog 為空、知會節點不顯示
-Webhook 區塊，含 webhook 的模板不得發布。（實作註記：BPM 在宿主沒註冊時會注入空 registry，
+`formDataSourceRegistry`。未註冊 registry 的宿主：Designer Catalog 為空、知會節點的 Webhook
+區塊只顯示「目前沒有可用的 Webhook 端點」提示（2026-11-10 起；原本整個區塊不顯示），含 webhook
+的模板不得發布。（實作註記：BPM 在宿主沒註冊時會注入空 registry，
 視為「有來源但沒有端點」，因此發布時實際回報的是每個 target 的
 `WORKFLOW_WEBHOOK_ENDPOINT_MISSING`；`WORKFLOW_WEBHOOK_REGISTRY_MISSING` 只在
 `workflowWebhookTargetSources` 設為不含任何可用來源時出現。見 docs/19 P1 決策 #6。）
@@ -446,7 +447,9 @@ claim。排程器在 registry 至少有一個 endpoint 時預設啟用（與通�
 
 ### 3.9 設計器 UX
 
-知會節點面板在「知會對象」下方新增「Webhook」區塊（僅在 catalog 非空時顯示）：
+知會節點面板在「知會對象」下方新增「Webhook」區塊。catalog 載入失敗時不顯示；載入成功但沒有
+未停用的端點時，只顯示「目前沒有可用的 Webhook 端點」的 `InlineMessage`（2026-11-10 改；原本
+同樣不顯示，作者無從得知功能存在）。節點已有 target 時一律顯示完整區塊：
 
 - 「新增 Webhook」加入一個 target，選擇 endpoint（`Select`，顯示 `label`；同 key 多版本時
   顯示版本）。
