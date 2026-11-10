@@ -272,11 +272,7 @@ type ConditionValueOption = Readonly<{
   name: string;
 }>;
 type InitiatorPolicyMode =
-  | 'ALL'
-  | 'CUSTOM'
-  | 'NONE'
-  | 'ORG_UNIT'
-  | 'ORG_UNIT_POSITION';
+  'ALL' | 'CUSTOM' | 'NONE' | 'ORG_UNIT' | 'ORG_UNIT_POSITION';
 type InitiatorPolicyDraft = Readonly<{
   includeDescendants?: boolean;
   mode: InitiatorPolicyMode;
@@ -660,6 +656,12 @@ const SERVICE_ACTION_TYPE_OPTIONS: readonly {
 ];
 const DRY_RUN_MEMBER_ID = 'member-001';
 
+// Publish conflicts are multi-line (one line per conflicting version or
+// instance); keep the line breaks instead of collapsing them into one line.
+const PUBLISH_ERROR_STYLE: CSSProperties = {
+  whiteSpace: 'pre-line',
+};
+
 const FORM_EDIT_DRAWER_BODY_STYLE: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
@@ -801,9 +803,7 @@ export function TemplateDesignerView({
   const [initiatorPolicyCustomDraft, setInitiatorPolicyCustomDraft] =
     useState(false);
   // The edge switched to a hand-written condition before any text was typed.
-  const [expressionEdgeId, setExpressionEdgeId] = useState<string | null>(
-    null,
-  );
+  const [expressionEdgeId, setExpressionEdgeId] = useState<string | null>(null);
   const flowCanvasRef = useRef<HTMLDivElement | null>(null);
   const [flowViewport, setFlowViewport] = useState<Viewport | undefined>(
     undefined,
@@ -1169,7 +1169,10 @@ export function TemplateDesignerView({
       initiatorPolicyCustomDraft
         ? { mode: 'CUSTOM', value: initiatorPolicyCel ?? '' }
         : (initiatorPolicyDraftOverride ??
-          readInitiatorPolicyUiDraft(initiatorPolicyCel, initiatorPolicyModeDraft)),
+          readInitiatorPolicyUiDraft(
+            initiatorPolicyCel,
+            initiatorPolicyModeDraft,
+          )),
     [
       initiatorPolicyCel,
       initiatorPolicyCustomDraft,
@@ -1257,9 +1260,9 @@ export function TemplateDesignerView({
     references: expressionFieldReferences,
     resolveCurrentReferences: resolveExpressionFieldReferences,
   } = useWorkflowExpressionReferences(
-      { formDefinitionVersionId, initiatorPolicyCel, workflowDefinition },
-      !embedded && !loading,
-    );
+    { formDefinitionVersionId, initiatorPolicyCel, workflowDefinition },
+    !embedded && !loading,
+  );
   const [formEditBlockedMessage, setFormEditBlockedMessage] = useState<
     string | null
   >(null);
@@ -1275,7 +1278,12 @@ export function TemplateDesignerView({
             formFields: webhookFormSchema?.fields ?? [],
           })[0] ?? null)
         : null,
-    [webhookCatalog, webhookCatalogState, webhookFormSchema, workflowDefinition],
+    [
+      webhookCatalog,
+      webhookCatalogState,
+      webhookFormSchema,
+      workflowDefinition,
+    ],
   );
   // Publish-only as well: the field access matrix runs the publish lint's own
   // rules (ADR 20 §4), and a draft that breaks them can still be saved.
@@ -1293,7 +1301,8 @@ export function TemplateDesignerView({
   // whose stages can be skipped, sit after it, or straddle a parallel split,
   // while the draft can still be saved with that unfinished.
   const nodeActorPublishIssue = useMemo(
-    (): string | null => readNodeActorGraphIssues(workflowDefinition)[0] ?? null,
+    (): string | null =>
+      readNodeActorGraphIssues(workflowDefinition)[0] ?? null,
     [workflowDefinition],
   );
   const publishIssue =
@@ -1410,10 +1419,9 @@ export function TemplateDesignerView({
       setFormVersionOptions(
         readFormVersionSelectOptions(nextRecord.formVersions),
       );
-      const nextWorkflowDefinition =
-        normalizeDesignerWorkflowDefinition(
-          sourceVersion?.workflowDefinition ?? readFallbackWorkflowDefinition(),
-        );
+      const nextWorkflowDefinition = normalizeDesignerWorkflowDefinition(
+        sourceVersion?.workflowDefinition ?? readFallbackWorkflowDefinition(),
+      );
       const nextFormDefinitionVersionId =
         sourceVersion?.formDefinitionVersionId ??
         nextRecord.formVersions[0]?.id ??
@@ -2051,9 +2059,7 @@ export function TemplateDesignerView({
     });
   }
 
-  function updateInitiatorPolicyDraft(
-    draft: InitiatorPolicyDraft,
-  ): void {
+  function updateInitiatorPolicyDraft(draft: InitiatorPolicyDraft): void {
     setInitiatorPolicyDraftOverride(
       draft.mode === 'ALL' || draft.mode === 'CUSTOM' ? null : draft,
     );
@@ -2108,438 +2114,440 @@ export function TemplateDesignerView({
 
   return (
     <>
-        <style>{SIDE_PANEL_GLOBAL_STYLE}</style>
-        {!embedded ? (
-          <PageHeader>
-            {/* ContentHeader renders only buttons, filters and a back link
+      <style>{SIDE_PANEL_GLOBAL_STYLE}</style>
+      {!embedded ? (
+        <PageHeader>
+          {/* ContentHeader renders only buttons, filters and a back link
                 as children and drops anything else (a Tag included), so the
                 dialect rides on its `description` line instead. */}
-            <ContentHeader
-              description={readTemplateHeaderDescription(
-                readTemplateVersionDescription({
-                  draftVersion: draft?.version ?? null,
-                  hasPublishedVersion: Boolean(
-                    record?.template.currentVersionId,
-                  ),
-                  publishedVersion:
-                    record?.versions.find(
-                      (version) =>
-                        version.id === record.template.currentVersionId,
-                    )?.version ?? null,
-                }),
-                expressionDialect,
-              )}
-              onBackClick={handleBackToTemplates}
-              title={record?.template.name ?? '流程設計器'}
-            >
-              {expressionDialect === 'cel-legacy' ? (
-                <Button
-                  disabled={loading || saving}
-                  onClick={(): void => setDialectUpgradeOpen(true)}
-                  variant="base-secondary"
-                >
-                  升級到 cel-v2
-                </Button>
-              ) : null}
-              {showAiAssistant ? (
-                <Button
-                  disabled={!aiAssistantAvailable}
-                  onClick={(): void => setChatOpen((current) => !current)}
-                  variant={chatOpen ? 'base-primary' : 'base-secondary'}
-                >
-                  {aiAssistantAvailable ? 'AI 助理' : 'AI 助理（未設定）'}
-                </Button>
-              ) : null}
+          <ContentHeader
+            description={readTemplateHeaderDescription(
+              readTemplateVersionDescription({
+                draftVersion: draft?.version ?? null,
+                hasPublishedVersion: Boolean(record?.template.currentVersionId),
+                publishedVersion:
+                  record?.versions.find(
+                    (version) =>
+                      version.id === record.template.currentVersionId,
+                  )?.version ?? null,
+              }),
+              expressionDialect,
+            )}
+            onBackClick={handleBackToTemplates}
+            title={record?.template.name ?? '流程設計器'}
+          >
+            {expressionDialect === 'cel-legacy' ? (
               <Button
-                aria-label="儲存草稿"
+                disabled={loading || saving}
+                onClick={(): void => setDialectUpgradeOpen(true)}
+                variant="base-secondary"
+              >
+                升級到 cel-v2
+              </Button>
+            ) : null}
+            {showAiAssistant ? (
+              <Button
+                disabled={!aiAssistantAvailable}
+                onClick={(): void => setChatOpen((current) => !current)}
+                variant={chatOpen ? 'base-primary' : 'base-secondary'}
+              >
+                {aiAssistantAvailable ? 'AI 助理' : 'AI 助理（未設定）'}
+              </Button>
+            ) : null}
+            <Button
+              aria-label="儲存草稿"
+              disabled={
+                saving ||
+                Boolean(workflowIssue) ||
+                Boolean(initiatorPolicyIssue)
+              }
+              icon={SaveIcon}
+              iconType="icon-only"
+              onClick={(): void => void handleSaveDraft()}
+              variant="base-secondary"
+            >
+              儲存草稿
+            </Button>
+            {showDryRun ? (
+              <Button
                 disabled={
-                  saving ||
+                  loading ||
                   Boolean(workflowIssue) ||
                   Boolean(initiatorPolicyIssue)
                 }
-                icon={SaveIcon}
-                iconType="icon-only"
-                onClick={(): void => void handleSaveDraft()}
+                icon={EyeIcon}
+                iconType="leading"
+                onClick={openDryRunModal}
                 variant="base-secondary"
               >
-                儲存草稿
+                試跑流程
               </Button>
-              {showDryRun ? (
-                <Button
-                  disabled={
-                    loading ||
-                    Boolean(workflowIssue) ||
-                    Boolean(initiatorPolicyIssue)
-                  }
-                  icon={EyeIcon}
-                  iconType="leading"
-                  onClick={openDryRunModal}
-                  variant="base-secondary"
-                >
-                  試跑流程
-                </Button>
-              ) : null}
-              <Button
-                disabled={
-                  saving ||
-                  (!draft && !hasUnsavedChanges && !formDraftDirty) ||
-                  Boolean(workflowIssue) ||
-                  Boolean(initiatorPolicyIssue) ||
-                  Boolean(publishIssue)
-                }
-                icon={CheckedIcon}
-                iconType="leading"
-                onClick={(): void => void handlePublish()}
-                variant="base-primary"
-              >
-                {publishButtonText}
-              </Button>
-            </ContentHeader>
-          </PageHeader>
-        ) : null}
+            ) : null}
+            <Button
+              disabled={
+                saving ||
+                (!draft && !hasUnsavedChanges && !formDraftDirty) ||
+                Boolean(workflowIssue) ||
+                Boolean(initiatorPolicyIssue) ||
+                Boolean(publishIssue)
+              }
+              icon={CheckedIcon}
+              iconType="leading"
+              onClick={(): void => void handlePublish()}
+              variant="base-primary"
+            >
+              {publishButtonText}
+            </Button>
+          </ContentHeader>
+        </PageHeader>
+      ) : null}
 
-        <SectionGroup>
-          <Section>
-            <div style={WORKSPACE_STYLE}>
-              {error ? (
-                <Typography color="text-error" variant="body">
-                  {error}
-                </Typography>
-              ) : null}
-              {/* Scoped to its node, and dropped as soon as that node carries
+      <SectionGroup>
+        <Section>
+          <div style={WORKSPACE_STYLE}>
+            {error ? (
+              <Typography
+                color="text-error"
+                style={PUBLISH_ERROR_STYLE}
+                variant="body"
+              >
+                {error}
+              </Typography>
+            ) : null}
+            {/* Scoped to its node, and dropped as soon as that node carries
                   a policy again — the assistant can set one through the
                   toolset without going through `updateUserTaskDecisionPolicy`,
                   and a notice saying the policy was reset while the panel
                   shows a quorum is worse than no notice at all. */}
-              {policyNotice &&
-              policyNotice.nodeId === selectedNode?.id &&
-              selectedNode.type === 'userTask' &&
-              (selectedNode.data.decisionPolicy?.type ?? 'SINGLE') ===
-                policyNotice.policyType ? (
-                <Typography color="text-warning" variant="body">
-                  {policyNotice.message}
-                </Typography>
-              ) : null}
-              {workflowIssue ? (
-                <Typography color="text-error" variant="body">
-                  {workflowIssue}
-                </Typography>
-              ) : null}
-              {initiatorPolicyIssue ? (
-                <Typography color="text-error" variant="body">
-                  {initiatorPolicyIssue}
-                </Typography>
-              ) : null}
-              {!workflowIssue && publishIssue ? (
-                <Typography color="text-error" variant="body">
-                  發布前需修正：{publishIssue}
-                </Typography>
-              ) : null}
-              {!embedded ? (
-                <div style={FORM_STACK_STYLE}>
-                  <BPMFormField
-                    hintText={
-                      formVersionBindingLocked
-                        ? '已設定條件分流條件。請先移除所有條件，才能更換綁定表單版本。'
-                        : undefined
-                    }
-                    label="綁定表單版本"
-                    name="formDefinitionVersionId"
-                    required
-                  >
-                    <div style={FORM_BIND_ROW_STYLE}>
-                      <div style={FORM_BIND_FIELD_STYLE}>
-                        <AutoComplete
-                          asyncData
-                          disabled={loading || formVersionBindingLocked}
-                          disabledOptionsFilter
-                          emptyText="沒有符合的已發布表單版本"
-                          isForceClearable={
-                            Boolean(formDefinitionVersionId) &&
-                            !formVersionBindingLocked
-                          }
-                          loading={formVersionLoading}
-                          loadingText="搜尋表單版本中..."
-                          mode="single"
-                          onChange={(option): void => {
-                            if (!formVersionBindingLocked) {
-                              setFormDefinitionVersionId(option?.id ?? null);
-                            }
-                          }}
-                          onClear={(): void => {
-                            if (!formVersionBindingLocked) {
-                              setFormDefinitionVersionId(null);
-                            }
-                          }}
-                          onSearch={handleSearchFormVersions}
-                          onVisibilityChange={(open): void => {
-                            if (open && !formVersionBindingLocked) {
-                              void handleSearchFormVersions('');
-                            }
-                          }}
-                          options={[...visibleFormVersionOptions]}
-                          placeholder="選擇已發布表單版本"
-                          searchDebounceTime={300}
-                          value={selectedFormVersionOption}
-                        />
-                      </div>
-                      <Button
-                        disabled={loading}
-                        onClick={(): void => {
-                          void openFormEditDrawer();
-                        }}
-                        style={FORM_BIND_BUTTON_STYLE}
-                        variant="base-secondary"
-                      >
-                        編輯表單
-                      </Button>
-                    </div>
-                  </BPMFormField>
-                </div>
-              ) : null}
-              <div style={TWO_COLUMN_STYLE}>
-                <div ref={flowCanvasRef} style={FLOW_CANVAS_STYLE}>
-                  <ReactFlow
-                    connectionMode={ConnectionMode.Strict}
-                    edges={flowEdges}
-                    fitView
-                    isValidConnection={(connection): boolean =>
-                      isWorkflowConnectionValid(
-                        connection,
-                        workflowDefinition.nodes,
-                      )
-                    }
-                    nodeTypes={nodeTypes}
-                    nodes={flowNodes}
-                    deleteKeyCode={null}
-                    multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
-                    onConnect={handleConnect}
-                    onEdgeClick={handleEdgeClick}
-                    onNodeClick={(_, node): void => {
-                      setSelectedNodeId(node.id);
-                      setSelectedEdgeIds([]);
-                    }}
-                    onNodesChange={handleNodeChanges}
-                    onPaneClick={(): void => {
-                      setSelectedNodeId(null);
-                      setSelectedEdgeIds([]);
-                    }}
-                    onViewportChange={setFlowViewport}
-                    viewport={flowViewport}
-                  >
-                    <Background />
-                    <style>{FLOW_CANVAS_GLOBAL_STYLE}</style>
-                    <Controls>
-                      {hasDeletableSelection ? (
-                        <ControlButton
-                          aria-label="刪除選取項目"
-                          className="workflow-selection-delete-control"
-                          onClick={removeSelectedWorkflowElements}
-                          style={SELECTION_DELETE_CONTROL_BUTTON_STYLE}
-                          title="刪除選取項目"
-                        >
-                          <span style={SELECTION_DELETE_CONTROL_ICON_STYLE}>
-                            <Icon color="error" icon={TrashIcon} size={16} />
-                          </span>
-                        </ControlButton>
-                      ) : null}
-                    </Controls>
-                    <AutoLayoutPanel onApplyAutoLayout={applyAutoLayout} />
-                    <MiniMap />
-                  </ReactFlow>
-                </div>
-                <div className={SIDE_PANEL_CLASS_NAME} style={PANEL_STYLE}>
-                  <Typography component="h2" variant="h3">
-                    流程工具
-                  </Typography>
-                  {embedded && showAiAssistant ? (
-                    <div style={TOOL_GROUP_STYLE}>
-                      <Typography color="text-neutral" variant="caption">
-                        AI 協助
-                      </Typography>
-                      <div style={BUTTON_ROW_STYLE}>
-                        <Button
-                          disabled={!aiAssistantAvailable}
-                          onClick={(): void =>
-                            setChatOpen((current) => !current)
-                          }
-                          size="sub"
-                          variant={chatOpen ? 'base-primary' : 'base-secondary'}
-                        >
-                          {aiAssistantAvailable
-                            ? 'AI 助理'
-                            : 'AI 助理（未設定）'}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
-                  <div style={TOOL_GROUP_STYLE}>
-                    <Typography color="text-neutral" variant="caption">
-                      動作節點
-                    </Typography>
-                    <div style={BUTTON_ROW_STYLE}>
-                      {ACTION_NODE_PALETTE.map((item) => (
-                        <Button
-                          icon={item.icon}
-                          iconType="leading"
-                          key={item.type}
-                          onClick={(): void => addWorkflowNode(item.type)}
-                          size="sub"
-                          variant="base-secondary"
-                        >
-                          {item.label}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                  <div style={TOOL_GROUP_STYLE}>
-                    <Typography color="text-neutral" variant="caption">
-                      流程控制
-                    </Typography>
-                    <div style={BUTTON_ROW_STYLE}>
-                      {FLOW_CONTROL_PALETTE.map((item) => (
-                        <Button
-                          icon={item.icon}
-                          iconType="leading"
-                          key={item.type}
-                          onClick={(): void => addWorkflowNode(item.type)}
-                          size="sub"
-                          variant="base-secondary"
-                        >
-                          {item.label}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                  <div style={TOOL_GROUP_STYLE}>
-                    <Typography color="text-neutral" variant="caption">
-                      表單欄位
-                    </Typography>
-                    <div style={BUTTON_ROW_STYLE}>
-                      <Button
-                        disabled={webhookFormSchema === null}
-                        onClick={(): void => setFieldAccessMatrixOpen(true)}
-                        size="sub"
-                        title={
-                          webhookFormSchema === null
-                            ? FIELD_ACCESS_NO_FORM_REASON
-                            : undefined
+            {policyNotice &&
+            policyNotice.nodeId === selectedNode?.id &&
+            selectedNode.type === 'userTask' &&
+            (selectedNode.data.decisionPolicy?.type ?? 'SINGLE') ===
+              policyNotice.policyType ? (
+              <Typography color="text-warning" variant="body">
+                {policyNotice.message}
+              </Typography>
+            ) : null}
+            {workflowIssue ? (
+              <Typography color="text-error" variant="body">
+                {workflowIssue}
+              </Typography>
+            ) : null}
+            {initiatorPolicyIssue ? (
+              <Typography color="text-error" variant="body">
+                {initiatorPolicyIssue}
+              </Typography>
+            ) : null}
+            {!workflowIssue && publishIssue ? (
+              <Typography color="text-error" variant="body">
+                發布前需修正：{publishIssue}
+              </Typography>
+            ) : null}
+            {!embedded ? (
+              <div style={FORM_STACK_STYLE}>
+                <BPMFormField
+                  hintText={
+                    formVersionBindingLocked
+                      ? '已設定條件分流條件。請先移除所有條件，才能更換綁定表單版本。'
+                      : undefined
+                  }
+                  label="綁定表單版本"
+                  name="formDefinitionVersionId"
+                  required
+                >
+                  <div style={FORM_BIND_ROW_STYLE}>
+                    <div style={FORM_BIND_FIELD_STYLE}>
+                      <AutoComplete
+                        asyncData
+                        disabled={loading || formVersionBindingLocked}
+                        disabledOptionsFilter
+                        emptyText="沒有符合的已發布表單版本"
+                        isForceClearable={
+                          Boolean(formDefinitionVersionId) &&
+                          !formVersionBindingLocked
                         }
-                        variant="base-secondary"
+                        loading={formVersionLoading}
+                        loadingText="搜尋表單版本中..."
+                        mode="single"
+                        onChange={(option): void => {
+                          if (!formVersionBindingLocked) {
+                            setFormDefinitionVersionId(option?.id ?? null);
+                          }
+                        }}
+                        onClear={(): void => {
+                          if (!formVersionBindingLocked) {
+                            setFormDefinitionVersionId(null);
+                          }
+                        }}
+                        onSearch={handleSearchFormVersions}
+                        onVisibilityChange={(open): void => {
+                          if (open && !formVersionBindingLocked) {
+                            void handleSearchFormVersions('');
+                          }
+                        }}
+                        options={[...visibleFormVersionOptions]}
+                        placeholder="選擇已發布表單版本"
+                        searchDebounceTime={300}
+                        value={selectedFormVersionOption}
+                      />
+                    </div>
+                    <Button
+                      disabled={loading}
+                      onClick={(): void => {
+                        void openFormEditDrawer();
+                      }}
+                      style={FORM_BIND_BUTTON_STYLE}
+                      variant="base-secondary"
+                    >
+                      編輯表單
+                    </Button>
+                  </div>
+                </BPMFormField>
+              </div>
+            ) : null}
+            <div style={TWO_COLUMN_STYLE}>
+              <div ref={flowCanvasRef} style={FLOW_CANVAS_STYLE}>
+                <ReactFlow
+                  connectionMode={ConnectionMode.Strict}
+                  edges={flowEdges}
+                  fitView
+                  isValidConnection={(connection): boolean =>
+                    isWorkflowConnectionValid(
+                      connection,
+                      workflowDefinition.nodes,
+                    )
+                  }
+                  nodeTypes={nodeTypes}
+                  nodes={flowNodes}
+                  deleteKeyCode={null}
+                  multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
+                  onConnect={handleConnect}
+                  onEdgeClick={handleEdgeClick}
+                  onNodeClick={(_, node): void => {
+                    setSelectedNodeId(node.id);
+                    setSelectedEdgeIds([]);
+                  }}
+                  onNodesChange={handleNodeChanges}
+                  onPaneClick={(): void => {
+                    setSelectedNodeId(null);
+                    setSelectedEdgeIds([]);
+                  }}
+                  onViewportChange={setFlowViewport}
+                  viewport={flowViewport}
+                >
+                  <Background />
+                  <style>{FLOW_CANVAS_GLOBAL_STYLE}</style>
+                  <Controls>
+                    {hasDeletableSelection ? (
+                      <ControlButton
+                        aria-label="刪除選取項目"
+                        className="workflow-selection-delete-control"
+                        onClick={removeSelectedWorkflowElements}
+                        style={SELECTION_DELETE_CONTROL_BUTTON_STYLE}
+                        title="刪除選取項目"
                       >
-                        欄位總覽
+                        <span style={SELECTION_DELETE_CONTROL_ICON_STYLE}>
+                          <Icon color="error" icon={TrashIcon} size={16} />
+                        </span>
+                      </ControlButton>
+                    ) : null}
+                  </Controls>
+                  <AutoLayoutPanel onApplyAutoLayout={applyAutoLayout} />
+                  <MiniMap />
+                </ReactFlow>
+              </div>
+              <div className={SIDE_PANEL_CLASS_NAME} style={PANEL_STYLE}>
+                <Typography component="h2" variant="h3">
+                  流程工具
+                </Typography>
+                {embedded && showAiAssistant ? (
+                  <div style={TOOL_GROUP_STYLE}>
+                    <Typography color="text-neutral" variant="caption">
+                      AI 協助
+                    </Typography>
+                    <div style={BUTTON_ROW_STYLE}>
+                      <Button
+                        disabled={!aiAssistantAvailable}
+                        onClick={(): void => setChatOpen((current) => !current)}
+                        size="sub"
+                        variant={chatOpen ? 'base-primary' : 'base-secondary'}
+                      >
+                        {aiAssistantAvailable ? 'AI 助理' : 'AI 助理（未設定）'}
                       </Button>
                     </div>
                   </div>
-                  {selectedEdges.length > 1
-                    ? renderSelectedEdgesPanel(selectedEdges)
-                    : null}
-                  {selectedEdges.length === 1 && selectedEdge
-                    ? renderEdgePanel(selectedEdge)
-                    : null}
-                  {selectedEdges.length === 0 && selectedNode
-                    ? renderNodePanel(selectedNode)
-                    : null}
-                </div>
-              </div>
-            </div>
-          </Section>
-        </SectionGroup>
-        {renderEdgeSettingsModal(editingEdge)}
-        {!embedded && showDryRun ? renderDryRunModal() : null}
-        {!embedded ? (
-          <DialectUpgradeModal
-            draft={{
-              formDefinitionVersionId,
-              initiatorPolicyCel,
-              workflowDefinition,
-            }}
-            onCancel={(): void => setDialectUpgradeOpen(false)}
-            onConfirm={(): void => {
-              setDialectUpgradeOpen(false);
-              updateWorkflowDefinitionDirectly((definition) => ({
-                ...definition,
-                expressionDialect: 'cel-v2',
-              }));
-            }}
-            open={dialectUpgradeOpen}
-          />
-        ) : null}
-        <FieldAccessMatrixDrawer
-          definition={workflowDefinition}
-          expressionReferences={expressionFieldReferences}
-          formSchema={webhookFormSchema}
-          language={language}
-          onApply={(entries): string | null =>
-            controller.dispatch({ entries, type: 'setFieldAccessMatrix' }).error
-          }
-          onClose={(): void => setFieldAccessMatrixOpen(false)}
-          open={fieldAccessMatrixOpen}
-        />
-        {showAiAssistant && aiAssistantAvailable ? (
-          <WorkflowChatDrawer
-            controller={controller}
-            onClose={(): void => setChatOpen(false)}
-            open={chatOpen}
-          />
-        ) : null}
-        {!embedded ? (
-          <Drawer
-            headerTitle="編輯表單"
-            isHeaderDisplay
-            onClose={discardFormEdit}
-            open={formEditOpen}
-            size="wide"
-          >
-            <div style={FORM_EDIT_DRAWER_BODY_STYLE}>
-              <div style={FORM_EDIT_DRAWER_CONTENT_STYLE}>
-                {formDraftLoading ? (
-                  <Typography color="text-neutral" variant="body">
-                    載入中…
+                ) : null}
+                <div style={TOOL_GROUP_STYLE}>
+                  <Typography color="text-neutral" variant="caption">
+                    動作節點
                   </Typography>
-                ) : (
-                  <FormBuilderView
-                    onChange={(next): void => {
-                      setFormDraft(next);
-                    }}
-                    value={
-                      formDraft ?? {
-                        schema: FORM_EDIT_EMPTY_SCHEMA,
-                        uiSchema: FORM_EDIT_EMPTY_UI_SCHEMA,
+                  <div style={BUTTON_ROW_STYLE}>
+                    {ACTION_NODE_PALETTE.map((item) => (
+                      <Button
+                        icon={item.icon}
+                        iconType="leading"
+                        key={item.type}
+                        onClick={(): void => addWorkflowNode(item.type)}
+                        size="sub"
+                        variant="base-secondary"
+                      >
+                        {item.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                <div style={TOOL_GROUP_STYLE}>
+                  <Typography color="text-neutral" variant="caption">
+                    流程控制
+                  </Typography>
+                  <div style={BUTTON_ROW_STYLE}>
+                    {FLOW_CONTROL_PALETTE.map((item) => (
+                      <Button
+                        icon={item.icon}
+                        iconType="leading"
+                        key={item.type}
+                        onClick={(): void => addWorkflowNode(item.type)}
+                        size="sub"
+                        variant="base-secondary"
+                      >
+                        {item.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                <div style={TOOL_GROUP_STYLE}>
+                  <Typography color="text-neutral" variant="caption">
+                    表單欄位
+                  </Typography>
+                  <div style={BUTTON_ROW_STYLE}>
+                    <Button
+                      disabled={webhookFormSchema === null}
+                      onClick={(): void => setFieldAccessMatrixOpen(true)}
+                      size="sub"
+                      title={
+                        webhookFormSchema === null
+                          ? FIELD_ACCESS_NO_FORM_REASON
+                          : undefined
                       }
-                    }
-                  />
-                )}
-              </div>
-              {formEditBlockedMessage ? (
-                <InlineMessage
-                  content={formEditBlockedMessage}
-                  severity="error"
-                />
-              ) : null}
-              <div style={FORM_EDIT_DRAWER_FOOTER_STYLE}>
-                <Button
-                  disabled={formDraftLoading || formEditChecking}
-                  loading={formEditChecking}
-                  onClick={(): void => {
-                    void applyFormEdit();
-                  }}
-                  variant="base-primary"
-                >
-                  套用
-                </Button>
-                <Button
-                  disabled={formEditChecking}
-                  onClick={discardFormEdit}
-                  variant="base-secondary"
-                >
-                  取消
-                </Button>
+                      variant="base-secondary"
+                    >
+                      欄位總覽
+                    </Button>
+                  </div>
+                </div>
+                {selectedEdges.length > 1
+                  ? renderSelectedEdgesPanel(selectedEdges)
+                  : null}
+                {selectedEdges.length === 1 && selectedEdge
+                  ? renderEdgePanel(selectedEdge)
+                  : null}
+                {selectedEdges.length === 0 && selectedNode
+                  ? renderNodePanel(selectedNode)
+                  : null}
               </div>
             </div>
-          </Drawer>
-        ) : null}
-      </>
+          </div>
+        </Section>
+      </SectionGroup>
+      {renderEdgeSettingsModal(editingEdge)}
+      {!embedded && showDryRun ? renderDryRunModal() : null}
+      {!embedded ? (
+        <DialectUpgradeModal
+          draft={{
+            formDefinitionVersionId,
+            initiatorPolicyCel,
+            workflowDefinition,
+          }}
+          onCancel={(): void => setDialectUpgradeOpen(false)}
+          onConfirm={(): void => {
+            setDialectUpgradeOpen(false);
+            updateWorkflowDefinitionDirectly((definition) => ({
+              ...definition,
+              expressionDialect: 'cel-v2',
+            }));
+          }}
+          open={dialectUpgradeOpen}
+        />
+      ) : null}
+      <FieldAccessMatrixDrawer
+        definition={workflowDefinition}
+        expressionReferences={expressionFieldReferences}
+        formSchema={webhookFormSchema}
+        language={language}
+        onApply={(entries): string | null =>
+          controller.dispatch({ entries, type: 'setFieldAccessMatrix' }).error
+        }
+        onClose={(): void => setFieldAccessMatrixOpen(false)}
+        open={fieldAccessMatrixOpen}
+      />
+      {showAiAssistant && aiAssistantAvailable ? (
+        <WorkflowChatDrawer
+          controller={controller}
+          onClose={(): void => setChatOpen(false)}
+          open={chatOpen}
+        />
+      ) : null}
+      {!embedded ? (
+        <Drawer
+          headerTitle="編輯表單"
+          isHeaderDisplay
+          onClose={discardFormEdit}
+          open={formEditOpen}
+          size="wide"
+        >
+          <div style={FORM_EDIT_DRAWER_BODY_STYLE}>
+            <div style={FORM_EDIT_DRAWER_CONTENT_STYLE}>
+              {formDraftLoading ? (
+                <Typography color="text-neutral" variant="body">
+                  載入中…
+                </Typography>
+              ) : (
+                <FormBuilderView
+                  formDefinitionId={
+                    selectedFormVersionOption?.formDefinitionId ?? null
+                  }
+                  onChange={(next): void => {
+                    setFormDraft(next);
+                  }}
+                  templateId={templateId ?? null}
+                  value={
+                    formDraft ?? {
+                      schema: FORM_EDIT_EMPTY_SCHEMA,
+                      uiSchema: FORM_EDIT_EMPTY_UI_SCHEMA,
+                    }
+                  }
+                />
+              )}
+            </div>
+            {formEditBlockedMessage ? (
+              <InlineMessage
+                content={formEditBlockedMessage}
+                severity="error"
+              />
+            ) : null}
+            <div style={FORM_EDIT_DRAWER_FOOTER_STYLE}>
+              <Button
+                disabled={formDraftLoading || formEditChecking}
+                loading={formEditChecking}
+                onClick={(): void => {
+                  void applyFormEdit();
+                }}
+                variant="base-primary"
+              >
+                套用
+              </Button>
+              <Button
+                disabled={formEditChecking}
+                onClick={discardFormEdit}
+                variant="base-secondary"
+              >
+                取消
+              </Button>
+            </div>
+          </div>
+        </Drawer>
+      ) : null}
+    </>
   );
 
   function renderDryRunModal(): ReactElement {
@@ -2766,9 +2774,7 @@ export function TemplateDesignerView({
 
               setInitiatorPolicyModeDraft(mode === 'ALL' ? null : mode);
               setInitiatorPolicyDraftOverride(mode === 'ALL' ? null : draft);
-              setInitiatorPolicyCel(
-                readInitiatorPolicyCel(draft, orgUnits),
-              );
+              setInitiatorPolicyCel(readInitiatorPolicyCel(draft, orgUnits));
             }}
             options={policyModeOptions}
             placeholder="選擇誰可以發起"
@@ -2999,9 +3005,7 @@ export function TemplateDesignerView({
     const slaDurationParts = sla ? readSlaDurationParts(sla.duration) : null;
     const slaDurationUnit = slaDurationParts?.unit ?? 'DAY';
     const slaWarningAtOption = readSlaWarningAtOption(sla?.warningAt ?? null);
-    const slaEscalateLevel = readManagerLevelOption(
-      sla?.escalateLevelsUp ?? 1,
-    );
+    const slaEscalateLevel = readManagerLevelOption(sla?.escalateLevelsUp ?? 1);
     // The schema types `decisionPolicy` as required, but templates authored
     // before the field existed carry no such key at runtime, so every read goes
     // through helpers that tolerate `undefined` — same stance as
@@ -4052,8 +4056,8 @@ export function TemplateDesignerView({
     node: Extract<WorkflowNode, { type: 'serviceTask' }>,
   ): ReactElement {
     const action = node.data.action;
-    const selectedMembers = readServiceTaskMemberIds(action).map(
-      (memberId) => readMemberSelectOption(memberOptions, memberId),
+    const selectedMembers = readServiceTaskMemberIds(action).map((memberId) =>
+      readMemberSelectOption(memberOptions, memberId),
     );
     const runtimeRecipients =
       action.type === 'NOTIFY' && action.recipients.type !== 'DIRECT'
@@ -4138,7 +4142,10 @@ export function TemplateDesignerView({
               placeholder={
                 selectedFormVersionOption ? '選擇欄位' : '請先綁定表單版本'
               }
-              value={readSelectOption(targetFieldOptions, targetFieldKey || null)}
+              value={readSelectOption(
+                targetFieldOptions,
+                targetFieldKey || null,
+              )}
             />
           </BPMFormField>
           <ExpressionField
@@ -4148,7 +4155,9 @@ export function TemplateDesignerView({
             hintText="運算結果會寫進上面的欄位；畫面上一律以文字顯示。"
             label="寫入的值"
             name="serviceFieldValue"
-            onChange={(value): void => updateServiceAction({ ...action, value })}
+            onChange={(value): void =>
+              updateServiceAction({ ...action, value })
+            }
             required
             targetFieldKey={targetFieldKey || null}
             usagePoint="SERVICE_FORM_FIELD_VALUE"
@@ -5079,8 +5088,7 @@ function layoutWorkflowDefinition(
     ...definition,
     nodes: definition.nodes.map((node) => {
       const positionedNode = graph.node(node.id) as
-        | { readonly x: number; readonly y: number }
-        | undefined;
+        { readonly x: number; readonly y: number } | undefined;
 
       return positionedNode
         ? {
@@ -5264,8 +5272,6 @@ function omitSlaKey(
   ) as SlaConfig;
 }
 
-
-
 function readApproverFallbackMode(value: string | null): ApproverFallbackMode {
   if (value === 'DIRECT' || value === 'POSITION') {
     return value;
@@ -5291,9 +5297,6 @@ function readApproverFallbackModeDraft(
 
   return { type: 'NONE' };
 }
-
-
-
 
 function readInitiatorPolicyMode(
   value: string | null,
@@ -5620,12 +5623,6 @@ function readMemberSelectOptions(
   }));
 }
 
-
-
-
-
-
-
 function readDryRunInitiatorMetadataSnapshot(
   memberId: string,
   memberships: readonly MembershipRecord[],
@@ -5638,8 +5635,7 @@ function readDryRunInitiatorMetadataSnapshot(
   );
   const primaryMembership = activeMemberships.reduce<MembershipRecord | null>(
     (currentPrimary, membership) =>
-      currentPrimary &&
-      compareMembershipRecord(currentPrimary, membership) <= 0
+      currentPrimary && compareMembershipRecord(currentPrimary, membership) <= 0
         ? currentPrimary
         : membership,
     null,
@@ -5793,7 +5789,6 @@ function mergeMemberOptions(
   return changed ? [...upgradedOptions, ...newOptions] : currentOptions;
 }
 
-
 function readWorkflowDirectMemberIds(
   definition: WorkflowDefinition,
 ): readonly string[] {
@@ -5835,7 +5830,6 @@ function readNodeApproverSummary(
 
   return null;
 }
-
 
 function readNodeApproverLines(
   node: WorkflowNode,
@@ -5901,7 +5895,6 @@ function readDryRunWebhookLabels(
       }))
     : [];
 }
-
 
 function formatMemberDisplayName(name: string, email: string): string {
   return formatMemberLabel(name, email);

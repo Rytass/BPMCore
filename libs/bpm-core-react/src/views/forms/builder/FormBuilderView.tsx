@@ -26,6 +26,7 @@ import {
   DatePicker,
   DateTimePicker,
   Icon,
+  InlineMessage,
   Input,
   Modal,
   Section,
@@ -135,6 +136,10 @@ import {
   parseFormBindingExpressionLintLine,
   readFormBindingExpressionLintMessage,
 } from '@rytass/bpm-core-client/template';
+import {
+  listFilterableFieldIssues,
+  type FilterableFieldIssueResult,
+} from '@rytass/bpm-core-client/workflow';
 import { FormFieldLayout } from '@mezzanine-ui/core/form';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import { FormRenderer } from '../renderer/FormRendererView';
@@ -186,7 +191,9 @@ type FormDataSourceConstantValue = string | number | boolean | null;
  * lets the same renderer serve a top-level field or a table column — the caller
  * decides where the result is written (ADR 16 §3.9).
  */
-type FieldCommit<TField extends FormFieldDefinition> = (nextField: TField) => void;
+type FieldCommit<TField extends FormFieldDefinition> = (
+  nextField: TField,
+) => void;
 
 /**
  * A change that needs confirmation before it touches the schema, because it can
@@ -690,9 +697,7 @@ const UNBOUND_BINDING_ID = '__UNBOUND__';
 const OPTION_SOURCE_KIND_OPTIONS: readonly {
   readonly id: string;
   readonly name: string;
-}[] = [
-  { id: STATIC_OPTION_SOURCE_ID, name: '靜態選項' },
-];
+}[] = [{ id: STATIC_OPTION_SOURCE_ID, name: '靜態選項' }];
 
 const OPTION_MODE_OPTIONS: readonly {
   readonly id: 'multiple' | 'single';
@@ -755,10 +760,25 @@ export interface FormBuilderViewProps {
     readonly schema: FormDefinitionSchema;
     readonly uiSchema: FormUiSchema;
   }) => void;
+
+  /**
+   * Template and form version this schema belongs to. With either given, the
+   * builder checks filterable fields against existing instances (ADR 25 §5.4)
+   * and shows issues; it never blocks a draft.
+   */
+  readonly formDefinitionId?: string | null;
+  readonly templateId?: string | null;
 }
 
+const PRE_LINE_STYLE: CSSProperties = { whiteSpace: 'pre-line' };
+
+const FILTERABLE_WARNING =
+  '勾選後，此欄位的 key 與型別在之後的版本不能再改。HIDE／hidden 不是保密手段。';
+
 export function FormBuilderView({
+  formDefinitionId,
   onChange,
+  templateId,
   value,
 }: FormBuilderViewProps): ReactElement {
   const initialSchema = value?.schema ?? EMPTY_SCHEMA;
@@ -775,6 +795,59 @@ export function FormBuilderView({
   const [advancedSchemaMessage, setAdvancedSchemaMessage] = useState<
     string | null
   >(null);
+  const [filterableIssues, setFilterableIssues] = useState<
+    readonly FilterableFieldIssueResult[]
+  >([]);
+  const [filterableCheckError, setFilterableCheckError] = useState<
+    string | null
+  >(null);
+
+  // Debounced: the schema changes on every keystroke in the JSON editor.
+  // Cleanup cancels both the timer and any response still in flight.
+  useEffect((): (() => void) => {
+    if (!templateId && !formDefinitionId) {
+      setFilterableIssues([]);
+      setFilterableCheckError(null);
+
+      return (): void => undefined;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout((): void => {
+      void listFilterableFieldIssues({
+        formDefinitionId,
+        schemaJson: stringifyJson(schema),
+        templateId,
+      })
+        .then((issues): void => {
+          if (!cancelled) {
+            setFilterableIssues(issues);
+            setFilterableCheckError(null);
+          }
+        })
+        .catch((checkError: unknown): void => {
+          if (!cancelled) {
+            setFilterableIssues([]);
+            setFilterableCheckError(
+              checkError instanceof Error
+                ? checkError.message
+                : '無法檢查可篩選欄位。',
+            );
+          }
+        });
+    }, 400);
+
+    return (): void => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [formDefinitionId, schema, templateId]);
+
+  const filterableIssueByPath = useMemo(
+    (): ReadonlyMap<string, string> =>
+      new Map(filterableIssues.map((issue) => [issue.path, issue.message])),
+    [filterableIssues],
+  );
   const [activeTab, setActiveTab] = useState<BuilderTabKey>('design');
   const [selectedFieldKey, setSelectedFieldKey] = useState<string | null>(null);
   const [dataSourceCatalog, setDataSourceCatalog] = useState<
@@ -818,7 +891,9 @@ export function FormBuilderView({
 
         setDataSourceCatalog([]);
         void requestError;
-        setDataSourceCatalogError('目前無法載入 DataSource Catalog，請稍後重試。');
+        setDataSourceCatalogError(
+          '目前無法載入 DataSource Catalog，請稍後重試。',
+        );
         setDataSourceCatalogState('unavailable');
       });
 
@@ -1021,9 +1096,8 @@ export function FormBuilderView({
 
     const updatedSchema = {
       ...schema,
-      fields: schema.fields.map(
-        (field): FormFieldDefinition =>
-          field.fieldKey === previousFieldKey ? nextField : field,
+      fields: schema.fields.map((field): FormFieldDefinition =>
+        field.fieldKey === previousFieldKey ? nextField : field,
       ),
     };
     const nextSchema =
@@ -1065,11 +1139,10 @@ export function FormBuilderView({
   ): void {
     setSchema((currentSchema) => ({
       ...currentSchema,
-      fields: currentSchema.fields.map(
-        (field): FormFieldDefinition =>
-          field.fieldKey === fieldKey && isTableFieldDefinition(field)
-            ? updater(field)
-            : field,
+      fields: currentSchema.fields.map((field): FormFieldDefinition =>
+        field.fieldKey === fieldKey && isTableFieldDefinition(field)
+          ? updater(field)
+          : field,
       ),
     }));
     setAdvancedSchemaMessage(null);
@@ -1105,7 +1178,6 @@ export function FormBuilderView({
           )
         : nextField;
     });
-
   }
 
   function handleAddTableColumn(field: TableFieldDefinition): void {
@@ -1448,9 +1520,8 @@ export function FormBuilderView({
       : undefined;
 
     return (
-      descriptor?.parameters.find(
-        (parameter) => parameter.key === parameterKey,
-      )?.label || parameterKey
+      descriptor?.parameters.find((parameter) => parameter.key === parameterKey)
+        ?.label || parameterKey
     );
   }
 
@@ -1483,11 +1554,10 @@ export function FormBuilderView({
   function updateFieldRequired(fieldKey: string, required: boolean): void {
     setSchema((currentSchema) => ({
       ...currentSchema,
-      fields: currentSchema.fields.map(
-        (field): FormFieldDefinition =>
-          field.fieldKey === fieldKey
-            ? ({ ...field, required } as FormFieldDefinition)
-            : field,
+      fields: currentSchema.fields.map((field): FormFieldDefinition =>
+        field.fieldKey === fieldKey
+          ? ({ ...field, required } as FormFieldDefinition)
+          : field,
       ),
     }));
     setAdvancedSchemaMessage(null);
@@ -1518,26 +1588,30 @@ export function FormBuilderView({
   return (
     <>
       <>
-          <SectionGroup>
-            <Section>
-              <div style={WORKBENCH_STYLE}>
-                <Tab
-                  activeKey={activeTab}
-                  onChange={handleTabChange}
-                  size="sub"
-                >
-                  <TabItem key="design">設計</TabItem>
-                  <TabItem key="preview">預覽</TabItem>
-                  <TabItem key="advanced">進階</TabItem>
-                </Tab>
+        {filterableCheckError ? (
+          <InlineMessage content={filterableCheckError} severity="warning" />
+        ) : null}
+        {filterableIssues.length > 0 ? (
+          <Typography color="text-error" style={PRE_LINE_STYLE} variant="body">
+            {filterableIssues.map((issue): string => issue.message).join('\n')}
+          </Typography>
+        ) : null}
+        <SectionGroup>
+          <Section>
+            <div style={WORKBENCH_STYLE}>
+              <Tab activeKey={activeTab} onChange={handleTabChange} size="sub">
+                <TabItem key="design">設計</TabItem>
+                <TabItem key="preview">預覽</TabItem>
+                <TabItem key="advanced">進階</TabItem>
+              </Tab>
 
-                {activeTab === 'design' ? renderDesignTab() : null}
-                {activeTab === 'preview' ? renderPreviewTab() : null}
-                {activeTab === 'advanced' ? renderAdvancedTab() : null}
-              </div>
-            </Section>
-          </SectionGroup>
-        </>
+              {activeTab === 'design' ? renderDesignTab() : null}
+              {activeTab === 'preview' ? renderPreviewTab() : null}
+              {activeTab === 'advanced' ? renderAdvancedTab() : null}
+            </div>
+          </Section>
+        </SectionGroup>
+      </>
       {pendingBuilderConfirmation ? (
         <Modal
           cancelText="返回"
@@ -1554,7 +1628,8 @@ export function FormBuilderView({
           {pendingBuilderConfirmation.kind === 'remove-field' ? (
             <div style={COMPACT_STACK_STYLE}>
               <Typography variant="body">
-                此欄位仍被下列 DataSource binding 使用；移除後請重新設定這些欄位。
+                此欄位仍被下列 DataSource binding
+                使用；移除後請重新設定這些欄位。
               </Typography>
               <Typography color="text-warning" variant="body">
                 {pendingBuilderConfirmation.affectedFieldKeys.join('、')}
@@ -1770,6 +1845,38 @@ export function FormBuilderView({
             )
           : null}
         {renderSettingsFormRow(
+          '可篩選',
+          'fieldFilterable',
+          <Toggle
+            checked={field.filterable === true}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateSelectedFieldWith((current) =>
+                event.target.checked
+                  ? { ...current, filterable: true }
+                  : removeFieldKey(current, 'filterable'),
+              )
+            }
+          />,
+        )}
+        {field.filterable === true ? (
+          <Typography
+            color="text-neutral"
+            style={FIELD_SETTINGS_HINT_STYLE}
+            variant="body"
+          >
+            {FILTERABLE_WARNING}
+          </Typography>
+        ) : null}
+        {filterableIssueByPath.has(field.fieldKey) ? (
+          <Typography
+            color="text-error"
+            style={FIELD_SETTINGS_HINT_STYLE}
+            variant="body"
+          >
+            {filterableIssueByPath.get(field.fieldKey)}
+          </Typography>
+        ) : null}
+        {renderSettingsFormRow(
           '只存不顯示（系統整合用）',
           'fieldHidden',
           <Toggle
@@ -1791,8 +1898,8 @@ export function FormBuilderView({
             style={FIELD_SETTINGS_HINT_STYLE}
             variant="body"
           >
-            填寫、唯讀與重送畫面都不會顯示這個欄位，值仍會存下來；
-            透過 API 仍然讀得到這個值，不是權限控管。
+            填寫、唯讀與重送畫面都不會顯示這個欄位，值仍會存下來； 透過 API
+            仍然讀得到這個值，不是權限控管。
           </Typography>
         ) : null}
       </div>
@@ -1852,7 +1959,12 @@ export function FormBuilderView({
     }
 
     if (isFormOptionFieldDefinition(field)) {
-      return renderOptionFieldSettings(field, commit, requestChange, rowColumns);
+      return renderOptionFieldSettings(
+        field,
+        commit,
+        requestChange,
+        rowColumns,
+      );
     }
 
     if (field.type === 'boolean') {
@@ -1933,7 +2045,9 @@ export function FormBuilderView({
    * Mezzanine caps a field's data entry at 640px — that cap is what squeezed
    * the list into a third of the panel while the settings beside it ran wide.
    */
-  function renderTableColumnsSection(field: TableFieldDefinition): ReactElement {
+  function renderTableColumnsSection(
+    field: TableFieldDefinition,
+  ): ReactElement {
     return (
       <div style={TABLE_COLUMNS_SECTION_STYLE}>
         <div style={TABLE_COLUMNS_HEADER_STYLE}>
@@ -2030,6 +2144,44 @@ export function FormBuilderView({
         ),
         title: '必填',
       },
+      {
+        key: 'filterable',
+        render: (row: TableColumnRow): ReactElement => {
+          const column = readTableColumn(field, row.index);
+          const issue = filterableIssueByPath.get(
+            `${field.fieldKey}.${column.fieldKey}`,
+          );
+
+          return (
+            <div>
+              <Toggle
+                checked={column.filterable === true}
+                inputProps={{
+                  'aria-label': `${row.label || row.fieldKey} 可篩選`,
+                }}
+                onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                  commitTableColumn(field, row.index, {
+                    ...column,
+                    filterable: event.target.checked,
+                  })
+                }
+                size="sub"
+              />
+              {column.filterable === true ? (
+                <Typography color="text-neutral" variant="caption">
+                  {FILTERABLE_WARNING}
+                </Typography>
+              ) : null}
+              {issue ? (
+                <Typography color="text-error" variant="caption">
+                  {issue}
+                </Typography>
+              ) : null}
+            </div>
+          );
+        },
+        title: '可篩選',
+      },
     ];
     const actions: TableActions<TableColumnRow> = {
       render: (row): ReturnType<TableActions<TableColumnRow>['render']> => [
@@ -2065,7 +2217,11 @@ export function FormBuilderView({
         draggable={{
           enabled: true,
           onDragEnd: (_rows, options): void =>
-            handleReorderTableColumns(field, options.fromIndex, options.toIndex),
+            handleReorderTableColumns(
+              field,
+              options.fromIndex,
+              options.toIndex,
+            ),
         }}
         // Expanding a row is what selects the column: the settings then sit
         // under the row they belong to, so there is nothing to guess about
@@ -2470,7 +2626,8 @@ export function FormBuilderView({
         candidate.version === field.dataSource.version,
     );
     const unsupportedCurrentSource =
-      descriptor && !isFormDataSourceDescriptorCompatible(descriptor, field.type);
+      descriptor &&
+      !isFormDataSourceDescriptorCompatible(descriptor, field.type);
 
     return (
       <div style={DATA_SOURCE_SETTINGS_STYLE}>
@@ -2961,10 +3118,7 @@ export function FormBuilderView({
           }
           options={options}
           size="sub"
-          value={readSelectOption(
-            options,
-            value === true ? 'true' : 'false',
-          )}
+          value={readSelectOption(options, value === true ? 'true' : 'false')}
         />
       );
     }
@@ -3675,9 +3829,7 @@ export function FormBuilderView({
               wide ? FormFieldLayout.VERTICAL : FormFieldLayout.STRETCH
             }
             name={name}
-            {...(hint
-              ? { hintText: hint.text, severity: hint.severity }
-              : {})}
+            {...(hint ? { hintText: hint.text, severity: hint.severity } : {})}
           >
             {control}
           </BPMFormField>
@@ -4077,9 +4229,7 @@ function readDiscardedColumnSettings(
  * boilerplate is not the designer's work, so losing it is not worth a
  * confirmation.
  */
-function isDefaultColumnOptions(
-  options: readonly FormFieldOption[],
-): boolean {
+function isDefaultColumnOptions(options: readonly FormFieldOption[]): boolean {
   return (
     options.length === DEFAULT_COLUMN_OPTIONS.length &&
     options.every(
@@ -4213,7 +4363,7 @@ function convertTableColumnType(
  */
 function removeFieldKey(
   field: FormFieldDefinition,
-  key: 'displayAs' | 'hidden',
+  key: 'displayAs' | 'filterable' | 'hidden',
 ): FormFieldDefinition {
   return Object.fromEntries(
     Object.entries(field).filter(([entryKey]) => entryKey !== key),

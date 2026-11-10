@@ -106,6 +106,10 @@ jest.mock('@rytass/bpm-core-client/workflow', () => ({
   listTaskDecisions: jest.fn(),
   readApprovalInstance: jest.fn(),
   readApprovalInstanceCaseTitle: jest.fn(),
+  readApprovalTemplateCurrentFormSchema: jest.fn(),
+}));
+jest.mock('@rytass/bpm-core-client/template', () => ({
+  listApprovalTemplates: jest.fn(async (): Promise<readonly unknown[]> => []),
 }));
 
 const api = workflowApi as jest.Mocked<typeof workflowApi>;
