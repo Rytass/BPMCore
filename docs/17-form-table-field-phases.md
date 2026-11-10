@@ -89,7 +89,7 @@ dataSource 環境 lint）確認屬 P3 例外；`docs/api-reference.md` 對 `form
    並在 `ConditionService` 的識別字白名單加入 `size`（比照既有的 `has` macro）：
    沿用扁平欄位的 `!= ""` 會把 0 列表格判為已填（附錄 A 實測），與 ADR §3.8 的
    「列數 > 0」語意相反。value 類 operator 對 table 回 `undefined`，不產生表達式。
-   （缺 key 守衛見下方附錄 A 結論 1、2 與 `docs/05-conditions-cel.md` §2.1。）
+   （缺 key 守衛見下方附錄 A 結論 1、2 與 `docs/05-conditions-cel.md` §5.1.1。）
 5. 條件式引用 table 內部 path 的阻擋，本 phase 只做 form schema 這一半
    （`visibleWhen`／`requiredWhen`／`readonlyWhen`）；edge structured condition 那一半
    在 workflow 發布路徑，維持 P1 範圍。

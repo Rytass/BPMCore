@@ -199,6 +199,12 @@ W6 runtime 會優先執行 `edge.data.condition` 的 CEL expression，並保留�
 邊條件以案件 `workflowSnapshot.expressionDialect` 的方言評估（缺少＝`cel-legacy`），不讀模板目前的版本；評估失敗不會當成
 「不成立」而改走 default 邊，而是整個交易回滾（見 §9.2）。
 
+唯一的例外（未發佈）：設計器建的邊（帶 `conditionFieldKey` ＋ `conditionOperator`）存下的 CEL 丟 `EXPRESSION_MISSING_KEY`
+或 `EXPRESSION_TYPE_ERROR`，**且該欄位確實未填**（沒有 key、`null`、`""`、只有空白、空陣列）時，改由結構化欄位回答，
+未填的欄位讀作不符合（不等於／未填寫為 `true`，其餘為 `false`）。這是給沒碰過的選填欄位用的：舊定義的 CEL 讀不到 key 就丟例外。
+CEL 能算出結果時一律採用；欄位已填卻仍出錯、手寫 CEL、預算超限、函式失敗都照常回滾。實際執行與 dry run 共用同一個判斷，
+規則細節見 `docs/05` §5.1.1。
+
 > 所有節點類型的 outgoing edge 都會先評估條件：條件成立的 edge 全部都會走（分叉），XOR 只取第一條。
 > 下方示意程式只描述 XOR 的情況。
 
@@ -980,7 +986,7 @@ ad-hoc 結案通知，標籤為「逾期終止」），案件終態為 `EXPIRED`
 
 上表的 CEL 評估點（表單欄位那列不是 CEL）遇到執行期錯誤（語法、缺 key、型別、預算、結果、函式失敗，見 §9.2）都是 fail closed：
 丟 `ExpressionRuntimeError`（`BadRequestException`），所在交易回滾，案件不前進。只有 NOTIFY webhook 的 `EXPRESSION` 參數例外，
-失敗記在 delivery 上，審批照常進行（§9.2）。
+失敗記在 delivery 上，審批照常進行（§9.2）；另外設計器建的邊在欄位未填時會改由結構化欄位回答（§3.1，未發佈）。
 
 ---
 
@@ -1085,7 +1091,7 @@ async function checkInstanceCompletion(instanceId) {
 - 對外只有六個錯誤碼與 label（`EXPRESSION_SYNTAX_ERROR`、`EXPRESSION_MISSING_KEY`、`EXPRESSION_TYPE_ERROR`、
   `EXPRESSION_BUDGET_EXCEEDED`、`EXPRESSION_INVALID_RESULT`、`EXPRESSION_FUNCTION_FAILED`），不含引擎原文與 context 值。
 - 錯誤是 `ExpressionRuntimeError`（繼承 `BadRequestException`）：交易回滾，案件、任務、token 與 `formData` 都不變。
-  邊條件失敗不會改走 default 邊。委派條件失敗依 §4.2：只有該規則正是要套用的那條時才讓派送失敗。
+  邊條件失敗不會改走 default 邊（設計器建的邊在欄位未填時改由結構化欄位回答，見 §3.1，這不是改走 default）。委派條件失敗依 §4.2：只有該規則正是要套用的那條時才讓派送失敗。
 - 宿主或內建函式失敗（丟錯、回 thenable、回傳型別不符、函式已下架）是 `EXPRESSION_FUNCTION_FAILED`，而且不會被
   `||`、`&&`、`exists` 吸收：評估中只要有一次函式呼叫失敗，整次就判失敗。被短路而沒有執行的呼叫不算。
 - 函式從宿主移除後，引用它的進行中案件在評估時回 `EXPRESSION_FUNCTION_FAILED` 並回滾；宿主補回函式後同一案件可以繼續推進。
