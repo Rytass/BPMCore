@@ -68,7 +68,7 @@
 ### 1.5 送出時的型別檢查現況
 
 - `validateSubmittedFormData`（~10440）對 `hidden` 欄位不做 `visibleWhen` 判斷，其值經 `readSubmittedTextValueErrors` 檢查文字規則。
-- `number`／`money`／`date`／`datetime` 的值格式是否在送出時受檢、各型別實際的正規儲存格式為何，**目前未能確認**，列為 P0 必做的現況測試（[26](./26-instance-field-filter-phases.md) P0）。
+- **P0 查證結果**：送出時**不檢查** `number`／`money`／`date`／`datetime`／選項類欄位的值型別，只檢查 `required` 與文字規則；API 直接送入 `"abc"` 當金額會被存下。client 端（`libs/bpm-core-client` 的 `form-rendering.ts`）寫入的形狀為：數字為 JSON number、`date` 為 `YYYY-MM-DD`、`datetime` 為 `Date#toISOString()`（UTC、毫秒、`Z`）、單選為字串、多選為字串陣列。§6 的正規格式以此為準。
 
 ---
 
@@ -123,7 +123,7 @@
 ### 4.1 決策：直接查 `form_data`，只加整欄 GIN
 
 ```sql
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_approval_instances_form_data_gin"
+CREATE INDEX IF NOT EXISTS "IDX_approval_instances_form_data_gin"
   ON "approval_instances" USING gin ("form_data" jsonb_path_ops);
 ```
 
@@ -185,13 +185,14 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_approval_instances_form_data_gin"
 
 兩個執行時點：
 
-- **勾選當下**：設計器儲存草稿時即檢查，在勾選框旁明確顯示錯誤。
-- **發布時**：伺服器再檢查一次，作為最終依據（防止繞過設計器直接呼叫 API）。
+- **勾選當下**：設計器呼叫唯讀 query `filterableFieldIssues(templateId, formDefinitionId, schemaJson)` 取得問題清單，在勾選框旁明確顯示錯誤。草稿儲存**不阻擋**——草稿不影響任何實例，擋在草稿會讓設計者無法先存再改。
+- **發布時**：伺服器再檢查一次，作為最終依據（防止繞過設計器直接呼叫 API）。掛點為範本服務的版本發布（一般發布與「表單＋流程一次建立」的 compose 共用）與**回滾**——回滾會讓舊版本成為目前版本，同樣要通過檢查。不通過回 `ConflictException`，訊息逐條列出問題。
+- 判定邏輯是 `@rytass/bpm-core-shared` 的純函式 `readFilterableFieldIssues`，前後端共用，訊息由 `describeFilterableFieldIssue` 產生。
 
 錯誤訊息必須明確且給出路：
 
 - 歷史型別衝突：指出衝突的版本號與當時的型別。
-- 舊資料不符：列出筆數、前若干筆實例 id、實際值與預期型別。
+- 舊資料不符：列出筆數、前若干筆實例 id（table 附列號）與預期型別。**不列實際值**：設計者不一定能讀那些實例，而 schema 由設計者自己送出，若回傳實際值，任何 key 都能被「宣告為可篩選」來讀出存值。僅剩的資訊是「該 key 的舊值是否符合某型別」與筆數，設計者本就能定義表單要收什麼資料，視為可接受。
 - 兩者都提示解法：**改用新的 fieldKey 再勾選可篩選**（舊實例在新 key 上即為「沒有值」，篩選時不符合、排序時依 §7.6 排列，行為可預期）。舊實例的表單值目前沒有 API 可修改，故不提示「修正資料」。
 
 設計器的勾選框旁另需說明：
@@ -205,15 +206,16 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_approval_instances_form_data_gin"
 
 - **只對可篩選欄位**強制型別檢查；未宣告的欄位維持現狀，不影響任何現有 host（現在沒有任何範本有可篩選欄位）。「所有欄位一律檢查」屬破壞性變更，另案處理。
 - 四條寫入路徑（W1–W4，§1.3）都必須套用同一個檢查函式，不符即拒絕寫入。W4 `SET_FORM_FIELD` 是流程內部寫入，同樣適用。
-- 各型別的正規儲存格式於 P0 依 client 現況查證後定案，建議如下：
+- 檢查依據為**範本目前版本**的可篩選路徑（F3）：送出用送出當下的表單版本；補填、重送與 `SET_FORM_FIELD` 讀範本目前版本，因為查詢也以目前版本解讀。
+- 各型別的正規儲存格式（依 §1.5 的 P0 查證定案）：
 
   | 型別 | 正規格式 |
   | --- | --- |
   | `number`、`money` | JSON number |
   | `date` | 字串 `YYYY-MM-DD` |
-  | `datetime` | ISO 8601 字串，含時區 |
+  | `datetime` | `Date#toISOString()` 形狀：`YYYY-MM-DDTHH:mm:ss.sssZ`（UTC） |
   | `select`、`autocomplete`、`radio`、`text`、`textarea` | 字串 |
-  | `checkbox`、多選 | 字串陣列 |
+  | `checkbox`、多選 | 字串陣列（單選類欄位也接受字串陣列，`[]` 為沒有值） |
   | `boolean` | JSON boolean |
   | `member`、`org_unit` | id 字串（member 多選為字串陣列） |
 
@@ -283,6 +285,8 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_approval_instances_form_data_gin"
 
 ### 7.7 SQL 形狀與安全
 
+- **日期不在 SQL 轉型**：`date` 與 `datetime` 的正規格式（§6）本身可依字串順序比較，範圍與排序直接比較文字，不做 `::date`／`::timestamptz` 轉型，因此不會因非法日期（如 `2026-02-30`）讓查詢報錯；格式不符的值以正規表示式排除，視為沒有值。條件值同樣先正規化為正規格式再傳入。
+- **選項與成員的兩種形狀**：同一欄位的值可能是字串或字串陣列，`EQUALS`／`IN` 對每個值組成兩個包含條件，以 `OR` 連接（`form_data @> {"k":"v"}` 或 `form_data @> {"k":["v"]}`），兩者都走 GIN。
 - **值一律以參數傳遞**，不拼進 SQL 或 jsonpath 字串。路徑只能來自已驗證的 fieldKey（符合 `^[A-Za-z_][A-Za-z0-9_]*$`）。
 - 型別轉換一律包在 `CASE WHEN jsonb_typeof(...) = '<type>' THEN ... END` 中，確保髒值不會讓查詢報錯；不依賴 `AND` 的短路順序（PostgreSQL 不保證）。
 - `CONTAINS` 的 `%`、`_`、`\` 需跳脫後再以 `ILIKE` 比對。
@@ -308,7 +312,7 @@ WHERE ai.template_id = $templateId
       AND CASE WHEN jsonb_typeof(r -> 'qty') = 'number'
                THEN (r ->> 'qty')::numeric END >= $qtyFrom)
 ORDER BY CASE WHEN ai.form_data ->> 'applyDate' ~ '^\d{4}-\d{2}-\d{2}$'
-              THEN (ai.form_data ->> 'applyDate')::date END DESC,
+              THEN ai.form_data ->> 'applyDate' END DESC,
          ai.id DESC
 LIMIT $pageSize OFFSET $offset;
 ```
@@ -356,8 +360,9 @@ LIMIT $pageSize OFFSET $offset;
 
 ## 10. Migration
 
-- 新增一支獨立 migration，只建 §4.1 的 GIN 索引，設 `transaction = false`，以 `CREATE INDEX CONCURRENTLY` 建立，避免已有大量實例的 host 升級時被鎖住寫入。
-- `docs/api-reference.md` 的 migration 說明需註明：host 的 migration 執行器必須允許非交易 migration。
+- 新增一支 migration，只建 §4.1 的 GIN 索引，以一般的 `CREATE INDEX IF NOT EXISTS` 在 migration 交易內建立。
+- **原裁決 F10（非交易、`CONCURRENTLY`）不可行**：TypeORM 的 `migrationsTransactionMode` 預設為 `'all'`，在此模式下只要任何一支 migration 宣告 `transaction` 屬性，整批就拋 `ForbiddenTransactionModeOverrideError`（`typeorm/migration/MigrationExecutor.js`）。函式庫無法要求每個 host 改成 `'each'`，否則升級即失敗。
+- 代價：建索引期間 `approval_instances` 會被鎖住寫入。在 §9 的效能範圍內只需數秒；實例量大的 host 可在升級**前**自行執行 `CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_approval_instances_form_data_gin" ON "approval_instances" USING gin ("form_data" jsonb_path_ops);`，migration 遇到同名索引會跳過。`docs/api-reference.md` 的 migration 說明寫明此作法。
 - 不新增資料表、不新增欄位、不需回填。
 
 ---
@@ -505,7 +510,7 @@ export interface ListApprovalInstancesOptions {
 | F7 | 第一期型別（Q13） | 需求方的 10 種加 `boolean`、`textarea`；不含 `file_upload` |
 | F8 | hidden 能否可篩選（Q5） | 可以 |
 | F9 | 大量資料的升級路徑 | 文件寫明效能範圍；查詢條件產生收在內部介面後 |
-| F10 | 索引 migration（Q15） | 獨立、非交易、`CONCURRENTLY` |
+| F10 | 索引 migration（Q15） | 原決定為獨立、非交易、`CONCURRENTLY`；實作時查證 TypeORM 不允許（§10），改為交易內一般建立，大量資料的 host 先自行以 `CONCURRENTLY` 建同名索引 |
 | F11 | 伺服器端保密（Q4） | 不做 |
 | F12 | 遮蔽擴充點（Q18） | 預留內部介面 |
 | F13 | 名稱搜尋（Q2） | 支援，同時比對值與名稱；名稱為送出當時快照 |
@@ -565,3 +570,4 @@ export interface ListApprovalInstancesOptions {
 - **效能數字未實測**：P4 實測前不對外承諾 p95。
 - **名稱快照不回溯**：需由採用的 host 確認業務上可接受，並寫入使用說明。
 - **舊資料無法修正**：§5.4 拒絕後唯一出路是改用新 key；若之後新增「寫回表單值」的 API（§13 第 2 點），可再提供修正路徑。
+- **發布與寫入的併發（已知、未處理）**：啟用檢查（§5.4）與寫入檢查（§6）之間沒有鎖。發布交易讀完舊資料、尚未 commit 時，若另一個請求用舊版本送出案件，且某欄位在舊版本不是可篩選，就會寫入一筆新版本認定為型別錯誤的值；此後這筆案件在該欄位的篩選中被視為沒有值，且不再受檢。發生條件是「啟用篩選的發布」與「該欄位寫入錯型別值」落在同一個毫秒級時間窗，機率很低，影響是單筆案件被篩選漏掉、不會報錯。修法：發布與回滾對 `approval_templates` 該列取 `FOR UPDATE`（或 transaction-level advisory lock），W1–W4 在寫入交易內對同一列取共享鎖，並以範本目前版本的 schema 檢查；W1 的檢查需移入寫入交易。另案處理。

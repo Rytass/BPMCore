@@ -1,6 +1,6 @@
 # 26 — 簽核實例欄位篩選開發 Phase
 
-- **狀態**：P0–P4 PLANNED（尚未啟動）
+- **狀態**：P0–P3 IMPLEMENTED（2026-11-11，本機 develop 端對端操作通過，待獨立 verifier）；P4 PLANNED
 - **規劃日期**：2026-11-10；依 ADR 25 的裁決（2026-11-11）改寫
 - **權威決策**：[25 — ADR：簽核實例依表單欄位篩選與排序](./25-instance-field-filter-adr.md)（Accepted）
 - **完成定義**：P0–P4 全部 VERIFIED，且請款範本的驗收情境（§驗收情境）在 wrapper host 實際操作通過；`docs/api-reference.md` 同步更新。
@@ -12,10 +12,10 @@
 
 | Phase | 交付 | 相依 | 狀態 |
 | --- | --- | --- | --- |
-| P0 | 現況測試：送出型別檢查與各型別的實際儲存格式；api-reference 版本行更正 | — | PLANNED |
-| P1 | `filterable` 宣告、lint、啟用檢查（歷史型別與舊資料）、四路徑寫入型別檢查 | P0 | PLANNED |
-| P2 | 查詢：GIN migration、條件編譯器（內部介面）、權限擴充點、sort、service 與 GraphQL | P1 | PLANNED |
-| P3 | Client SDK、設計器勾選與錯誤提示、列表篩選面板、api-reference 同步 | P2 | PLANNED |
+| P0 | 現況測試：送出型別檢查與各型別的實際儲存格式；api-reference 版本行更正 | — | IMPLEMENTED |
+| P1 | `filterable` 宣告、lint、啟用檢查（歷史型別與舊資料）、四路徑寫入型別檢查 | P0 | IMPLEMENTED |
+| P2 | 查詢：GIN migration、條件編譯器（內部介面）、權限擴充點、sort、service 與 GraphQL | P1 | IMPLEMENTED |
+| P3 | Client SDK、設計器勾選與錯誤提示、列表篩選面板、api-reference 同步 | P2 | IMPLEMENTED |
 | P4 | 1 萬筆效能實測、wrapper host 驗收 | P3 | PLANNED |
 
 ```
@@ -68,7 +68,7 @@
 
 **Scope**
 
-- Migration：獨立一支、`transaction = false`，`CREATE INDEX CONCURRENTLY` 建 `form_data` 的 GIN（`jsonb_path_ops`）索引（ADR §10）。
+- Migration：獨立一支，交易內以 `CREATE INDEX IF NOT EXISTS` 建 `form_data` 的 GIN（`jsonb_path_ops`）索引；不宣告 `transaction`（TypeORM `'all'` 模式會拒絕整批，見 ADR §10）。
 - 內部介面：
   - `ApprovalInstanceFieldFilterCompiler`：把 `fieldFilters` 與 `sort` 轉為 SQL 片段（ADR §7.7）。v1 實作為 jsonb；不匯出。
   - `ApprovalInstanceFilterableFieldPolicy`：回傳檢視者可用的可篩選欄位；v1 回傳目前版本全部可篩選欄位；不匯出（ADR §8.2）。
