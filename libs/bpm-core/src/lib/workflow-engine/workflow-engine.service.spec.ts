@@ -12242,6 +12242,51 @@ describe('WorkflowEngineService', () => {
       );
     });
 
+    it.each([
+      ['EXPRESSION_TYPE_ERROR'],
+      ['EXPRESSION_MISSING_KEY'],
+    ] as const)(
+      'rethrows %s when the edge field is filled, so a broken CEL stays visible',
+      async (code): Promise<void> => {
+        // Second review of PR #135: a CEL edited by hand while the structured
+        // fields stayed (`form.amount > "abc"`) must not route silently.
+        evaluateBoolean.mockImplementation(function (
+          this: ConditionService,
+          ...args: Parameters<ConditionService['evaluateBoolean']>
+        ): boolean {
+          if (isEdgeCall(args)) {
+            throw new ExpressionRuntimeError(code, 'workflow.edges');
+          }
+
+          return realEvaluateBoolean.apply(this, args);
+        });
+
+        await expect(
+          route(greaterThanWorkflow(), { amount: 600000 }),
+        ).rejects.toThrow(code);
+      },
+    );
+
+    it('answers a type error from the structured fields when the edge field is empty', async (): Promise<void> => {
+      evaluateBoolean.mockImplementation(function (
+        this: ConditionService,
+        ...args: Parameters<ConditionService['evaluateBoolean']>
+      ): boolean {
+        if (isEdgeCall(args)) {
+          throw new ExpressionRuntimeError(
+            'EXPRESSION_TYPE_ERROR',
+            'workflow.edges',
+          );
+        }
+
+        return realEvaluateBoolean.apply(this, args);
+      });
+
+      await expect(
+        route(greaterThanWorkflow(), { amount: null }),
+      ).resolves.toBe('task_default');
+    });
+
     it('routes a dry run by the structured fields when the key is absent', (): void => {
       failOnAbsentKey('agent');
 

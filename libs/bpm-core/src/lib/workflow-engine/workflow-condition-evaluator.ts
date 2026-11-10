@@ -2,24 +2,11 @@ import {
   WorkflowEdge,
   WorkflowEdgeConditionOperator,
 } from '@rytass/bpm-core-shared/workflow';
+import { isEmptyWorkflowValue, readOwnFormValue } from './workflow-form-value';
 
 export type WorkflowConditionContext = Readonly<{
   formData: Readonly<Record<string, unknown>>;
 }>;
-
-/**
- * A form value by key, own properties only: an absent key named like an
- * inherited member (`constructor`, `toString`) reads as `undefined`, not as a
- * function.
- */
-export function readOwnFormValue(
-  formData: Readonly<Record<string, unknown>>,
-  fieldKey: string,
-): unknown {
-  return Object.prototype.hasOwnProperty.call(formData, fieldKey)
-    ? formData[fieldKey]
-    : undefined;
-}
 
 export function evaluateWorkflowEdgeCondition(
   edge: WorkflowEdge,
@@ -154,18 +141,6 @@ function isNonPrimitiveValue(value: unknown): boolean {
   }
 
   return typeof value === 'object' && value !== null;
-}
-
-function isEmptyWorkflowValue(value: unknown): boolean {
-  if (value === null || typeof value === 'undefined') {
-    return true;
-  }
-
-  if (Array.isArray(value)) {
-    return value.length === 0;
-  }
-
-  return typeof value === 'string' ? value.trim() === '' : false;
 }
 
 function normalizeWorkflowValue(value: unknown): string | number | boolean {

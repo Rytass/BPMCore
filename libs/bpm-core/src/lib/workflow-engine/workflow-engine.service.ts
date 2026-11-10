@@ -150,10 +150,8 @@ import {
   TaskStatusEnum,
   WorkflowTokenStatusEnum,
 } from './workflow-engine.enums';
-import {
-  evaluateWorkflowEdgeCondition,
-  readOwnFormValue,
-} from './workflow-condition-evaluator';
+import { evaluateWorkflowEdgeCondition } from './workflow-condition-evaluator';
+import { isEmptyWorkflowValue, readOwnFormValue } from './workflow-form-value';
 import {
   WorkflowDryRunResultObject,
   WorkflowDryRunStepObject,
@@ -3519,30 +3517,23 @@ export class WorkflowEngineService {
     edge: WorkflowEdge,
     lastDecision: Readonly<Record<string, unknown>> | null,
   ): boolean {
-    const expression = edge.data.condition?.trim();
+    const expression = readEvaluableEdgeExpression(edge, input.formData);
 
-    if (
-      expression &&
-      !isListValuedStructuredCondition(edge, input.formData)
-    ) {
-      try {
-        return this.conditionService.evaluateBoolean(
-          expression,
-          buildDryRunExpressionContext(input, lastDecision),
-          `workflow.edges.${edge.id}.data.condition`,
-          {
-            allowedRootIdentifiers: DRY_RUN_EDGE_ROOT_IDENTIFIERS,
-            dialect: readWorkflowExpressionDialect(input.workflowDefinition),
-          },
-        );
-      } catch (error: unknown) {
-        if (!canAnswerFromStructuredCondition(edge, error)) {
-          throw error;
-        }
-      }
+    if (!expression) {
+      return evaluateWorkflowEdgeCondition(edge, { formData: input.formData });
     }
 
-    return evaluateWorkflowEdgeCondition(edge, { formData: input.formData });
+    return evaluateWithStructuredFallback(edge, input.formData, (): boolean =>
+      this.conditionService.evaluateBoolean(
+        expression,
+        buildDryRunExpressionContext(input, lastDecision),
+        `workflow.edges.${edge.id}.data.condition`,
+        {
+          allowedRootIdentifiers: DRY_RUN_EDGE_ROOT_IDENTIFIERS,
+          dialect: readWorkflowExpressionDialect(input.workflowDefinition),
+        },
+      ),
+    );
   }
 
   /**
@@ -4901,36 +4892,31 @@ export class WorkflowEngineService {
     node: WorkflowNode,
     edge: WorkflowEdge,
   ): Promise<boolean> {
-    const expression = edge.data.condition?.trim();
+    const expression = readEvaluableEdgeExpression(edge, instance.formData);
 
-    if (
-      expression &&
-      !isListValuedStructuredCondition(edge, instance.formData)
-    ) {
-      const context = {
-        ...buildWorkflowExpressionContext(instance),
-        lastDecision: await this.readLastDecisionContext(
-          manager,
-          instance.id,
-          node.id,
-        ),
-      };
-
-      try {
-        return this.conditionService.evaluateBoolean(
-          expression,
-          context,
-          `workflow.edges.${edge.id}.data.condition`,
-          { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
-        );
-      } catch (error: unknown) {
-        if (!canAnswerFromStructuredCondition(edge, error)) {
-          throw error;
-        }
-      }
+    if (!expression) {
+      return evaluateWorkflowEdgeCondition(edge, {
+        formData: instance.formData,
+      });
     }
 
-    return evaluateWorkflowEdgeCondition(edge, { formData: instance.formData });
+    const context = {
+      ...buildWorkflowExpressionContext(instance),
+      lastDecision: await this.readLastDecisionContext(
+        manager,
+        instance.id,
+        node.id,
+      ),
+    };
+
+    return evaluateWithStructuredFallback(edge, instance.formData, (): boolean =>
+      this.conditionService.evaluateBoolean(
+        expression,
+        context,
+        `workflow.edges.${edge.id}.data.condition`,
+        { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
+      ),
+    );
   }
 
   private async readLastDecisionContext(
@@ -9384,26 +9370,29 @@ function readNodeEntryCondition(node: WorkflowNode): string | null {
 }
 
 /**
- * A designer-built edge whose value is a list is answered by its structured
- * fields: `evaluateWorkflowEdgeCondition` reads a list as contains / does not
- * contain and an empty list as empty, which the stored CEL of older
- * definitions did not.
+ * The stored CEL an edge is evaluated by, or `null` when its structured fields
+ * answer directly: no CEL, or a designer-built edge whose value is a list
+ * (`evaluateWorkflowEdgeCondition` reads a list as contains / does not contain
+ * and an empty list as empty, which the stored CEL of older definitions did
+ * not).
  */
-function isListValuedStructuredCondition(
+function readEvaluableEdgeExpression(
   edge: WorkflowEdge,
   formData: Readonly<Record<string, unknown>>,
-): boolean {
+): string | null {
+  const expression = edge.data.condition?.trim();
   const fieldKey = edge.data.conditionFieldKey;
-
-  return Boolean(
+  const listValued = Boolean(
     fieldKey &&
     edge.data.conditionOperator &&
     Array.isArray(readOwnFormValue(formData, fieldKey)),
   );
+
+  return expression && !listValued ? expression : null;
 }
 
 /**
- * The expression errors a designer-built edge answers from its structured
+ * The expression errors a designer-built edge may answer from its structured
  * fields instead of failing the submit or decision.
  */
 const STRUCTURED_FALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
@@ -9412,8 +9401,10 @@ const STRUCTURED_FALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether a designer-built edge may answer from its structured fields
- * (`conditionFieldKey` + `conditionOperator`) after its stored CEL failed.
+ * Evaluates an edge's stored CEL and, only when it fails because the edge's
+ * own field is unfilled, answers from the structured fields instead. The one
+ * place both the actual run and the designer dry run decide that, so the two
+ * cannot drift apart.
  *
  * Published definitions and in-flight instances keep the CEL they were
  * stored with, and that CEL throws for an optional field left untouched: the
@@ -9421,20 +9412,34 @@ const STRUCTURED_FALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
  * meets `null` or `""` (`null > 5`, `"" > 5`). Only then does the structured
  * evaluator answer, reading the value as unfilled (`EQUALS` and the ordered
  * comparisons false, `NOT_EQUALS` and `IS_EMPTY` true, `IS_FILLED` false).
- * A stored CEL that evaluates keeps its result, so no route that worked
- * before changes. A hand-written CEL has no structured fields and still
- * fails as written; a budget overrun or a function failure is never absorbed.
+ *
+ * Everything else is rethrown: a stored CEL that evaluates keeps its result,
+ * so no route that worked before changes; a type error or missing key while
+ * the edge's field *is* filled points at the CEL itself (edited by hand while
+ * the structured fields stayed) and stays visible; a hand-written CEL has no
+ * structured fields; a budget overrun or a function failure is never absorbed.
  */
-function canAnswerFromStructuredCondition(
+function evaluateWithStructuredFallback(
   edge: WorkflowEdge,
-  error: unknown,
+  formData: Readonly<Record<string, unknown>>,
+  evaluate: () => boolean,
 ): boolean {
-  return Boolean(
-    edge.data.conditionFieldKey &&
-    edge.data.conditionOperator &&
-    error instanceof ExpressionRuntimeError &&
-    STRUCTURED_FALLBACK_ERROR_CODES.has(error.code),
-  );
+  try {
+    return evaluate();
+  } catch (error: unknown) {
+    const fieldKey = edge.data.conditionFieldKey;
+    const answerable =
+      Boolean(fieldKey && edge.data.conditionOperator) &&
+      error instanceof ExpressionRuntimeError &&
+      STRUCTURED_FALLBACK_ERROR_CODES.has(error.code) &&
+      isEmptyWorkflowValue(readOwnFormValue(formData, fieldKey ?? ''));
+
+    if (!answerable) {
+      throw error;
+    }
+
+    return evaluateWorkflowEdgeCondition(edge, { formData });
+  }
 }
 
 function edgeHasCondition(edge: WorkflowEdge): boolean {
