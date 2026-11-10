@@ -1,3 +1,13 @@
+## 0.20.1 (2026-11-10)
+
+### 🩹 Fixes
+
+- **workflow-graph:** guard designer conditions against absent form keys ([a3d2cb6](https://github.com/Rytass/BPMCore/commit/a3d2cb6))
+
+### ❤️ Thank You
+
+- Kai-Chieh Yang
+
 ## 0.20.0 (2026-11-08)
 
 ### 🚀 Features

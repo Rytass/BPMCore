@@ -1,3 +1,15 @@
+## 0.20.1 (2026-11-10)
+
+### 🩹 Fixes
+
+- **workflow-graph:** read a multiple-selection "" as unfilled ([298753a](https://github.com/Rytass/BPMCore/commit/298753a))
+- **workflow-graph:** guard designer conditions against absent form keys ([a3d2cb6](https://github.com/Rytass/BPMCore/commit/a3d2cb6))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.20.0 (2026-11-08)
 
 ### 🚀 Features

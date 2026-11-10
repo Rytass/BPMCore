@@ -1,3 +1,22 @@
+## 0.20.1 (2026-11-10)
+
+### 🩹 Fixes
+
+- **workflow-graph:** read a multiple-selection "" as unfilled ([298753a](https://github.com/Rytass/BPMCore/commit/298753a))
+- **workflow-engine:** fall back on a missing key only when it is the edge's field ([d2c5589](https://github.com/Rytass/BPMCore/commit/d2c5589))
+- **workflow-engine:** fall back to structured fields only for an unfilled field ([1f626e0](https://github.com/Rytass/BPMCore/commit/1f626e0))
+- **condition:** drop missing-key names after a computed index ([74d8081](https://github.com/Rytass/BPMCore/commit/74d8081))
+- **workflow-engine:** cover empty strings and own keys in the structured fallback ([6371342](https://github.com/Rytass/BPMCore/commit/6371342))
+- **condition:** echo only names written in the expression in CEL error messages ([098f7d9](https://github.com/Rytass/BPMCore/commit/098f7d9))
+- **condition:** keep form and initiator values out of CEL error messages ([36757f4](https://github.com/Rytass/BPMCore/commit/36757f4))
+- **workflow-engine:** route designer edges with unfilled fields through the structured evaluator ([a57f10f](https://github.com/Rytass/BPMCore/commit/a57f10f))
+- **workflow-graph:** guard designer conditions against absent form keys ([a3d2cb6](https://github.com/Rytass/BPMCore/commit/a3d2cb6))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.20.0 (2026-11-08)
 
 ### 🚀 Features
