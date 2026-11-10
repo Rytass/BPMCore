@@ -3,8 +3,9 @@ import { resolve } from 'node:path';
 
 /**
  * Minimal reproduction, with the real cel-js, of why the workflow engine routes
- * a designer-built edge through the structured evaluator when its field has no
- * value (`shouldEvaluateStructuredCondition` in the workflow engine).
+ * a designer-built edge through the structured evaluator when its stored CEL
+ * fails on a field that has no value (`evaluateWithStructuredFallback` in the
+ * workflow engine).
  *
  * The condition designer used to store these expressions. A client serialises
  * the form with `JSON.stringify`, so an optional field the user never touched
