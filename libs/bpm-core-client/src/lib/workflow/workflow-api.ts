@@ -11,10 +11,21 @@ import {
   isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
+  type ApprovalInstanceFieldFilter,
+  type ApprovalInstanceSort,
+} from '@rytass/bpm-core-shared';
+import {
   WorkflowDefinition,
   WorkflowExpressionDialect,
 } from '@rytass/bpm-core-shared/workflow';
 import { requestGraphQl } from '../graphql-client';
+
+export type {
+  ApprovalInstanceFieldFilter,
+  ApprovalInstanceFieldFilterOperator,
+  ApprovalInstanceSort,
+  ApprovalInstanceSortDirection,
+} from '@rytass/bpm-core-shared';
 
 export type ApprovalInstanceState =
   | 'APPROVED'
@@ -503,10 +514,34 @@ export type ApprovalInstanceView = 'ALL' | 'CC' | 'SENT';
 export interface ApprovalInstancesPageInput {
   readonly page: number;
   readonly pageSize: number;
+  /**
+   * Field conditions (ADR 25 §7). Needs `templateId`; the server rejects them
+   * without one.
+   */
+  readonly fieldFilters?: readonly ApprovalInstanceFieldFilter[];
   readonly searchText: string | null;
+  /** Sort keys in priority order. Empty or absent keeps the server default. */
+  readonly sort?: readonly ApprovalInstanceSort[];
   readonly state: ApprovalInstanceState | null;
   readonly templateId: string | null;
   readonly view: ApprovalInstanceView;
+}
+
+/** The kinds the server reports for a filterable field (ADR 25 §5.4). */
+export type FilterableFieldIssueKind = 'INVALID_VALUES' | 'TYPE_CHANGED';
+
+export interface FilterableFieldIssueResult {
+  readonly conflictVersionNumbers: readonly number[];
+  readonly fieldType: string;
+  readonly invalidInstanceCount: number;
+  readonly kind: FilterableFieldIssueKind;
+  readonly label: string;
+  /** The server's Chinese sentence for this issue, ready to show. */
+  readonly message: string;
+  readonly path: string;
+  readonly sampleInstanceIds: readonly string[];
+  readonly templateId: string;
+  readonly templateName: string;
 }
 
 export interface ApprovalInstancesPageResult {
@@ -749,18 +784,44 @@ export async function listApprovalInstances(): Promise<
   return data.approvalInstances.map(parseInstanceJson);
 }
 
+function readFieldFilterVariables(
+  fieldFilters: ApprovalInstancesPageInput['fieldFilters'],
+): readonly ApprovalInstanceFieldFilter[] | null {
+  return fieldFilters && fieldFilters.length > 0 ? fieldFilters : null;
+}
+
+function readSortVariables(
+  sort: ApprovalInstancesPageInput['sort'],
+): readonly {
+  readonly direction: NonNullable<ApprovalInstanceSort['direction']>;
+  readonly field: string;
+}[] | null {
+  return sort && sort.length > 0
+    ? sort.map((item) => ({
+        // The server defaults to DESC, but the client states it so a request
+        // reads the same whatever the server default is.
+        direction: item.direction ?? 'DESC',
+        field: item.field,
+      }))
+    : null;
+}
+
 export async function listApprovalInstancesPage({
+  fieldFilters,
   page,
   pageSize,
   searchText,
+  sort,
   state,
   templateId,
   view,
 }: ApprovalInstancesPageInput): Promise<ApprovalInstancesPageResult> {
   const variables = {
+    fieldFilters: readFieldFilterVariables(fieldFilters),
     page,
     pageSize,
     searchText: searchText?.trim() || null,
+    sort: readSortVariables(sort),
     state: state ? [state] : null,
     templateId: templateId?.trim() || null,
     view,
@@ -772,6 +833,8 @@ export async function listApprovalInstancesPage({
         $searchText: String
         $state: [ApprovalInstanceState!]
         $templateId: String
+        $fieldFilters: [ApprovalInstanceFieldFilterInput!]
+        $sort: [ApprovalInstanceSortInput!]
         $page: Int
         $pageSize: Int
       ) {
@@ -780,6 +843,8 @@ export async function listApprovalInstancesPage({
           searchText: $searchText
           state: $state
           templateId: $templateId
+          fieldFilters: $fieldFilters
+          sort: $sort
           page: $page
           pageSize: $pageSize
         ) {
@@ -806,6 +871,8 @@ export async function listApprovalInstancesPage({
         $searchText: String
         $state: [ApprovalInstanceState!]
         $templateId: String
+        $fieldFilters: [ApprovalInstanceFieldFilterInput!]
+        $sort: [ApprovalInstanceSortInput!]
         $page: Int
         $pageSize: Int
       ) {
@@ -814,6 +881,8 @@ export async function listApprovalInstancesPage({
           searchText: $searchText
           state: $state
           templateId: $templateId
+          fieldFilters: $fieldFilters
+          sort: $sort
           page: $page
           pageSize: $pageSize
         ) {
@@ -835,6 +904,114 @@ export async function listApprovalInstancesPage({
     pageInfo,
     totalCount: pageInfo.totalCount,
   };
+}
+
+interface FilterableFieldIssuesQueryData {
+  readonly filterableFieldIssues: readonly FilterableFieldIssueResult[];
+}
+
+/**
+ * Enable-time check for filterable fields (ADR 25 §5.4). Read-only: it never
+ * blocks a save; the publish of a version that has issues is what refuses.
+ * Give `templateId` to check one template, or `formDefinitionId` to check
+ * every template that uses the form. Neither given returns an empty list.
+ */
+export async function listFilterableFieldIssues({
+  formDefinitionId,
+  schemaJson,
+  templateId,
+}: {
+  readonly formDefinitionId?: string | null;
+  readonly schemaJson: string;
+  readonly templateId?: string | null;
+}): Promise<readonly FilterableFieldIssueResult[]> {
+  const data = await requestGraphQl<FilterableFieldIssuesQueryData>(
+    `query FilterableFieldIssues(
+      $templateId: ID
+      $formDefinitionId: ID
+      $schemaJson: String!
+    ) {
+      filterableFieldIssues(
+        templateId: $templateId
+        formDefinitionId: $formDefinitionId
+        schemaJson: $schemaJson
+      ) {
+        conflictVersionNumbers
+        fieldType
+        invalidInstanceCount
+        kind
+        label
+        message
+        path
+        sampleInstanceIds
+        templateId
+        templateName
+      }
+    }`,
+    {
+      formDefinitionId: formDefinitionId ?? null,
+      schemaJson,
+      templateId: templateId ?? null,
+    },
+  );
+
+  return data.filterableFieldIssues;
+}
+
+interface TemplateCurrentVersionQueryData {
+  readonly approvalTemplate: { readonly currentVersionId: string | null };
+  readonly approvalTemplateVersions: readonly {
+    readonly formDefinitionVersionId: string | null;
+    readonly id: string;
+  }[];
+}
+
+interface FormDefinitionVersionSchemaQueryData {
+  readonly formDefinitionVersion: { readonly schemaJson: string };
+}
+
+/**
+ * The form schema of a template's current version, for reading which fields
+ * are filterable. Unlike `readLaunchContext` this does not need the launch
+ * permission: the list shows instances of templates the member may only
+ * read. Returns `null` when the template has no current version or no form.
+ */
+export async function readApprovalTemplateCurrentFormSchema(
+  templateId: string,
+): Promise<FormDefinitionSchema | null> {
+  const templateData = await requestGraphQl<TemplateCurrentVersionQueryData>(
+    `query ApprovalTemplateCurrentVersion($id: String!) {
+      approvalTemplate(id: $id) {
+        currentVersionId
+      }
+      approvalTemplateVersions(templateId: $id) {
+        formDefinitionVersionId
+        id
+      }
+    }`,
+    { id: templateId },
+  );
+  const currentVersionId = templateData.approvalTemplate.currentVersionId;
+  const formDefinitionVersionId = templateData.approvalTemplateVersions.find(
+    (version) => version.id === currentVersionId,
+  )?.formDefinitionVersionId;
+
+  if (!formDefinitionVersionId) {
+    return null;
+  }
+
+  const formData = await requestGraphQl<FormDefinitionVersionSchemaQueryData>(
+    `query ApprovalTemplateFormSchema($id: String!) {
+      formDefinitionVersion(id: $id) {
+        schemaJson
+      }
+    }`,
+    { id: formDefinitionVersionId },
+  );
+
+  return JSON.parse(
+    formData.formDefinitionVersion.schemaJson,
+  ) as FormDefinitionSchema;
 }
 
 export async function readLaunchContext(

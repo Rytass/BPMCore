@@ -4,6 +4,7 @@ import {
   listApprovalHistoryTasks,
   listApprovalInstances,
   listApprovalInstancesPage,
+  listFilterableFieldIssues,
   listInboxTasks,
   listInactiveMembersWithOpenTasks,
   listMemberOpenTasks,
@@ -52,6 +53,27 @@ function installFetchMock<TData>(payload: TData): {
       (global as { fetch: typeof fetch }).fetch = originalFetch;
     },
   };
+}
+
+type Responder = (query: string, variables: Readonly<Record<string, unknown>>) => unknown;
+
+function mockRequests(respond: Responder): CapturedRequest[] {
+  const requests: CapturedRequest[] = [];
+  (global as { fetch: typeof fetch }).fetch = jest.fn(
+    async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as CapturedRequest;
+      requests.push(request);
+
+      return new Response(
+        JSON.stringify({
+          data: respond(request.query, request.variables ?? {}),
+        }),
+        { headers: { 'Content-Type': 'application/json' }, status: 200 },
+      );
+    },
+  ) as unknown as typeof fetch;
+
+  return requests;
 }
 
 describe('@rytass/bpm-core-client/workflow', () => {
@@ -120,6 +142,144 @@ describe('@rytass/bpm-core-client/workflow', () => {
         );
 
         expect(listQuery).toContain('submittedByMemberId');
+      } finally {
+        (global as { fetch: typeof fetch }).fetch = originalFetch;
+      }
+    });
+  });
+
+  describe('listApprovalInstancesPage field filters and sort (ADR 25)', () => {
+    const pageInfoPayload = {
+      approvalInstancePageInfo: {
+        hasNextPage: false,
+        hasPreviousPage: false,
+        page: 1,
+        pageSize: 10,
+        totalCount: 0,
+        totalPages: 1,
+      },
+    };
+
+    const respondPage: Responder = (query) =>
+      query.includes('query ApprovalInstancePageInfo(')
+        ? pageInfoPayload
+        : { approvalInstances: [] };
+
+    it('sends fieldFilters and sort as variables on both queries', async (): Promise<void> => {
+      const originalFetch = global.fetch;
+      const requests = mockRequests(respondPage);
+
+      try {
+        await listApprovalInstancesPage({
+          fieldFilters: [
+            { fieldKey: 'amount', from: '100', operator: 'RANGE', to: '500' },
+            { fieldKey: 'dept', operator: 'IN', values: ['sales', 'ops'] },
+          ],
+          page: 1,
+          pageSize: 10,
+          searchText: null,
+          sort: [{ direction: 'ASC', field: 'amount' }, { field: 'submittedAt' }],
+          state: null,
+          templateId: 'tpl-1',
+          view: 'ALL',
+        });
+
+        const listRequest = requests.find((request) =>
+          request.query.includes('query ApprovalInstancesPage('),
+        );
+        const pageInfoRequest = requests.find((request) =>
+          request.query.includes('query ApprovalInstancePageInfo('),
+        );
+
+        for (const request of [listRequest, pageInfoRequest]) {
+          expect(request?.query).toContain(
+            '$fieldFilters: [ApprovalInstanceFieldFilterInput!]',
+          );
+          expect(request?.query).toContain('$sort: [ApprovalInstanceSortInput!]');
+          expect(request?.query).toContain('fieldFilters: $fieldFilters');
+          expect(request?.query).toContain('sort: $sort');
+          expect(request?.variables).toMatchObject({
+            fieldFilters: [
+              { fieldKey: 'amount', from: '100', operator: 'RANGE', to: '500' },
+              { fieldKey: 'dept', operator: 'IN', values: ['sales', 'ops'] },
+            ],
+            sort: [
+              { direction: 'ASC', field: 'amount' },
+              { direction: 'DESC', field: 'submittedAt' },
+            ],
+            templateId: 'tpl-1',
+          });
+        }
+      } finally {
+        (global as { fetch: typeof fetch }).fetch = originalFetch;
+      }
+    });
+
+    it('sends null when no filter or sort is given, so the server default holds', async (): Promise<void> => {
+      const originalFetch = global.fetch;
+      const requests = mockRequests(respondPage);
+
+      try {
+        await listApprovalInstancesPage({
+          fieldFilters: [],
+          page: 1,
+          pageSize: 10,
+          searchText: null,
+          sort: [],
+          state: null,
+          templateId: null,
+          view: 'SENT',
+        });
+
+        const listRequest = requests.find((request) =>
+          request.query.includes('query ApprovalInstancesPage('),
+        );
+
+        expect(listRequest?.variables).toMatchObject({
+          fieldFilters: null,
+          sort: null,
+        });
+      } finally {
+        (global as { fetch: typeof fetch }).fetch = originalFetch;
+      }
+    });
+  });
+
+  describe('listFilterableFieldIssues', () => {
+    it('sends the template or form id with the schema and returns the issues', async (): Promise<void> => {
+      const originalFetch = global.fetch;
+      const issue = {
+        conflictVersionNumbers: [],
+        fieldType: 'number',
+        invalidInstanceCount: 2,
+        kind: 'INVALID_VALUES',
+        label: '金額',
+        message: '欄位「金額」（amount）無法啟用篩選',
+        path: 'amount',
+        sampleInstanceIds: ['case-1', 'case-2'],
+        templateId: 'tpl-1',
+        templateName: '請款',
+      };
+      const requests = mockRequests(() => ({
+        filterableFieldIssues: [issue],
+      }));
+
+      try {
+        const result = await listFilterableFieldIssues({
+          formDefinitionId: 'form-1',
+          schemaJson: '{"fields":[]}',
+          templateId: null,
+        });
+
+        expect(requests[0]?.query).toContain(
+          'filterableFieldIssues(',
+        );
+        expect(requests[0]?.variables).toEqual({
+          formDefinitionId: 'form-1',
+          schemaJson: '{"fields":[]}',
+          templateId: null,
+        });
+        expect(result).toEqual([issue]);
       } finally {
         (global as { fetch: typeof fetch }).fetch = originalFetch;
       }
