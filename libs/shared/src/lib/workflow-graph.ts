@@ -2429,10 +2429,8 @@ export function readConditionExpression(
 
   const fieldReference = readFormFieldReference(field.fieldKey);
   const guarded = isFormIdentifierKey(field.fieldKey);
-  const { join, present, readEmpty } = createConditionGuard(
-    fieldReference,
-    guarded,
-  );
+  const guard = createConditionGuard(fieldReference, guarded);
+  const { join, present, readEmpty } = guard;
 
   if (field.type === 'member') {
     // The value is a string (single) or a list (multiple), so the flat `== ""`
@@ -2503,7 +2501,7 @@ export function readConditionExpression(
       field,
       operator,
       value,
-      createConditionGuard(fieldReference, guarded),
+      guard,
     );
   }
 
