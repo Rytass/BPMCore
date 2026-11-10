@@ -89,6 +89,7 @@ dataSource 環境 lint）確認屬 P3 例外；`docs/api-reference.md` 對 `form
    並在 `ConditionService` 的識別字白名單加入 `size`（比照既有的 `has` macro）：
    沿用扁平欄位的 `!= ""` 會把 0 列表格判為已填（附錄 A 實測），與 ADR §3.8 的
    「列數 > 0」語意相反。value 類 operator 對 table 回 `undefined`，不產生表達式。
+   （缺 key 守衛見下方附錄 A 結論 1、2 與 `docs/05-conditions-cel.md` §5.1.1。）
 5. 條件式引用 table 內部 path 的阻擋，本 phase 只做 form schema 這一半
    （`visibleWhen`／`requiredWhen`／`readonlyWhen`）；edge structured condition 那一半
    在 workflow 發布路徑，維持 P1 範圍。
@@ -834,11 +835,15 @@ Received ""`）。
 
 1. 「列數 > 0／= 0」語意可以實作，但必須用 `size()`，不能沿用扁平欄位的
    `!= ""` 比較——空 list 既不是 null 也不等於 `""`，會把 0 列表格判為已填。
-   因此 `readConditionExpression` 對 table 產生
-   `form.X != null && size(form.X) > 0` 與 `form.X == null || size(form.X) == 0`。
-2. `size(null)` 會丟例外，故必須保留 null 守衛；formData 缺 key 時同樣丟例外，
-   但這是既有扁平欄位就有的行為（context 直接掛 `instance.formData`，未補 null），
-   不是表格新增的問題。
+   因此 `readConditionExpression` 對 table（識別字 key）產生
+   `has(form.X) && (form.X != null && size(form.X) > 0)` 與它的否定
+   `!(has(form.X) && (form.X != null && size(form.X) > 0))`。
+2. `size(null)` 會丟例外，故必須保留 null 守衛；formData 缺 key 時同樣丟例外
+   （context 直接掛 `instance.formData`，未補 null；用戶端以 `JSON.stringify` 送出，
+   沒碰過的選填欄位根本沒有 key），所以前面再加 `has()`。IS_EMPTY 不寫成
+   `!has(...) || ...`：cel-js 的 `||` 不短路，缺 key 時右側照樣會評估而丟例外，
+   因此一律用「受守衛的 `&&` 再取否定」。非識別字 key（`form["a-b"]`）無法用 `has()`
+   守衛，維持原本的輸出。
 3. Comprehension macro（`exists` 等）在引擎層可用，但
    `ConditionService.lintRootIdentifiers` 會把 macro 的迴圈變數判為未知識別字而
    擋下，因此目前無法出現在已發布模板中。V1 本來就不提供產生這類 CEL 的 UI

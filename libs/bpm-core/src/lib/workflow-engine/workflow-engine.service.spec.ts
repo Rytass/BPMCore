@@ -11977,6 +11977,508 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  describe('a designer-built edge on a field the form data does not hold', (): void => {
+    // Real cel-js throws `Identifier "x" not found` for a key absent from the
+    // form data (docs: libs/bpm-core/src/lib/condition/cel-js-absent-form-key
+    // .spec.ts), but jest maps cel-js to a JavaScript-eval shim that answers
+    // `undefined` instead. So the spy throws what ConditionService throws for
+    // it: the stored CEL runs first, and only its failure hands the edge to the
+    // structured fields.
+    const absentKeyError = (key: string): ExpressionRuntimeError =>
+      new ExpressionRuntimeError('EXPRESSION_MISSING_KEY', 'workflow.edges', {
+        keyName: key,
+      });
+    const realEvaluateBoolean = ConditionService.prototype.evaluateBoolean;
+    let evaluateBoolean: jest.SpyInstance;
+
+    beforeEach((): void => {
+      evaluateBoolean = jest.spyOn(
+        ConditionService.prototype,
+        'evaluateBoolean',
+      );
+    });
+
+    afterEach((): void => {
+      evaluateBoolean.mockRestore();
+    });
+
+    // Only an edge condition (label `workflow.edges.…`) is made to fail or to
+    // be counted; node entry conditions and the like keep their real answer.
+    const isEdgeCall = (call: readonly unknown[]): boolean =>
+      String(call[2]).startsWith('workflow.edges.');
+    const edgeCalls = (): readonly (readonly unknown[])[] =>
+      evaluateBoolean.mock.calls.filter(isEdgeCall);
+    const failOnAbsentKey = (key: string): void => {
+      evaluateBoolean.mockImplementation(function (
+        this: ConditionService,
+        ...args: Parameters<ConditionService['evaluateBoolean']>
+      ): boolean {
+        if (isEdgeCall(args)) {
+          throw absentKeyError(key);
+        }
+
+        return realEvaluateBoolean.apply(this, args);
+      });
+    };
+    const createFixture = (
+      workflow: WorkflowDefinition,
+      formData: Readonly<Record<string, unknown>>,
+    ): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: formData,
+        processWorkflowSnapshot: workflow,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    const route = async (
+      workflow: WorkflowDefinition,
+      formData: Readonly<Record<string, unknown>>,
+    ): Promise<string | undefined> => {
+      const fixture = createFixture(workflow, formData);
+
+      await fixture.service.processInstance('instance-1');
+
+      return fixture.savedTasks[0]?.nodeId;
+    };
+    const isFilledWorkflow = (key: string): WorkflowDefinition =>
+      createExclusiveGatewayWorkflow({
+        highCondition: `form["${key}"] != null && form["${key}"] != ""`,
+        structuredCondition: {
+          conditionFieldKey: key,
+          conditionOperator: 'IS_FILLED',
+        },
+      });
+    const isEmptyWorkflow = (key: string): WorkflowDefinition =>
+      createExclusiveGatewayWorkflow({
+        highCondition: `form["${key}"] == null || form["${key}"] == ""`,
+        structuredCondition: {
+          conditionFieldKey: key,
+          conditionOperator: 'IS_EMPTY',
+        },
+      });
+    const greaterThanWorkflow = (): WorkflowDefinition =>
+      createExclusiveGatewayWorkflow({
+        highCondition: 'form.amount > 5',
+        structuredCondition: {
+          conditionFieldKey: 'amount',
+          conditionOperator: 'GREATER_THAN',
+          conditionValue: '5',
+        },
+      });
+
+    it.each([
+      ['an absent key', {}],
+      ['an undefined value', { agent: undefined }],
+      ['a null value', { agent: null }],
+    ] as const)(
+      'routes an "is filled" edge by the structured fields for %s',
+      async (_label, formData): Promise<void> => {
+        failOnAbsentKey('agent');
+
+        await expect(route(isFilledWorkflow('agent'), formData)).resolves.toBe(
+          'task_default',
+        );
+        expect(edgeCalls().length).toBeGreaterThan(0);
+      },
+    );
+
+    it('routes an "is empty" edge to its branch when the key is absent', async (): Promise<void> => {
+      failOnAbsentKey('agent');
+
+      await expect(route(isEmptyWorkflow('agent'), {})).resolves.toBe(
+        'task_high',
+      );
+      expect(edgeCalls().length).toBeGreaterThan(0);
+    });
+
+    it('catches a key that is not an identifier, which no CEL guard can wrap', async (): Promise<void> => {
+      failOnAbsentKey('a-b');
+
+      await expect(route(isFilledWorkflow('a-b'), {})).resolves.toBe(
+        'task_default',
+      );
+      await expect(route(isEmptyWorkflow('a-b'), {})).resolves.toBe(
+        'task_high',
+      );
+      expect(edgeCalls().length).toBeGreaterThan(0);
+    });
+
+    it('does not match an ordered comparison on a null or absent number', async (): Promise<void> => {
+      failOnAbsentKey('amount');
+
+      await expect(
+        route(greaterThanWorkflow(), { amount: null }),
+      ).resolves.toBe('task_default');
+      await expect(route(greaterThanWorkflow(), {})).resolves.toBe(
+        'task_default',
+      );
+      expect(edgeCalls().length).toBeGreaterThan(0);
+    });
+
+    it('routes a legacy ordered comparison on an empty string by the structured fields', async (): Promise<void> => {
+      // Real cel-js throws on `"" > 5` (string against number); the spy stands
+      // in for that, and must not be reached.
+      failOnAbsentKey('amount');
+
+      await expect(
+        route(greaterThanWorkflow(), { amount: '' }),
+      ).resolves.toBe('task_default');
+      expect(edgeCalls().length).toBeGreaterThan(0);
+    });
+
+    it('routes an empty-string "is filled" edge by the structured fields', async (): Promise<void> => {
+      failOnAbsentKey('agent');
+
+      await expect(
+        route(isFilledWorkflow('agent'), { agent: '' }),
+      ).resolves.toBe('task_default');
+      await expect(route(isEmptyWorkflow('agent'), { agent: '' })).resolves.toBe(
+        'task_high',
+      );
+      expect(edgeCalls().length).toBeGreaterThan(0);
+    });
+
+    it('routes a blank field named like an inherited member as unfilled', async (): Promise<void> => {
+      failOnAbsentKey('constructor');
+
+      await expect(
+        route(isFilledWorkflow('constructor'), {}),
+      ).resolves.toBe('task_default');
+      expect(edgeCalls().length).toBeGreaterThan(0);
+    });
+
+    it('keeps a whitespace-only text on the stored CEL', async (): Promise<void> => {
+      // CEL's `!= ""` counts "  " as filled, the structured evaluator counts it
+      // as empty; routing it there would flip the result of the stored CEL.
+      evaluateBoolean.mockImplementation(function (
+        this: ConditionService,
+        ...args: Parameters<ConditionService['evaluateBoolean']>
+      ): boolean {
+        return isEdgeCall(args) ? true : realEvaluateBoolean.apply(this, args);
+      });
+
+      await expect(
+        route(isFilledWorkflow('agent'), { agent: '  ' }),
+      ).resolves.toBe('task_high');
+      expect(edgeCalls()).toHaveLength(1);
+    });
+
+    it('still evaluates the stored CEL once the field holds a value', async (): Promise<void> => {
+      // The stored CEL says "not filled" while the form says otherwise, so the
+      // route shows which one decided.
+      evaluateBoolean.mockImplementation(function (
+        this: ConditionService,
+        ...args: Parameters<ConditionService['evaluateBoolean']>
+      ): boolean {
+        return isEdgeCall(args) ? false : realEvaluateBoolean.apply(this, args);
+      });
+
+      await expect(
+        route(isFilledWorkflow('agent'), { agent: 'someone' }),
+      ).resolves.toBe('task_default');
+      expect(edgeCalls()).toEqual([
+        [
+          'form["agent"] != null && form["agent"] != ""',
+          expect.anything(),
+          'workflow.edges.edge_gateway_high.data.condition',
+          { dialect: 'cel-legacy' },
+        ],
+      ]);
+    });
+
+    it('leaves a hand-written CEL alone, so an absent key it reads still fails', async (): Promise<void> => {
+      failOnAbsentKey('agent');
+
+      await expect(
+        route(
+          createExclusiveGatewayWorkflow({
+            highCondition: 'form.agent != null && form.agent != ""',
+            includeStructuredCondition: false,
+          }),
+          {},
+        ),
+      ).rejects.toThrow('EXPRESSION_MISSING_KEY');
+      expect(edgeCalls()).toHaveLength(1);
+    });
+
+    it('keeps the stored CEL result when it evaluates, even for an empty value', async (): Promise<void> => {
+      // Review of PR #135: answering every "" from the structured fields turned
+      // a stored `form.due < "2026-01-01"` (true for "") into false and left a
+      // gateway without a default edge on a 409. Only a failing CEL hands over.
+      await expect(
+        route(
+          createExclusiveGatewayWorkflow({
+            highCondition: 'form.due < "2026-01-01"',
+            structuredCondition: {
+              conditionFieldKey: 'due',
+              conditionOperator: 'LESS_THAN',
+              conditionValue: '2026-01-01',
+            },
+          }),
+          { due: '' },
+        ),
+      ).resolves.toBe('task_high');
+      expect(edgeCalls()).toHaveLength(1);
+    });
+
+    it('does not absorb a budget overrun into the structured fields', async (): Promise<void> => {
+      evaluateBoolean.mockImplementation(function (
+        this: ConditionService,
+        ...args: Parameters<ConditionService['evaluateBoolean']>
+      ): boolean {
+        if (isEdgeCall(args)) {
+          throw new ExpressionRuntimeError(
+            'EXPRESSION_BUDGET_EXCEEDED',
+            'workflow.edges',
+          );
+        }
+
+        return realEvaluateBoolean.apply(this, args);
+      });
+
+      await expect(route(isFilledWorkflow('agent'), {})).rejects.toThrow(
+        'EXPRESSION_BUDGET_EXCEEDED',
+      );
+    });
+
+    it.each([
+      ['EXPRESSION_TYPE_ERROR'],
+      ['EXPRESSION_MISSING_KEY'],
+    ] as const)(
+      'rethrows %s when the edge field is filled, so a broken CEL stays visible',
+      async (code): Promise<void> => {
+        // Second review of PR #135: a CEL edited by hand while the structured
+        // fields stayed (`form.amount > "abc"`) must not route silently.
+        evaluateBoolean.mockImplementation(function (
+          this: ConditionService,
+          ...args: Parameters<ConditionService['evaluateBoolean']>
+        ): boolean {
+          if (isEdgeCall(args)) {
+            throw new ExpressionRuntimeError(code, 'workflow.edges');
+          }
+
+          return realEvaluateBoolean.apply(this, args);
+        });
+
+        await expect(
+          route(greaterThanWorkflow(), { amount: 600000 }),
+        ).rejects.toThrow(code);
+      },
+    );
+
+    it('answers a type error from the structured fields when the edge field is empty', async (): Promise<void> => {
+      evaluateBoolean.mockImplementation(function (
+        this: ConditionService,
+        ...args: Parameters<ConditionService['evaluateBoolean']>
+      ): boolean {
+        if (isEdgeCall(args)) {
+          throw new ExpressionRuntimeError(
+            'EXPRESSION_TYPE_ERROR',
+            'workflow.edges',
+          );
+        }
+
+        return realEvaluateBoolean.apply(this, args);
+      });
+
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation((): void => undefined);
+
+      await expect(
+        route(greaterThanWorkflow(), { amount: null }),
+      ).resolves.toBe('task_default');
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /code=EDGE_STRUCTURED_FALLBACK edge=\S+ field=amount reason=EXPRESSION_TYPE_ERROR$/u,
+        ),
+      );
+      warn.mockRestore();
+    });
+
+    it.each([
+      ['another key', 'department'],
+      ['no key name', null],
+    ] as const)(
+      'rethrows a missing key that names %s, even with the edge field empty',
+      async (_case, keyName): Promise<void> => {
+        // Third review of PR #135: a hand-edited CEL that also reads another
+        // key (`form.agent != null && initiator.department == "X"`) must not
+        // be answered by the edge's fields when that other key is missing.
+        evaluateBoolean.mockImplementation(function (
+          this: ConditionService,
+          ...args: Parameters<ConditionService['evaluateBoolean']>
+        ): boolean {
+          if (isEdgeCall(args)) {
+            throw new ExpressionRuntimeError(
+              'EXPRESSION_MISSING_KEY',
+              'workflow.edges',
+              { keyName },
+            );
+          }
+
+          return realEvaluateBoolean.apply(this, args);
+        });
+
+        await expect(route(isFilledWorkflow('agent'), {})).rejects.toThrow(
+          'EXPRESSION_MISSING_KEY',
+        );
+      },
+    );
+
+    it('routes a dry run by the structured fields when the key is absent', (): void => {
+      failOnAbsentKey('agent');
+
+      const dryRun = (
+        workflow: WorkflowDefinition,
+      ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+        createFixture(workflow, {}).service.dryRunApprovalWorkflow({
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson: JSON.stringify(workflow),
+        });
+      const filled = dryRun(isFilledWorkflow('agent'));
+      const empty = dryRun(isEmptyWorkflow('agent'));
+
+      expect(filled.valid).toBe(true);
+      expect(filled.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            edgeDefault: true,
+            edgeMatched: true,
+            nodeId: 'task_default',
+          }),
+        ]),
+      );
+      expect(empty.valid).toBe(true);
+      expect(empty.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ edgeMatched: true, nodeId: 'task_high' }),
+        ]),
+      );
+      expect(edgeCalls().length).toBeGreaterThan(0);
+    });
+
+    it('leaves a hand-written CEL alone in the dry run too', (): void => {
+      failOnAbsentKey('agent');
+
+      const workflow = createExclusiveGatewayWorkflow({
+        highCondition: 'form.agent != null && form.agent != ""',
+        includeStructuredCondition: false,
+      });
+      const result = createFixture(workflow, {}).service.dryRunApprovalWorkflow(
+        {
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson: JSON.stringify(workflow),
+        },
+      );
+
+      expect(edgeCalls()).toHaveLength(1);
+      expect(result.valid).toBe(false);
+    });
+
+    describe('dry run failure messages', (): void => {
+      const FORM_MARKER = 'secret-form-value';
+      const INITIATOR_MARKER = 'secret-initiator-value';
+      const dryRunErrors = (
+        workflow: WorkflowDefinition,
+      ): readonly string[] => {
+        const result = createFixture(
+          workflow,
+          {},
+        ).service.dryRunApprovalWorkflow({
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson: JSON.stringify(workflow),
+        });
+
+        expect(result.valid).toBe(false);
+
+        return result.errors;
+      };
+      const throwOnEdge = (error: Error): void => {
+        evaluateBoolean.mockImplementation(function (
+          this: ConditionService,
+          ...args: Parameters<ConditionService['evaluateBoolean']>
+        ): boolean {
+          if (isEdgeCall(args)) {
+            throw error;
+          }
+
+          return realEvaluateBoolean.apply(this, args);
+        });
+      };
+      const handWrittenWorkflow = (): WorkflowDefinition =>
+        createExclusiveGatewayWorkflow({
+          highCondition: 'form.agent != null && form.agent != ""',
+          includeStructuredCondition: false,
+        });
+
+      it('keeps the context and the name of a raw cel-js identifier error out of the message', (): void => {
+        // The exact shape cel-js 0.8.2 throws: the whole context follows the
+        // identifier. A raw Error stands for one that bypassed ConditionService.
+        throwOnEdge(
+          new Error(
+            `Identifier "agent" not found in context: ${JSON.stringify({
+              form: { other: FORM_MARKER },
+              initiator: { name: INITIATOR_MARKER },
+            })}`,
+          ),
+        );
+
+        const errors = dryRunErrors(handWrittenWorkflow());
+
+        expect(errors).toEqual(['Dry run failed']);
+        errors.forEach((message) => {
+          expect(message).not.toContain(FORM_MARKER);
+          expect(message).not.toContain(INITIATOR_MARKER);
+        });
+      });
+
+      it('replaces any other raw evaluation error with the generic message', (): void => {
+        throwOnEdge(
+          Object.assign(
+            new Error(
+              `CelTypeError: greaterThan operation cannot be applied to (${FORM_MARKER}, uint)`,
+            ),
+            { name: 'CelTypeError' },
+          ),
+        );
+
+        expect(dryRunErrors(handWrittenWorkflow())).toEqual(['Dry run failed']);
+      });
+
+      it('keeps the engine own message readable', (): void => {
+        const workflow = handWrittenWorkflow();
+        const withoutStart: WorkflowDefinition = {
+          ...workflow,
+          nodes: workflow.nodes.filter((node) => node.type !== 'startEvent'),
+        };
+
+        expect(dryRunErrors(withoutStart)).toEqual([
+          'Workflow does not include a startEvent',
+        ]);
+      });
+
+      it('keeps a message ConditionService already sanitised readable', (): void => {
+        throwOnEdge(
+          new BadRequestException(
+            'workflow.edges.e1.condition: Identifier "agent" not found',
+          ),
+        );
+
+        expect(dryRunErrors(handWrittenWorkflow())).toEqual([
+          'workflow.edges.e1.condition: Identifier "agent" not found',
+        ]);
+      });
+    });
+  });
+
   it('reports dry run edge labels, default routing, and entry condition results', (): void => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',

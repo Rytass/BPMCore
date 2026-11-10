@@ -2396,6 +2396,28 @@ export function readFormFieldOption(
   return options.find((option) => option.value === value) ?? null;
 }
 
+/**
+ * Compiles one designer condition to CEL.
+ *
+ * The runtime `form` is the submitted form data as-is, and a client submits it
+ * with `JSON.stringify`, so a field the user never touched has no key at all.
+ * cel-js throws `Identifier "x" not found in context` when it reads an absent
+ * key — `!= null` only guards a `null` value, not a missing key — and that
+ * would fail the whole submission. So for a plain-identifier key (`form.x`)
+ * every expression is gated on `has(form.x) && form.x != null` before the
+ * field is read, and "unfilled" (absent or `null`) gives the operator's empty
+ * answer: IS_FILLED / EQUALS / ordering are false, IS_EMPTY / NOT_EQUALS true.
+ *
+ * Two cel-js facts shape the strings (probed against cel-js 0.8.2):
+ * - `||` does not short-circuit, so `!has(form.x) || form.x == ""` still
+ *   throws on `{}`. A "no" answer is therefore the negation of a guarded `&&`.
+ * - Only the first operand of a flat `a && b && c` chain short-circuits
+ *   (`true && false && <throws>` throws), so the guards are right-nested:
+ *   `a && (b && c)`.
+ *
+ * `has()` accepts only a field selection, so a non-identifier key
+ * (`form["a-b"]`) cannot be gated and keeps its original, unguarded output.
+ */
 export function readConditionExpression(
   field: FormFieldDefinition | null,
   operator: WorkflowEdgeConditionOperator | undefined,
@@ -2406,18 +2428,30 @@ export function readConditionExpression(
   }
 
   const fieldReference = readFormFieldReference(field.fieldKey);
+  const guarded = isFormIdentifierKey(field.fieldKey);
+  const guard = createConditionGuard(fieldReference, guarded);
+  const { join, present, readEmpty } = guard;
 
   if (field.type === 'member') {
     // The value is a string (single) or a list (multiple), so the flat `== ""`
     // test alone would call the list `[]` filled, and `size()` would throw on
     // an explicit `null` (it does not short-circuit behind `== null ||`).
     // Comparing against `[]` as well is null-safe for both shapes.
+    const filled = [
+      ...present,
+      `${fieldReference} != ""`,
+      `${fieldReference} != []`,
+    ];
+
     if (operator === 'IS_FILLED') {
-      return `${fieldReference} != null && ${fieldReference} != "" && ${fieldReference} != []`;
+      return join(filled);
     }
 
     if (operator === 'IS_EMPTY') {
-      return `${fieldReference} == null || ${fieldReference} == "" || ${fieldReference} == []`;
+      return readEmpty(
+        filled,
+        `${fieldReference} == null || ${fieldReference} == "" || ${fieldReference} == []`,
+      );
     }
 
     return undefined;
@@ -2425,12 +2459,17 @@ export function readConditionExpression(
 
   if (field.type === 'org_unit') {
     // One org unit id (a string): only "was one picked" compiles, like member.
+    const filled = [...present, `${fieldReference} != ""`];
+
     if (operator === 'IS_FILLED') {
-      return `${fieldReference} != null && ${fieldReference} != ""`;
+      return join(filled);
     }
 
     if (operator === 'IS_EMPTY') {
-      return `${fieldReference} == null || ${fieldReference} == ""`;
+      return readEmpty(
+        filled,
+        `${fieldReference} == null || ${fieldReference} == ""`,
+      );
     }
 
     return undefined;
@@ -2440,12 +2479,17 @@ export function readConditionExpression(
     // A table value is a list, so emptiness means row count, not `== ""`.
     // cel-js supports the global `size()` macro but not a `.size()` method,
     // and `size(null)` throws — hence the null guard (see docs/17 appendix A).
+    const filled = [...present, `size(${fieldReference}) > 0`];
+
     if (operator === 'IS_FILLED') {
-      return `${fieldReference} != null && size(${fieldReference}) > 0`;
+      return join(filled);
     }
 
     if (operator === 'IS_EMPTY') {
-      return `${fieldReference} == null || size(${fieldReference}) == 0`;
+      return readEmpty(
+        filled,
+        `${fieldReference} == null || size(${fieldReference}) == 0`,
+      );
     }
 
     return undefined;
@@ -2457,24 +2501,99 @@ export function readConditionExpression(
       field,
       operator,
       value,
+      guard,
     );
   }
 
-  if (operator === 'IS_FILLED') {
-    return `${fieldReference} != null && ${fieldReference} != ""`;
-  }
+  if (operator === 'IS_FILLED' || operator === 'IS_EMPTY') {
+    const filled = [...present, `${fieldReference} != ""`];
 
-  if (operator === 'IS_EMPTY') {
-    return `${fieldReference} == null || ${fieldReference} == ""`;
+    return operator === 'IS_FILLED'
+      ? join(filled)
+      : readEmpty(
+          filled,
+          `${fieldReference} == null || ${fieldReference} == ""`,
+        );
   }
 
   if (!value) {
     return undefined;
   }
 
-  return `${fieldReference} ${readConditionExpressionOperator(
+  const comparison = `${fieldReference} ${readConditionExpressionOperator(
     operator,
   )} ${readConditionExpressionValue(field, value)}`;
+
+  if (!guarded) {
+    return comparison;
+  }
+
+  if (operator === 'NOT_EQUALS') {
+    // `!=` is true for an unfilled field, so it is the negation of `==` on a
+    // filled one (never a guarded `!=`, which would be false when unfilled).
+    return `!(${join([
+      ...present,
+      `${fieldReference} == ${readConditionExpressionValue(field, value)}`,
+    ])})`;
+  }
+
+  // An ordering comparison against `null` or `""` throws on a number and gives
+  // a misleading answer on a date, so a cleared field is treated as unfilled.
+  return join([
+    ...present,
+    ...(operator === 'EQUALS' ? [] : [`${fieldReference} != ""`]),
+    comparison,
+  ]);
+}
+
+/**
+ * `a && (b && (c))` — see {@link readConditionExpression} for why. `terms` must
+ * not be empty: the caller always passes the comparison itself, and an empty
+ * list would yield `undefined` instead of an expression.
+ */
+function joinNestedConjunction(terms: readonly string[]): string {
+  const [first = '', ...rest] = terms;
+
+  if (rest.length === 0) {
+    return first;
+  }
+
+  return rest.length === 1
+    ? `${first} && ${rest[0]}`
+    : `${first} && (${joinNestedConjunction(rest)})`;
+}
+
+/**
+ * How a designer condition guards the field it reads: the terms that must
+ * hold before the value is read, how terms are joined, and how "empty" is
+ * written. An identifier key (`form.x`) is guarded with `has()` and nested
+ * `&&` (cel-js only short-circuits a nested `&&`, never `||`); IS_EMPTY is
+ * then the negation of "filled". Any other key (`form["a-b"]`) cannot be
+ * guarded by `has()` and keeps its original flat `null ||` form.
+ */
+interface ConditionGuard {
+  readonly guarded: boolean;
+  readonly join: (terms: readonly string[]) => string;
+  readonly present: readonly string[];
+  readonly readEmpty: (filled: readonly string[], unguarded: string) => string;
+}
+
+function createConditionGuard(
+  fieldReference: string,
+  guarded: boolean,
+): ConditionGuard {
+  const join = (terms: readonly string[]): string =>
+    guarded ? joinNestedConjunction(terms) : terms.join(' && ');
+
+  return {
+    guarded,
+    join,
+    present: guarded
+      ? [`has(${fieldReference})`, `${fieldReference} != null`]
+      : [`${fieldReference} != null`],
+    readEmpty: (filled: readonly string[], unguarded: string): string =>
+      guarded ? `!(${join(filled)})` : unguarded,
+  };
 }
 
 /**
@@ -2485,32 +2604,48 @@ export function readConditionExpression(
  * picked", `IS_EMPTY` is "none picked". Ordering operators are not offered
  * (see `readConditionOperatorIds`), so they compile to nothing.
  *
- * Null-safety follows cel-js: `&&` short-circuits on `null`, but `||` does not
- * (`size(null)` and `"A" in null` throw even behind `x == null ||`). So every
- * expression is a guarded `&&`, or negates one, or compares to `[]`.
+ * Null-safety follows cel-js: `&&` short-circuits (see
+ * {@link readConditionExpression}), but `||` does not (`size(null)` and
+ * `"A" in null` throw even behind `x == null ||`). So every expression is a
+ * guarded `&&`, or negates one, or compares to `[]`.
  */
 function readMultipleSelectionConditionExpression(
   fieldReference: string,
   field: FormFieldDefinition,
   operator: WorkflowEdgeConditionOperator,
   value: string | undefined,
+  { guarded, join, present, readEmpty }: ConditionGuard,
 ): string | undefined {
+  // A guarded condition also reads `""` as unfilled: only an API write can put
+  // it there, but the structured evaluator already reads it as empty, and a
+  // CEL that called it filled would answer without throwing, so no fallback
+  // could fix it. Comparing a list against `""` is null-safe and false, as for
+  // member. An unguarded key keeps its previous output, like every other type.
+  const filled = [
+    ...present,
+    ...(guarded ? [`${fieldReference} != ""`] : []),
+    `${fieldReference} != []`,
+  ];
+
   if (operator === 'IS_FILLED') {
-    return `${fieldReference} != null && ${fieldReference} != []`;
+    return join(filled);
   }
 
   if (operator === 'IS_EMPTY') {
-    return `${fieldReference} == null || ${fieldReference} == []`;
+    return readEmpty(
+      filled,
+      `${fieldReference} == null || ${fieldReference} == []`,
+    );
   }
 
   if (!value || (operator !== 'EQUALS' && operator !== 'NOT_EQUALS')) {
     return undefined;
   }
 
-  const contains = `${fieldReference} != null && ${readConditionExpressionValue(
-    field,
-    value,
-  )} in ${fieldReference}`;
+  const contains = join([
+    ...present,
+    `${readConditionExpressionValue(field, value)} in ${fieldReference}`,
+  ]);
 
   return operator === 'EQUALS' ? contains : `!(${contains})`;
 }

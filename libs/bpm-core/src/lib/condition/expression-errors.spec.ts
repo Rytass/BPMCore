@@ -55,6 +55,9 @@ describe('toExpressionRuntimeError', (): void => {
       ['the name only occurs inside a raw literal', "form.a[r'Secret']"],
       ['the name is only part of a longer identifier', 'form.Secrets == 1'],
       ['the name only follows an escaped quote', 'form.a["x\\" Secret"]'],
+      // The value read through the index equals a name the author wrote.
+      ['a computed index could have read a written name', 'form.Secret[form.b]'],
+      ['a macro indexes with its own variable', 'form.Secret.exists(k, form.m[k])'],
     ])('drops it when %s', (_case, expression): void => {
       const error = toExpressionRuntimeError(
         missing('Secret'),
@@ -71,6 +74,8 @@ describe('toExpressionRuntimeError', (): void => {
       ['a member access', 'form.Secret > 1'],
       ['an identifier after a string literal', 'form.a == "x" && form.Secret'],
       ['an identifier after a bytes literal', 'b"x" == form.Secret'],
+      ['a literal-only index', 'form["a-b"] == form.Secret'],
+      ['a list literal', 'form.Secret in ["a", "b"]'],
     ])('keeps it for %s', (_case, expression): void => {
       expect(
         toExpressionRuntimeError(missing('Secret'), 'label', expression)

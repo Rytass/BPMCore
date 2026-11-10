@@ -2,6 +2,7 @@ import {
   WorkflowEdge,
   WorkflowEdgeConditionOperator,
 } from '@rytass/bpm-core-shared/workflow';
+import { isEmptyWorkflowValue, readOwnFormValue } from './workflow-form-value';
 
 export type WorkflowConditionContext = Readonly<{
   formData: Readonly<Record<string, unknown>>;
@@ -18,7 +19,7 @@ export function evaluateWorkflowEdgeCondition(
     return false;
   }
 
-  const actualValue = context.formData[fieldKey];
+  const actualValue = readOwnFormValue(context.formData, fieldKey);
 
   if (operator === 'IS_FILLED') {
     return !isEmptyWorkflowValue(actualValue);
@@ -42,6 +43,15 @@ function compareWorkflowValues(
   operator: WorkflowEdgeConditionOperator,
   expectedValue: string,
 ): boolean {
+  // An unfilled field (absent, null, "", whitespace only or an empty list — the
+  // same set IS_EMPTY reports) holds no value to compare. Normalising it to ""
+  // would make `"" < "5"` true for an untouched number or date and would let
+  // `EQUALS ""` match, so every value and ordering comparison is false except
+  // NOT_EQUALS, which is true: nothing was filled, so it is not that value.
+  if (isEmptyWorkflowValue(actualValue)) {
+    return operator === 'NOT_EQUALS';
+  }
+
   // A table value is a list of rows. Only IS_FILLED / IS_EMPTY (handled above,
   // by row count) are defined for it; the designer offers nothing else, but a
   // hand-written or imported definition can still carry a value comparison.
@@ -131,18 +141,6 @@ function isNonPrimitiveValue(value: unknown): boolean {
   }
 
   return typeof value === 'object' && value !== null;
-}
-
-function isEmptyWorkflowValue(value: unknown): boolean {
-  if (value === null || typeof value === 'undefined') {
-    return true;
-  }
-
-  if (Array.isArray(value)) {
-    return value.length === 0;
-  }
-
-  return typeof value === 'string' ? value.trim() === '' : false;
 }
 
 function normalizeWorkflowValue(value: unknown): string | number | boolean {

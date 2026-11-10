@@ -531,13 +531,13 @@ describe('table field conditions', () => {
 
   it('compiles table emptiness to a row count, not a string comparison', () => {
     expect(readConditionExpression(TABLE_FIELD, 'IS_FILLED', undefined)).toBe(
-      'form.items != null && size(form.items) > 0',
+      'has(form.items) && (form.items != null && size(form.items) > 0)',
     );
     expect(readConditionExpression(TABLE_FIELD, 'IS_EMPTY', undefined)).toBe(
-      'form.items == null || size(form.items) == 0',
+      '!(has(form.items) && (form.items != null && size(form.items) > 0))',
     );
     expect(readConditionExpression(TEXT_FIELD, 'IS_FILLED', undefined)).toBe(
-      'form.note != null && form.note != ""',
+      'has(form.note) && (form.note != null && form.note != "")',
     );
   });
 
@@ -563,10 +563,10 @@ describe('member field conditions', () => {
 
   it('compiles emptiness without size() so an explicit null cannot throw', () => {
     expect(readConditionExpression(MEMBER_FIELD, 'IS_FILLED', undefined)).toBe(
-      'form.reviewer != null && form.reviewer != "" && form.reviewer != []',
+      'has(form.reviewer) && (form.reviewer != null && (form.reviewer != "" && form.reviewer != []))',
     );
     expect(readConditionExpression(MEMBER_FIELD, 'IS_EMPTY', undefined)).toBe(
-      'form.reviewer == null || form.reviewer == "" || form.reviewer == []',
+      '!(has(form.reviewer) && (form.reviewer != null && (form.reviewer != "" && form.reviewer != [])))',
     );
   });
 
@@ -1521,10 +1521,10 @@ describe('org_unit field conditions', () => {
 
   it('compiles emptiness and refuses value operators', () => {
     expect(readConditionExpression(ORG_FIELD, 'IS_FILLED', undefined)).toBe(
-      'form.f != null && form.f != ""',
+      'has(form.f) && (form.f != null && form.f != "")',
     );
     expect(readConditionExpression(ORG_FIELD, 'IS_EMPTY', undefined)).toBe(
-      'form.f == null || form.f == ""',
+      '!(has(form.f) && (form.f != null && form.f != ""))',
     );
     expect(readConditionExpression(ORG_FIELD, 'EQUALS', 'o1')).toBeUndefined();
   });
