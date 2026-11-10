@@ -12282,10 +12282,50 @@ describe('WorkflowEngineService', () => {
         return realEvaluateBoolean.apply(this, args);
       });
 
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation((): void => undefined);
+
       await expect(
         route(greaterThanWorkflow(), { amount: null }),
       ).resolves.toBe('task_default');
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /code=EDGE_STRUCTURED_FALLBACK edge=\S+ field=amount reason=EXPRESSION_TYPE_ERROR$/u,
+        ),
+      );
+      warn.mockRestore();
     });
+
+    it.each([
+      ['another key', 'department'],
+      ['no key name', null],
+    ] as const)(
+      'rethrows a missing key that names %s, even with the edge field empty',
+      async (_case, keyName): Promise<void> => {
+        // Third review of PR #135: a hand-edited CEL that also reads another
+        // key (`form.agent != null && initiator.department == "X"`) must not
+        // be answered by the edge's fields when that other key is missing.
+        evaluateBoolean.mockImplementation(function (
+          this: ConditionService,
+          ...args: Parameters<ConditionService['evaluateBoolean']>
+        ): boolean {
+          if (isEdgeCall(args)) {
+            throw new ExpressionRuntimeError(
+              'EXPRESSION_MISSING_KEY',
+              'workflow.edges',
+              { keyName },
+            );
+          }
+
+          return realEvaluateBoolean.apply(this, args);
+        });
+
+        await expect(route(isFilledWorkflow('agent'), {})).rejects.toThrow(
+          'EXPRESSION_MISSING_KEY',
+        );
+      },
+    );
 
     it('routes a dry run by the structured fields when the key is absent', (): void => {
       failOnAbsentKey('agent');

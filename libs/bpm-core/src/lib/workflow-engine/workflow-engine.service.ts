@@ -3523,16 +3523,20 @@ export class WorkflowEngineService {
       return evaluateWorkflowEdgeCondition(edge, { formData: input.formData });
     }
 
-    return evaluateWithStructuredFallback(edge, input.formData, (): boolean =>
-      this.conditionService.evaluateBoolean(
-        expression,
-        buildDryRunExpressionContext(input, lastDecision),
-        `workflow.edges.${edge.id}.data.condition`,
-        {
-          allowedRootIdentifiers: DRY_RUN_EDGE_ROOT_IDENTIFIERS,
-          dialect: readWorkflowExpressionDialect(input.workflowDefinition),
-        },
-      ),
+    return evaluateWithStructuredFallback(
+      edge,
+      input.formData,
+      (message: string): void => this.logger.warn(`dry-run ${message}`),
+      (): boolean =>
+        this.conditionService.evaluateBoolean(
+          expression,
+          buildDryRunExpressionContext(input, lastDecision),
+          `workflow.edges.${edge.id}.data.condition`,
+          {
+            allowedRootIdentifiers: DRY_RUN_EDGE_ROOT_IDENTIFIERS,
+            dialect: readWorkflowExpressionDialect(input.workflowDefinition),
+          },
+        ),
     );
   }
 
@@ -4909,13 +4913,18 @@ export class WorkflowEngineService {
       ),
     };
 
-    return evaluateWithStructuredFallback(edge, instance.formData, (): boolean =>
-      this.conditionService.evaluateBoolean(
-        expression,
-        context,
-        `workflow.edges.${edge.id}.data.condition`,
-        { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
-      ),
+    return evaluateWithStructuredFallback(
+      edge,
+      instance.formData,
+      (message: string): void =>
+        this.logger.warn(`instance=${instance.id} ${message}`),
+      (): boolean =>
+        this.conditionService.evaluateBoolean(
+          expression,
+          context,
+          `workflow.edges.${edge.id}.data.condition`,
+          { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
+        ),
     );
   }
 
@@ -9392,15 +9401,6 @@ function readEvaluableEdgeExpression(
 }
 
 /**
- * The expression errors a designer-built edge may answer from its structured
- * fields instead of failing the submit or decision.
- */
-const STRUCTURED_FALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
-  'EXPRESSION_MISSING_KEY',
-  'EXPRESSION_TYPE_ERROR',
-]);
-
-/**
  * Evaluates an edge's stored CEL and, only when it fails because the edge's
  * own field is unfilled, answers from the structured fields instead. The one
  * place both the actual run and the designer dry run decide that, so the two
@@ -9413,32 +9413,52 @@ const STRUCTURED_FALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
  * evaluator answer, reading the value as unfilled (`EQUALS` and the ordered
  * comparisons false, `NOT_EQUALS` and `IS_EMPTY` true, `IS_FILLED` false).
  *
- * Everything else is rethrown: a stored CEL that evaluates keeps its result,
- * so no route that worked before changes; a type error or missing key while
- * the edge's field *is* filled points at the CEL itself (edited by hand while
- * the structured fields stayed) and stays visible; a hand-written CEL has no
- * structured fields; a budget overrun or a function failure is never absorbed.
+ * - `EXPRESSION_MISSING_KEY` falls back only when the missing key *is* the
+ *   edge's field. A CEL edited by hand to also read another key
+ *   (`form.agent != null && initiator.department == "X"`) fails as written
+ *   when that other key is missing, even if the edge's field is unfilled.
+ * - `EXPRESSION_TYPE_ERROR` carries no key, so it falls back whenever the
+ *   edge's field is unfilled, and each such fallback is logged (`warn`, no
+ *   values) so an unrelated type error answered this way stays traceable.
+ * - Everything else is rethrown: a stored CEL that evaluates keeps its
+ *   result, so no route that worked before changes; an error while the
+ *   edge's field is filled points at the CEL itself; a hand-written CEL has
+ *   no structured fields; a budget overrun or a function failure is never
+ *   absorbed.
  */
 function evaluateWithStructuredFallback(
   edge: WorkflowEdge,
   formData: Readonly<Record<string, unknown>>,
+  warn: (message: string) => void,
   evaluate: () => boolean,
 ): boolean {
   try {
     return evaluate();
   } catch (error: unknown) {
     const fieldKey = edge.data.conditionFieldKey;
-    const answerable =
-      Boolean(fieldKey && edge.data.conditionOperator) &&
-      error instanceof ExpressionRuntimeError &&
-      STRUCTURED_FALLBACK_ERROR_CODES.has(error.code) &&
-      isEmptyWorkflowValue(readOwnFormValue(formData, fieldKey ?? ''));
 
-    if (!answerable) {
+    if (
+      !fieldKey ||
+      !edge.data.conditionOperator ||
+      !(error instanceof ExpressionRuntimeError) ||
+      !isEmptyWorkflowValue(readOwnFormValue(formData, fieldKey))
+    ) {
       throw error;
     }
 
-    return evaluateWorkflowEdgeCondition(edge, { formData });
+    if (error.code === 'EXPRESSION_MISSING_KEY' && error.keyName === fieldKey) {
+      return evaluateWorkflowEdgeCondition(edge, { formData });
+    }
+
+    if (error.code === 'EXPRESSION_TYPE_ERROR') {
+      warn(
+        `code=EDGE_STRUCTURED_FALLBACK edge=${edge.id} field=${fieldKey} reason=EXPRESSION_TYPE_ERROR`,
+      );
+
+      return evaluateWorkflowEdgeCondition(edge, { formData });
+    }
+
+    throw error;
   }
 }
 
