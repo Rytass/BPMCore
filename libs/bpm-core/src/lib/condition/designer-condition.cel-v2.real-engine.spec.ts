@@ -33,6 +33,16 @@ const FIELDS: readonly FormFieldDefinition[] = [
     required: false,
     type: 'select',
   },
+  {
+    fieldKey: 'tags',
+    label: '標籤',
+    options: [
+      { label: 'A', value: 'A' },
+      { label: 'B', value: 'B' },
+    ],
+    required: false,
+    type: 'checkbox',
+  },
 ] as readonly FormFieldDefinition[];
 
 const SCHEMA = {
@@ -46,6 +56,7 @@ const SAMPLE_VALUE: Readonly<Record<string, string>> = {
   due: '2026-01-01',
   plant: 'TW01',
   price: '5',
+  tags: 'A',
   urgent: 'true',
 };
 
@@ -102,6 +113,34 @@ describe('designer-compiled conditions under cel-v2', (): void => {
           }),
         ).toBe(UNFILLED_ANSWER[operator]);
       });
+    },
+  );
+
+  it.each(['cel-legacy', 'cel-v2'] as const)(
+    'reads a multiple-selection "" as unfilled under %s',
+    (dialect): void => {
+      const tags = FIELDS.find((field) => field.fieldKey === 'tags');
+
+      if (!tags) {
+        throw new Error('tags field missing');
+      }
+
+      const read = (
+        operator: WorkflowEdgeConditionOperator,
+        value: unknown,
+      ): boolean =>
+        service.evaluateBoolean(
+          readConditionExpression(tags, operator, undefined) ?? '',
+          { form: { tags: value } },
+          'edge',
+          { dialect },
+        );
+
+      expect(read('IS_FILLED', '')).toBe(false);
+      expect(read('IS_EMPTY', '')).toBe(true);
+      expect(read('IS_FILLED', [])).toBe(false);
+      expect(read('IS_FILLED', ['A'])).toBe(true);
+      expect(read('IS_EMPTY', ['A'])).toBe(false);
     },
   );
 });

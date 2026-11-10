@@ -2572,6 +2572,7 @@ function joinNestedConjunction(terms: readonly string[]): string {
  * guarded by `has()` and keeps its original flat `null ||` form.
  */
 interface ConditionGuard {
+  readonly guarded: boolean;
   readonly join: (terms: readonly string[]) => string;
   readonly present: readonly string[];
   readonly readEmpty: (filled: readonly string[], unguarded: string) => string;
@@ -2585,6 +2586,7 @@ function createConditionGuard(
     guarded ? joinNestedConjunction(terms) : terms.join(' && ');
 
   return {
+    guarded,
     join,
     present: guarded
       ? [`has(${fieldReference})`, `${fieldReference} != null`]
@@ -2612,9 +2614,18 @@ function readMultipleSelectionConditionExpression(
   field: FormFieldDefinition,
   operator: WorkflowEdgeConditionOperator,
   value: string | undefined,
-  { join, present, readEmpty }: ConditionGuard,
+  { guarded, join, present, readEmpty }: ConditionGuard,
 ): string | undefined {
-  const filled = [...present, `${fieldReference} != []`];
+  // A guarded condition also reads `""` as unfilled: only an API write can put
+  // it there, but the structured evaluator already reads it as empty, and a
+  // CEL that called it filled would answer without throwing, so no fallback
+  // could fix it. Comparing a list against `""` is null-safe and false, as for
+  // member. An unguarded key keeps its previous output, like every other type.
+  const filled = [
+    ...present,
+    ...(guarded ? [`${fieldReference} != ""`] : []),
+    `${fieldReference} != []`,
+  ];
 
   if (operator === 'IS_FILLED') {
     return join(filled);

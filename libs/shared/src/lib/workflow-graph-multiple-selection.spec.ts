@@ -70,10 +70,10 @@ describe('multiple-selection condition expressions (string shape)', () => {
       '!(has(form.x) && (form.x != null && "A" in form.x))',
     );
     expect(readConditionExpression(field, 'IS_FILLED', undefined)).toBe(
-      'has(form.x) && (form.x != null && form.x != [])',
+      'has(form.x) && (form.x != null && (form.x != "" && form.x != []))',
     );
     expect(readConditionExpression(field, 'IS_EMPTY', undefined)).toBe(
-      '!(has(form.x) && (form.x != null && form.x != []))',
+      '!(has(form.x) && (form.x != null && (form.x != "" && form.x != [])))',
     );
   });
 
