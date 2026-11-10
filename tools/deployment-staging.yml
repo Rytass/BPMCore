@@ -49,6 +49,10 @@ spec:
           env:
             - name: PORT
               value: '6001'
+            # NOTIFY webhook showcase (apps/api/src/app/api-showcase-webhook.ts):
+            # registers the "展示：右上角通知" endpoint and the browser stream.
+            - name: API_SHOWCASE_WEBHOOK_ENABLED
+              value: 'true'
           ports:
             - name: api-http
               containerPort: 6001
@@ -154,6 +158,14 @@ spec:
         - name: main
           port: 6001
     - match: Host(`bpm-core-staging.rytass.info`) && PathPrefix(`/attachments`)
+      kind: Rule
+      priority: 20
+      services:
+        - name: main
+          port: 6001
+    # Only the browser stream; the showcase receiver is called from inside
+    # the pod and stays unrouted.
+    - match: Host(`bpm-core-staging.rytass.info`) && Path(`/showcase/webhook-notifications/stream`)
       kind: Rule
       priority: 20
       services:

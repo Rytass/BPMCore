@@ -11,7 +11,11 @@ import { buildTypeOrmModuleOptions } from '@rytass/bpm-core-nestjs-module';
 import { BPM_MEMBER_RESOLVER } from '@rytass/bpm-core-nestjs-module';
 import { BPM_BUSINESS_CALENDAR } from '@rytass/bpm-core-nestjs-module';
 import { BPM_FORM_DATA_SOURCE_REGISTRY } from '@rytass/bpm-core-nestjs-module';
-import { BPM_WORKFLOW_WEBHOOK_REGISTRY } from '@rytass/bpm-core-nestjs-module';
+import {
+  BPM_WORKFLOW_WEBHOOK_REGISTRY,
+  StaticBPMWorkflowWebhookRegistry,
+} from '@rytass/bpm-core-nestjs-module';
+import type { BPMWorkflowWebhookRegistry } from '@rytass/bpm-core-nestjs-module';
 import type { Request } from 'express';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -23,6 +27,11 @@ import { ApiSessionService } from './api-session.service';
 import { ApiTaiwanBusinessCalendar } from './api-taiwan-business-calendar';
 import { ApiFormDataSourceRegistry } from './api-form-data-source';
 import { ApiDemoWebhookModule } from './api-demo-webhook.module';
+import { ApiShowcaseWebhookModule } from './api-showcase-webhook.module';
+import {
+  ApiShowcaseWebhookHub,
+  createApiShowcaseWebhookEndpoints,
+} from './api-showcase-webhook';
 import { API_DEMO_EXPRESSION_FUNCTIONS } from './api-expression-functions';
 import {
   readApiSetting,
@@ -40,6 +49,7 @@ import {
   imports: [
     ApiAuthModule,
     ApiDemoWebhookModule,
+    ApiShowcaseWebhookModule,
     VaultModule.forRoot({
       path: process.env.VAULT_PATH ?? 'bpm_core/develop',
     }),
@@ -85,7 +95,12 @@ import {
       }),
     }),
     BPMRootModule.forRootAsync({
-      imports: [ApiAuthModule, ApiDemoWebhookModule, VaultModule],
+      imports: [
+        ApiAuthModule,
+        ApiDemoWebhookModule,
+        ApiShowcaseWebhookModule,
+        VaultModule,
+      ],
       businessCalendarProvider: {
         provide: BPM_BUSINESS_CALENDAR,
         useClass: ApiTaiwanBusinessCalendar,
@@ -125,13 +140,21 @@ import {
           workflowWebhookTargetSources: ['REGISTRY', 'DATABASE'],
         };
       },
-      // Demo endpoints for the NOTIFY webhook feature; empty in production.
-      // A provider rather than a value, so the endpoints can read their
-      // signing secret from Vault.
+      // Demo endpoints for the NOTIFY webhook feature (empty in production)
+      // plus the staging showcase endpoint (on in production only with
+      // API_SHOWCASE_WEBHOOK_ENABLED=true). A provider rather than a value,
+      // so the endpoints can read their signing secrets.
       workflowWebhookRegistryProvider: {
-        inject: [ApiDemoWebhookSigningSecret],
+        inject: [ApiDemoWebhookSigningSecret, ApiShowcaseWebhookHub],
         provide: BPM_WORKFLOW_WEBHOOK_REGISTRY,
-        useFactory: createApiDemoWebhookRegistry,
+        useFactory: (
+          demoSecret: ApiDemoWebhookSigningSecret,
+          showcaseHub: ApiShowcaseWebhookHub,
+        ): BPMWorkflowWebhookRegistry =>
+          new StaticBPMWorkflowWebhookRegistry([
+            ...createApiDemoWebhookRegistry(demoSecret).list(),
+            ...createApiShowcaseWebhookEndpoints(showcaseHub),
+          ]),
       },
     }),
   ],

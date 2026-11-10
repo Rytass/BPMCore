@@ -3,6 +3,7 @@
 import type { ReactElement, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { HostLayout } from './host-layout';
+import { HostShowcaseWebhookNotifications } from './host-showcase-webhook-notifications';
 
 /**
  * Paths that should render bare (no sidebar chrome) — login screen and
@@ -25,5 +26,10 @@ export function HostShell({ children }: HostShellProps): ReactElement {
   if (pathname && BARE_PATHS.has(pathname)) {
     return <>{children}</>;
   }
-  return <HostLayout>{children}</HostLayout>;
+  return (
+    <HostLayout>
+      <HostShowcaseWebhookNotifications />
+      {children}
+    </HostLayout>
+  );
 }
