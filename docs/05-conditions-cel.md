@@ -243,9 +243,9 @@ trim(form.vendorName) + "／" + upper(form.paymentType)
   無法用 `has()` 守衛，維持原本輸出。這些條件在兩種方言都通過發布 lint，求值結果一致
   （`designer-condition.cel-v2.real-engine.spec.ts`）。
 - **已儲存的定義**不會重編，仍帶舊的 CEL。引擎照舊先求值存下來的 CEL；只有它丟 `EXPRESSION_MISSING_KEY` 或
-  `EXPRESSION_TYPE_ERROR`，且 edge 帶有設計器的結構化欄位（`conditionFieldKey` ＋ `conditionOperator`）時，才改由結構化欄位
-  回答，語意同上（只讀 `formData` 自身的 key）。CEL 能算出結果時一律採用，所以原本能走的路由不變（日期 `"" < "2026-01-01"`
-  仍為 `true`）。預算超限與函式失敗不會被吸收；沒有結構化欄位的手寫 CEL 照舊失敗。值是陣列時照舊直接用結構化欄位。
+  `EXPRESSION_TYPE_ERROR`、edge 帶有設計器的結構化欄位（`conditionFieldKey` ＋ `conditionOperator`），**且該欄位確實未填**時，
+  才改由結構化欄位回答，語意同上（只讀 `formData` 自身的 key）。CEL 能算出結果時一律採用，所以原本能走的路由不變（日期 `"" < "2026-01-01"`
+  仍為 `true`）。欄位已填卻仍缺 key 或型別錯誤，代表 CEL 本身有問題（例如手改過 CEL 但結構化欄位還留著，`form.amount > "abc"`），照常報錯；預算超限與函式失敗不會被吸收；沒有結構化欄位的手寫 CEL 照舊失敗。實際執行與試跑共用同一個判斷（`evaluateWithStructuredFallback`）。值是陣列時照舊直接用結構化欄位。
 
 ### 5.2 宿主函式與內建函式（未發佈）
 
