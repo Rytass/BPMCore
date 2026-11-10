@@ -200,7 +200,7 @@ W6 runtime 會優先執行 `edge.data.condition` 的 CEL expression，並保留�
 「不成立」而改走 default 邊，而是整個交易回滾（見 §9.2）。
 
 唯一的例外（未發佈）：設計器建的邊（帶 `conditionFieldKey` ＋ `conditionOperator`）存下的 CEL 丟 `EXPRESSION_MISSING_KEY`
-或 `EXPRESSION_TYPE_ERROR`，**且該欄位確實未填**（沒有 key、`null`、`""`、只有空白、空陣列）時，改由結構化欄位回答，
+或 `EXPRESSION_TYPE_ERROR`，**且該欄位確實未填**（沒有 key、`null`、`""`、只有空白、空陣列）時，改由結構化欄位回答（缺 key 還要求缺的就是該欄位；型別錯誤退回時記一筆 warn），
 未填的欄位讀作不符合（不等於／未填寫為 `true`，其餘為 `false`）。這是給沒碰過的選填欄位用的：舊定義的 CEL 讀不到 key 就丟例外。
 CEL 能算出結果時一律採用；欄位已填卻仍出錯、手寫 CEL、預算超限、函式失敗都照常回滾。實際執行與 dry run 共用同一個判斷，
 規則細節見 `docs/05` §5.1.1。

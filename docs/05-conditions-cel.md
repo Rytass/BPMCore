@@ -239,13 +239,16 @@ trim(form.vendorName) + "／" + upper(form.paymentType)
 
 - **設計器編出的條件**（`readConditionExpression`）對識別字 key（`form.x`）加上守衛：`has(form.x) && (form.x != null && …)`，
   右向巢狀，因為 cel-js 0.8.2 的 `||` 不短路、攤平的 `a && b && c` 只有第一個運算元短路。缺 key 與 `null` 視為未填：
-  已填寫／等於／大小比較為 `false`，未填寫／不等於為 `true`。大小比較另把 `""` 視為未填。非識別字 key（`form["a-b"]`）
+  已填寫／等於／大小比較為 `false`，未填寫／不等於為 `true`。大小比較另把 `""` 視為未填；識別字 key 的多選欄位（勾選、多選下拉／搜尋）已填寫／未填寫也把 `""` 視為未填，與成員欄位一致。非識別字 key（`form["a-b"]`）
   無法用 `has()` 守衛，維持原本輸出。這些條件在兩種方言都通過發布 lint，求值結果一致
   （`designer-condition.cel-v2.real-engine.spec.ts`）。
 - **已儲存的定義**不會重編，仍帶舊的 CEL。引擎照舊先求值存下來的 CEL；只有它丟 `EXPRESSION_MISSING_KEY` 或
   `EXPRESSION_TYPE_ERROR`、edge 帶有設計器的結構化欄位（`conditionFieldKey` ＋ `conditionOperator`），**且該欄位確實未填**時，
-  才改由結構化欄位回答，語意同上（只讀 `formData` 自身的 key）。CEL 能算出結果時一律採用，所以原本能走的路由不變（日期 `"" < "2026-01-01"`
-  仍為 `true`）。欄位已填卻仍缺 key 或型別錯誤，代表 CEL 本身有問題（例如手改過 CEL 但結構化欄位還留著，`form.amount > "abc"`），照常報錯；預算超限與函式失敗不會被吸收；沒有結構化欄位的手寫 CEL 照舊失敗。實際執行與試跑共用同一個判斷（`evaluateWithStructuredFallback`）。值是陣列時照舊直接用結構化欄位。
+  才改由結構化欄位回答。缺 key 還要求缺的就是該欄位（`keyName` 等於 `conditionFieldKey`）：手改過、還讀了其他 key 的 CEL，
+  缺的是那個 key 時照常失敗；型別錯誤不帶 key，欄位未填就退回，但每次記一筆 warn
+  （`code=EDGE_STRUCTURED_FALLBACK edge=… field=… reason=EXPRESSION_TYPE_ERROR`，不含值），語意同上（只讀 `formData` 自身的 key）。CEL 能算出結果時一律採用，所以原本能走的路由不變（日期 `"" < "2026-01-01"`
+  仍為 `true`）。這只對已發布的定義成立：模板重新存檔並發布後改用新編出的守衛條件，同一個 `""` 會變成 `false`；
+  進行中的案件用的是發起當下的快照，不受影響。欄位已填卻仍缺 key 或型別錯誤，代表 CEL 本身有問題（例如手改過 CEL 但結構化欄位還留著，`form.amount > "abc"`），照常報錯；預算超限與函式失敗不會被吸收；沒有結構化欄位的手寫 CEL 照舊失敗。實際執行與試跑共用同一個判斷（`evaluateWithStructuredFallback`）。值是陣列時照舊直接用結構化欄位。
 
 ### 5.2 宿主函式與內建函式（未發佈）
 
