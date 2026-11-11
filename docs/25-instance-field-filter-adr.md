@@ -183,7 +183,7 @@ CREATE INDEX IF NOT EXISTS "IDX_approval_instances_form_data_gin"
    | `number`／`money`／`date`／`datetime` 欄位存了空字串 `""` | 沒有值，通過 |
    | 其他型別不符（例如金額存 `"abc"`、日期存 `"11/3"`） | 髒值，拒絕 |
 
-兩個執行時點：
+兩個執行時點（發布、compose 與回滾的檢查，在取得範本列 `FOR UPDATE` 之後、同一交易內執行，§15）：
 
 - **勾選當下**：設計器呼叫唯讀 query `filterableFieldIssues(templateId, formDefinitionId, schemaJson)` 取得問題清單，在勾選框旁明確顯示錯誤。草稿儲存**不阻擋**——草稿不影響任何實例，擋在草稿會讓設計者無法先存再改。
 - **發布時**：伺服器再檢查一次，作為最終依據（防止繞過設計器直接呼叫 API）。掛點為範本服務的版本發布（一般發布與「表單＋流程一次建立」的 compose 共用）與**回滾**——回滾會讓舊版本成為目前版本，同樣要通過檢查。不通過回 `ConflictException`，訊息逐條列出問題。
@@ -208,6 +208,7 @@ CREATE INDEX IF NOT EXISTS "IDX_approval_instances_form_data_gin"
 - **只對可篩選欄位**強制型別檢查；未宣告的欄位維持現狀，不影響任何現有 host（現在沒有任何範本有可篩選欄位）。「所有欄位一律檢查」屬破壞性變更，另案處理。
 - 四條寫入路徑（W1–W4，§1.3）都必須套用同一個檢查函式，不符即拒絕寫入。W4 `SET_FORM_FIELD` 是流程內部寫入，同樣適用。
 - 檢查依據為**範本目前版本**的可篩選路徑（F3）：送出用送出當下的表單版本；補填、重送與 `SET_FORM_FIELD` 讀範本目前版本，因為查詢也以目前版本解讀。
+- **檢查在寫入交易內，且在取鎖之後執行**（§15）：W1 送出在交易內對範本列取 `FOR SHARE`，確認範本目前版本仍是送出時綁定的版本（否則回 `ConflictException`），再檢查並寫入；W2–W4 在各自的寫入交易內、實例 advisory lock 之後取同一把 `FOR SHARE`，再以目前版本檢查。交易外的預檢（W3 重送）只做提早拒絕，不作為依據。
 - 各型別的正規儲存格式（依 §1.5 的 P0 查證定案）：
 
   | 型別 | 正規格式 |
@@ -571,4 +572,9 @@ export interface ListApprovalInstancesOptions {
 - **效能數字未實測**：P4 實測前不對外承諾 p95。
 - **名稱快照不回溯**：需由採用的 host 確認業務上可接受，並寫入使用說明。
 - **舊資料無法修正**：§5.4 拒絕後唯一出路是改用新 key；若之後新增「寫回表單值」的 API（§13 第 2 點），可再提供修正路徑。
-- **發布與寫入的併發（已知、未處理）**：啟用檢查（§5.4）與寫入檢查（§6）之間沒有鎖。發布交易讀完舊資料、尚未 commit 時，若另一個請求用舊版本送出案件，且某欄位在舊版本不是可篩選，就會寫入一筆新版本認定為型別錯誤的值；此後這筆案件在該欄位的篩選中被視為沒有值，且不再受檢。發生條件是「啟用篩選的發布」與「該欄位寫入錯型別值」落在同一個毫秒級時間窗，機率很低，影響是單筆案件被篩選漏掉、不會報錯。修法：發布與回滾對 `approval_templates` 該列取 `FOR UPDATE`（或 transaction-level advisory lock），W1–W4 在寫入交易內對同一列取共享鎖，並以範本目前版本的 schema 檢查；W1 的檢查需移入寫入交易。另案處理。
+- **發布與寫入的併發（已處理）**：原本啟用檢查（§5.4）與寫入檢查（§6）之間沒有鎖。發布交易讀完舊資料、尚未 commit 時，若另一個請求用舊版本送出案件，且某欄位在舊版本不是可篩選，就會寫入一筆新版本認定為型別錯誤的值；此後這筆案件在該欄位的篩選中被視為沒有值，且不再受檢。影響是單筆案件被篩選漏掉、不會報錯。現行做法：
+  - **發布、compose、回滾**：在交易內先對 `approval_templates` 該列取 `FOR UPDATE`（TypeORM `pessimistic_write`），啟用檢查在取鎖之後、同一交易內執行；發布在取鎖後才重讀草稿版本與其表單綁定，檢查的是提交 commit 時的內容。
+  - **W1–W4**：在各自的寫入交易內對同一列取 `FOR SHARE`（`pessimistic_read`），並以取鎖後的範本目前版本 schema 檢查。W1 的檢查已從交易外移入寫入交易，取鎖後若範本目前版本已不是送出時綁定的版本，回 `ConflictException` 請重送。
+  - **選列鎖、不選 advisory lock**：範本列鎖直接表達「範本的版本狀態」，且不與實例的 `pg_advisory_xact_lock(hashtext(instanceId))` 共用鍵空間（hashtext 可能碰撞）。
+  - **鎖順序**：實例 advisory lock → 範本列鎖。發布、compose、回滾只取範本列鎖、不取實例鎖；W 路徑從不寫 `approval_templates`，因此不會出現 `FOR SHARE` 升級成 `FOR UPDATE` 的死鎖，也不會與發布形成環狀等待。
+  - **驗證**：單元測試以 mock 斷言鎖的模式與「鎖先於檢查」的順序（`template.service.spec.ts`、`workflow-engine.service.spec.ts`）。未做真實 DB 併發測試（repo 目前沒有整合測試基礎設施）；鎖語意依 Postgres 的列鎖相容表（`FOR SHARE` 與 `FOR UPDATE` 互斥、`FOR SHARE` 之間相容）。
