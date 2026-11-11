@@ -1,3 +1,37 @@
+## 0.21.0 (2026-11-11)
+
+### 🚀 Features
+
+- **bpm-core-react:** place refused fill values on their fields by path ([0f26687](https://github.com/Rytass/BPMCore/commit/0f26687))
+- **bpm-core-client:** expose refused form values on request errors ([3a5d406](https://github.com/Rytass/BPMCore/commit/3a5d406))
+- **shared:** add structured form data issue contract ([827e26d](https://github.com/Rytass/BPMCore/commit/827e26d))
+- **client:** add a filterable expense example list built on field filters ([3d624fb](https://github.com/Rytass/BPMCore/commit/3d624fb))
+- **react:** filterable toggle in the form builder and list field filters ([e8d58bf](https://github.com/Rytass/BPMCore/commit/e8d58bf))
+- **client:** pass field filters and sort to the approval-instance list ([bbfd789](https://github.com/Rytass/BPMCore/commit/bbfd789))
+- **workflow-engine:** filter and sort approval instances by form fields ([6e4a98f](https://github.com/Rytass/BPMCore/commit/6e4a98f))
+- **template:** refuse to enable a filterable field over conflicting history ([42628b4](https://github.com/Rytass/BPMCore/commit/42628b4))
+- **shared:** declare filterable form fields and the field filter contract ([166389e](https://github.com/Rytass/BPMCore/commit/166389e))
+- **designer:** explain an empty webhook catalog instead of hiding it ([61cb7bf](https://github.com/Rytass/BPMCore/commit/61cb7bf))
+- **api:** add a staging notify webhook showcase pushed over SSE ([0cb3ea5](https://github.com/Rytass/BPMCore/commit/0cb3ea5))
+
+### 🩹 Fixes
+
+- **client:** read form data issues all or nothing ([c0e4281](https://github.com/Rytass/BPMCore/commit/c0e4281))
+- **react:** map Chinese fill errors back onto the fields they name ([23e1db8](https://github.com/Rytass/BPMCore/commit/23e1db8))
+- **shared:** name the table, not a column, for a malformed filterable table ([c4b0420](https://github.com/Rytass/BPMCore/commit/c4b0420))
+- **shared:** describe filterable value mismatches in Chinese ([afd27a7](https://github.com/Rytass/BPMCore/commit/afd27a7))
+- **client:** name data-source values in case titles from the option snapshot ([14ade77](https://github.com/Rytass/BPMCore/commit/14ade77))
+- **react:** name org units, not members, in an org-unit field filter ([0909d1b](https://github.com/Rytass/BPMCore/commit/0909d1b))
+- **react:** skip the filterable-field check for a form without filterable fields ([1afd9a3](https://github.com/Rytass/BPMCore/commit/1afd9a3))
+
+### 🔥 Performance
+
+- **template:** scan instances only for fields a publish newly makes filterable ([b18dda2](https://github.com/Rytass/BPMCore/commit/b18dda2))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.20.1 (2026-11-10)
 
 ### 🩹 Fixes

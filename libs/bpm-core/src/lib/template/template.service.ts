@@ -953,10 +953,13 @@ export class TemplateService {
     // ADR 25 §5.4: a field that becomes filterable must not hold values the
     // template's existing instances cannot satisfy. Checked here, inside the
     // publish transaction, so the instances it reads are the ones it archives.
+    // Only what this publish makes filterable is scanned (ADR 25 §15).
     await assertTemplateFilterableFieldsEnabled(
       manager,
       template.id,
       formSchema,
+      (): Promise<FormDefinitionSchema | null> =>
+        this.readInForceFormSchema(manager, template),
     );
 
     const previousVersionId = template.currentVersionId;
@@ -1055,6 +1058,8 @@ export class TemplateService {
             manager,
             target.formDefinitionVersionId,
           ),
+          (): Promise<FormDefinitionSchema | null> =>
+            this.readInForceFormSchema(manager, template),
         );
 
         const previousVersionId = template.currentVersionId;
@@ -1432,6 +1437,31 @@ export class TemplateService {
     return manager
       ? manager.getRepository(FormDefinitionVersionEntity)
       : this.formDefinitionVersionRepository;
+  }
+
+  /**
+   * The form schema of the template's current version: the one whose
+   * filterable fields the stored instances already satisfy. Null when the
+   * template has no published version yet. Read under the caller's template
+   * row lock, so no write can change what it guarantees before the publish
+   * commits.
+   */
+  private async readInForceFormSchema(
+    manager: EntityManager,
+    template: ApprovalTemplateEntity,
+  ): Promise<FormDefinitionSchema | null> {
+    if (!template.currentVersionId) {
+      return null;
+    }
+
+    const current = await manager
+      .getRepository(ApprovalTemplateVersionEntity)
+      .findOne({ where: { id: template.currentVersionId } });
+
+    return this.readFormSchemaOfVersion(
+      manager,
+      current?.formDefinitionVersionId ?? null,
+    );
   }
 
   private async readFormSchemaOfVersion(

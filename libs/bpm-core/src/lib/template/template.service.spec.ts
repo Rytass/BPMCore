@@ -4094,6 +4094,44 @@ describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
     expect(result.published).toBe(true);
   });
 
+  it('scans instances only for what a publish newly makes filterable (ADR 25 §15)', async (): Promise<void> => {
+    const { manager, state } = createFilterableManager(
+      [],
+      [{ formData: { amountTwd: 5 }, id: 'instance-1' }],
+    );
+    const query = jest.spyOn(manager, 'query');
+    const service = createStoreBackedService(manager);
+    const instanceScans = (): number =>
+      query.mock.calls.filter(([sql]) =>
+        String(sql).includes('jsonb_object_agg'),
+      ).length;
+
+    const v1 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(AMOUNT_TWD_FILTERABLE_SCHEMA, AMOUNT_TWD_UI_SCHEMA, {
+        publish: true,
+      }),
+      'member-admin',
+    );
+
+    expect(instanceScans()).toBe(1);
+
+    // A value that should never have got in: the publish below keeps
+    // `amountTwd` as it is, so it trusts the in-force guarantee and does not
+    // look at the instances again.
+    state.instances = [{ formData: { amountTwd: 'abc' }, id: 'instance-1' }];
+
+    const v2 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(AMOUNT_TWD_FILTERABLE_SCHEMA, AMOUNT_TWD_UI_SCHEMA, {
+        publish: true,
+        templateId: v1.template.id,
+      }),
+      'member-admin',
+    );
+
+    expect(v2.published).toBe(true);
+    expect(instanceScans()).toBe(1);
+  });
+
   /**
    * Records, in order, every template-row read and every instance read the
    * enable check makes through the same manager. The order is what ADR 25

@@ -78,6 +78,16 @@ export interface UserTaskNodeData extends BaseNodeData {
    */
   readonly fieldPermissions?: readonly FieldPermission[];
   readonly notification?: NotificationOverride;
+  /**
+   * Requires a non-empty comment whenever a person approves at this node.
+   *
+   * Omitted or `false` keeps today's behaviour where approving without a
+   * comment is accepted. The engine validates this against the workflow
+   * snapshot stored on the instance, so in-flight instances started before the
+   * template opted in keep their original behaviour. Only a person's approval
+   * is held to it: the SLA `AUTO_APPROVE` timeout never waits for a comment.
+   */
+  readonly requireApprovalComment?: boolean;
   readonly returnBehavior: ReturnBehavior;
   readonly sla?: SlaConfig;
 }

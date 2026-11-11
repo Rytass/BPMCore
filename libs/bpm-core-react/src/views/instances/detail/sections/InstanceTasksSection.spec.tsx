@@ -60,23 +60,48 @@ jest.mock('@mezzanine-ui/react', () => {
       {props.children as ReactNode}
     </div>
   );
-  // Renders only while open, with a button standing in for its confirm.
+  // Renders only while open, with a button standing in for its confirm that
+  // follows `confirmButtonProps.disabled`, and a second one that is always
+  // enabled: a confirm that reaches the handler without the button (the Enter
+  // key, say), so the handler's own guard can be tested apart from the button.
   const Modal = (props: Readonly<Record<string, unknown>>): ReactElement | null =>
     props.open === true ? (
       <div data-modal={String(props.title)}>
         {props.children as ReactNode}
         <button
           data-modal-confirm={String(props.title)}
+          disabled={
+            (
+              props.confirmButtonProps as
+                | Readonly<{ disabled?: boolean }>
+                | undefined
+            )?.disabled === true
+          }
+          onClick={props.onConfirm as () => void}
+          type="button"
+        />
+        <button
+          data-modal-confirm-forced={String(props.title)}
           onClick={props.onConfirm as () => void}
           type="button"
         />
       </div>
     ) : null;
+  // A real textarea, so a test can type into the dialogs.
+  const Textarea = (
+    props: Readonly<Record<string, unknown>>,
+  ): ReactElement => (
+    <textarea
+      onChange={props.onChange as () => void}
+      value={props.value as string}
+    />
+  );
   const mocks: Readonly<Record<string, unknown>> = {
     Badge,
     Description,
     Modal,
     Table,
+    Textarea,
   };
 
   return new Proxy(mocks, {
@@ -407,4 +432,194 @@ describe('InstanceTasksSection approver fill', () => {
       container.querySelector('[data-modal="簽核意見"]')?.textContent,
     ).toContain('Task task-1 is not pending');
   });
+});
+
+describe('InstanceTasksSection approval comment', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  function instanceWithApprovalComment(
+    requireApprovalComment: boolean | undefined,
+  ): ApprovalInstanceRecord {
+    return {
+      id: 'instance-1',
+      workflowSnapshot: {
+        edges: [],
+        meta: { schemaVersion: 1 },
+        nodes: [
+          {
+            data: {
+              allowReject: true,
+              label: '財務',
+              returnBehavior: {
+                allowReturn: false,
+                allowedTargets: 'PREVIOUS',
+              },
+              ...(requireApprovalComment === undefined
+                ? {}
+                : { requireApprovalComment }),
+            },
+            id: 'band-0',
+            position: { x: 0, y: 0 },
+            type: 'userTask',
+          },
+        ],
+      },
+    } as unknown as ApprovalInstanceRecord;
+  }
+
+  beforeEach((): void => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    jest.mocked(decideTask).mockReset();
+    jest
+      .mocked(decideTask)
+      .mockResolvedValue({} as Awaited<ReturnType<typeof decideTask>>);
+  });
+
+  afterEach((): void => {
+    act((): void => root.unmount());
+    container.remove();
+  });
+
+  async function openApproveDialog(
+    requireApprovalComment: boolean | undefined,
+    tasks: readonly TaskRecord[] = [task({ id: 'task-1' })],
+  ): Promise<void> {
+    const ref = createRef<InstanceTasksSectionHandle>();
+
+    await act(async (): Promise<void> => {
+      root.render(
+        <InstanceTasksSection
+          adhocDirectives={[]}
+          currentMemberId="member-001"
+          instance={instanceWithApprovalComment(requireApprovalComment)}
+          memberProfilesById={new Map()}
+          onChanged={jest.fn()}
+          ref={ref}
+          tasks={tasks}
+        />,
+      );
+    });
+    await act(async (): Promise<void> => {
+      ref.current?.handleApprove();
+    });
+  }
+
+  async function typeComment(text: string): Promise<void> {
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      '[data-modal="簽核意見"] textarea',
+    );
+
+    await act(async (): Promise<void> => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        'value',
+      )?.set?.call(textarea, text);
+      textarea?.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  async function confirm(): Promise<void> {
+    await act(async (): Promise<void> => {
+      container
+        .querySelector<HTMLButtonElement>('[data-modal-confirm="簽核意見"]')
+        ?.click();
+    });
+  }
+
+  async function confirmWithoutTheButton(): Promise<void> {
+    await act(async (): Promise<void> => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-modal-confirm-forced="簽核意見"]',
+        )
+        ?.click();
+    });
+  }
+
+  const confirmButton = (): HTMLButtonElement | null =>
+    container.querySelector<HTMLButtonElement>(
+      '[data-modal-confirm="簽核意見"]',
+    );
+
+  it('disables the confirm button while the node requires a comment and none is written', async (): Promise<void> => {
+    await openApproveDialog(true);
+
+    expect(confirmButton()?.disabled).toBe(true);
+
+    await typeComment('   ');
+
+    expect(confirmButton()?.disabled).toBe(true);
+
+    await typeComment('金額已核對');
+
+    expect(confirmButton()?.disabled).toBe(false);
+  });
+
+  it.each([undefined, false])(
+    'keeps the confirm button enabled without a comment when requireApprovalComment is %j',
+    async (requireApprovalComment: boolean | undefined): Promise<void> => {
+      await openApproveDialog(requireApprovalComment);
+
+      expect(confirmButton()?.disabled).toBe(false);
+    },
+  );
+
+  it('does not send an approval without a comment when the node requires one', async (): Promise<void> => {
+    await openApproveDialog(true);
+    await confirmWithoutTheButton();
+
+    expect(decideTask).not.toHaveBeenCalled();
+    expect(
+      container.querySelector('[data-modal="簽核意見"]'),
+    ).not.toBeNull();
+  });
+
+  it('does not send an approval whose comment is only spaces when the node requires one', async (): Promise<void> => {
+    await openApproveDialog(true);
+    await typeComment('   ');
+    await confirmWithoutTheButton();
+
+    expect(decideTask).not.toHaveBeenCalled();
+  });
+
+  it('sends the trimmed comment once the node requires one and it is written', async (): Promise<void> => {
+    await openApproveDialog(true);
+    await typeComment('  金額已核對  ');
+    await confirm();
+
+    expect(decideTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'APPROVED',
+        comment: '金額已核對',
+        taskId: 'task-1',
+      }),
+    );
+  });
+
+  it('holds an ad-hoc signer to the main node requirement too', async (): Promise<void> => {
+    await openApproveDialog(true, [
+      task({ adhocType: 'COUNTERSIGN', id: 'task-1', isAdhoc: true }),
+    ]);
+
+    expect(confirmButton()?.disabled).toBe(true);
+
+    await confirmWithoutTheButton();
+
+    expect(decideTask).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, false])(
+    'still sends an approval without a comment when requireApprovalComment is %j',
+    async (requireApprovalComment: boolean | undefined): Promise<void> => {
+      await openApproveDialog(requireApprovalComment);
+      await confirm();
+
+      expect(decideTask).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'APPROVED', comment: null }),
+      );
+    },
+  );
 });

@@ -290,6 +290,19 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
     kind: 'mutation',
   },
   {
+    name: 'set_user_task_require_approval_comment',
+    description:
+      '設定簽核節點核准（同意）時是否必須填寫意見。true=簽核人按同意一定要填意見，未填會被引擎擋下；false=可留空（預設）。只針對人工核准，逾時自動同意不受影響。',
+    inputSchema: objectSchema(
+      {
+        nodeId: { type: 'string' },
+        requireApprovalComment: { type: 'boolean' },
+      },
+      ['nodeId', 'requireApprovalComment'],
+    ),
+    kind: 'mutation',
+  },
+  {
     name: 'set_user_task_sla',
     description:
       '設定簽核節點的時效與逾時處理。enabled=false 會移除整組時效設定。期限以「數量 + 單位」表示（DAY 日 / HOUR 小時），不接受 ISO duration 字串。' +
@@ -643,6 +656,9 @@ function readNodeSummary(node: WorkflowNode): string {
       (node.data.excludeInitiator
         ? `；申請人不可簽核自己的單=${node.data.excludeInitiator.whenEmpty}`
         : '') +
+      // Only reported when on, so the assistant can read back what
+      // set_user_task_require_approval_comment wrote; absent means "optional".
+      (node.data.requireApprovalComment === true ? '；核准必填意見' : '') +
       readFieldAccessSummary(node) +
       (node.data.fieldPermissions === undefined ? '' : '；含舊欄位權限設定')
     );
@@ -1070,6 +1086,12 @@ function buildPrimitiveCommand(
         requireComment: readBoolean(input, 'requireComment'),
         type: 'setUserTaskReturnRequireComment',
       };
+    case 'set_user_task_require_approval_comment':
+      return {
+        nodeId: readString(input, 'nodeId'),
+        requireApprovalComment: readBoolean(input, 'requireApprovalComment'),
+        type: 'setUserTaskRequireApprovalComment',
+      };
     case 'set_user_task_sla':
       return {
         nodeId: readString(input, 'nodeId'),
@@ -1176,7 +1198,7 @@ function readNodeTypeCatalog(): unknown {
       {
         dataShape:
           'label, approverResolver, decisionPolicy, returnBehavior(allowReturn, allowedTargets, requireComment?, resubmitStrategy?), ' +
-          'allowReject, allowTransfer, allowAddSigner, excludeInitiator?(whenEmpty), triggerMode, ' +
+          'requireApprovalComment?, allowReject, allowTransfer, allowAddSigner, excludeInitiator?(whenEmpty), triggerMode, ' +
           'sla?(duration, calendar?, onTimeout, escalateLevelsUp?, warningAt?), notification?',
         label: WORKFLOW_NODE_TYPE_LABELS.userTask,
         type: 'userTask',
