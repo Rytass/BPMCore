@@ -203,6 +203,17 @@ import {
   withPreferClosestOrgUnit,
 } from './approver-resolver-model';
 import { readDryRunSampleFormData } from './dry-run-sample-data';
+import {
+  readNotifyRecipients,
+  readNotifyRecipientSourceChoice,
+  readNotifyRecipientSourcePick,
+  readNotifyRecipientsDesignerIssue,
+  withNotifyFormPath,
+  withNotifyIncludeDescendants,
+  withNotifyOrgUnit,
+  withNotifyPosition,
+  withNotifyRecipients,
+} from './notify-recipient-options';
 import { DialectUpgradeModal } from './expression/DialectUpgradeModal';
 import { ExpressionField } from './expression/ExpressionField';
 import { useWorkflowExpressionReferences } from './expression/use-workflow-expression-references';
@@ -4056,33 +4067,40 @@ export function TemplateDesignerView({
     node: Extract<WorkflowNode, { type: 'serviceTask' }>,
   ): ReactElement {
     const action = node.data.action;
+    const recipients = readNotifyRecipients(action);
+    const sourceChoice = readNotifyRecipientSourceChoice(recipients);
     const selectedMembers = readServiceTaskMemberIds(action).map((memberId) =>
       readMemberSelectOption(memberOptions, memberId),
     );
-    const runtimeRecipients =
-      action.type === 'NOTIFY' && action.recipients.type !== 'DIRECT'
-        ? readApproverResolverSummary(
-            action.recipients,
-            memberOptions,
+    const selectedRecipientOrgUnit =
+      recipients.type === 'ORG_UNIT_MEMBER' ||
+      recipients.type === 'ORG_UNIT_POSITION' ||
+      recipients.type === 'ORG_UNIT_MANAGER'
+        ? readSelectedOrgUnitOption(orgUnits, recipients.orgUnitId)
+        : null;
+    const selectedRecipientPosition =
+      recipients.type === 'POSITION' || recipients.type === 'ORG_UNIT_POSITION'
+        ? readSelectedPositionOption(positions, recipients.positionId)
+        : null;
+    const recipientOrgScopedPositions =
+      recipients.type === 'ORG_UNIT_POSITION'
+        ? readOrgScopedPositions({
+            includeDescendants: Boolean(recipients.includeDescendants),
+            memberships,
+            orgUnitId: recipients.orgUnitId,
             orgUnits,
             positions,
-            webhookFormSchema,
-          )
+          })
+        : [];
+    const recipientFormChoice =
+      recipients.type === 'DYNAMIC_FORM'
+        ? readDynamicFormFieldChoice(webhookFormSchema, recipients.formPath)
         : null;
 
-    function updateNotifyRecipients(memberIds: readonly string[]): void {
-      const recipients: ApproverResolver = {
-        memberIds: [...memberIds],
-        type: 'DIRECT',
-      };
-
-      // Only the recipients change: channels, template and webhooks belong
-      // to the same action and must survive a member being added or removed.
-      updateServiceAction(
-        action.type === 'NOTIFY'
-          ? { ...action, recipients }
-          : { channels: ['IN_APP'], recipients, type: 'NOTIFY' },
-      );
+    // Only the recipients change: channels, template and webhooks belong to
+    // the same action and must survive a source or target being edited.
+    function updateNotifyRecipients(next: ApproverResolver): void {
+      updateServiceAction(withNotifyRecipients(action, next));
     }
 
     function updateNotifyWebhooks(
@@ -4171,47 +4189,186 @@ export function TemplateDesignerView({
       <>
         {actionTypePicker}
         <BPMFormField
-          hintText={
-            runtimeRecipients
-              ? `目前知會對象為「${runtimeRecipients}」；在此選擇成員會改為指定成員。`
-              : action.type === 'NOTIFY'
-                ? '可只設定 Webhook，不指定知會對象。'
-                : undefined
-          }
-          label="知會對象"
-          name="notifyMemberIds"
+          hintText={sourceChoice.hint ?? undefined}
+          label="知會對象來源"
+          name="notifyRecipientType"
         >
-          <AutoComplete
-            asyncData
-            disabledOptionsFilter
-            emptyText="沒有符合的成員"
-            loading={memberLoading}
-            loadingText="搜尋成員中..."
-            mode="multiple"
-            onChange={(options): void =>
-              updateNotifyRecipients(options.map((option) => option.id))
-            }
-            onSearch={handleSearchMembers}
-            onVisibilityChange={(open): void => {
-              if (open) {
-                // Clear synchronously so the window between opening and the
-                // fetch landing never shows a different node's stale results.
-                setMemberSearchResults([]);
-                void handleSearchMembers('');
+          <Select
+            clearable={false}
+            onChange={(option): void => {
+              // Re-picking the source already stored, or the read-only entry
+              // of a source this panel does not edit, writes nothing.
+              const next = readNotifyRecipientSourcePick(
+                recipients,
+                option?.id ?? null,
+                positions,
+              );
+
+              if (next) {
+                updateNotifyRecipients(next);
               }
             }}
-            // As in the approver picker: merged so an already-picked member can
-            // still be unticked from the dropdown, which AutoComplete resolves
-            // through `options`.
-            options={[
-              ...mergeMemberOptions(selectedMembers, memberSearchResults),
-            ]}
-            overflowStrategy="wrap"
-            placeholder="搜尋姓名或信箱"
-            searchDebounceTime={300}
-            value={[...selectedMembers]}
+            options={[...sourceChoice.options]}
+            value={sourceChoice.selected}
           />
         </BPMFormField>
+        {recipients.type === 'DIRECT' ? (
+          <BPMFormField
+            hintText={
+              action.type === 'NOTIFY'
+                ? '可只設定 Webhook，不指定知會對象。'
+                : undefined
+            }
+            label="知會對象"
+            name="notifyMemberIds"
+          >
+            <AutoComplete
+              asyncData
+              disabledOptionsFilter
+              emptyText="沒有符合的成員"
+              loading={memberLoading}
+              loadingText="搜尋成員中..."
+              mode="multiple"
+              onChange={(options): void =>
+                updateNotifyRecipients({
+                  memberIds: options.map((option) => option.id),
+                  type: 'DIRECT',
+                })
+              }
+              onSearch={handleSearchMembers}
+              onVisibilityChange={(open): void => {
+                if (open) {
+                  // Clear synchronously so the window between opening and the
+                  // fetch landing never shows a different node's stale results.
+                  setMemberSearchResults([]);
+                  void handleSearchMembers('');
+                }
+              }}
+              // As in the approver picker: merged so an already-picked member can
+              // still be unticked from the dropdown, which AutoComplete resolves
+              // through `options`.
+              options={[
+                ...mergeMemberOptions(selectedMembers, memberSearchResults),
+              ]}
+              overflowStrategy="wrap"
+              placeholder="搜尋姓名或信箱"
+              searchDebounceTime={300}
+              value={[...selectedMembers]}
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'DYNAMIC_FORM' ? (
+          <BPMFormField
+            hintText={
+              recipientFormChoice?.problem ??
+              '知會對象取自申請人送出表單時在該欄位選的人員。'
+            }
+            label="表單欄位"
+            name="notifyFormPath"
+            required
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateNotifyRecipients(
+                  withNotifyFormPath(recipients, option?.id ?? ''),
+                )
+              }
+              options={[...(recipientFormChoice?.options ?? [])]}
+              placeholder="選擇人員選擇欄位"
+              value={recipientFormChoice?.selected ?? undefined}
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'ORG_UNIT_MEMBER' ||
+        recipients.type === 'ORG_UNIT_POSITION' ||
+        recipients.type === 'ORG_UNIT_MANAGER' ? (
+          <BPMFormField
+            hintText={
+              recipients.type === 'ORG_UNIT_MANAGER'
+                ? '依指定組織或其上層的主管解析規則決定知會對象。'
+                : '依指定組織目前有效會員歸屬決定知會對象。'
+            }
+            label="組織"
+            name="notifyOrgUnitId"
+            required
+          >
+            <OrgUnitPicker
+              name="notifyOrgUnitId"
+              onChange={(option): void =>
+                updateNotifyRecipients(
+                  withNotifyOrgUnit(recipients, option?.id ?? ''),
+                )
+              }
+              orgUnits={orgUnits}
+              placeholder="選擇組織"
+              value={selectedRecipientOrgUnit}
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'ORG_UNIT_MEMBER' ||
+        recipients.type === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField label="包含下層" name="notifyIncludeDescendants">
+            <Toggle
+              checked={Boolean(recipients.includeDescendants)}
+              inputProps={{
+                id: 'notifyIncludeDescendants',
+                name: 'notifyIncludeDescendants',
+              }}
+              onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                updateNotifyRecipients(
+                  withNotifyIncludeDescendants(
+                    recipients,
+                    event.target.checked,
+                  ),
+                )
+              }
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'POSITION' ? (
+          <BPMFormField
+            hintText="通知目前有效歸屬中擁有此職位的會員。"
+            label="職位"
+            name="notifyPositionId"
+            required
+          >
+            <PositionPicker
+              name="notifyPositionId"
+              onChange={(option): void =>
+                updateNotifyRecipients(
+                  withNotifyPosition(recipients, option?.id ?? ''),
+                )
+              }
+              placeholder="選擇職位"
+              positions={positions}
+              value={selectedRecipientPosition}
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField
+            hintText="只通知指定組織範圍內擁有此職位的有效會員。"
+            label="職位"
+            name="notifyOrgUnitPositionId"
+            required
+          >
+            <PositionPicker
+              disabled={!recipients.orgUnitId.trim()}
+              name="notifyOrgUnitPositionId"
+              onChange={(option): void =>
+                updateNotifyRecipients(
+                  withNotifyPosition(recipients, option?.id ?? ''),
+                )
+              }
+              placeholder={
+                recipients.orgUnitId.trim() ? '選擇職位' : '請先選擇組織'
+              }
+              positions={recipientOrgScopedPositions}
+              value={selectedRecipientPosition}
+            />
+          </BPMFormField>
+        ) : null}
         {action.type === 'NOTIFY' &&
         !isNotifyWebhookListEditable(action.webhooks) ? (
           <div style={FORM_STACK_STYLE}>
@@ -5962,7 +6119,11 @@ function readWorkflowDefinitionIssue(
   // same everywhere (ADR 18 P0).
   const notifyNodeIssue =
     definition.nodes
-      .map((node) => readNotifyServiceTaskIssue(node))
+      .map(
+        (node) =>
+          readNotifyServiceTaskIssue(node) ??
+          readNotifyRecipientsDesignerIssue(node),
+      )
       .find((issue): issue is string => issue !== null) ?? null;
   const incompleteConditionEdge = definition.edges.find(
     (edge) =>
