@@ -11026,6 +11026,255 @@ describe('WorkflowEngineService', () => {
     expect(decision.comment).toBeNull();
   });
 
+  describe('requiring a comment when a person approves (requireApprovalComment)', (): void => {
+    function createApprovalCommentFixture({
+      decisionTask = createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      snapshotRequires,
+      templateRequires,
+    }: {
+      readonly decisionTask?: TaskEntity;
+      readonly snapshotRequires?: boolean;
+      readonly templateRequires?: boolean;
+    }): ReturnType<typeof createServiceFixture> {
+      return createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask,
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          requireApprovalComment: snapshotRequires,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        ...(templateRequires === undefined
+          ? {}
+          : {
+              templateWorkflowDefinition: createLinearUserTaskWorkflow({
+                requireApprovalComment: templateRequires,
+              }),
+            }),
+      });
+    }
+
+    it.each([null, undefined, '', '   '])(
+      'refuses an approval whose comment is %j when the node requires one',
+      async (comment: string | null | undefined): Promise<void> => {
+        const fixture = createApprovalCommentFixture({
+          snapshotRequires: true,
+        });
+
+        await expect(
+          fixture.service.decideTask({
+            action: TaskDecisionActionEnum.APPROVED,
+            comment,
+            decidedByMemberId: 'member-finance',
+            taskId: 'task-1',
+          }),
+        ).rejects.toThrow(
+          'Approve decision comment is required by workflow node task_finance',
+        );
+      },
+    );
+
+    it('refuses with a 400 BadRequestException, not a conflict', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({ snapshotRequires: true });
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('accepts an approval that carries a comment when the node requires one', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({ snapshotRequires: true });
+
+      const decision = await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '  金額已核對  ',
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+      });
+
+      expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+      expect(decision.comment).toBe('金額已核對');
+    });
+
+    it.each([undefined, false])(
+      'still accepts an approval without a comment when requireApprovalComment is %j',
+      async (snapshotRequires: boolean | undefined): Promise<void> => {
+        const fixture = createApprovalCommentFixture({ snapshotRequires });
+
+        const decision = await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        });
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        expect(decision.comment).toBeNull();
+      },
+    );
+
+    it('reads the instance snapshot, so a template that opts in later does not block a running case', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({
+        snapshotRequires: undefined,
+        templateRequires: true,
+      });
+
+      const decision = await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+      });
+
+      expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+    });
+
+    it('keeps holding a running case to the snapshot when the template later opts out', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({
+        snapshotRequires: true,
+        templateRequires: false,
+      });
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow(
+        'Approve decision comment is required by workflow node task_finance',
+      );
+    });
+
+    it('holds a person approving an ad-hoc task to the main node setting', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({
+        decisionTask: createTask({
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        snapshotRequires: true,
+      });
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow(
+        'Approve decision comment is required by workflow node task_finance',
+      );
+    });
+
+    it('lets the SLA timeout auto-approve a node that requires a comment', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({ snapshotRequires: true });
+
+      const decision = await fixture.service.decideTask(
+        {
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        },
+        { automatic: 'SLA_AUTO_APPROVE' },
+      );
+
+      expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+    });
+
+    it('does not ask for an approval comment when a person rejects, returns or transfers', async (): Promise<void> => {
+      const rejected = createApprovalCommentFixture({ snapshotRequires: true });
+
+      await expect(
+        rejected.service.decideTask({
+          action: TaskDecisionActionEnum.REJECTED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow('Reject decision comment is required');
+
+      const returned = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          requireApprovalComment: true,
+          returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      expect(
+        (
+          await returned.service.decideTask({
+            action: TaskDecisionActionEnum.RETURNED,
+            comment: null,
+            decidedByMemberId: 'member-finance',
+            taskId: 'task-1',
+          })
+        ).action,
+      ).toBe(TaskDecisionActionEnum.RETURNED);
+
+      const transferred = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          assigneeMemberId: 'member-finance',
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          requireApprovalComment: true,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      expect(
+        (
+          await transferred.service.decideTask({
+            action: TaskDecisionActionEnum.TRANSFERRED,
+            comment: null,
+            decidedByMemberId: 'member-finance',
+            taskId: 'task-1',
+            transferToMemberId: 'member-manager',
+          })
+        ).action,
+      ).toBe(TaskDecisionActionEnum.TRANSFERRED);
+    });
+  });
+
   it('stamps a manual transfer reason on the delegation chain', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -20451,6 +20700,7 @@ function createLinearUserTaskWorkflow({
   decisionPolicy = { type: 'SINGLE' },
   excludeInitiator,
   fieldAccess,
+  requireApprovalComment,
   returnBehavior = {
     allowReturn: false,
     allowedTargets: 'PREVIOUS',
@@ -20464,6 +20714,7 @@ function createLinearUserTaskWorkflow({
   readonly decisionPolicy?: DecisionPolicy;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
   readonly fieldAccess?: readonly FieldAccessEntry[];
+  readonly requireApprovalComment?: boolean;
   readonly returnBehavior?: ReturnBehavior;
   readonly slaDuration?: string | null;
 } = {}): WorkflowDefinition {
@@ -20503,6 +20754,9 @@ function createLinearUserTaskWorkflow({
           returnBehavior,
           ...(excludeInitiator ? { excludeInitiator } : {}),
           ...(fieldAccess ? { fieldAccess } : {}),
+          ...(requireApprovalComment !== undefined
+            ? { requireApprovalComment }
+            : {}),
           ...(slaDuration
             ? {
                 sla: {

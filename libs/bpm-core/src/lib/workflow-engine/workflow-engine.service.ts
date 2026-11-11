@@ -1394,6 +1394,22 @@ export class WorkflowEngineService {
           );
         }
 
+        // Same snapshot rule as the return check above. Only a person's
+        // approval is held to it: an engine-made approval (the SLA
+        // `AUTO_APPROVE` timeout) carries `options.automatic` and must never
+        // stall waiting for a comment nobody is there to write. A person's
+        // approval of an ad-hoc task counts too: it runs on the main node.
+        if (
+          input.action === TaskDecisionActionEnum.APPROVED &&
+          options.automatic === undefined &&
+          !decisionComment &&
+          isApprovalCommentRequired(instance.workflowSnapshot, task.nodeId)
+        ) {
+          throw new BadRequestException(
+            `Approve decision comment is required by workflow node ${task.nodeId}`,
+          );
+        }
+
         if (filledFormData !== null && task.isAdhoc) {
           throw new ForbiddenException(
             `Ad-hoc task ${task.id} cannot fill in form fields`,
@@ -9578,6 +9594,15 @@ function isReturnCommentRequired(
     node.type === 'userTask' &&
     node.data.returnBehavior.requireComment === true
   );
+}
+
+function isApprovalCommentRequired(
+  workflow: WorkflowDefinition,
+  nodeId: string,
+): boolean {
+  const node = readWorkflowNodeOrThrow(workflow, nodeId);
+
+  return node.type === 'userTask' && node.data.requireApprovalComment === true;
 }
 
 function readReturnResubmitStrategy(

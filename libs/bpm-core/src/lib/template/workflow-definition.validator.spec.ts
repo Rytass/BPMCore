@@ -731,6 +731,31 @@ describe('workflow definition validator', () => {
     );
   });
 
+  it('rejects a non-boolean requireApprovalComment', (): void => {
+    const workflow = createUserTaskWorkflow({
+      requireApprovalComment: 'yes' as never,
+    });
+
+    expect(lintWorkflowDefinition(workflow).errors).toContain(
+      'workflow.nodes.task_manager.requireApprovalComment must be a boolean',
+    );
+  });
+
+  it.each([true, false])(
+    'accepts requireApprovalComment set to %s',
+    (requireApprovalComment: boolean): void => {
+      const workflow = createUserTaskWorkflow({ requireApprovalComment });
+
+      expect(lintWorkflowDefinition(workflow).errors).toEqual([]);
+    },
+  );
+
+  it('accepts a node that leaves requireApprovalComment out', (): void => {
+    expect(
+      lintWorkflowDefinition(createUserTaskWorkflow({})).errors,
+    ).toEqual([]);
+  });
+
   it('rejects an excludeInitiator whose whenEmpty is not a known behaviour', (): void => {
     const workflow = createUserTaskWorkflow({
       excludeInitiator: { whenEmpty: 'IGNORE' as never },
@@ -1380,12 +1405,14 @@ function createUserTaskWorkflow({
   approverResolver = { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
   decisionPolicy = { type: 'SINGLE' },
   excludeInitiator,
+  requireApprovalComment,
   returnBehavior = { allowReturn: true, allowedTargets: 'INITIATOR' },
   sla,
 }: {
   readonly approverResolver?: ApproverResolver;
   readonly decisionPolicy?: DecisionPolicy;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly requireApprovalComment?: boolean;
   readonly returnBehavior?: ReturnBehavior;
   readonly sla?: SlaConfig;
 }): WorkflowDefinition {
@@ -1424,6 +1451,9 @@ function createUserTaskWorkflow({
           label: '主管簽核',
           returnBehavior,
           ...(excludeInitiator ? { excludeInitiator } : {}),
+          ...(requireApprovalComment !== undefined
+            ? { requireApprovalComment }
+            : {}),
           ...(sla ? { sla } : {}),
         },
         id: 'task_manager',
