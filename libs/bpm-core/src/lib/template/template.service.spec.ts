@@ -331,7 +331,7 @@ describe('TemplateService', () => {
         Promise.resolve(value),
     );
     const service = new TemplateService(
-      {
+      withTemplateTransaction({
         findOne: jest.fn(
           (): Promise<ApprovalTemplateEntity | null> =>
             Promise.resolve(template),
@@ -343,7 +343,7 @@ describe('TemplateService', () => {
           ): ApprovalTemplateEntity => Object.assign(entity, value),
         ),
         save: templateSave,
-      } as unknown as Repository<ApprovalTemplateEntity>,
+      } as unknown as Repository<ApprovalTemplateEntity>),
       createRepository<ApprovalTemplateCategoryEntity>(),
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
@@ -363,13 +363,63 @@ describe('TemplateService', () => {
     expect(templateSave).toHaveBeenCalledTimes(2);
   });
 
+  it('locks the template row FOR UPDATE before reading and saving a deactivate or an edit (ADR 25 §15)', async (): Promise<void> => {
+    const events: string[] = [];
+    const templateRepository = {
+      findOne: jest.fn(
+        (options: {
+          readonly lock?: { readonly mode: string };
+        }): Promise<ApprovalTemplateEntity> => {
+          events.push(options.lock ? `lock:${options.lock.mode}` : 'read');
+
+          return Promise.resolve(createApprovalTemplate('template-1'));
+        },
+      ),
+      merge: jest.fn(
+        (
+          entity: ApprovalTemplateEntity,
+          value: Partial<ApprovalTemplateEntity>,
+        ): ApprovalTemplateEntity => Object.assign(entity, value),
+      ),
+      save: jest.fn(
+        (value: ApprovalTemplateEntity): Promise<ApprovalTemplateEntity> => {
+          events.push('save');
+
+          return Promise.resolve(value);
+        },
+      ),
+    } as unknown as Repository<ApprovalTemplateEntity>;
+    const service = new TemplateService(
+      withTemplateTransaction(templateRepository),
+      createRepository<ApprovalTemplateCategoryEntity>(),
+      createRepository<ApprovalTemplateVersionEntity>(),
+      createRepository<FormDefinitionVersionEntity>(),
+      new ConditionService(),
+      {} as unknown as FormService,
+      createTemplateModuleRef(),
+    );
+
+    await service.deactivateApprovalTemplate('template-1');
+
+    expect(events).toEqual(['lock:pessimistic_write', 'read', 'save']);
+
+    events.splice(0);
+    await service.updateApprovalTemplate({ id: 'template-1', name: '新名稱' });
+
+    expect(events.slice(0, 3)).toEqual([
+      'lock:pessimistic_write',
+      'read',
+      'save',
+    ]);
+  });
+
   it('rejects activation toggles for unknown approval templates', async (): Promise<void> => {
     const service = new TemplateService(
-      {
+      withTemplateTransaction({
         findOne: jest.fn(
           (): Promise<ApprovalTemplateEntity | null> => Promise.resolve(null),
         ),
-      } as unknown as Repository<ApprovalTemplateEntity>,
+      } as unknown as Repository<ApprovalTemplateEntity>),
       createRepository<ApprovalTemplateCategoryEntity>(),
       createRepository<ApprovalTemplateVersionEntity>(),
       createRepository<FormDefinitionVersionEntity>(),
@@ -587,7 +637,7 @@ describe('TemplateService', () => {
       ),
     } as unknown as Repository<ApprovalTemplateEntity>;
     const service = new TemplateService(
-      templateRepository,
+      withTemplateTransaction(templateRepository),
       {
         findOne: jest.fn(
           (): Promise<ApprovalTemplateCategoryEntity> =>
@@ -2830,6 +2880,26 @@ function createApprovalTemplateCategory(
     name: '財務',
     sortOrder: 0,
     updatedAt: new Date('2026-05-10T00:00:00.000Z'),
+  });
+}
+
+/**
+ * Gives a template repository mock the transaction a template edit runs in
+ * (ADR 25 §15): the transaction's manager hands back the same repository.
+ */
+function withTemplateTransaction(
+  repository: Repository<ApprovalTemplateEntity>,
+): Repository<ApprovalTemplateEntity> {
+  const manager = {
+    getRepository: (): Repository<ApprovalTemplateEntity> => repository,
+  };
+
+  return Object.assign(repository, {
+    manager: {
+      transaction: <TResult>(
+        run: (transactionManager: typeof manager) => Promise<TResult>,
+      ): Promise<TResult> => run(manager),
+    },
   });
 }
 

@@ -454,31 +454,40 @@ export class TemplateService {
   async updateApprovalTemplate(
     input: UpdateApprovalTemplateInput,
   ): Promise<ApprovalTemplateEntity> {
-    const existing = await this.getTemplateOrThrow(input.id);
     const category =
       input.categoryId === undefined
         ? undefined
         : await this.validateOptionalTemplateCategory(input.categoryId);
-    const next = this.templateRepository.merge(existing, {
-      category:
-        input.category !== undefined
-          ? input.category
-          : category !== undefined
-            ? (category?.name ?? null)
-            : existing.category,
-      description: input.description ?? existing.description,
-      name: input.name ?? existing.name,
-    });
 
-    // Assigned outside `merge` because the relation, not the `categoryId`
-    // scalar, owns `category_id`. Leaving `categoryDetail` untouched when the
-    // caller omitted `categoryId` keeps the loaded relation, which persists
-    // the current category unchanged.
-    if (category !== undefined) {
-      next.categoryDetail = category;
-    }
+    await this.templateRepository.manager.transaction(
+      async (manager): Promise<void> => {
+        const existing = await this.readLockedTemplateOrThrow(
+          manager,
+          input.id,
+        );
+        const templates = manager.getRepository(ApprovalTemplateEntity);
+        const next = templates.merge(existing, {
+          category:
+            input.category !== undefined
+              ? input.category
+              : category !== undefined
+                ? (category?.name ?? null)
+                : existing.category,
+          description: input.description ?? existing.description,
+          name: input.name ?? existing.name,
+        });
 
-    await this.templateRepository.save(next);
+        // Assigned outside `merge` because the relation, not the `categoryId`
+        // scalar, owns `category_id`. Leaving `categoryDetail` untouched when the
+        // caller omitted `categoryId` keeps the loaded relation, which persists
+        // the current category unchanged.
+        if (category !== undefined) {
+          next.categoryDetail = category;
+        }
+
+        await templates.save(next);
+      },
+    );
 
     // Re-read rather than returning the saved entity: `categoryId` is not
     // written by `save()` any more, so the in-memory copy would still carry
@@ -1422,13 +1431,37 @@ export class TemplateService {
     id: string,
     isActive: boolean,
   ): Promise<ApprovalTemplateEntity> {
-    const template = await this.getTemplateOrThrow(id);
+    return this.templateRepository.manager.transaction(
+      async (manager): Promise<ApprovalTemplateEntity> => {
+        const template = await this.readLockedTemplateOrThrow(manager, id);
+        const templates = manager.getRepository(ApprovalTemplateEntity);
 
-    return this.templateRepository.save(
-      this.templateRepository.merge(template, {
-        isActive,
-      }),
+        return templates.save(templates.merge(template, { isActive }));
+      },
     );
+  }
+
+  /**
+   * Locks the template row FOR UPDATE, the lock a publish, compose or rollback
+   * takes (ADR 25 §15), then reads the row with its category. A template edit
+   * saves the whole entity it read, so reading it unlocked would let a publish
+   * that commits in between be overwritten with the pre-publish
+   * `currentVersionId`; under the lock the read is the latest committed row
+   * and a publish waits for this edit instead.
+   */
+  private async readLockedTemplateOrThrow(
+    manager: EntityManager,
+    id: string,
+  ): Promise<ApprovalTemplateEntity> {
+    // The lock is taken without the category join: Postgres refuses FOR
+    // UPDATE on the nullable side of an outer join.
+    const locked = await this.lockTemplateRow(manager, id, 'pessimistic_write');
+
+    if (!locked) {
+      throw new NotFoundException(`Approval template ${id} was not found`);
+    }
+
+    return this.getTemplateOrThrow(id, manager);
   }
 
   private async setApprovalTemplateCategoryActive(
