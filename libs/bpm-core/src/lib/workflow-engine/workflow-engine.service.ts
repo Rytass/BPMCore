@@ -845,6 +845,11 @@ export class WorkflowEngineService {
     validateSubmittedFormData(formDefinitionVersion.schema, formData, {
       deferredFieldKeys,
     });
+    // Checked against the bound version's schema before any data source is
+    // called, so a bad value is refused cheaply. The transaction below
+    // confirms under the template lock that this version is still current
+    // (ADR 25 §15), which is what makes this schema the one in force.
+    assertFilterableFormDataValues(formDefinitionVersion.schema, formData);
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
         authContext: authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
@@ -900,26 +905,33 @@ export class WorkflowEngineService {
 
     return this.runEngineTransaction(
       async (manager): Promise<ApprovalInstanceEntity> => {
-        // ADR 25 §6 and §15: the filterable-field check runs inside this
-        // transaction, under a FOR SHARE lock on the template row, so a publish
-        // that enables a field cannot commit between the check and the insert.
-        // The check reads the template's current version, which the lock pins;
-        // the instance binds to the version read before the transaction, so a
-        // publish in between is refused rather than binding a stale version.
+        // ADR 25 §6 and §15: take FOR SHARE on the template row, so a publish,
+        // deactivation or edit cannot commit between this point and the
+        // insert, then re-check under the lock what was read before it. The
+        // filterable check above used the version read then; it holds only
+        // while that version is still the current one.
         const lockedTemplate = await manager
           .getRepository(ApprovalTemplateEntity)
           .findOne({
             lock: { mode: 'pessimistic_read' },
-            where: { id: template.id },
+            where: { deletedAt: IsNull(), id: template.id },
           });
 
-        if (lockedTemplate?.currentVersionId !== templateVersion.id) {
+        if (!lockedTemplate) {
+          throw new NotFoundException(
+            `Approval template ${template.id} was not found`,
+          );
+        }
+
+        if (!lockedTemplate.isActive) {
+          throw new ConflictException('Approval template is deactivated');
+        }
+
+        if (lockedTemplate.currentVersionId !== templateVersion.id) {
           throw new ConflictException(
             '範本在送出期間發布了新版本，這次申請沒有送出；請重新整理頁面後再送出',
           );
         }
-
-        assertFilterableFormDataValues(formDefinitionVersion.schema, formData);
 
         const instanceRepository = manager.getRepository(
           ApprovalInstanceEntity,
@@ -9116,13 +9128,11 @@ function readFilterableProblemRef(
       : undefined;
 
   if (table && isTableFieldDefinition(table)) {
-    const tableLabel = table.label || table.fieldKey;
-
     if (problem.rowIndex === null) {
       return readFieldRef(table);
     }
 
-    const rowRef = `「${tableLabel}」第 ${problem.rowIndex + 1} 列`;
+    const rowRef = readRowRef(table, problem.rowIndex);
 
     return column ? readCellRef(rowRef, column) : rowRef;
   }

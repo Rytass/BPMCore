@@ -24,6 +24,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   Logger,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
@@ -4972,26 +4973,108 @@ describe('WorkflowEngineService', () => {
     };
     const sharedLock = { lock: { mode: 'pessimistic_read' } };
 
-    it('W1 submit: refuses a wrong-typed filterable value inside the write transaction, under a FOR SHARE lock on the template', async (): Promise<void> => {
-      const fixture = createServiceFixture({
+    const submitW1 = (
+      fixture: ReturnType<typeof createServiceFixture>,
+      formDataJson: string,
+    ): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson,
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: '{"memberId":"member-001","roles":[]}',
+        templateId: 'template-1',
+        title: null,
+      });
+    const createW1Fixture = (): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
         currentVersionId: 'template-version-1',
         formSchema: amountFilterableSchema(),
         formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
         templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
       });
+    // What the template row reads as once the submit holds FOR SHARE: the
+    // state a deactivation, deletion or publish committed in the meantime.
+    const changeTemplateUnderLock = (
+      fixture: ReturnType<typeof createServiceFixture>,
+      change: (template: ApprovalTemplateEntity) => ApprovalTemplateEntity | null,
+    ): void => {
+      const read = fixture.templateFindOne.getMockImplementation() as (
+        ...args: readonly unknown[]
+      ) => Promise<ApprovalTemplateEntity>;
 
-      await expect(
-        fixture.service.submitApprovalInstance({
-          formDataJson: '{"amount":"很多"}',
-          initiatorMemberId: 'member-001',
-          initiatorMetadataSnapshotJson: '{"memberId":"member-001","roles":[]}',
-          templateId: 'template-1',
-          title: null,
-        }),
-      ).rejects.toThrow(/欄位「金額」必須是數字/u);
+      fixture.templateFindOne.mockImplementation(
+        async (options?: { readonly lock?: unknown }): Promise<ApprovalTemplateEntity | null> => {
+          const template = await read(options);
+
+          return options?.lock ? change(template) : template;
+        },
+      );
+    };
+
+    it('W1 submit: refuses a wrong-typed filterable value before calling a data source or opening the write transaction', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      await expect(submitW1(fixture, '{"amount":"很多"}')).rejects.toThrow(
+        /欄位「金額」必須是數字/u,
+      );
+
+      expect(fixture.templateFindOne).not.toHaveBeenCalledWith(
+        expect.objectContaining(sharedLock),
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('W1 submit: takes FOR SHARE on the live template row before inserting', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      await submitW1(fixture, '{"amount":10}');
 
       expect(fixture.templateFindOne).toHaveBeenCalledWith(
-        expect.objectContaining(sharedLock),
+        expect.objectContaining({
+          ...sharedLock,
+          where: expect.objectContaining({
+            deletedAt: expect.any(Object),
+            id: 'template-1',
+          }),
+        }),
+      );
+      expect(fixture.savedInstance).not.toBeNull();
+    });
+
+    it('W1 submit: refuses when the template was deactivated while the submit was in flight', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      changeTemplateUnderLock(fixture, (template) => ({
+        ...template,
+        isActive: false,
+      }));
+
+      await expect(submitW1(fixture, '{"amount":10}')).rejects.toThrow(
+        'Approval template is deactivated',
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('W1 submit: refuses with not found when the template was deleted while the submit was in flight', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      changeTemplateUnderLock(fixture, () => null);
+
+      await expect(submitW1(fixture, '{"amount":10}')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('W1 submit: refuses when another version was published while the submit was in flight', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      changeTemplateUnderLock(fixture, (template) => ({
+        ...template,
+        currentVersionId: 'template-version-2',
+      }));
+
+      await expect(submitW1(fixture, '{"amount":10}')).rejects.toThrow(
+        /範本在送出期間發布了新版本/u,
       );
       expect(fixture.savedInstance).toBeNull();
     });
