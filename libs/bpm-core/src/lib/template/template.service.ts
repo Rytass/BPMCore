@@ -692,10 +692,6 @@ export class TemplateService {
     input: UpdateApprovalTemplateDraftInput,
     manager?: EntityManager,
   ): Promise<ApprovalTemplateVersionEntity> {
-    const workflowDefinition = this.parseWorkflowDefinitionOrThrow(
-      input.workflowDefinitionJson,
-    );
-
     return this.runInTemplateTransaction(
       manager,
       async (txManager): Promise<ApprovalTemplateVersionEntity> => {
@@ -725,6 +721,9 @@ export class TemplateService {
         await this.validateOptionalFormDefinitionVersion(
           input.formDefinitionVersionId,
           txManager,
+        );
+        const workflowDefinition = this.parseWorkflowDefinitionOrThrow(
+          input.workflowDefinitionJson,
         );
         const next = versionRepository.merge(existing, {
           formDefinitionVersionId: input.formDefinitionVersionId,

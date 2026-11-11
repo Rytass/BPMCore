@@ -2840,6 +2840,26 @@ describe('TemplateService.composeApprovalTemplateWithForm', () => {
     ).toBe(ApprovalTemplateVersionStatusEnum.PUBLISHED);
   });
 
+  it('refuses a draft update of a published version as not a draft before reading its JSON', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+    const published = await service.composeApprovalTemplateWithForm(
+      composeInput({ publish: true }),
+      'member-admin',
+    );
+
+    await expect(
+      service.updateApprovalTemplateDraft({
+        formDefinitionVersionId: published.formDefinitionVersion.id,
+        initiatorPolicyCel: null,
+        notificationConfigJson: null,
+        slaDefaultsJson: null,
+        versionId: published.templateVersion.id,
+        workflowDefinitionJson: '{not json',
+      }),
+    ).rejects.toThrow('Only draft approval template versions can be updated');
+  });
+
   it('refuses to publish a new version onto a deactivated template', async (): Promise<void> => {
     const { manager, store } = createInMemoryManager();
     const service = createStoreBackedService(manager);
