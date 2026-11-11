@@ -575,6 +575,7 @@ export interface ListApprovalInstancesOptions {
 - **發布與寫入的併發（已處理）**：原本啟用檢查（§5.4）與寫入檢查（§6）之間沒有鎖。發布交易讀完舊資料、尚未 commit 時，若另一個請求用舊版本送出案件，且某欄位在舊版本不是可篩選，就會寫入一筆新版本認定為型別錯誤的值；此後這筆案件在該欄位的篩選中被視為沒有值，且不再受檢。影響是單筆案件被篩選漏掉、不會報錯。現行做法：
   - **發布、compose、回滾**：在交易內先對 `approval_templates` 該列取 `FOR UPDATE`（TypeORM `pessimistic_write`），啟用檢查在取鎖之後、同一交易內執行；發布在取鎖後才重讀草稿版本與其表單綁定，檢查的是提交 commit 時的內容。
   - **W1–W4**：在各自的寫入交易內對同一列取 `FOR SHARE`（`pessimistic_read`），並以取鎖後的範本目前版本 schema 檢查。W1 的檢查已從交易外移入寫入交易，取鎖後若範本目前版本已不是送出時綁定的版本，回 `ConflictException` 請重送。
+  - **範本的啟用、停用與基本資料編輯**：同樣在交易內先取 `FOR UPDATE`，取鎖後才讀整筆範本並存回。這幾條路徑會把讀到的整個 entity 存回；若在鎖外讀取，發布在讀與存之間 commit 時，TypeORM 會把讀到的舊 `currentVersionId` 當成變更寫回，蓋掉剛發布的版本。取鎖後讀到的是最新已 commit 的列，發布則等編輯結束。
   - **選列鎖、不選 advisory lock**：範本列鎖直接表達「範本的版本狀態」，且不與實例的 `pg_advisory_xact_lock(hashtext(instanceId))` 共用鍵空間（hashtext 可能碰撞）。
   - **鎖順序**：實例 advisory lock → 範本列鎖。發布、compose、回滾只取範本列鎖、不取實例鎖；W 路徑從不寫 `approval_templates`，因此不會出現 `FOR SHARE` 升級成 `FOR UPDATE` 的死鎖，也不會與發布形成環狀等待。
-  - **驗證**：單元測試以 mock 斷言鎖的模式與「鎖先於檢查」的順序（`template.service.spec.ts`、`workflow-engine.service.spec.ts`）。未做真實 DB 併發測試（repo 目前沒有整合測試基礎設施）；鎖語意依 Postgres 的列鎖相容表（`FOR SHARE` 與 `FOR UPDATE` 互斥、`FOR SHARE` 之間相容）。
+  - **驗證**：單元測試以 mock 斷言鎖的模式與「鎖先於檢查」的順序（`template.service.spec.ts`、`workflow-engine.service.spec.ts`）。repo 沒有整合測試基礎設施，另於 develop DB 手動驗證（2026-11-11）：以 psql 持有範本列 `FOR UPDATE` 數秒，同時送件（W1）或停用範本，兩者都等到鎖釋放才繼續，之後依取鎖後的狀態處理。
