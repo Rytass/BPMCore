@@ -1323,6 +1323,27 @@ describe('workflow definition validator: the form and earlier-signer approver so
         lintRecipients({ formPath: 'reviewer', type: 'DYNAMIC_FORM' }),
       ).toEqual([]);
     });
+
+    it('requires an organization for 指定組織主管, as the designer does', (): void => {
+      expect(
+        lintRecipients({ orgUnitId: '', type: 'ORG_UNIT_MANAGER' }),
+      ).toEqual([
+        'workflow.nodes.notify_peer.action.recipients.orgUnitId is required',
+      ]);
+      expect(
+        lintRecipients({
+          type: 'ORG_UNIT_MANAGER',
+        } as unknown as ApproverResolver),
+      ).toEqual([
+        'workflow.nodes.notify_peer.action.recipients.orgUnitId is required',
+      ]);
+    });
+
+    it('accepts 指定組織主管 once an organization is chosen', (): void => {
+      expect(
+        lintRecipients({ orgUnitId: 'org_hq', type: 'ORG_UNIT_MANAGER' }),
+      ).toEqual([]);
+    });
   });
 });
 
