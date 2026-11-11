@@ -276,6 +276,14 @@ export function readNodeDisplayLabel(
   );
 }
 
+// A blank name falls back to the id, so a member label is never empty.
+function readMemberName(
+  profile: MemberProfileRecord,
+  fallbackLabel: string,
+): string {
+  return profile.name.trim() ? profile.name : fallbackLabel;
+}
+
 export function readMemberDisplayText(
   memberId: string | null,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
@@ -286,17 +294,36 @@ export function readMemberDisplayText(
 
   const profile = memberProfilesById.get(memberId);
 
-  return profile
-    ? formatMemberLabel(profile.name, profile.email, 'fullwidth')
-    : memberId;
+  if (!profile) {
+    return memberId;
+  }
+
+  return formatMemberLabel(
+    readMemberName(profile, memberId),
+    profile.email,
+    'fullwidth',
+  );
+}
+
+/**
+ * Whether a task now sits with someone other than the approver it was first
+ * meant for, through administrator reassignment or delegation. The timeline and
+ * the tasks section both read this one rule. A candidate pool has no assignee,
+ * so nothing has moved to anyone yet.
+ */
+function hasMovedFromOriginalAssignee(task: TaskRecord): boolean {
+  return (
+    Boolean(task.assigneeMemberId) &&
+    Boolean(task.originalAssigneeMemberId) &&
+    task.originalAssigneeMemberId !== task.assigneeMemberId &&
+    readDelegationChain(task.delegationChainJson).length > 0
+  );
 }
 
 export function readTaskAssigneeLabel(
   task: TaskRecord,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord> = new Map(),
 ): string {
-  const delegationChain = readDelegationChain(task.delegationChainJson);
-
   if (!task.assigneeMemberId) {
     return task.candidateMemberIds.length
       ? `候選 ${task.candidateMemberIds
@@ -309,17 +336,15 @@ export function readTaskAssigneeLabel(
     task.assigneeMemberId,
     memberProfilesById,
   );
+
+  if (!hasMovedFromOriginalAssignee(task)) {
+    return assigneeLabel;
+  }
+
   const originalAssigneeLabel = readMemberDisplayText(
     task.originalAssigneeMemberId,
     memberProfilesById,
   );
-
-  if (
-    delegationChain.length === 0 ||
-    task.originalAssigneeMemberId === task.assigneeMemberId
-  ) {
-    return assigneeLabel;
-  }
 
   return `${assigneeLabel}（原：${originalAssigneeLabel}）`;
 }
@@ -505,7 +530,7 @@ export function readCommentDescriptionPart(
   return isPresentText(text) ? { label, text, tone, type: 'comment' } : null;
 }
 
-export function readMemberDescriptionPart(
+function readMemberDescriptionPart(
   prefix: string,
   memberId: string | null,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
@@ -515,11 +540,36 @@ export function readMemberDescriptionPart(
 
   return {
     email: profile?.email ?? null,
-    label: profile?.name ?? fallbackLabel,
+    label: profile ? readMemberName(profile, fallbackLabel) : fallbackLabel,
     memberId,
     prefix,
     type: 'member',
   };
+}
+
+/**
+ * Who a pending task was first meant for, when it has since moved to someone
+ * else (administrator reassignment or delegation). Same rule as
+ * {@link readTaskAssigneeLabel}'s 「（原：…）」, so the timeline and the tasks
+ * section agree. Falls back to the raw id so the person is never silently
+ * dropped when their profile cannot be resolved.
+ */
+function readOriginalAssigneeDescriptionPart(
+  task: TaskRecord,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
+): ActivityStepDescriptionPart | null {
+  const originalMemberId = task.originalAssigneeMemberId;
+
+  if (!originalMemberId || !hasMovedFromOriginalAssignee(task)) {
+    return null;
+  }
+
+  return readMemberDescriptionPart(
+    '原簽核人',
+    originalMemberId,
+    memberProfilesById,
+    originalMemberId,
+  );
 }
 
 export function isActivityDescriptionPart(
@@ -581,6 +631,18 @@ function isSequentialTaskCreation(activityLog: ActivityLogRecord): boolean {
 export function readSequentialActivityPayloadMemberIds(
   activityLog: ActivityLogRecord,
 ): readonly string[] {
+  if (activityLog.eventType === 'TASK_REASSIGNED') {
+    // A seat reassigned inside a group node leaves the task's delegation chain
+    // untouched, so the previous holder is only named here.
+    const reassignedPayload = readActivityPayload(activityLog);
+
+    return [
+      readStringField(reassignedPayload, 'fromMemberId'),
+      readStringField(reassignedPayload, 'toMemberId'),
+      readStringField(reassignedPayload, 'actorMemberId'),
+    ].filter(isPresentText);
+  }
+
   if (
     activityLog.eventType !== 'TASK_CANDIDATE_ACTIVATED' &&
     activityLog.eventType !== 'TASK_CREATED'
@@ -701,6 +763,37 @@ export function formatActivityDateTime(value: string): string {
   return formatDateTime(value);
 }
 
+function readTaskReassignedLabel(
+  payload: Readonly<Record<string, unknown>>,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
+): string | null {
+  const fromMemberId = readStringField(payload, 'fromMemberId');
+  const toMemberId = readStringField(payload, 'toMemberId');
+  const reason = readStringField(payload, 'reason');
+  // A group stage (parallel, any, quorum) moves one seat and leaves the task's
+  // assignee alone, so the seat's holder was not the 原簽核人. Payloads from
+  // before assigneeChanged existed keep the original wording.
+  const fromLabel = payload.assigneeChanged === false ? '原座位' : '原簽核人';
+  const trimmedReason = reason?.trim();
+  const parts = [
+    fromMemberId
+      ? `${fromLabel}：${readMemberDisplayText(fromMemberId, memberProfilesById)}`
+      : null,
+    toMemberId
+      ? `改派給：${readMemberDisplayText(toMemberId, memberProfilesById)}`
+      : null,
+  ];
+
+  return (
+    [
+      parts.filter(isPresentText).join(' → '),
+      trimmedReason ? `原因：${trimmedReason}` : null,
+    ]
+      .filter(isPresentText)
+      .join(' · ') || null
+  );
+}
+
 function readActivityDetail(
   activityLog: ActivityLogRecord,
   payload: Readonly<Record<string, unknown>>,
@@ -717,6 +810,14 @@ function readActivityDetail(
       },
       memberProfilesById,
     );
+  }
+
+  if (activityLog.eventType === 'TASK_REASSIGNED') {
+    // The actor is the administrator; the payload says whose seat moved to
+    // whom and why. Without this the entry only showed the node and the
+    // administrator, so a reassigned case no longer said who it had been
+    // waiting on (usually someone who has left).
+    return readTaskReassignedLabel(payload, memberProfilesById);
   }
 
   if (activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED') {
@@ -1337,6 +1438,7 @@ export function readActivityStepRecords(
           memberProfilesById,
           '未指定',
         ),
+        readOriginalAssigneeDescriptionPart(task, memberProfilesById),
         readTextDescriptionPart(
           `建立時間：${formatActivityDateTime(task.createdAt)}`,
         ),
