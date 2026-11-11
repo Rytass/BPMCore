@@ -120,7 +120,7 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
     'ORG_MANAGER_CHAIN: { type, minPositionLevel, startFrom?, startPositionLevel?, fallback? }（沿主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽。' +
     "startFrom 決定鏈從誰的主管開始爬，省略＝從發起人：{ type: 'INITIATOR' }、{ type: 'FORM_MEMBER', formPath }（表單上「人員選擇」單選欄位選的人）、{ type: 'NODE_ACTOR', nodeIds[] }（前面指定關卡實際簽核的那一位）；起點本人不在鏈上，從他的直屬主管開始；知會節點只能從發起人開始。" +
-    'startPositionLevel 為起始職等，職等低於它的主管穿過不簽、第一位達到的主管才開始簽，省略＝第一位有職等的主管就開始簽，不可高於 minPositionLevel。改寫簽核人時，若沒有帶 startFrom／startPositionLevel 這兩個 key，會沿用節點原有的起點與起始職等；要改回從發起人起算請傳 startFrom: { type: 'INITIATOR' } 或 null，要清掉起始職等請傳 startPositionLevel: null）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
+    "startPositionLevel 為起始職等，職等低於它的主管穿過不簽、第一位達到的主管才開始簽，省略＝第一位有職等的主管就開始簽，不可高於 minPositionLevel。改寫簽核人時，若沒有帶 startFrom／startPositionLevel 這兩個 key，會沿用節點原有的起點與起始職等；要改回從發起人起算請傳 startFrom: { type: 'INITIATOR' } 或 null，要清掉起始職等請傳 startPositionLevel: null）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；" +
     "fallback（無主管時的改派）可為 { type: 'NONE' }（預設，停止流程）、{ type: 'DIRECT', memberId, allowInitiatorSelfApproval? }（改派固定會員）、或 { type: 'POSITION', positionId, allowInitiatorSelfApproval? }（改派給該職位目前的有效成員，多人時全部成為簽核人）；" +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }；' +
     'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
