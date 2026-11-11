@@ -147,6 +147,13 @@ import {
 } from './node-actor-resolver-options';
 import { readMinPositionLevelOptions } from './position-level-options';
 import {
+  isMembershipActiveOn,
+  readActivePositionIds,
+  readOrgScopedPositions,
+  readOrgUnitScopeIds,
+  readTodayDateOnlyString,
+} from './position-scope';
+import {
   OrgUnitRecord,
   MembershipRecord,
   PositionRecord,
@@ -207,7 +214,6 @@ import {
   readNotifyRecipients,
   readNotifyRecipientSourceChoice,
   readNotifyRecipientSourcePick,
-  readNotifyRecipientsDesignerIssue,
   withNotifyFormPath,
   withNotifyIncludeDescendants,
   withNotifyOrgUnit,
@@ -4094,6 +4100,19 @@ export function TemplateDesignerView({
       recipients.type === 'POSITION' || recipients.type === 'ORG_UNIT_POSITION'
         ? readSelectedPositionOption(positions, recipients.positionId)
         : null;
+    // The picker offers only positions someone holds through an effective
+    // membership, the same set the engine can resolve. A stored position that
+    // is no longer held stays selected, with a warning, so the author sees it.
+    const activeRecipientPositionIds = readActivePositionIds(memberships);
+    const isRecipientPositionInactive =
+      recipients.type === 'POSITION' &&
+      Boolean(recipients.positionId) &&
+      !activeRecipientPositionIds.has(recipients.positionId);
+    const recipientPositionOptions = positions.filter(
+      (position) =>
+        activeRecipientPositionIds.has(position.id) ||
+        (isRecipientPositionInactive && position.id === recipients.positionId),
+    );
     const recipientOrgScopedPositions =
       recipients.type === 'ORG_UNIT_POSITION'
         ? readOrgScopedPositions({
@@ -4340,7 +4359,11 @@ export function TemplateDesignerView({
         ) : null}
         {recipients.type === 'POSITION' ? (
           <BPMFormField
-            hintText="通知目前有效歸屬中擁有此職位的會員。"
+            hintText={
+              isRecipientPositionInactive
+                ? '這個職位目前沒有任何有效歸屬的會員，送出時會找不到收件人，請改選其他職位。'
+                : '通知目前有效歸屬中擁有此職位的會員。'
+            }
             label="職位"
             name="notifyPositionId"
             required
@@ -4353,7 +4376,7 @@ export function TemplateDesignerView({
                 )
               }
               placeholder="選擇職位"
-              positions={positions}
+              positions={recipientPositionOptions}
               value={selectedRecipientPosition}
             />
           </BPMFormField>
@@ -5827,20 +5850,6 @@ function readDryRunInitiatorMetadataSnapshot(
   };
 }
 
-function readTodayDateOnlyString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function isMembershipActiveOn(
-  membership: MembershipRecord,
-  date: string,
-): boolean {
-  return (
-    membership.effectiveFrom <= date &&
-    (!membership.effectiveTo || membership.effectiveTo >= date)
-  );
-}
-
 function compareMembershipRecord(
   left: MembershipRecord,
   right: MembershipRecord,
@@ -5862,56 +5871,6 @@ function readUniqueTexts(
         : currentValues,
     [],
   );
-}
-
-function readOrgScopedPositions({
-  includeDescendants,
-  memberships,
-  orgUnitId,
-  orgUnits,
-  positions,
-}: {
-  readonly includeDescendants: boolean;
-  readonly memberships: readonly MembershipRecord[];
-  readonly orgUnitId: string;
-  readonly orgUnits: readonly OrgUnitRecord[];
-  readonly positions: readonly PositionRecord[];
-}): readonly PositionRecord[] {
-  const orgUnitIds = new Set(
-    readOrgUnitScopeIds(orgUnits, orgUnitId, includeDescendants),
-  );
-  const positionIds = new Set(
-    memberships
-      .filter((membership) => orgUnitIds.has(membership.orgUnitId))
-      .map((membership) => membership.positionId)
-      .filter((positionId): positionId is string => Boolean(positionId)),
-  );
-
-  return positions.filter((position) => positionIds.has(position.id));
-}
-
-function readOrgUnitScopeIds(
-  orgUnits: readonly OrgUnitRecord[],
-  orgUnitId: string,
-  includeDescendants: boolean,
-): readonly string[] {
-  const orgUnit = orgUnits.find((candidate) => candidate.id === orgUnitId);
-
-  if (!orgUnit) {
-    return orgUnitId.trim() ? [orgUnitId] : [];
-  }
-
-  if (!includeDescendants) {
-    return [orgUnit.id];
-  }
-
-  return orgUnits
-    .filter(
-      (candidate) =>
-        candidate.id === orgUnit.id ||
-        candidate.path.startsWith(`${orgUnit.path}.`),
-    )
-    .map((candidate) => candidate.id);
 }
 
 /**
@@ -6131,11 +6090,7 @@ function readWorkflowDefinitionIssue(
   // same everywhere (ADR 18 P0).
   const notifyNodeIssue =
     definition.nodes
-      .map(
-        (node) =>
-          readNotifyServiceTaskIssue(node) ??
-          readNotifyRecipientsDesignerIssue(node),
-      )
+      .map((node) => readNotifyServiceTaskIssue(node))
       .find((issue): issue is string => issue !== null) ?? null;
   const incompleteConditionEdge = definition.edges.find(
     (edge) =>

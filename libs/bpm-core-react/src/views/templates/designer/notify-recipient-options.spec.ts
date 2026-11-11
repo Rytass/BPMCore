@@ -11,7 +11,6 @@ import {
   readNotifyRecipients,
   readNotifyRecipientSourceChoice,
   readNotifyRecipientSourcePick,
-  readNotifyRecipientsDesignerIssue,
   withNotifyFormPath,
   withNotifyIncludeDescendants,
   withNotifyOrgUnit,
@@ -507,9 +506,8 @@ describe('notify recipient readiness', () => {
       'ORG_UNIT_MANAGER',
       [],
     ) as ApproverResolver;
-    const node = notifyNode(picked);
 
-    expect(readNotifyRecipientsDesignerIssue(node)).toBe(
+    expect(readNotifyServiceTaskIssue(notifyNode(picked))).toBe(
       '知會節點需要指定組織。',
     );
   });
@@ -519,9 +517,7 @@ describe('notify recipient readiness', () => {
       type: 'ORG_UNIT_MANAGER',
     } as unknown as ApproverResolver);
 
-    expect(readNotifyRecipientsDesignerIssue(node)).toBe(
-      '知會節點需要指定組織。',
-    );
+    expect(readNotifyServiceTaskIssue(node)).toBe('知會節點需要指定組織。');
   });
 
   it('lets each source through once its target is chosen', () => {
@@ -534,38 +530,8 @@ describe('notify recipient readiness', () => {
     ];
 
     complete.forEach((recipients) => {
-      const node = notifyNode(recipients);
-
-      expect(readNotifyServiceTaskIssue(node)).toBeNull();
-      expect(readNotifyRecipientsDesignerIssue(node)).toBeNull();
+      expect(readNotifyServiceTaskIssue(notifyNode(recipients))).toBeNull();
     });
-  });
-
-  it('has no designer-only issue for any other node or source', () => {
-    expect(
-      readNotifyRecipientsDesignerIssue(
-        notifyNode({ memberIds: [], type: 'DIRECT' }),
-      ),
-    ).toBeNull();
-    expect(
-      readNotifyRecipientsDesignerIssue({
-        data: { label: '開始' },
-        id: 'start',
-        position: { x: 0, y: 0 },
-        type: 'start',
-      } as unknown as WorkflowNode),
-    ).toBeNull();
-    expect(
-      readNotifyRecipientsDesignerIssue({
-        data: {
-          action: { fieldPath: 'a', type: 'SET_FORM_FIELD', value: '1' },
-          label: '寫欄位',
-        },
-        id: 'set',
-        position: { x: 0, y: 0 },
-        type: 'serviceTask',
-      } as unknown as WorkflowNode),
-    ).toBeNull();
   });
 
   it('keeps the 指定會員 rules: empty needs a webhook, a webhook-only node is fine', () => {

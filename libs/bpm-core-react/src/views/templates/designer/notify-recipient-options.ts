@@ -1,7 +1,6 @@
 import {
   ApproverResolver,
   ServiceAction,
-  WorkflowNode,
   isNotifyRecipientResolverType,
 } from '@rytass/bpm-core-shared/workflow';
 import { PositionRecord } from '@rytass/bpm-core-client/organization';
@@ -284,32 +283,4 @@ export function withNotifyFormPath(
   return state.mode === 'DYNAMIC_FORM'
     ? buildApproverResolver({ ...state, formPath })
     : recipients;
-}
-
-/**
- * What the designer alone checks before a notify node can be saved, on top of
- * `readNotifyServiceTaskIssue`: 指定組織主管 with no organization chosen.
- * The shared check and the publish lint do not look at it, and the engine
- * cannot resolve a manager without an organization.
- */
-export function readNotifyRecipientsDesignerIssue(
-  node: WorkflowNode,
-): string | null {
-  if (node.type !== 'serviceTask') {
-    return null;
-  }
-
-  const action = node.data.action;
-
-  if (action.type !== 'NOTIFY') {
-    return null;
-  }
-
-  const recipients = action.recipients;
-
-  // Hand-written or AI-written JSON may carry no `orgUnitId` at all.
-  return recipients?.type === 'ORG_UNIT_MANAGER' &&
-    (typeof recipients.orgUnitId !== 'string' || !recipients.orgUnitId.trim())
-    ? '知會節點需要指定組織。'
-    : null;
 }
