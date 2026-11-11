@@ -7301,6 +7301,72 @@ describe('WorkflowEngineService', () => {
           ).toBe(false);
         });
 
+        describe('excludeNodeActors on the next node', (): void => {
+          // task_finance (member-finance) -> task_next, which keeps whoever
+          // approved task_finance out. The approval is written in the same
+          // transaction that creates task_next.
+          const excludingFixture = (
+            nextApprovers: readonly string[],
+          ): ReturnType<typeof createServiceFixture> => {
+            const base = twoStep({ memberIds: nextApprovers, type: 'DIRECT' });
+            const snapshot = {
+              ...base,
+              nodes: base.nodes.map((node) =>
+                node.id === 'task_next' && node.type === 'userTask'
+                  ? {
+                      ...node,
+                      data: {
+                        ...node.data,
+                        excludeNodeActors: {
+                          nodeIds: ['task_finance'],
+                          whenEmpty: 'FAIL',
+                        },
+                      },
+                    }
+                  : node,
+              ),
+            } as WorkflowDefinition;
+
+            return createServiceFixture({
+              currentVersionId: 'template-version-1',
+              decisionTask: createTask({
+                nodeId: 'task_finance',
+                status: TaskStatusEnum.PENDING,
+                tokenId: 'token-1',
+              }),
+              decisionToken: createWorkflowToken({
+                currentNodeId: 'task_finance',
+                status: WorkflowTokenStatusEnum.WAITING,
+              }),
+              formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+              ...actorOrg,
+              processWorkflowSnapshot: snapshot,
+              templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+            });
+          };
+
+          it('hands the next node to the other approver once the first stage is approved', async (): Promise<void> => {
+            const fixture = excludingFixture(['member-finance', 'member-x']);
+
+            await approve(fixture);
+
+            expect(
+              fixture.savedTasks.find((task) => task.nodeId === 'task_next'),
+            ).toMatchObject({ assigneeMemberId: 'member-x' });
+          });
+
+          it('stops the approval of the first stage when only its own approver is left for the next node', async (): Promise<void> => {
+            const fixture = excludingFixture(['member-finance']);
+
+            await expect(approve(fixture)).rejects.toThrow(
+              '只剩前面關卡「財務簽核」的簽核者',
+            );
+            expect(
+              fixture.savedTasks.some((task) => task.nodeId === 'task_next'),
+            ).toBe(false);
+          });
+        });
+
         describe('the TASK_DECIDED payload', (): void => {
           const readPayload = (
             fixture: ReturnType<typeof createServiceFixture>,
