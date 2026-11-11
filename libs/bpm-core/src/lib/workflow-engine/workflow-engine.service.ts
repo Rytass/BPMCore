@@ -1377,13 +1377,12 @@ export class WorkflowEngineService {
           options.transferReason === undefined &&
           isNodeActorsExcluded(taskNode) &&
           transferToMemberId !== null &&
-          (
-            await this.readExcludedNodeActorMemberIds(
-              manager,
-              instance,
-              readExcludedNodeActorNodeIds(taskNode),
-            )
-          ).includes(transferToMemberId)
+          (await this.isExcludedNodeActorTarget(
+            manager,
+            instance,
+            taskNode,
+            transferToMemberId,
+          ))
         ) {
           throw new ConflictException(
             `簽核節點「${taskNode.data.label}」不允許與前面關卡的簽核者為同一人，不能將任務轉交給前面${readNodeActorNodeNames(instance, readExcludedNodeActorNodeIds(taskNode))}的簽核者`,
@@ -6547,13 +6546,12 @@ export class WorkflowEngineService {
 
     if (
       isNodeActorsExcluded(node) &&
-      (
-        await this.readExcludedNodeActorMemberIds(
-          manager,
-          instance,
-          readExcludedNodeActorNodeIds(node),
-        )
-      ).includes(toMemberId)
+      (await this.isExcludedNodeActorTarget(
+        manager,
+        instance,
+        node,
+        toMemberId,
+      ))
     ) {
       throw new TaskReassignmentRejectedError(
         TaskReassignmentErrorCodeEnum.TARGET_IS_EXCLUDED_NODE_ACTOR,
@@ -7029,12 +7027,128 @@ export class WorkflowEngineService {
     nodeIds: readonly string[],
   ): Promise<readonly string[]> {
     const groups = await Promise.all(
-      nodeIds.map((nodeId) =>
-        this.readNodeActorMemberIds(manager, instance, [nodeId]),
-      ),
+      nodeIds.map(async (nodeId): Promise<readonly string[]> => {
+        const approvals = await this.readNodeActorApprovals(manager, instance, [
+          nodeId,
+        ]);
+        const principalMemberIds = await this.readApprovalPrincipalMemberIds(
+          manager,
+          approvals,
+        );
+
+        return [
+          ...approvals.map((decision) => decision.decidedByMemberId),
+          ...principalMemberIds,
+        ];
+      }),
     );
 
     return uniqueTexts(groups.flat());
+  }
+
+  /**
+   * Whether `targetMemberId` may not take a seat on `node` under
+   * `excludeNodeActors`, checked the way task creation checks a candidate: the
+   * target is one of the excluded members, or one end of a delegation between
+   * the target and an excluded member is on the path. A delegation is read in
+   * both directions, since the target may be the delegate of an excluded
+   * member, or delegate an excluded member's seat onward.
+   */
+  private async isExcludedNodeActorTarget(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    node: UserTaskNode,
+    targetMemberId: string,
+  ): Promise<boolean> {
+    const excludedMemberIds = await this.readExcludedNodeActorMemberIds(
+      manager,
+      instance,
+      readExcludedNodeActorNodeIds(node),
+    );
+
+    if (excludedMemberIds.includes(targetMemberId)) {
+      return true;
+    }
+
+    if (excludedMemberIds.length === 0) {
+      return false;
+    }
+
+    const context = this.buildDelegationContext(instance, node.id);
+    const gradeGated = isOrgManagerChainNode(node);
+    const ownDelegation = await this.resolveDelegation(
+      manager,
+      targetMemberId,
+      context,
+      gradeGated,
+    );
+
+    if (
+      isExcludedMemberOnCandidatePath(
+        {
+          delegationChain: ownDelegation.delegationChain,
+          memberId: ownDelegation.finalAssigneeMemberId,
+          originalMemberId: targetMemberId,
+        },
+        excludedMemberIds,
+      )
+    ) {
+      return true;
+    }
+
+    const excludedSeats = await Promise.all(
+      excludedMemberIds.map(async (memberId): Promise<boolean> => {
+        const delegation = await this.resolveDelegation(
+          manager,
+          memberId,
+          context,
+          gradeGated,
+        );
+
+        return isExcludedMemberOnCandidatePath(
+          {
+            delegationChain: delegation.delegationChain,
+            memberId: delegation.finalAssigneeMemberId,
+            originalMemberId: memberId,
+          },
+          [targetMemberId],
+        );
+      }),
+    );
+
+    return excludedSeats.some((routesToTarget) => routesToTarget);
+  }
+
+  /**
+   * The principals the approvals stand for: a delegate who approved counts as
+   * the member who delegated to them, read from the candidate row each approval
+   * was signed on (see {@link readRuleDelegatorMemberIds}).
+   */
+  private async readApprovalPrincipalMemberIds(
+    manager: EntityManager,
+    approvals: readonly TaskDecisionEntity[],
+  ): Promise<readonly string[]> {
+    if (approvals.length === 0) {
+      return [];
+    }
+
+    const candidates = await manager.getRepository(TaskCandidateEntity).find({
+      where: {
+        taskId: In(uniqueTexts(approvals.map((decision) => decision.taskId))),
+      },
+    });
+
+    return uniqueTexts(
+      approvals.flatMap((decision) =>
+        candidates
+          .filter(
+            (candidate) =>
+              candidate.taskId === decision.taskId &&
+              candidate.memberId === decision.decidedByMemberId,
+          )
+          .flatMap(readRuleDelegatorMemberIds),
+      ),
+    );
   }
 
   private async resolveInitiatorManagerReplacements(
@@ -7601,6 +7715,25 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     nodeIds: readonly string[],
   ): Promise<readonly string[]> {
+    const approvals = await this.readNodeActorApprovals(
+      manager,
+      instance,
+      nodeIds,
+    );
+
+    return uniqueTexts(approvals.map((decision) => decision.decidedByMemberId));
+  }
+
+  /**
+   * The real approvals (earliest first) of the most recent batch among
+   * `nodeIds`: the rows {@link readNodeActorMemberIds} reads the approvers from.
+   * Kept as decisions so the exclusion can also reach each decision's task.
+   */
+  private async readNodeActorApprovals(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    nodeIds: readonly string[],
+  ): Promise<readonly TaskDecisionEntity[]> {
     const tasks = await manager.getRepository(TaskEntity).find({
       where: { instanceId: instance.id, isAdhoc: false, nodeId: In([...nodeIds]) },
     });
@@ -7648,15 +7781,12 @@ export class WorkflowEngineService {
         .map((log) => log.payload['decisionId']),
     );
 
-    return uniqueTexts(
-      [...decisions]
-        .filter((decision) => !automaticDecisionIds.has(decision.id))
-        .sort(
-          (first, second) =>
-            first.decidedAt.getTime() - second.decidedAt.getTime(),
-        )
-        .map((decision) => decision.decidedByMemberId),
-    );
+    return [...decisions]
+      .filter((decision) => !automaticDecisionIds.has(decision.id))
+      .sort(
+        (first, second) =>
+          first.decidedAt.getTime() - second.decidedAt.getTime(),
+      );
   }
 
   private async resolvePositionCandidates(
@@ -10045,6 +10175,33 @@ function collectSkippedDelegations(
 
     return [skipped];
   });
+}
+
+// The members a rule delegation stands for on a candidate row a person
+// approved: the delegators of the trailing run of rule steps (`ruleId` set).
+// A transfer step carries no rule and is not a delegation, so when one sits on
+// the chain the original assignee is not a delegator and is left out. A chain
+// of rule steps only also names the original assignee.
+function readRuleDelegatorMemberIds(
+  candidate: Pick<TaskCandidateEntity, 'delegationChain' | 'originalMemberId'>,
+): readonly string[] {
+  const steps = readDelegationSteps(candidate.delegationChain);
+  const trailingRuleCount = [...steps]
+    .reverse()
+    .findIndex((step) => step.ruleId === null);
+  const ruleSteps =
+    trailingRuleCount === -1
+      ? steps
+      : steps.slice(steps.length - trailingRuleCount);
+
+  if (ruleSteps.length === 0) {
+    return [];
+  }
+
+  return [
+    ...(trailingRuleCount === -1 ? [candidate.originalMemberId] : []),
+    ...ruleSteps.map((step) => step.from),
+  ];
 }
 
 // A delegate acting for the initiator is still the initiator approving their

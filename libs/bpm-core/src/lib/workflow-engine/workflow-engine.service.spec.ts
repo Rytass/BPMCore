@@ -7428,6 +7428,7 @@ describe('WorkflowEngineService', () => {
         };
         const exclusionFixture = ({
           activityLogs = [],
+          candidates = [],
           decisionPolicy = { type: 'PARALLEL_ANY' },
           decisions = aSignedAct3.decisions,
           delegationResolutionByMember,
@@ -7439,6 +7440,8 @@ describe('WorkflowEngineService', () => {
           tasks = aSignedAct3.tasks,
         }: {
           readonly activityLogs?: readonly ActivityLogEntity[];
+          // The candidate rows the earlier approvals were signed on.
+          readonly candidates?: readonly TaskCandidateEntity[];
           readonly decisionPolicy?: DecisionPolicy;
           readonly decisions?: readonly TaskDecisionEntity[];
           readonly delegationResolutionByMember?: Readonly<
@@ -7458,6 +7461,7 @@ describe('WorkflowEngineService', () => {
             formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
             ...org,
             processActivityLogs: activityLogs,
+            processTaskCandidates: candidates,
             processTaskDecisions: decisions,
             processWorkflowSnapshot: (snapshot ?? ((linear) => linear))(
               createLinearUserTaskWorkflow({
@@ -7671,6 +7675,58 @@ describe('WorkflowEngineService', () => {
                 resolver: directOf('member-a', 'member-b'),
               }),
             ).resolves.toEqual(['member-c']);
+          });
+
+          it('drops the delegator of an earlier approver who signed by delegation', async (): Promise<void> => {
+            await expect(
+              candidatesAfterProcessing({
+                candidates: [
+                  createTaskCandidate({
+                    delegationChain: [
+                      {
+                        from: 'member-a',
+                        reason: 'ALL',
+                        ruleId: 'rule-a-d',
+                        to: 'member-d',
+                      },
+                    ],
+                    memberId: 'member-d',
+                    originalMemberId: 'member-a',
+                    status: TaskCandidateStatusEnum.COMPLETED,
+                    taskId: 't1',
+                  }),
+                ],
+                decisions: [approved('d1', 't1', 'member-d', 1)],
+                excludeNodeActors: nodeActors(['ACT3']),
+                resolver: directOf('member-a', 'member-b'),
+              }),
+            ).resolves.toEqual(['member-b']);
+          });
+
+          it('keeps the transferor when the earlier approver received the seat by a transfer', async (): Promise<void> => {
+            await expect(
+              candidatesAfterProcessing({
+                candidates: [
+                  createTaskCandidate({
+                    delegationChain: [
+                      {
+                        from: 'member-a',
+                        reason: '轉簽',
+                        ruleId: null,
+                        to: 'member-d',
+                      },
+                    ],
+                    memberId: 'member-d',
+                    originalMemberId: 'member-a',
+                    status: TaskCandidateStatusEnum.COMPLETED,
+                    taskId: 't1',
+                  }),
+                ],
+                decisions: [approved('d1', 't1', 'member-d', 1)],
+                excludeNodeActors: nodeActors(['ACT3']),
+                resolver: directOf('member-a', 'member-b'),
+              }),
+            ).resolves.toEqual(['member-a', 'member-b']);
           });
 
           it('keeps a delegate for the earlier approver when the setting is omitted', async (): Promise<void> => {
@@ -7919,10 +7975,14 @@ describe('WorkflowEngineService', () => {
         describe('manual transfer', (): void => {
           const transferFixture = (
             excludeNodeActors?: ExcludeNodeActorsConfig,
+            delegationResolutionByMember?: Readonly<
+              Record<string, DelegationResolution>
+            >,
           ): ReturnType<typeof createServiceFixture> =>
             createServiceFixture({
               additionalProcessTasks: aSignedAct3.tasks,
               currentVersionId: 'template-version-1',
+              delegationResolutionByMember,
               decisionTask: createTask({
                 assigneeMemberId: 'member-finance',
                 nodeId: 'task_finance',
@@ -7966,6 +8026,45 @@ describe('WorkflowEngineService', () => {
             await expect(attempt).rejects.toThrow(
               '簽核節點「財務簽核」不允許與前面關卡的簽核者為同一人，不能將任務轉交給前面關卡「ACT3」的簽核者',
             );
+          });
+
+          it('refuses the delegate of someone who signed the earlier node', async (): Promise<void> => {
+            const attempt = transferTo(
+              transferFixture(nodeActors(['ACT3']), {
+                'member-a': delegateTo('member-a', 'member-d'),
+              }),
+              'member-d',
+            );
+
+            await expect(attempt).rejects.toThrow(ConflictException);
+            await expect(attempt).rejects.toThrow(
+              '簽核節點「財務簽核」不允許與前面關卡的簽核者為同一人，不能將任務轉交給前面關卡「ACT3」的簽核者',
+            );
+          });
+
+          it('refuses someone who delegated to the signer of the earlier node', async (): Promise<void> => {
+            const attempt = transferTo(
+              transferFixture(nodeActors(['ACT3']), {
+                'member-b': delegateTo('member-b', 'member-a'),
+              }),
+              'member-b',
+            );
+
+            await expect(attempt).rejects.toThrow(ConflictException);
+          });
+
+          it('still lets the task go to someone whose delegation avoids the earlier signers', async (): Promise<void> => {
+            const fixture = transferFixture(nodeActors(['ACT3']), {
+              'member-b': delegateTo('member-b', 'member-c'),
+            });
+
+            await transferTo(fixture, 'member-b');
+
+            expect(
+              fixture.savedTasks.some(
+                (task) => task.assigneeMemberId === 'member-b',
+              ),
+            ).toBe(true);
           });
 
           it('still lets the task go to someone who did not sign the earlier node', async (): Promise<void> => {
@@ -17631,6 +17730,7 @@ describe('administrator task reassignment', (): void => {
     assigneeMemberId = null,
     candidates = [],
     decisionPolicy = { type: 'SINGLE' },
+    delegationResolutionByMember,
     earlierApproval,
     excludeInitiator,
     excludeNodeActors,
@@ -17644,6 +17744,9 @@ describe('administrator task reassignment', (): void => {
     readonly assigneeMemberId?: string | null;
     readonly candidates?: readonly TaskCandidateEntity[];
     readonly decisionPolicy?: DecisionPolicy;
+    readonly delegationResolutionByMember?: Readonly<
+      Record<string, DelegationResolution>
+    >;
     // Someone who approved the earlier node `ACT3` (read by excludeNodeActors).
     readonly earlierApproval?: { readonly memberId: string };
     readonly excludeInitiator?: ExcludeInitiatorConfig;
@@ -17678,6 +17781,7 @@ describe('administrator task reassignment', (): void => {
         : [],
       currentVersionId: 'template-version-1',
       decisionTask: seed,
+      delegationResolutionByMember,
       decisionToken: createWorkflowToken({
         currentNodeId: 'task_finance',
         status: WorkflowTokenStatusEnum.WAITING,
@@ -18112,6 +18216,52 @@ describe('administrator task reassignment', (): void => {
           excludeNodeActors: { nodeIds: ['ACT3'], whenEmpty: 'FAIL' },
         }),
       options: { fromMemberId: 'member-from', toMemberId: 'member-earlier' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.TARGET_IS_EXCLUDED_NODE_ACTOR,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({
+          assigneeMemberId: 'member-from',
+          delegationResolutionByMember: {
+            'member-earlier': {
+              delegationChain: [
+                {
+                  from: 'member-earlier',
+                  reason: 'ALL',
+                  ruleId: 'rule-earlier-delegate',
+                  to: 'member-delegate',
+                },
+              ],
+              finalAssigneeMemberId: 'member-delegate',
+            },
+          },
+          earlierApproval: { memberId: 'member-earlier' },
+          excludeNodeActors: { nodeIds: ['ACT3'], whenEmpty: 'FAIL' },
+        }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-delegate' },
+    },
+    {
+      code: TaskReassignmentErrorCodeEnum.TARGET_IS_EXCLUDED_NODE_ACTOR,
+      build: (): ReturnType<typeof createOpenTaskFixture> =>
+        createOpenTaskFixture({
+          assigneeMemberId: 'member-from',
+          delegationResolutionByMember: {
+            'member-proxy': {
+              delegationChain: [
+                {
+                  from: 'member-proxy',
+                  reason: 'ALL',
+                  ruleId: 'rule-proxy-earlier',
+                  to: 'member-earlier',
+                },
+              ],
+              finalAssigneeMemberId: 'member-earlier',
+            },
+          },
+          earlierApproval: { memberId: 'member-earlier' },
+          excludeNodeActors: { nodeIds: ['ACT3'], whenEmpty: 'FAIL' },
+        }),
+      options: { fromMemberId: 'member-from', toMemberId: 'member-proxy' },
     },
     {
       code: TaskReassignmentErrorCodeEnum.TARGET_GRADE_TOO_LOW,
