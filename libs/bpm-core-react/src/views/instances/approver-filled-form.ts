@@ -208,48 +208,95 @@ export function isFillConflictMessage(message: string): boolean {
   return message.includes('form data changed; refresh and retry');
 }
 
-const FORM_DATA_PATH_PATTERN =
-  /^formData\.([A-Za-z_][A-Za-z0-9_]*(?:\[\d+\]\.[A-Za-z_][A-Za-z0-9_]*)?) (.+)$/;
-const MISSING_FIELDS_PREFIX = 'Form data is missing required fields: ';
+// The server names a field by its label: `欄位「標籤」`, a table row as
+// `「表格」第 N 列` (1-based), and a cell as `「表格」第 N 列的「欄位」`.
+// Each part of a message is separated by `；`.
+const TOP_LEVEL_REF_PATTERN = /^欄位「(.+?)」(.+)$/;
+const TABLE_REF_PATTERN = /^「(.+?)」第 (\d+) 列(?:的「(.+?)」)?(.+)$/;
+const MISSING_FIELDS_PREFIX = '缺少必填欄位：';
 
-/**
- * The field or table column a server error path such as `note` or
- * `items[0].name` points at, so its own settings can word the error.
- */
-function readFillPathField(
-  path: string,
+/** The field, or table column, a server error part names, with its renderer key. */
+interface FillErrorTarget {
+  readonly key: string;
+  readonly settings: FormFieldDefinition | TableColumnDefinition | undefined;
+}
+
+function readFillErrorTarget(
+  part: string,
   fields: readonly FormFieldDefinition[],
-): FormFieldDefinition | TableColumnDefinition | undefined {
-  const [fieldKey, columnKey] = path.split(/\[\d+\]\./);
-  const field = fields.find((candidate) => candidate.fieldKey === fieldKey);
+): { readonly target: FillErrorTarget; readonly reason: string } | null {
+  const topLevel = TOP_LEVEL_REF_PATTERN.exec(part);
 
-  return columnKey === undefined
-    ? field
-    : field && isTableFieldDefinition(field)
-      ? field.columns.find((column) => column.fieldKey === columnKey)
-      : undefined;
+  if (topLevel) {
+    const field = fields.find(
+      (candidate) => (candidate.label || candidate.fieldKey) === topLevel[1],
+    );
+
+    return field
+      ? {
+          reason: topLevel[2],
+          target: { key: field.fieldKey, settings: field },
+        }
+      : null;
+  }
+
+  const tableRef = TABLE_REF_PATTERN.exec(part);
+
+  if (!tableRef) {
+    return null;
+  }
+
+  const table = fields.find(
+    (candidate) =>
+      isTableFieldDefinition(candidate) &&
+      (candidate.label || candidate.fieldKey) === tableRef[1],
+  );
+
+  if (!table || !isTableFieldDefinition(table)) {
+    return null;
+  }
+
+  const rowKey = `${table.fieldKey}[${Number(tableRef[2]) - 1}]`;
+  const columnLabel = tableRef[3];
+
+  if (columnLabel === undefined) {
+    return {
+      reason: tableRef[4],
+      target: { key: rowKey, settings: undefined },
+    };
+  }
+
+  const column = table.columns.find(
+    (candidate) => (candidate.label || candidate.fieldKey) === columnLabel,
+  );
+
+  return column
+    ? {
+        reason: tableRef[4],
+        target: { key: `${rowKey}.${column.fieldKey}`, settings: column },
+      }
+    : null;
 }
 
 function readFillPathErrorText(
-  path: string,
   reason: string,
-  fields: readonly FormFieldDefinition[],
+  settings: FormFieldDefinition | TableColumnDefinition | undefined,
 ): string {
-  const atLeast = /^must include at least (\d+) row\(s\)$/.exec(reason);
-  const atMost = /^must include at most (\d+) row\(s\)$/.exec(reason);
-  const shortest = /^must be at least (\d+) characters$/.exec(reason);
-  const longest = /^must be at most (\d+) characters$/.exec(reason);
+  const atLeastRows = /^至少需要 (\d+) 列$/.exec(reason);
+  const atMostRows = /^最多 (\d+) 列$/.exec(reason);
+  const shortest = /^至少需要 (\d+) 個字$/.exec(reason);
+  const longest = /^最多 (\d+) 個字$/.exec(reason);
 
-  if (reason === 'is required') {
+  if (reason === '為必填') {
     return '此欄為必填。';
   }
 
-  if (atLeast) {
-    return `至少需要 ${atLeast[1]} 列。`;
+  if (atLeastRows) {
+    return `至少需要 ${atLeastRows[1]} 列。`;
   }
 
-  if (atMost) {
-    return `最多 ${atMost[1]} 列。`;
+  if (atMostRows) {
+    return `最多 ${atMostRows[1]} 列。`;
   }
 
   if (shortest) {
@@ -260,22 +307,21 @@ function readFillPathErrorText(
     return `最多 ${longest[1]} 個字。`;
   }
 
-  if (reason === 'does not match the required format') {
-    const field = readFillPathField(path, fields);
+  if (reason === '格式不正確') {
     const message =
-      field && (field.type === 'text' || field.type === 'textarea')
-        ? field.patternErrorMessage?.trim()
+      settings && (settings.type === 'text' || settings.type === 'textarea')
+        ? settings.patternErrorMessage?.trim()
         : undefined;
 
     return message || '格式不正確。';
   }
 
   // The server ran out of time on the format check; the value may be fine.
-  if (reason === 'could not be checked against the required format in time') {
+  if (reason === '無法在時限內完成格式檢查') {
     return '格式檢查逾時，請縮短內容後再試，或請表單設計者簡化格式。';
   }
 
-  return path.includes('[') ? '此欄內容不正確。' : '此欄位內容不正確。';
+  return '此欄內容不正確。';
 }
 
 /**
@@ -311,7 +357,9 @@ export function readFillServerErrors(
       : null;
   }
 
-  const parts = message.split('; ').map((part) => FORM_DATA_PATH_PATTERN.exec(part));
+  const parts = message
+    .split('；')
+    .map((part) => readFillErrorTarget(part, fillableFields));
 
   if (parts.length === 0 || parts.some((part) => part === null)) {
     return null;
@@ -321,7 +369,12 @@ export function readFillServerErrors(
     parts.flatMap((part) =>
       part === null
         ? []
-        : [[part[1], readFillPathErrorText(part[1], part[2], fillableFields)]],
+        : [
+            [
+              part.target.key,
+              readFillPathErrorText(part.reason, part.target.settings),
+            ],
+          ],
     ),
   );
 }

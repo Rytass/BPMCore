@@ -307,7 +307,7 @@ describe('approver-filled form helpers', () => {
     it('maps the server\'s fill errors onto renderer paths', () => {
       expect(
         readFillServerErrors(
-          'formData.financeItems[0].name is required; formData.financeItems must include at most 3 row(s)',
+          '「財務明細」第 1 列的「品項」為必填；欄位「財務明細」最多 3 列',
           SCHEMA,
           fillNode,
         ),
@@ -317,7 +317,7 @@ describe('approver-filled form helpers', () => {
       });
       expect(
         readFillServerErrors(
-          'Form data is missing required fields: 備註',
+          '缺少必填欄位：備註',
           SCHEMA,
           fillNode,
         ),
@@ -327,7 +327,7 @@ describe('approver-filled form helpers', () => {
     it('maps the server\'s text length and format errors', () => {
       expect(
         readFillServerErrors(
-          'formData.note must be at most 20 characters; formData.financeItems[1].name does not match the required format',
+          '欄位「備註」最多 20 個字；「財務明細」第 2 列的「品項」格式不正確',
           SCHEMA,
           fillNode,
         ),
@@ -337,7 +337,7 @@ describe('approver-filled form helpers', () => {
       });
       expect(
         readFillServerErrors(
-          'formData.note must be at least 2 characters',
+          '欄位「備註」至少需要 2 個字',
           SCHEMA,
           fillNode,
         ),
@@ -356,7 +356,7 @@ describe('approver-filled form helpers', () => {
 
       expect(
         readFillServerErrors(
-          'formData.note does not match the required format',
+          '欄位「備註」格式不正確',
           schema,
           fillNode,
         ),
@@ -366,7 +366,7 @@ describe('approver-filled form helpers', () => {
     it('does not word a format check that ran out of time as a format error', () => {
       expect(
         readFillServerErrors(
-          'formData.note could not be checked against the required format in time',
+          '欄位「備註」無法在時限內完成格式檢查',
           SCHEMA,
           fillNode,
         ),
@@ -383,7 +383,7 @@ describe('approver-filled form helpers', () => {
 
       expect(
         readFillServerErrors(
-          'Form data is missing required fields: 備註, 說明',
+          '缺少必填欄位：備註, 說明',
           schema,
           fillNode,
         ),
@@ -393,7 +393,7 @@ describe('approver-filled form helpers', () => {
       ).toBeNull();
       expect(
         readFillServerErrors(
-          'formData.note is required; something else',
+          '欄位「備註」為必填；something else',
           SCHEMA,
           fillNode,
         ),
