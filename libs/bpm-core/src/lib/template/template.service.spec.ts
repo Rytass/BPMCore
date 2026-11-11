@@ -2722,6 +2722,124 @@ describe('TemplateService.composeApprovalTemplateWithForm', () => {
     expect(store(ApprovalTemplateEntity).size).toBeGreaterThanOrEqual(1);
   });
 
+  /**
+   * Records template-row reads (with their lock mode) and template-version
+   * writes on one in-memory manager, and runs `onTemplateLock` when a
+   * FOR UPDATE is taken: the moment a concurrent transaction would have
+   * committed just before this one got the lock.
+   */
+  function recordTemplateLockAndVersionWrites(
+    manager: EntityManager,
+    onTemplateLock: () => void = (): void => undefined,
+  ): string[] {
+    const events: string[] = [];
+    const getRepository = manager.getRepository.bind(manager);
+
+    Object.assign(manager, {
+      getRepository: (target: new () => ObjectLiteral): ObjectLiteral => {
+        const repository = getRepository(target);
+
+        if (target === ApprovalTemplateEntity) {
+          const findOne = repository['findOne'] as (options: {
+            readonly lock?: { readonly mode: string };
+          }) => Promise<unknown>;
+
+          return {
+            ...repository,
+            findOne: (options: {
+              readonly lock?: { readonly mode: string };
+            }): Promise<unknown> => {
+              events.push(`template:${options.lock?.mode ?? 'none'}`);
+
+              if (options.lock?.mode === 'pessimistic_write') {
+                onTemplateLock();
+              }
+
+              return findOne(options);
+            },
+          };
+        }
+
+        if (target === ApprovalTemplateVersionEntity) {
+          const save = repository['save'] as (value: unknown) => Promise<unknown>;
+
+          return {
+            ...repository,
+            save: (value: unknown): Promise<unknown> => {
+              events.push('version:save');
+
+              return save(value);
+            },
+          };
+        }
+
+        return repository;
+      },
+    });
+
+    return events;
+  }
+
+  it('locks an existing template row before a compose forks or writes its draft (ADR 25 §15)', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+    const published = await service.composeApprovalTemplateWithForm(
+      composeInput({ publish: true }),
+      'member-admin',
+    );
+    const events = recordTemplateLockAndVersionWrites(manager);
+
+    await service.composeApprovalTemplateWithForm(
+      composeInput({ publish: true, templateId: published.template.id }),
+      'member-admin',
+    );
+
+    const lockAt = events.indexOf('template:pessimistic_write');
+    const firstWriteAt = events.indexOf('version:save');
+
+    expect(lockAt).toBeGreaterThanOrEqual(0);
+    expect(firstWriteAt).toBeGreaterThan(lockAt);
+  });
+
+  it('refuses a draft update when the draft was published before the update got the template lock', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+    const drafted = await service.composeApprovalTemplateWithForm(
+      composeInput(),
+      'member-admin',
+    );
+    const draftId = drafted.templateVersion.id;
+
+    recordTemplateLockAndVersionWrites(manager, (): void => {
+      const draft = store(ApprovalTemplateVersionEntity).get(
+        draftId,
+      ) as ApprovalTemplateVersionEntity;
+
+      draft.status = ApprovalTemplateVersionStatusEnum.PUBLISHED;
+    });
+
+    await expect(
+      service.updateApprovalTemplateDraft({
+        formDefinitionVersionId: drafted.formDefinitionVersion.id,
+        initiatorPolicyCel: null,
+        notificationConfigJson: null,
+        slaDefaultsJson: null,
+        versionId: draftId,
+        workflowDefinitionJson: JSON.stringify(EMPTY_WORKFLOW_DEFINITION),
+      }),
+    ).rejects.toThrow('Only draft approval template versions can be updated');
+
+    // The published status stays: the stale DRAFT copy read before the lock
+    // was never saved back.
+    expect(
+      (
+        store(ApprovalTemplateVersionEntity).get(
+          draftId,
+        ) as ApprovalTemplateVersionEntity
+      ).status,
+    ).toBe(ApprovalTemplateVersionStatusEnum.PUBLISHED);
+  });
+
   it('refuses to publish a new version onto a deactivated template', async (): Promise<void> => {
     const { manager, store } = createInMemoryManager();
     const service = createStoreBackedService(manager);
