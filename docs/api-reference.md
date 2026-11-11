@@ -1325,8 +1325,12 @@ fill it:
 | No resolver registered | `{}`, exactly as before |
 | Caller passed `initiatorMetadataSnapshotJson` (a host calling the service) | The caller's snapshot, stored as it is; the resolver is **not** called |
 | Engine-built snapshot (no snapshot passed, including every GraphQL submission) | What `resolveCustomFields` returned |
-| Resolver throws | The submission fails with that error; no case is created |
-| Resolver returns anything but a plain, JSON-serializable object (`null`, an array, a string, a `Date`, a circular object, an object whose `toJSON` returns a non-object) | The submission fails with `InternalServerErrorException` (`Initiator customFields resolver must return a plain object` or `... a JSON-serializable object`); no case is created; the engine never falls back to `{}` |
+| Resolver throws an `HttpException` | The submission fails with that exception as it is; no case is created |
+| Resolver throws anything else | The submission fails with `InternalServerErrorException` (`無法取得發起人的自訂欄位，這次申請沒有送出；請稍後再試或聯絡系統管理者`); the original error is logged, never sent to the client; no case is created |
+| Resolver takes longer than 10 s | The submission fails with `InternalServerErrorException` (`無法取得發起人的自訂欄位（逾時），這次申請沒有送出；請稍後再試或聯絡系統管理者`); no case is created. The timer is cleared when the resolver answers in time; what it settles with after the timeout is logged as a warning and dropped |
+| Resolver returns anything but a plain, JSON-serializable object (`null`, an array, a string, a `Date`, a circular object, an object whose `toJSON` returns a non-object) | The submission fails with `InternalServerErrorException` (`無法取得發起人的自訂欄位（回傳格式不正確），這次申請沒有送出；請聯絡系統管理者`); what was wrong is logged; no case is created |
+
+A submission never falls back to `{}`: every failure above leaves no case.
 
 Rules:
 

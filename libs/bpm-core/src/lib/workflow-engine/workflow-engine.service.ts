@@ -178,6 +178,7 @@ import {
 } from '../condition/expression-dialect';
 import {
   BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
+  BPMInitiatorCustomFieldsInput,
   BPMInitiatorCustomFieldsResolver,
 } from './initiator-custom-fields-resolver.token';
 import {
@@ -239,6 +240,18 @@ const APPROVAL_INSTANCE_BUSINESS_KEY_INDEX =
 const ORG_MANAGER_CHAIN_MAX_HOPS = 20;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
 const SYSTEM_DRY_RUN_INSTANCE_ID = 'dry-run-instance';
+// How long a submission waits for the host's initiator `customFields`
+// resolver. The case is not created when it runs out (the snapshot never falls
+// back to `{}`), so this bounds how long a member stares at a spinner when the
+// host's lookup hangs; it is shorter than the 30 s webhook budget because a
+// person is waiting on this one.
+const INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS = 10_000;
+const INITIATOR_CUSTOM_FIELDS_TIMEOUT_MESSAGE =
+  '無法取得發起人的自訂欄位（逾時），這次申請沒有送出；請稍後再試或聯絡系統管理者';
+const INITIATOR_CUSTOM_FIELDS_FAILED_MESSAGE =
+  '無法取得發起人的自訂欄位，這次申請沒有送出；請稍後再試或聯絡系統管理者';
+const INITIATOR_CUSTOM_FIELDS_INVALID_MESSAGE =
+  '無法取得發起人的自訂欄位（回傳格式不正確），這次申請沒有送出；請聯絡系統管理者';
 // The dry run checks each expression against the roots its use point may read,
 // as publish does. Keep these in step with `WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS`
 // in template.service.ts; P2 moves both to one place.
@@ -4678,20 +4691,97 @@ export class WorkflowEngineService {
       return defaultSnapshot;
     }
 
-    const customFields =
-      await this.initiatorCustomFieldsResolver.resolveCustomFields({
-        authContext,
-        defaultSnapshot: cloneJsonObject(defaultSnapshot),
-        formData: cloneJsonObject(formData),
-        memberId,
-        templateId,
-        templateVersionId,
-      });
-
     return {
       ...defaultSnapshot,
-      customFields: readResolvedInitiatorCustomFields(customFields),
+      customFields: await this.resolveInitiatorCustomFields(
+        this.initiatorCustomFieldsResolver,
+        {
+          authContext,
+          defaultSnapshot: cloneJsonObject(defaultSnapshot),
+          formData: cloneJsonObject(formData),
+          memberId,
+          templateId,
+          templateVersionId,
+        },
+      ),
     };
+  }
+
+  /**
+   * Calls the host's initiator `customFields` resolver within
+   * {@link INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS} and returns what it
+   * gave as the object the snapshot keeps.
+   *
+   * Every failure becomes an `InternalServerErrorException` with a message
+   * meant for the member, and the cause goes to the log only, so nothing of
+   * the host's lookup reaches the client: running out of time, an error that
+   * is not an `HttpException`, and a value that is not a plain JSON object. An
+   * `HttpException` the resolver throws is passed on as it is, because the
+   * host chose that answer for the member.
+   *
+   * A resolver that settles after the time has run out is not waited for; what
+   * it settles with is logged and dropped, so a late rejection is never left
+   * unhandled.
+   */
+  private async resolveInitiatorCustomFields(
+    resolver: BPMInitiatorCustomFieldsResolver,
+    input: BPMInitiatorCustomFieldsInput,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    const subject = `template=${input.templateId} version=${input.templateVersionId}`;
+    const outcome = await settleWithin(
+      new Promise<unknown>((resolve: (value: unknown) => void): void => {
+        resolve(resolver.resolveCustomFields(input));
+      }),
+      INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS,
+      (late: SettledOutcome): void => {
+        this.logger.warn(
+          `Initiator customFields resolver settled after the ${INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS} ms timeout (${subject}); ${
+            late.status === 'fulfilled'
+              ? 'its value was dropped'
+              : `its error was dropped: ${describeRejection(late.reason)}`
+          }`,
+        );
+      },
+    );
+
+    if (outcome.status === 'timeout') {
+      this.logger.error(
+        `Initiator customFields resolver timed out after ${INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS} ms (${subject})`,
+      );
+
+      throw new InternalServerErrorException(
+        INITIATOR_CUSTOM_FIELDS_TIMEOUT_MESSAGE,
+      );
+    }
+
+    if (outcome.status === 'rejected') {
+      if (outcome.reason instanceof HttpException) {
+        throw outcome.reason;
+      }
+
+      this.logger.error(
+        `Initiator customFields resolver failed (${subject}): ${describeRejection(outcome.reason)}`,
+        outcome.reason instanceof Error ? outcome.reason.stack : undefined,
+      );
+
+      throw new InternalServerErrorException(
+        INITIATOR_CUSTOM_FIELDS_FAILED_MESSAGE,
+      );
+    }
+
+    const customFields = readResolvedInitiatorCustomFields(outcome.value);
+
+    if (!customFields.ok) {
+      this.logger.error(
+        `Initiator customFields resolver returned an unusable value (${subject}): ${customFields.problem}`,
+      );
+
+      throw new InternalServerErrorException(
+        INITIATOR_CUSTOM_FIELDS_INVALID_MESSAGE,
+      );
+    }
+
+    return customFields.value;
   }
 
   async listActivityLogs(
@@ -9091,8 +9181,9 @@ function cloneJsonObject(
  * What a host's initiator `customFields` resolver returned, as the object the
  * snapshot keeps: a plain object that survives JSON, which is also how it is
  * stored, so the policy evaluated at submit and the conditions evaluated later
- * read the same values. Anything else is a bug in the host's resolver and fails
- * the submission rather than being replaced by `{}`.
+ * read the same values. Anything else is a bug in the host's resolver; the
+ * caller fails the submission with it rather than replacing it by `{}`, and
+ * `problem` is for the log only.
  *
  * The check runs on the round-tripped value too, because an object's `toJSON`
  * can turn it into something that is not an object. A key whose value is
@@ -9101,30 +9192,81 @@ function cloneJsonObject(
  */
 function readResolvedInitiatorCustomFields(
   value: unknown,
-): Readonly<Record<string, unknown>> {
+):
+  | { readonly ok: true; readonly value: Readonly<Record<string, unknown>> }
+  | { readonly ok: false; readonly problem: string } {
   if (!isPlainObjectValue(value)) {
-    throw new InternalServerErrorException(
-      'Initiator customFields resolver must return a plain object',
-    );
+    return { ok: false, problem: 'not a plain object' };
   }
 
   const roundTripped = ((): unknown => {
     try {
       return JSON.parse(JSON.stringify(value));
     } catch {
-      throw new InternalServerErrorException(
-        'Initiator customFields resolver must return a JSON-serializable object',
-      );
+      return undefined;
     }
   })();
 
-  if (!isPlainObjectValue(roundTripped)) {
-    throw new InternalServerErrorException(
-      'Initiator customFields resolver must return a plain object',
-    );
+  if (roundTripped === undefined) {
+    return { ok: false, problem: 'not JSON-serializable' };
   }
 
-  return roundTripped;
+  if (!isPlainObjectValue(roundTripped)) {
+    return { ok: false, problem: 'not a plain object once serialized' };
+  }
+
+  return { ok: true, value: roundTripped };
+}
+
+type SettledOutcome =
+  | { readonly status: 'fulfilled'; readonly value: unknown }
+  | { readonly status: 'rejected'; readonly reason: unknown };
+
+/**
+ * Waits for `promise` at most `timeoutMs`. The timer is cleared as soon as
+ * either side wins. Once the time has run out, whatever `promise` settles with
+ * later goes to `onLateSettle` and nowhere else, so a late rejection is
+ * handled rather than left to surface as an unhandled rejection.
+ */
+function settleWithin(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+  onLateSettle: (outcome: SettledOutcome) => void,
+): Promise<SettledOutcome | { readonly status: 'timeout' }> {
+  return new Promise(
+    (
+      resolve: (
+        outcome: SettledOutcome | { readonly status: 'timeout' },
+      ) => void,
+    ): void => {
+      const state = { timedOut: false };
+      const timer = setTimeout((): void => {
+        state.timedOut = true;
+        resolve({ status: 'timeout' });
+      }, timeoutMs);
+      const settle = (outcome: SettledOutcome): void => {
+        if (state.timedOut) {
+          onLateSettle(outcome);
+
+          return;
+        }
+
+        clearTimeout(timer);
+        resolve(outcome);
+      };
+
+      promise.then(
+        (value: unknown): void => settle({ status: 'fulfilled', value }),
+        (reason: unknown): void => settle({ status: 'rejected', reason }),
+      );
+    },
+  );
+}
+
+function describeRejection(reason: unknown): string {
+  return reason instanceof Error
+    ? `${reason.name}: ${reason.message}`
+    : String(reason);
 }
 
 function isPlainObjectValue(

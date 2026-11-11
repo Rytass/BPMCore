@@ -530,6 +530,12 @@ describe('WorkflowEngineService', () => {
     const STATION_POLICY = 'initiator.customFields.station == "TPE"';
     const NOT_ALLOWED =
       'Current member is not allowed to start this approval template';
+    const CUSTOM_FIELDS_FAILED =
+      '無法取得發起人的自訂欄位，這次申請沒有送出；請稍後再試或聯絡系統管理者';
+    const CUSTOM_FIELDS_TIMED_OUT =
+      '無法取得發起人的自訂欄位（逾時），這次申請沒有送出；請稍後再試或聯絡系統管理者';
+    const CUSTOM_FIELDS_INVALID =
+      '無法取得發起人的自訂欄位（回傳格式不正確），這次申請沒有送出；請聯絡系統管理者';
     const createFixture = (
       options: Partial<Parameters<typeof createServiceFixture>[0]> = {},
     ): ServiceFixture =>
@@ -797,17 +803,202 @@ describe('WorkflowEngineService', () => {
       },
     );
 
-    it('fails the submission, and starts nothing, when the resolver throws', async (): Promise<void> => {
+    it('fails the submission with its own message, and starts nothing, when the resolver throws', async (): Promise<void> => {
+      const error = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockReturnValue(undefined);
       const { resolver, resolveCustomFields } = createResolver({});
 
-      resolveCustomFields.mockRejectedValue(new Error('host lookup is down'));
+      resolveCustomFields.mockRejectedValue(
+        new Error('host lookup is down: db-7.internal'),
+      );
       const fixture = createFixture({
         initiatorCustomFieldsResolver: resolver,
       });
 
-      await expect(submit(fixture)).rejects.toThrow('host lookup is down');
+      const failure = await submit(fixture).catch(
+        (reason: unknown): unknown => reason,
+      );
+
+      expect(failure).toEqual(
+        new InternalServerErrorException(CUSTOM_FIELDS_FAILED),
+      );
+      expect((failure as Error).message).not.toContain('db-7.internal');
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('host lookup is down: db-7.internal'),
+        expect.any(String),
+      );
       expect(fixture.savedInstance).toBeNull();
       expect(readEngineTransaction(fixture)).not.toHaveBeenCalled();
+    });
+
+    it('wraps a resolver that throws synchronously the same way', async (): Promise<void> => {
+      jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: {
+          resolveCustomFields: (): Promise<
+            Readonly<Record<string, unknown>>
+          > => {
+            throw new TypeError('cannot read station of undefined');
+          },
+        },
+      });
+
+      await expect(submit(fixture)).rejects.toThrow(
+        new InternalServerErrorException(CUSTOM_FIELDS_FAILED),
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('passes on an HttpException the resolver throws as it is', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({});
+
+      resolveCustomFields.mockRejectedValue(
+        new ForbiddenException('這個帳號尚未完成人事資料建檔'),
+      );
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
+
+      await expect(submit(fixture)).rejects.toThrow(
+        new ForbiddenException('這個帳號尚未完成人事資料建檔'),
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    describe('timeout', (): void => {
+      afterEach((): void => {
+        jest.useRealTimers();
+      });
+
+      // Only the timer pair is faked: the fixture awaits real promises.
+      const useTimers = (): void => {
+        jest.useFakeTimers({
+          doNotFake: [
+            'Date',
+            'cancelAnimationFrame',
+            'cancelIdleCallback',
+            'clearImmediate',
+            'clearInterval',
+            'hrtime',
+            'nextTick',
+            'performance',
+            'queueMicrotask',
+            'requestAnimationFrame',
+            'requestIdleCallback',
+            'setImmediate',
+            'setInterval',
+          ],
+        });
+      };
+      // A resolver that answers 15 s after it is called, and a promise that
+      // settles once it has been called, so the clock is only moved after the
+      // submission has reached it.
+      const createSlowResolver = (
+        settle: 'resolve' | 'reject',
+      ): {
+        readonly called: Promise<void>;
+        readonly resolver: BPMInitiatorCustomFieldsResolver;
+      } => {
+        const signal: { notify: () => void } = {
+          notify: (): void => undefined,
+        };
+        const called = new Promise<void>((resolve: () => void): void => {
+          signal.notify = resolve;
+        });
+
+        return {
+          called,
+          resolver: {
+            resolveCustomFields: (): Promise<
+              Readonly<Record<string, unknown>>
+            > => {
+              signal.notify();
+
+              return new Promise(
+                (
+                  resolve: (value: Readonly<Record<string, unknown>>) => void,
+                  reject: (reason: Error) => void,
+                ): void => {
+                  setTimeout((): void => {
+                    if (settle === 'resolve') {
+                      resolve({ station: 'TPE' });
+                    } else {
+                      reject(new Error('host lookup gave up'));
+                    }
+                  }, 15_000);
+                },
+              );
+            },
+          },
+        };
+      };
+
+      it('fails the submission, and starts nothing, when the resolver takes longer than 10 s', async (): Promise<void> => {
+        jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+        jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+        useTimers();
+        const { called, resolver } = createSlowResolver('resolve');
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+        });
+        const submission = submit(fixture).catch(
+          (reason: unknown): unknown => reason,
+        );
+
+        await called;
+        await jest.advanceTimersByTimeAsync(10_000);
+        const settled = await Promise.race([
+          submission,
+          Promise.resolve('still waiting'),
+        ]);
+
+        expect(settled).toEqual(
+          new InternalServerErrorException(CUSTOM_FIELDS_TIMED_OUT),
+        );
+        expect(fixture.savedInstance).toBeNull();
+        expect(readEngineTransaction(fixture)).not.toHaveBeenCalled();
+        await jest.advanceTimersByTimeAsync(5_000);
+      });
+
+      it.each<['resolve' | 'reject']>([['resolve'], ['reject']])(
+        'drops and logs a resolver that settles (%s) after the timeout',
+        async (settle: 'resolve' | 'reject'): Promise<void> => {
+          jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+          const warn = jest
+            .spyOn(Logger.prototype, 'warn')
+            .mockReturnValue(undefined);
+          const unhandled = jest.fn();
+
+          process.on('unhandledRejection', unhandled);
+          useTimers();
+          const { called, resolver } = createSlowResolver(settle);
+          const fixture = createFixture({
+            initiatorCustomFieldsResolver: resolver,
+          });
+          const submission = submit(fixture);
+
+          await called;
+          await jest.advanceTimersByTimeAsync(10_000);
+          await expect(submission).rejects.toThrow(CUSTOM_FIELDS_TIMED_OUT);
+          await jest.advanceTimersByTimeAsync(5_000);
+          // Let an unhandled rejection, if any, reach the process listener.
+          await new Promise<void>((resolve: () => void): void => {
+            setImmediate(resolve);
+          });
+          process.off('unhandledRejection', unhandled);
+
+          expect(warn).toHaveBeenCalledWith(
+            expect.stringContaining(
+              settle === 'resolve'
+                ? 'its value was dropped'
+                : 'its error was dropped: Error: host lookup gave up',
+            ),
+          );
+          expect(unhandled).not.toHaveBeenCalled();
+          expect(fixture.savedInstance).toBeNull();
+        },
+      );
     });
 
     it.each<[string, unknown]>([
@@ -830,9 +1021,7 @@ describe('WorkflowEngineService', () => {
         });
 
         await expect(submit(fixture)).rejects.toThrow(
-          new InternalServerErrorException(
-            'Initiator customFields resolver must return a plain object',
-          ),
+          new InternalServerErrorException(CUSTOM_FIELDS_INVALID),
         );
         expect(fixture.savedInstance).toBeNull();
         expect(readEngineTransaction(fixture)).not.toHaveBeenCalled();
@@ -848,9 +1037,7 @@ describe('WorkflowEngineService', () => {
       });
 
       await expect(submit(fixture)).rejects.toThrow(
-        new InternalServerErrorException(
-          'Initiator customFields resolver must return a JSON-serializable object',
-        ),
+        new InternalServerErrorException(CUSTOM_FIELDS_INVALID),
       );
       expect(fixture.savedInstance).toBeNull();
     });

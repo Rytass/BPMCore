@@ -77,7 +77,15 @@ export interface BPMInitiatorCustomFieldsResolver {
    * hold secrets.
    *
    * Runs before the case is created and outside the engine transaction, so a
-   * slow lookup does not hold a case lock.
+   * slow lookup does not hold a case lock. The engine waits for it 10 seconds
+   * at most: past that the submission fails and no case is created, and what
+   * the resolver settles with later is logged and dropped.
+   *
+   * What the member sees on a failure is the engine's own message, never the
+   * resolver's: a thrown error, running out of time and a value of the wrong
+   * shape each answer 500 with a fixed message, and the cause is logged. Throw
+   * an `HttpException` to give the member a message of your own; it is passed
+   * on as it is.
    */
   resolveCustomFields(
     input: BPMInitiatorCustomFieldsInput,
