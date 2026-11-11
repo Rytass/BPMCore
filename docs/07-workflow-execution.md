@@ -708,6 +708,59 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
 - 其餘組織推導型 resolver（`POSITION`／`ORG_UNIT_*` 等）在 dry run 中的比對（dry run 只回傳佔位字串）；
   它們在實際建立任務時仍會被過濾。
 
+### 4.5 排除前面關卡的簽核者（`excludeNodeActors`）
+
+職務分離的另一半：「信管審核」與「會計審核」不能是同一人。User Task 節點設定
+`excludeNodeActors: { nodeIds, whenEmpty }` 後，**實際簽核過 `nodeIds` 所列前面關卡的人**
+不能是這個節點的簽核人。省略此設定就完全沿用 4.3 的行為；runtime 讀的是
+`instance.workflowSnapshot`，所以範本之後才開啟時，已經在跑的 instance 不受影響。
+
+- **誰算「那一關的簽核者」**：與 `NODE_ACTOR`（§4.1）同一套讀法（`readNodeActorMemberIds`）：該關**最近一輪**
+  裡實際按下同意的人；不含加簽（ad-hoc）、不含取消的任務、不含 SLA 自動核准；代理人替人簽的，取實際按同意的
+  代理人；轉簽的，含接手並按同意的人。**差別只有一處**：`NODE_ACTOR` 列了多個關卡時只取「最近實際走到的那一關」，
+  排除則是**每個關卡各讀各的最近一輪，再合併**——「不能與信管和資安兩關同一人」兩關都要排除。
+- **前面關卡沒有簽核者就不排除任何人**：那一關沒執行（進入條件不成立、被 `SKIP_NODE` 略過、走了別的分支）、
+  被退回後這一輪還沒簽、或只有 SLA 自動核准，都沒有人可排除，此節點照原本的流程建立任務。
+  這是與 `NODE_ACTOR` 的刻意差異：`NODE_ACTOR` 要「找得到人」所以來源關不能被略過，排除不需要。
+- **退回重送**：讀的是最近一輪。來源關重簽換成別人，排除的是新的簽核者，不是舊的。
+- **建立待簽任務**：與 `excludeInitiator` 同一個步驟與順序：先解析、再套用 delegation，然後移除排除名單出現在
+  其代理路徑上的候選人（代理前的 `originalMemberId`、`delegationChain` 任何一步的 `from`／`to`、或代理後的
+  `memberId`）——被排除者把席位代理給別人，那個代理人也不能簽；候選人的代理人是被排除者，同樣拿掉。
+  `ORG_MANAGER_CHAIN` 的走訪會越過被排除者往上，不會停在他身上。COUNT 門檻同樣降到剩下的人數。
+- **兩個排除設定同時開**：兩組名單取聯集（申請人與代送人＋前面關卡的簽核者）。排除後沒有人時，先套用
+  `excludeInitiator`；**只靠它就已經沒人**時看 `excludeInitiator.whenEmpty`，**它之後還剩人、被
+  `excludeNodeActors` 排光**時看 `excludeNodeActors.whenEmpty`。
+- **移除後沒有人時**依 `whenEmpty`，三個值與 §4.4 相同：
+  - `FAIL`：丟出 `ConflictException`，不建立任務（訊息見下）。
+  - `INITIATOR_MANAGER`：改派申請人的直屬主管；替補出來的人同樣不能是申請人、代送人或被排除的簽核者
+    （查主管時越過他們往上一層）。找不到就丟 `ConflictException`。
+  - `SKIP_NODE`：不建立任務，寫一筆 `TOKEN_ADVANCED` activity log
+    （`payload: { skippedByNodeActorExclusion: true, tokenId }`；由 `excludeInitiator` 引起的仍是
+    `skippedByInitiatorExclusion`），token 直接往下走。
+  - 一開始就解析不出任何人仍是原本的錯誤，不套用 `whenEmpty`。
+- **後門一起關**：
+  - **手動轉簽**（`decideTask` 的 `TRANSFERRED`，含群組席位轉簽）：目標是被排除者時回 `ConflictException`。
+  - **臨時加簽／會簽**：指定對象只剩被排除者時回 `ConflictException`（時機同 §4.4）。
+  - **依序簽（`SEQUENTIAL`）輪到下一位**：重新解析代理時，若新的代理路徑會經過被排除者，沿用建立時存下的值。
+  - **管理員改派**（`reassignTask`／`reassignMemberTasks`）：接手人是被排除者時回報
+    `TARGET_IS_EXCLUDED_NODE_ACTOR`，與 `TARGET_IS_INITIATOR` 並列。
+  - **SLA 升級轉派**（帶 `transferReason`）：與 `excludeInitiator` 一樣**不檢查**。
+- **發布檢查**：`nodeIds` 非空、不重複、不含本節點、每一個都存在且是 userTask；每個都必須在本節點的**上游**
+  （有路徑走到本節點）；且不能是「在平行分支上、到本節點之間有 `triggerMode: 'OR'`（任一分支到達即觸發）」的關卡
+  （本節點開始時它可能還沒簽，排除會讀到還沒發生的核准）。`whenEmpty` 必須是三個值之一；本節點有可由簽核人
+  補填的欄位時不能選 `SKIP_NODE`。**不要求**來源關沒有進入條件、沒有 `SKIP_NODE`、沒有逾時自動核准，
+  也不要求每條路徑都經過來源關（沒走到就沒人可排除）。
+- **Dry run**：前面關卡誰簽，在試跑時不知道，所以不模擬這個排除，也不會因它停止；只有同時開的
+  `excludeInitiator` 照 §4.4 的規則試跑。
+
+新的錯誤訊息（下游若做翻譯表請一併加入；`{節點}` 是簽核節點名稱，`{關卡}` 形如 `關卡「信管審核」`，多個以「、」連接）：
+
+- `簽核節點「{節點}」 無法建立待簽任務：解析出的簽核人只剩前面{關卡}的簽核者（含委派後的代理人），此節點不允許與前面關卡的簽核者為同一人。`
+- `簽核節點「{節點}」 無法建立待簽任務：解析出的簽核人只剩前面{關卡}的簽核者，此節點不允許與前面關卡的簽核者為同一人，且找不到申請人的主管可改派。`
+- `{臨時加簽／臨時會簽}「{節點}」 無法建立任務：指定對象只有前面{關卡}的簽核者，此節點不允許與前面關卡的簽核者為同一人。`
+- `簽核節點「{節點}」不允許與前面關卡的簽核者為同一人，不能將任務轉交給前面{關卡}的簽核者`
+- 管理員改派 `TARGET_IS_EXCLUDED_NODE_ACTOR`：`此節點不允許與前面關卡的簽核者為同一人，接手人不能是前面關卡的簽核者`
+
 ---
 
 ## 5. Task 決策處理

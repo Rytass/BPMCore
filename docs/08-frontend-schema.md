@@ -86,6 +86,7 @@ interface UserTaskNodeData extends BaseNodeData {
   readonly description?: string;
   readonly entryCondition?: string;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly excludeNodeActors?: ExcludeNodeActorsConfig;
   readonly fieldAccess?: readonly FieldAccessEntry[];
   /** @deprecated 從未生效；草稿仍帶這個鍵時無法發布（見 §8.6）。 */
   readonly fieldPermissions?: readonly FieldPermission[];
@@ -96,6 +97,13 @@ interface UserTaskNodeData extends BaseNodeData {
 
 interface ExcludeInitiatorConfig {
   /** 排除申請人後沒有任何簽核人時的處理方式。 */
+  readonly whenEmpty: 'FAIL' | 'INITIATOR_MANAGER' | 'SKIP_NODE';
+}
+
+interface ExcludeNodeActorsConfig {
+  /** 前面哪幾個簽核節點；實際簽核過這些關卡的人不能是本關的簽核人。 */
+  readonly nodeIds: readonly string[];
+  /** 排除後沒有任何簽核人時的處理方式，三個值與 `excludeInitiator` 相同。 */
   readonly whenEmpty: 'FAIL' | 'INITIATOR_MANAGER' | 'SKIP_NODE';
 }
 
@@ -119,6 +127,12 @@ Client 端的 `ApprovalInstanceRecord.submittedByMemberId`（選填、可為 `nu
 `null`、缺省、或等於 `initiatorMemberId` 都表示申請人自己送出，只有不同的非空值才顯示「由 X 代 Y 送出」。
 讀取權限與通知內文見 [07-workflow-execution.md](./07-workflow-execution.md) §4.4。
 
+`excludeNodeActors` 是關卡之間的權責分離設定（例：信管審核與會計審核不能是同一人）：存在時，
+實際簽核過 `nodeIds` 所列前面關卡的人（含代理關係的任何一端）不會是該節點的簽核人，也不能被轉簽
+或加簽到該節點。「誰算那一關的簽核者」與 `NODE_ACTOR` 來源同一套讀法；前面關卡沒執行或沒人簽過時
+不排除任何人。省略時行為與過去完全相同；可與 `excludeInitiator` 同時開，兩組名單取聯集。
+runtime 規則、`whenEmpty` 的決定方式與發布檢查見 [07-workflow-execution.md](./07-workflow-execution.md) §4.5。
+
 Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
 
 - 節點名稱。
@@ -136,7 +150,9 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 
 目前 designer 可編輯 `allowAddSigner`、`allowTransfer`、`allowReject`、
 `excludeInitiator`（`setUserTaskExcludeInitiator` command；AI 工具
-`set_user_task_exclude_initiator`）與 `fieldAccess`（見下方說明），以及
+`set_user_task_exclude_initiator`）、`excludeNodeActors`（面板的「不可與前面關卡同一人」，
+`setUserTaskExcludeNodeActors` command；AI 工具 `set_user_task_exclude_node_actors`；選項只列
+在本節點之前、走得到本節點的簽核節點）與 `fieldAccess`（見下方說明），以及
 `description`、`entryCondition`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
