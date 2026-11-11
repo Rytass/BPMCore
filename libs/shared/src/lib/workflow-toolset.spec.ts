@@ -1739,7 +1739,7 @@ describe('set_user_task_approver — manager chain start settings', () => {
     });
   });
 
-  it.each([2.5, Number.NaN])(
+  it.each([2.5, Number.NaN, '20', true])(
     'keeps a start level that is not a whole number so validation reports it (%s)',
     async (startPositionLevel) => {
       const { resolver } = await chainAfter({
@@ -1758,20 +1758,17 @@ describe('set_user_task_approver — manager chain start settings', () => {
     },
   );
 
-  it.each(['20', null])(
-    'drops a start level that is not a number (%s)',
-    async (startPositionLevel) => {
-      const { resolver } = await chainAfter({
-        minPositionLevel: 30,
-        startPositionLevel,
-      });
+  it('reads a null start level as no start level (control)', async () => {
+    const { resolver } = await chainAfter({
+      minPositionLevel: 30,
+      startPositionLevel: null,
+    });
 
-      expect(resolver).toEqual({
-        minPositionLevel: 30,
-        type: 'ORG_MANAGER_CHAIN',
-      });
-    },
-  );
+    expect(resolver).toEqual({
+      minPositionLevel: 30,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
 
   it('keeps an incomplete start incomplete so validation reports it instead of starting at the initiator', async () => {
     const form = await chainAfter({

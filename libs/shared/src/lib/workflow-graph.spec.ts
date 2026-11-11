@@ -2372,13 +2372,17 @@ describe('readSingleApproverSourceIssues', () => {
         ['task'],
       ),
     ).toEqual([]);
-    // The fixture is a real graph: the same call the other way round is not.
+    // The fixture is a real graph: the same call the other way round is
+    // refused because `me` is downstream of `task`, not because `me` is
+    // missing.
     expect(
       readNodeActorSourceIssues(
         withSource({ type: 'PARALLEL_ALL' }),
         'task',
         ['me'],
       ),
-    ).not.toEqual([]);
+    ).toEqual(
+      expect.arrayContaining([expect.stringMatching(/不在 .* 的上游/)]),
+    );
   });
 });

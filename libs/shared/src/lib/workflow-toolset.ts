@@ -1530,9 +1530,12 @@ function parseApproverResolver(value: unknown): ApproverResolver {
             type: 'ORG_MANAGER_CHAIN',
             ...(fallback ? { fallback } : {}),
             ...(startFrom === null ? {} : { startFrom }),
-            ...(typeof startPositionLevel === 'number'
-              ? { startPositionLevel }
-              : {}),
+            // Anything but an absent or `null` level is kept as written (a
+            // `'20'` as much as a `2.5`), so `readOrgManagerChainIssue`
+            // reports it instead of the start level quietly going away.
+            ...(startPositionLevel === undefined || startPositionLevel === null
+              ? {}
+              : { startPositionLevel: startPositionLevel as number }),
           }
         : DEFAULT_MANAGER_RESOLVER;
     }
