@@ -1021,12 +1021,12 @@ the engine's moves from UTC to `Asia/Taipei`.
 > upgrading. Instances already running keep the tasks they have; only
 > resolutions made after the upgrade read the new date.
 
-Known limitation: the template designer's browser-side dry-run snapshot
-(`readTodayDateOnlyString` in `TemplateDesignerView`) builds its simulated
-initiator from the browser's UTC date, because the client has no access to the
-host's `organizationTimeZone`. Between local midnight and the UTC offset that
-preview can disagree with the engine's dry run and with real runs for a
-membership effective from today.
+Known limitation: the template designer (`readTodayDateOnlyString` in
+`designer/position-scope.ts`) reads "today" in `Asia/Taipei`, the engine's
+default, because the browser has no access to the host's
+`organizationTimeZone`. A host that sets another zone can see the designer's
+position pickers and dry-run preview disagree with the engine for a membership
+effective from today.
 
 ## `@rytass/bpm-core-nestjs-module/form`
 
