@@ -73,6 +73,7 @@ import {
   SelectQueryBuilder,
 } from 'typeorm';
 import { AttachmentService } from '../attachment/attachment.service';
+import { readFileUploadValueIds } from '../attachment/file-upload-value-ids';
 import {
   DelegationResolution,
   DelegationService,
@@ -1431,7 +1432,23 @@ export class WorkflowEngineService {
           isReturnCommentRequired(instance.workflowSnapshot, task.nodeId)
         ) {
           throw new BadRequestException(
-            `Return decision comment is required by workflow node ${task.nodeId}`,
+            '此節點要求退回時填寫意見，請輸入意見後再退回。',
+          );
+        }
+
+        // Same snapshot rule as the return check above. Only a person's
+        // approval is held to it: an engine-made approval (the SLA
+        // `AUTO_APPROVE` timeout) carries `options.automatic` and must never
+        // stall waiting for a comment nobody is there to write. A person's
+        // approval of an ad-hoc task counts too: it runs on the main node.
+        if (
+          input.action === TaskDecisionActionEnum.APPROVED &&
+          options.automatic === undefined &&
+          !decisionComment &&
+          taskNode.data.requireApprovalComment === true
+        ) {
+          throw new BadRequestException(
+            '此節點要求同意時填寫意見，請輸入意見後再同意。',
           );
         }
 
@@ -8367,7 +8384,7 @@ export class WorkflowEngineService {
         { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
       );
 
-      assertServiceTaskTextValue(
+      assertServiceTaskFieldValue(
         instance.formDefinitionSnapshot,
         action.fieldPath,
         value,
@@ -9161,25 +9178,32 @@ function readFilterableProblemLocation(
   // Not in the schema (the check and this lookup read the same schema, so
   // this is defensive): still address it the way FormDataIssue.path promises,
   // `table[i].col` for a row value rather than the dotted filter path.
+  const row = `${tableKey}[${problem.rowIndex}]`;
   const path =
-    problem.rowIndex !== null && columnKey !== undefined
-      ? `${tableKey}[${problem.rowIndex}].${columnKey}`
-      : problem.path;
+    problem.rowIndex === null
+      ? problem.path
+      : columnKey === undefined
+        ? row
+        : `${row}.${columnKey}`;
 
   return { path, ref: `欄位「${path}」` };
 }
 
 /**
- * Holds a `SET_FORM_FIELD` write to the length and format rules the form
- * applies to a filler, so a service task cannot store text the field would
- * have refused. Breaking them throws, which rolls back the submit or decision
+ * Holds a `SET_FORM_FIELD` write to the rules the form applies to a filler —
+ * text length and format, and the shape of a member or organization-unit value
+ * — so a service task cannot store what the field would have refused. A member
+ * value matters past the write: a `DYNAMIC_FORM` resolver or a manager chain
+ * starting from the field reads it later, and an array on a single-member
+ * field would make that node refuse inside a later decision, which then
+ * cannot commit. Breaking them throws, which rolls back the submit or decision
  * that reached the node: the value is never half-written, and the node's value
  * has to be corrected. Only a top-level field can carry those rules — the
  * writer ignores an indexed path, and a nested record path names no field —
  * and an unreadable snapshot is left alone, as in
  * `readDataSourceFieldKeyAtPath`.
  */
-function assertServiceTaskTextValue(
+function assertServiceTaskFieldValue(
   snapshot: Readonly<Record<string, unknown>>,
   fieldPath: string,
   value: unknown,
@@ -9195,19 +9219,25 @@ function assertServiceTaskTextValue(
   const field = schema.fields.find(
     (candidate) => candidate.fieldKey === segments[0],
   );
+  const written = { [segments[0]]: value };
   const errors = field
-    ? readSubmittedTextValueErrors(field, value, {
-        testPattern: createTimedTextFieldPatternTest(),
-      })
+    ? [
+        ...readSubmittedTextValueErrors(field, value, {
+          testPattern: createTimedTextFieldPatternTest(),
+        }),
+        ...readSubmittedMemberValueErrors([field], written),
+        ...readSubmittedOrgUnitValueErrors([field], written),
+      ]
     : [];
 
   if (!field || errors.length === 0) {
     return;
   }
 
-  throw new BadRequestException(
+  throw createFormDataBadRequest(
     `系統節點「${nodeLabel}」要寫入的值不符合欄位規則（${readFormDataIssueMessage(errors)}），` +
       `這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`,
+    errors,
   );
 }
 
@@ -10869,7 +10899,57 @@ function validateSubmittedFormData(
           ),
         ),
     ],
+    // Every `file_upload` field, shown or not: the submit binds the files of
+    // each one to the case, so a cap only the visible ones obey could be
+    // stepped around by sending files in a hidden field.
+    readFileUploadErrors: () =>
+      readSubmittedFileUploadErrors(schema.fields, formData),
   });
+}
+
+/**
+ * A `file_upload` field holding more files than its `maxFiles`. The renderer
+ * stops at the cap, but nothing kept a caller that writes the form data itself
+ * from going past it. On a resubmit the value lists the files kept from the
+ * returned case and the ones uploaded since, so both count, as they do in the
+ * renderer. Each distinct non-empty id in the value is one file: the binding
+ * attaches an id once however often it repeats, so a repeat is not a second
+ * file. A field without `maxFiles` takes any number, as it does in the
+ * renderer.
+ */
+function readSubmittedFileUploadErrors(
+  fields: readonly FormFieldDefinition[],
+  formData: Readonly<Record<string, unknown>>,
+): readonly FormDataIssue[] {
+  return fields.flatMap((field): readonly FormDataIssue[] => {
+    if (field.type !== 'file_upload' || typeof field.maxFiles !== 'number') {
+      return [];
+    }
+
+    const fileCount = countFileUploadValueIds(
+      readRowCellValue(formData, field.fieldKey),
+    );
+
+    return fileCount > field.maxFiles
+      ? [
+          createFormDataIssue(
+            readFieldIssueLocation(field),
+            'MAX_FILES',
+            `最多 ${field.maxFiles} 個檔案`,
+            field.maxFiles,
+          ),
+        ]
+      : [];
+  });
+}
+
+/**
+ * The distinct files a `file_upload` value names. The ids are read by the same
+ * helper the attachment binding uses, and collapsed the way the binding
+ * collapses them (one attachment per id).
+ */
+function countFileUploadValueIds(value: unknown): number {
+  return new Set(readFileUploadValueIds(value)).size;
 }
 
 /**
@@ -10927,7 +11007,8 @@ function validateFilledFormFields(
  * The shared tail of submit and approver-fill validation: a missing required
  * field wins over a text value breaking its length or format rule, which wins
  * over a malformed member value, which wins over a malformed org unit value,
- * which wins over a table problem, and the later checks are only evaluated
+ * which wins over a table problem, which wins over a `file_upload` field
+ * holding more files than it allows, and the later checks are only evaluated
  * when the earlier ones pass. The refusal carries every issue of the winning
  * check. Its message is those issues' sentences joined, except for missing
  * required fields, which keep the one-line summary `缺少必填欄位：A, B` that
@@ -10936,12 +11017,16 @@ function validateFilledFormFields(
  */
 function throwFirstFormDataFieldError({
   missingFields,
+  readFileUploadErrors = (): readonly FormDataIssue[] => [],
   readMemberErrors,
   readOrgUnitErrors,
   readTableErrors,
   readTextErrors,
 }: {
   readonly missingFields: readonly FormFieldDefinition[];
+  // Optional: an approver cannot be given a `file_upload` field to fill in
+  // (workflow lint `approverFilledFieldFileUpload`), so only submit passes it.
+  readonly readFileUploadErrors?: () => readonly FormDataIssue[];
   readonly readMemberErrors: () => readonly FormDataIssue[];
   readonly readOrgUnitErrors: () => readonly FormDataIssue[];
   readonly readTableErrors: () => readonly FormDataIssue[];
@@ -10965,6 +11050,7 @@ function throwFirstFormDataFieldError({
     readMemberErrors,
     readOrgUnitErrors,
     readTableErrors,
+    readFileUploadErrors,
   ].reduce<readonly FormDataIssue[]>(
     (found, check) => (found.length > 0 ? found : check()),
     [],

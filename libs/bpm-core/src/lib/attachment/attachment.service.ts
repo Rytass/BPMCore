@@ -28,6 +28,7 @@ import {
 } from '@rytass/bpm-core-shared/form';
 import { AttachmentEntity } from './attachment.entity';
 import { UploadAttachmentInput } from './dto/upload-attachment.input';
+import { readFileUploadValueIds } from './file-upload-value-ids';
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -574,22 +575,10 @@ function readFileUploadAttachmentRefs(
   formData: Readonly<Record<string, unknown>>,
 ): readonly FormAttachmentRef[] {
   return readSubmittedFileUploadFieldKeys(schema, formData).flatMap(
-    (fieldKey): readonly FormAttachmentRef[] => {
-      const value = formData[fieldKey];
-      const entries: readonly unknown[] = Array.isArray(value)
-        ? value
-        : [value];
-
-      return (
-        entries
-          // An empty value holds no file.
-          .filter(
-            (entry): entry is string =>
-              typeof entry === 'string' && entry !== '',
-          )
-          .map((id): FormAttachmentRef => ({ id, path: `form.${fieldKey}` }))
-      );
-    },
+    (fieldKey): readonly FormAttachmentRef[] =>
+      readFileUploadValueIds(formData[fieldKey]).map(
+        (id): FormAttachmentRef => ({ id, path: `form.${fieldKey}` }),
+      ),
   );
 }
 

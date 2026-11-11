@@ -455,6 +455,38 @@ describe('approver-filled form helpers', () => {
         ).toEqual({ note2: '最多 20 個字。' });
       });
 
+      it('maps a file count past maxFiles, from the structured issue and from the message alone', () => {
+        const fileSchema: FormDefinitionSchema = {
+          fields: [
+            {
+              fieldKey: 'files',
+              label: '附件',
+              maxFiles: 2,
+              required: false,
+              type: 'file_upload',
+            },
+          ],
+          schemaVersion: 1,
+        };
+        const fileNode = {
+          ...fillNode,
+          data: {
+            ...fillNode.data,
+            fieldAccess: [{ display: 'SHOW', fieldKey: 'files', fill: 'OPTIONAL' }],
+          },
+        } as UserTaskNode;
+        const message = '欄位「附件」最多 2 個檔案';
+
+        expect(
+          readFillServerErrors(message, fileSchema, fileNode, [
+            { message, path: 'files', reason: 'MAX_FILES', limit: 2 },
+          ]),
+        ).toEqual({ files: '最多 2 個檔案。' });
+        expect(readFillServerErrors(message, fileSchema, fileNode)).toEqual({
+          files: '最多 2 個檔案。',
+        });
+      });
+
       it('reads a label holding 「」 and ； by path, not by splitting the message', () => {
         expect(
           readFillServerErrors(

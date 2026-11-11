@@ -494,6 +494,10 @@ test.describe('M1 W3 template designer', () => {
     await expect(page.getByText('退回時意見必填')).toBeVisible();
     await page.locator('label[for="returnRequireComment"]').click();
 
+    // Approval setting: always available, whether or not returning is allowed.
+    await expect(page.getByText('核准時意見必填')).toBeVisible();
+    await page.locator('label[for="approvalRequireComment"]').click();
+
     // SLA settings reveal progressively, matching the approver-resolver panel.
     await expect(page.getByText('啟用時效')).toBeVisible();
     await expect(page.getByText('逾時處理')).toHaveCount(0);
@@ -520,6 +524,7 @@ test.describe('M1 W3 template designer', () => {
     await expect.poll((): boolean => savedData !== null).toBe(true);
 
     expect(savedData).toMatchObject({
+      requireApprovalComment: true,
       returnBehavior: expect.objectContaining({ requireComment: true }),
       sla: {
         calendar: 'BUSINESS_DAY',
