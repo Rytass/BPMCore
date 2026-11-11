@@ -25,6 +25,14 @@ export interface FormDataSourceModuleOptions extends Pick<
   'imports'
 > {
   readonly registryProvider?: Provider<BPMFormDataSourceRegistry>;
+  /**
+   * The engine module the runtime template checks run through. `BPMRootModule`
+   * passes the very `WorkflowEngineModule.forRoot(...)` it imports itself, so
+   * Nest builds one engine that sees the host's initiator `customFields`
+   * resolver and service-task dispatcher. Importing the plain class instead
+   * builds a second engine without them.
+   */
+  readonly workflowEngineModule?: DynamicModule;
 }
 
 @Global()
@@ -43,7 +51,7 @@ export class FormDataSourceModule {
       global: true,
       imports: [
         ...(options.imports ?? []),
-        WorkflowEngineModule,
+        options.workflowEngineModule ?? WorkflowEngineModule,
         // `EXPRESSION` bindings are linted and evaluated by the shared
         // `ConditionService`, with the host's function registry.
         ConditionModule,

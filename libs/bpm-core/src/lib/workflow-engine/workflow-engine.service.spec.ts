@@ -26,6 +26,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  InternalServerErrorException,
   NotFoundException,
   Logger,
 } from '@nestjs/common';
@@ -123,6 +124,10 @@ import {
   TaskReassignmentResult,
   WorkflowEngineService,
 } from './workflow-engine.service';
+import {
+  BPMInitiatorCustomFieldsInput,
+  BPMInitiatorCustomFieldsResolver,
+} from './initiator-custom-fields-resolver.token';
 import { BPMWorkflowServiceTaskDispatcher } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
@@ -514,6 +519,848 @@ describe('WorkflowEngineService', () => {
       positionId: 'position-manager',
       positionIds: ['position-manager', 'position-staff'],
       primaryOrgUnitId: 'org-sales',
+    });
+  });
+
+  describe('initiator customFields resolver on submit', (): void => {
+    const ENGINE_SNAPSHOT = {
+      memberId: 'member-001',
+      orgUnitIds: ['org-sales'],
+      positionId: 'position-manager',
+      positionIds: ['position-manager'],
+      primaryOrgUnitId: 'org-sales',
+    };
+    const STATION_POLICY = 'initiator.customFields.station == "TPE"';
+    const NOT_ALLOWED =
+      'Current member is not allowed to start this approval template';
+    const CUSTOM_FIELDS_FAILED =
+      '無法取得發起人的自訂欄位，這次申請沒有送出；請稍後再試或聯絡系統管理者';
+    const CUSTOM_FIELDS_TIMED_OUT =
+      '無法取得發起人的自訂欄位（逾時），這次申請沒有送出；請稍後再試或聯絡系統管理者';
+    const CUSTOM_FIELDS_INVALID =
+      '無法取得發起人的自訂欄位（回傳格式不正確），這次申請沒有送出；請聯絡系統管理者';
+    const createFixture = (
+      options: Partial<Parameters<typeof createServiceFixture>[0]> = {},
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processMemberships: [
+          createMembership({
+            id: 'membership-sales',
+            isPrimary: true,
+            orgUnitId: 'org-sales',
+            positionId: 'position-manager',
+          }),
+        ],
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        ...options,
+      });
+    const createResolver = (
+      result: unknown,
+    ): {
+      readonly resolveCustomFields: jest.Mock<
+        Promise<Readonly<Record<string, unknown>>>,
+        [BPMInitiatorCustomFieldsInput]
+      >;
+      readonly resolver: BPMInitiatorCustomFieldsResolver;
+    } => {
+      const resolveCustomFields = jest
+        .fn<
+          Promise<Readonly<Record<string, unknown>>>,
+          [BPMInitiatorCustomFieldsInput]
+        >()
+        .mockResolvedValue(result as Readonly<Record<string, unknown>>);
+
+      return { resolveCustomFields, resolver: { resolveCustomFields } };
+    };
+    const submit = (
+      fixture: ServiceFixture,
+      options: {
+        readonly authContext?: BPMAuthContext;
+        readonly initiatorMetadataSnapshotJson?: string;
+      } = {},
+    ): Promise<ApprovalInstanceEntity> =>
+      fixture.service.submitApprovalInstance(
+        {
+          // The GraphQL mutation always sends both of these.
+          endUserSubmission: true,
+          formDataJson: '{"amount":1000}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson:
+            options.initiatorMetadataSnapshotJson ?? null,
+          templateId: 'template-1',
+          title: null,
+        },
+        options.authContext,
+      );
+    const readEngineTransaction = (fixture: ServiceFixture): jest.Mock =>
+      (
+        fixture.service as unknown as {
+          readonly approvalInstanceRepository: {
+            readonly manager: { readonly transaction: jest.Mock };
+          };
+        }
+      ).approvalInstanceRepository.manager.transaction;
+
+    it('leaves customFields empty when no resolver is registered', async (): Promise<void> => {
+      const fixture = createFixture();
+
+      await submit(fixture);
+
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: {},
+        ...ENGINE_SNAPSHOT,
+      });
+    });
+
+    it('stores what the resolver returns as customFields and hands it the submission', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        grade: 7,
+        nested: { codes: ['a', 'b'] },
+        station: 'TPE',
+      });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
+      const authContext: BPMAuthContext = {
+        memberId: 'member-001',
+        metadata: { site: 'TPE' },
+        permissions: [],
+        roles: [],
+      };
+
+      await submit(fixture, { authContext });
+
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: {
+          grade: 7,
+          nested: { codes: ['a', 'b'] },
+          station: 'TPE',
+        },
+        ...ENGINE_SNAPSHOT,
+      });
+      expect(resolveCustomFields).toHaveBeenCalledTimes(1);
+      expect(resolveCustomFields).toHaveBeenCalledWith({
+        authContext,
+        defaultSnapshot: { customFields: {}, ...ENGINE_SNAPSHOT },
+        formData: { amount: 1000 },
+        memberId: 'member-001',
+        purpose: 'SUBMISSION',
+        templateId: 'template-1',
+        templateVersionId: 'template-version-1',
+      });
+    });
+
+    it('gives a host that called the service without an auth context one for the initiator', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({});
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
+
+      await submit(fixture);
+
+      expect(resolveCustomFields.mock.calls[0]?.[0].authContext).toEqual({
+        memberId: 'member-001',
+        metadata: {},
+        permissions: [],
+        roles: [],
+      });
+    });
+
+    it('keeps the engine fields when the resolver returns the same keys or edits what it was given', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        memberId: 'member-evil',
+        positionId: 'position-evil',
+      });
+
+      resolveCustomFields.mockImplementation(
+        (
+          input: BPMInitiatorCustomFieldsInput,
+        ): Promise<Readonly<Record<string, unknown>>> => {
+          (input.defaultSnapshot as Record<string, unknown>)['memberId'] =
+            'member-evil';
+          (input.defaultSnapshot['orgUnitIds'] as string[]).push('org-evil');
+          (input.formData as Record<string, unknown>)['amount'] = 1;
+
+          return Promise.resolve({
+            memberId: 'member-evil',
+            positionId: 'position-evil',
+          });
+        },
+      );
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
+
+      await submit(fixture);
+
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: { memberId: 'member-evil', positionId: 'position-evil' },
+        ...ENGINE_SNAPSHOT,
+      });
+      expect(fixture.savedInstance?.initiatorMemberId).toBe('member-001');
+      expect(fixture.savedInstance?.formData).toEqual({ amount: 1000 });
+    });
+
+    it('does not call the resolver, and keeps the snapshot as it is, when the caller passes one', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        station: 'TPE',
+      });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
+
+      await submit(fixture, {
+        initiatorMetadataSnapshotJson:
+          '{"customFields":{"station":"KHH"},"memberId":"member-001","roles":["IT"]}',
+      });
+
+      expect(resolveCustomFields).not.toHaveBeenCalled();
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: { station: 'KHH' },
+        memberId: 'member-001',
+        roles: ['IT'],
+      });
+    });
+
+    it('lets an initiator policy read what the resolver returned', async (): Promise<void> => {
+      const allowed = createFixture({
+        initiatorCustomFieldsResolver: createResolver({ station: 'TPE' })
+          .resolver,
+        templateInitiatorPolicyCel: STATION_POLICY,
+      });
+      const refused = createFixture({
+        initiatorCustomFieldsResolver: createResolver({ station: 'KHH' })
+          .resolver,
+        templateInitiatorPolicyCel: STATION_POLICY,
+      });
+
+      await expect(submit(allowed)).resolves.toMatchObject({
+        id: 'instance-1',
+      });
+      await expect(submit(refused)).rejects.toThrow(NOT_ALLOWED);
+      expect(refused.savedInstance).toBeNull();
+    });
+
+    // This unit suite maps `cel-js` to a JavaScript shim (jest.config.cts), so
+    // the shim's answer is not asserted here. The shim reads an absent key as
+    // `undefined` and the policy comes out false (ConflictException); the real
+    // engines throw `EXPRESSION_MISSING_KEY` for the same read
+    // (ExpressionRuntimeError). Either way no case is saved, which is the only
+    // behaviour this test pins.
+    it('does not start a case whose policy reads customFields when no resolver is registered', async (): Promise<void> => {
+      const fixture = createFixture({
+        templateInitiatorPolicyCel: STATION_POLICY,
+      });
+
+      const error: unknown = await submit(fixture).then(
+        () => null,
+        (rejected: unknown): unknown => rejected,
+      );
+
+      expect(
+        error instanceof ConflictException ||
+          error instanceof ExpressionRuntimeError,
+      ).toBe(true);
+      expect(error).not.toBeNull();
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    // Two steps, because this fixture does not process a case inside
+    // `submitApprovalInstance`: the token the submit saves reaches
+    // `processTokens` only when the fixture holds a workflow snapshot, and then
+    // it also holds a second start token. So the snapshot the submit stored is
+    // handed to a fixture that processes an existing case, built the way the
+    // other exclusive gateway tests are (`processWorkflowSnapshot` and
+    // `processInstance`); only the stored snapshot differs.
+    it.each([
+      ['TPE', 'task_high'],
+      ['KHH', 'task_default'],
+    ])(
+      'routes a case on the customFields.station %s the resolver returned to %s',
+      async (station: string, expectedNodeId: string): Promise<void> => {
+        const submitted = createFixture({
+          initiatorCustomFieldsResolver: createResolver({ station }).resolver,
+        });
+
+        await submit(submitted);
+        expect(submitted.savedInstance).not.toBeNull();
+
+        const processed = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processInitiatorMetadataSnapshot:
+            submitted.savedInstance?.initiatorMetadataSnapshot ?? {},
+          processWorkflowSnapshot: createExclusiveGatewayWorkflow({
+            highCondition: STATION_POLICY,
+            includeStructuredCondition: false,
+          }),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await processed.service.processInstance('instance-1');
+
+        expect(processed.savedTasks.map((task) => task.nodeId)).toEqual([
+          expectedNodeId,
+        ]);
+      },
+    );
+
+    it('fails the submission with its own message, and starts nothing, when the resolver throws', async (): Promise<void> => {
+      const error = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockReturnValue(undefined);
+      const { resolver, resolveCustomFields } = createResolver({});
+
+      resolveCustomFields.mockRejectedValue(
+        new Error('host lookup is down: db-7.internal'),
+      );
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
+
+      const failure = await submit(fixture).catch(
+        (reason: unknown): unknown => reason,
+      );
+
+      expect(failure).toEqual(
+        new InternalServerErrorException(CUSTOM_FIELDS_FAILED),
+      );
+      expect((failure as Error).message).not.toContain('db-7.internal');
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('host lookup is down: db-7.internal'),
+        expect.any(String),
+      );
+      expect(fixture.savedInstance).toBeNull();
+      expect(readEngineTransaction(fixture)).not.toHaveBeenCalled();
+    });
+
+    it('wraps a resolver that throws synchronously the same way', async (): Promise<void> => {
+      jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: {
+          resolveCustomFields: (): Promise<
+            Readonly<Record<string, unknown>>
+          > => {
+            throw new TypeError('cannot read station of undefined');
+          },
+        },
+      });
+
+      await expect(submit(fixture)).rejects.toThrow(
+        new InternalServerErrorException(CUSTOM_FIELDS_FAILED),
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('passes on an HttpException the resolver throws as it is', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({});
+
+      resolveCustomFields.mockRejectedValue(
+        new ForbiddenException('這個帳號尚未完成人事資料建檔'),
+      );
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
+
+      await expect(submit(fixture)).rejects.toThrow(
+        new ForbiddenException('這個帳號尚未完成人事資料建檔'),
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    describe('timeout', (): void => {
+      afterEach((): void => {
+        jest.useRealTimers();
+      });
+
+      // Only the timer pair is faked: the fixture awaits real promises.
+      const useTimers = (): void => {
+        jest.useFakeTimers({
+          doNotFake: [
+            'Date',
+            'cancelAnimationFrame',
+            'cancelIdleCallback',
+            'clearImmediate',
+            'clearInterval',
+            'hrtime',
+            'nextTick',
+            'performance',
+            'queueMicrotask',
+            'requestAnimationFrame',
+            'requestIdleCallback',
+            'setImmediate',
+            'setInterval',
+          ],
+        });
+      };
+      // A resolver that answers 15 s after it is called, and a promise that
+      // settles once it has been called, so the clock is only moved after the
+      // submission has reached it.
+      const createSlowResolver = (
+        settle: 'resolve' | 'reject',
+      ): {
+        readonly called: Promise<void>;
+        readonly resolver: BPMInitiatorCustomFieldsResolver;
+      } => {
+        const signal: { notify: () => void } = {
+          notify: (): void => undefined,
+        };
+        const called = new Promise<void>((resolve: () => void): void => {
+          signal.notify = resolve;
+        });
+
+        return {
+          called,
+          resolver: {
+            resolveCustomFields: (): Promise<
+              Readonly<Record<string, unknown>>
+            > => {
+              signal.notify();
+
+              return new Promise(
+                (
+                  resolve: (value: Readonly<Record<string, unknown>>) => void,
+                  reject: (reason: Error) => void,
+                ): void => {
+                  setTimeout((): void => {
+                    if (settle === 'resolve') {
+                      resolve({ station: 'TPE' });
+                    } else {
+                      reject(new Error('host lookup gave up'));
+                    }
+                  }, 15_000);
+                },
+              );
+            },
+          },
+        };
+      };
+
+      it('fails the submission, and starts nothing, when the resolver takes longer than 10 s', async (): Promise<void> => {
+        jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+        jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+        useTimers();
+        const { called, resolver } = createSlowResolver('resolve');
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+        });
+        const submission = submit(fixture).catch(
+          (reason: unknown): unknown => reason,
+        );
+
+        await called;
+        await jest.advanceTimersByTimeAsync(10_000);
+        const settled = await Promise.race([
+          submission,
+          Promise.resolve('still waiting'),
+        ]);
+
+        expect(settled).toEqual(
+          new InternalServerErrorException(CUSTOM_FIELDS_TIMED_OUT),
+        );
+        expect(fixture.savedInstance).toBeNull();
+        expect(readEngineTransaction(fixture)).not.toHaveBeenCalled();
+        await jest.advanceTimersByTimeAsync(5_000);
+      });
+
+      it.each<['resolve' | 'reject']>([['resolve'], ['reject']])(
+        'drops and logs a resolver that settles (%s) after the timeout',
+        async (settle: 'resolve' | 'reject'): Promise<void> => {
+          jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+          const warn = jest
+            .spyOn(Logger.prototype, 'warn')
+            .mockReturnValue(undefined);
+          const unhandled = jest.fn();
+
+          process.on('unhandledRejection', unhandled);
+          useTimers();
+          const { called, resolver } = createSlowResolver(settle);
+          const fixture = createFixture({
+            initiatorCustomFieldsResolver: resolver,
+          });
+          const submission = submit(fixture);
+
+          await called;
+          await jest.advanceTimersByTimeAsync(10_000);
+          await expect(submission).rejects.toThrow(CUSTOM_FIELDS_TIMED_OUT);
+          await jest.advanceTimersByTimeAsync(5_000);
+          // Let an unhandled rejection, if any, reach the process listener.
+          await new Promise<void>((resolve: () => void): void => {
+            setImmediate(resolve);
+          });
+          process.off('unhandledRejection', unhandled);
+
+          expect(warn).toHaveBeenCalledWith(
+            expect.stringContaining(
+              settle === 'resolve'
+                ? 'its value was dropped'
+                : 'its error was dropped: Error: host lookup gave up',
+            ),
+          );
+          expect(unhandled).not.toHaveBeenCalled();
+          expect(fixture.savedInstance).toBeNull();
+        },
+      );
+    });
+
+    it.each<[string, unknown]>([
+      ['null', null],
+      ['undefined', undefined],
+      ['an array', []],
+      ['a string', 'TPE'],
+      ['a number', 7],
+      ['a Date', new Date('2026-01-01T00:00:00.000Z')],
+      // Looks like a plain object, but JSON turns it into a string.
+      [
+        'an object whose toJSON returns a string',
+        { toJSON: (): string => 'TPE' },
+      ],
+    ])(
+      'fails the submission when the resolver returns %s',
+      async (_label: string, returned: unknown): Promise<void> => {
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: createResolver(returned).resolver,
+        });
+
+        await expect(submit(fixture)).rejects.toThrow(
+          new InternalServerErrorException(CUSTOM_FIELDS_INVALID),
+        );
+        expect(fixture.savedInstance).toBeNull();
+        expect(readEngineTransaction(fixture)).not.toHaveBeenCalled();
+      },
+    );
+
+    it('fails the submission when the resolver returns an object JSON cannot carry', async (): Promise<void> => {
+      const circular: Record<string, unknown> = {};
+
+      circular['self'] = circular;
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: createResolver(circular).resolver,
+      });
+
+      await expect(submit(fixture)).rejects.toThrow(
+        new InternalServerErrorException(CUSTOM_FIELDS_INVALID),
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('keeps the stored snapshot, and does not call the resolver, when a returned case is resubmitted', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        station: 'TPE',
+      });
+      const storedSnapshot = {
+        customFields: { station: 'KHH' },
+        memberId: 'member-001',
+      };
+      const formSchema = createFinanceTableFormSchema();
+      const fixture = createFixture({
+        formSchema,
+        initiatorCustomFieldsResolver: resolver,
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processFormData: { amount: 10 },
+        processFormDefinitionSnapshot: { schema: formSchema },
+        processInitiatorMetadataSnapshot: storedSnapshot,
+        processWorkflowSnapshot: createFieldAccessWorkflow(),
+      });
+
+      await fixture.service.resubmitApprovalInstance({
+        endUserSubmission: true,
+        formDataJson: '{"amount":11}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      });
+
+      expect(resolveCustomFields).not.toHaveBeenCalled();
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual(
+        storedSnapshot,
+      );
+    });
+
+    it('does not call the resolver for a dry run', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        station: 'TPE',
+      });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
+
+      const dryRun = fixture.service.dryRunApprovalWorkflow({
+        formDataJson: '{}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        workflowDefinitionJson: JSON.stringify(createStartEndWorkflow()),
+      });
+
+      expect(dryRun.valid).toBe(true);
+      expect(resolveCustomFields).not.toHaveBeenCalled();
+    });
+
+    describe('launchable template list', (): void => {
+      const listIds = async (
+        fixture: ServiceFixture,
+        authContext?: BPMAuthContext,
+      ): Promise<readonly string[]> =>
+        (
+          await fixture.service.listLaunchableApprovalTemplates(
+            'member-001',
+            authContext,
+          )
+        ).map((template) => template.id);
+      // A policy in cel-v2, whose real engine throws `EXPRESSION_MISSING_KEY`
+      // for an absent key (only `cel-js`, the default dialect, is shimmed).
+      const CEL_V2_WORKFLOW = {
+        ...createStartEndWorkflow(),
+        expressionDialect: 'cel-v2',
+      } as WorkflowDefinition;
+
+      it.each([
+        ['TPE', ['template-1']],
+        ['KHH', []],
+      ])(
+        'judges a policy that reads customFields.station by the %s the resolver returns',
+        async (station: string, expected: readonly string[]): Promise<void> => {
+          const fixture = createFixture({
+            initiatorCustomFieldsResolver: createResolver({ station }).resolver,
+            templateInitiatorPolicyCel: STATION_POLICY,
+          });
+
+          await expect(listIds(fixture)).resolves.toEqual(expected);
+        },
+      );
+
+      it('lists a cel-v2 template whose policy reads customFields when the resolver supplies the key', async (): Promise<void> => {
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: createResolver({ station: 'TPE' })
+            .resolver,
+          templateInitiatorPolicyCel: STATION_POLICY,
+          templateWorkflowDefinition: CEL_V2_WORKFLOW,
+        });
+
+        await expect(listIds(fixture)).resolves.toEqual(['template-1']);
+      });
+
+      it('calls the resolver once for the whole list, for the member alone', async (): Promise<void> => {
+        const { resolver, resolveCustomFields } = createResolver({
+          station: 'TPE',
+        });
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+          templateInitiatorPolicyCel: STATION_POLICY,
+        });
+        const authContext: BPMAuthContext = {
+          memberId: 'member-001',
+          metadata: { site: 'TPE' },
+          permissions: [],
+          roles: [],
+        };
+
+        fixture.templateFind.mockResolvedValue(
+          ['template-1', 'template-2', 'template-3'].map(
+            (id: string): ApprovalTemplateEntity =>
+              Object.assign(createTemplate('template-version-1', true), {
+                id,
+              }),
+          ),
+        );
+
+        await expect(listIds(fixture, authContext)).resolves.toEqual([
+          'template-1',
+          'template-2',
+          'template-3',
+        ]);
+        expect(resolveCustomFields).toHaveBeenCalledTimes(1);
+        expect(resolveCustomFields).toHaveBeenCalledWith({
+          authContext,
+          defaultSnapshot: { customFields: {}, ...ENGINE_SNAPSHOT },
+          formData: null,
+          memberId: 'member-001',
+          purpose: 'LAUNCHABLE_TEMPLATES',
+          templateId: null,
+          templateVersionId: null,
+        });
+      });
+
+      it('gives the resolver a bare auth context when the caller passes none', async (): Promise<void> => {
+        const { resolver, resolveCustomFields } = createResolver({});
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+        });
+
+        await listIds(fixture);
+
+        expect(resolveCustomFields.mock.calls[0]?.[0].authContext).toEqual({
+          memberId: 'member-001',
+          metadata: {},
+          permissions: [],
+          roles: [],
+        });
+      });
+
+      it('does not call the resolver when no template is published', async (): Promise<void> => {
+        const { resolver, resolveCustomFields } = createResolver({});
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+        });
+
+        fixture.templateFind.mockResolvedValue([]);
+
+        await expect(listIds(fixture)).resolves.toEqual([]);
+        expect(resolveCustomFields).not.toHaveBeenCalled();
+      });
+
+      describe('when the resolver fails', (): void => {
+        afterEach((): void => {
+          jest.useRealTimers();
+        });
+
+        const failures: readonly [
+          string,
+          (
+            mock: ReturnType<typeof createResolver>['resolveCustomFields'],
+          ) => void,
+        ][] = [
+          [
+            'throws',
+            (mock): void => {
+              mock.mockRejectedValue(new Error('host lookup is down'));
+            },
+          ],
+          [
+            'returns a value that is not an object',
+            (mock): void => {
+              mock.mockResolvedValue(
+                'TPE' as unknown as Readonly<Record<string, unknown>>,
+              );
+            },
+          ],
+          [
+            'throws an HttpException',
+            (mock): void => {
+              mock.mockRejectedValue(new ForbiddenException('not allowed'));
+            },
+          ],
+        ];
+
+        it.each(failures)(
+          'answers the list and leaves out a cel-v2 template that reads customFields when it %s',
+          async (
+            _label: string,
+            fail: (
+              mock: ReturnType<typeof createResolver>['resolveCustomFields'],
+            ) => void,
+          ): Promise<void> => {
+            jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+            const warn = jest
+              .spyOn(Logger.prototype, 'warn')
+              .mockReturnValue(undefined);
+            const { resolver, resolveCustomFields } = createResolver({});
+
+            fail(resolveCustomFields);
+            const fixture = createFixture({
+              initiatorCustomFieldsResolver: resolver,
+              templateInitiatorPolicyCel: STATION_POLICY,
+              templateWorkflowDefinition: CEL_V2_WORKFLOW,
+            });
+
+            await expect(listIds(fixture)).resolves.toEqual([]);
+            expect(resolveCustomFields).toHaveBeenCalledTimes(1);
+            expect(warn).toHaveBeenCalledWith(
+              expect.stringContaining('judged with customFields {}'),
+            );
+            expect(warn).toHaveBeenCalledWith(
+              expect.stringContaining('EXPRESSION_MISSING_KEY'),
+            );
+            expect(warn).not.toHaveBeenCalledWith(
+              expect.stringContaining('member-001'),
+            );
+          },
+        );
+
+        it('still lists a template whose policy does not read customFields', async (): Promise<void> => {
+          jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+          jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+          const { resolver, resolveCustomFields } = createResolver({});
+
+          resolveCustomFields.mockRejectedValue(
+            new Error('host lookup is down'),
+          );
+          const fixture = createFixture({
+            initiatorCustomFieldsResolver: resolver,
+            templateInitiatorPolicyCel: 'initiator.memberId == "member-001"',
+            templateWorkflowDefinition: CEL_V2_WORKFLOW,
+          });
+
+          await expect(listIds(fixture)).resolves.toEqual(['template-1']);
+        });
+
+        it('answers the list once the resolver has taken longer than 10 s', async (): Promise<void> => {
+          jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+          const warn = jest
+            .spyOn(Logger.prototype, 'warn')
+            .mockReturnValue(undefined);
+          jest.useFakeTimers({
+            doNotFake: [
+              'Date',
+              'cancelAnimationFrame',
+              'cancelIdleCallback',
+              'clearImmediate',
+              'clearInterval',
+              'hrtime',
+              'nextTick',
+              'performance',
+              'queueMicrotask',
+              'requestAnimationFrame',
+              'requestIdleCallback',
+              'setImmediate',
+              'setInterval',
+            ],
+          });
+          const signal: { notify: () => void } = {
+            notify: (): void => undefined,
+          };
+          const called = new Promise<void>((resolve: () => void): void => {
+            signal.notify = resolve;
+          });
+          const fixture = createFixture({
+            initiatorCustomFieldsResolver: {
+              resolveCustomFields: (): Promise<
+                Readonly<Record<string, unknown>>
+              > => {
+                signal.notify();
+
+                return new Promise(
+                  (
+                    resolve: (value: Readonly<Record<string, unknown>>) => void,
+                  ): void => {
+                    setTimeout((): void => {
+                      resolve({ station: 'TPE' });
+                    }, 15_000);
+                  },
+                );
+              },
+            },
+            templateInitiatorPolicyCel: STATION_POLICY,
+            templateWorkflowDefinition: CEL_V2_WORKFLOW,
+          });
+          const listed = listIds(fixture);
+
+          await called;
+          await jest.advanceTimersByTimeAsync(10_000);
+          const settled = await Promise.race([
+            listed,
+            Promise.resolve('still waiting'),
+          ]);
+
+          expect(settled).toEqual([]);
+          expect(warn).toHaveBeenCalledWith(
+            expect.stringContaining('judged with customFields {}'),
+          );
+          await jest.advanceTimersByTimeAsync(5_000);
+        });
+      });
     });
   });
 
@@ -4589,6 +5436,44 @@ describe('WorkflowEngineService', () => {
         expect(launchable.map((template) => template.id)).toEqual([
           'template-1',
         ]);
+      });
+
+      // The list judges a policy against the engine's default snapshot, which
+      // has no `customFields`. The real engines throw `EXPRESSION_MISSING_KEY`
+      // for that read; the template must be left out and the list must still
+      // answer (the stub stands in for the real engine, see the note above).
+      it('answers the list and leaves the template out when its policy throws on a missing key', async (): Promise<void> => {
+        const warn = jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockReturnValue(undefined);
+        const conditionService = new ConditionService();
+
+        jest
+          .spyOn(conditionService, 'evaluateBoolean')
+          .mockImplementation(() => {
+            throw new ExpressionRuntimeError(
+              'EXPRESSION_MISSING_KEY',
+              'initiatorPolicyCel',
+            );
+          });
+        const fixture = createServiceFixture({
+          conditionService,
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateInitiatorPolicyCel:
+            'initiator.customFields.station == "TPE"',
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await expect(
+          fixture.service.listLaunchableApprovalTemplates('member-001'),
+        ).resolves.toEqual([]);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('EXPRESSION_MISSING_KEY'),
+        );
+        expect(warn).not.toHaveBeenCalledWith(
+          expect.stringContaining('member-001'),
+        );
       });
 
       // Fail closed for that template only: one hand-edited version must not
@@ -20233,6 +21118,7 @@ function createServiceFixture({
   formDataSourceValueResolver,
   formSchema,
   formVersionStatus,
+  initiatorCustomFieldsResolver,
   instanceSaveError,
   instanceState,
   latestReturnActivity,
@@ -20243,6 +21129,7 @@ function createServiceFixture({
   processTaskDecisions = [],
   processFormData,
   processFormDefinitionSnapshot,
+  processInitiatorMetadataSnapshot,
   processOptionSnapshot,
   processManagerResolutions = [],
   processMemberships = [],
@@ -20275,6 +21162,8 @@ function createServiceFixture({
   readonly decisionToken?: WorkflowTokenEntity;
   readonly formSchema?: FormDefinitionSchema;
   readonly formVersionStatus: FormDefinitionVersionStatusEnum;
+  // The host's initiator `customFields` resolver; unset means none registered.
+  readonly initiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver;
   // Makes the instance insert fail, the way the database would on a clash.
   readonly instanceSaveError?: Error;
   readonly instanceState?: ApprovalInstanceStateEnum;
@@ -20289,6 +21178,9 @@ function createServiceFixture({
   readonly processTaskDecisions?: readonly TaskDecisionEntity[];
   readonly processFormData?: Readonly<Record<string, unknown>>;
   readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
+  // The initiator snapshot the processed instance already carries; unset reads
+  // like the default `{}`.
+  readonly processInitiatorMetadataSnapshot?: Readonly<Record<string, unknown>>;
   readonly processManagerResolutions?: readonly ManagerResolutionEntity[];
   readonly processMemberships?: readonly MembershipEntity[];
   readonly processNotifications?: readonly NotificationEntity[];
@@ -20376,6 +21268,7 @@ function createServiceFixture({
         formData: processFormData,
         formDataOptionSnapshot: processOptionSnapshot,
         formDefinitionSnapshot: processFormDefinitionSnapshot,
+        initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
         state: instanceState,
         submittedByMemberId,
         updatedAt: rootInstanceUpdatedAt,
@@ -20695,6 +21588,7 @@ function createServiceFixture({
                 formData: processFormData,
                 formDataOptionSnapshot: processOptionSnapshot,
                 formDefinitionSnapshot: processFormDefinitionSnapshot,
+                initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
                 state: instanceState,
                 submittedByMemberId,
                 updatedAt: transactionalInstanceUpdatedAt,
@@ -21361,6 +22255,7 @@ function createServiceFixture({
       formDataSourceValueResolver,
       rootOptions,
       webhookDeliveryService,
+      initiatorCustomFieldsResolver,
     ),
     notificationService,
   };
@@ -21973,6 +22868,7 @@ function createApprovalInstance({
   formData,
   id,
   initiatorMemberId,
+  initiatorMetadataSnapshot,
   state,
   submittedByMemberId,
   title,
@@ -21985,6 +22881,7 @@ function createApprovalInstance({
   readonly formData?: Readonly<Record<string, unknown>>;
   readonly id?: string;
   readonly initiatorMemberId?: string;
+  readonly initiatorMetadataSnapshot?: Readonly<Record<string, unknown>>;
   readonly state?: ApprovalInstanceStateEnum;
   readonly submittedByMemberId?: string | null;
   readonly title?: string;
@@ -22005,7 +22902,7 @@ function createApprovalInstance({
     },
     id: id ?? 'instance-1',
     initiatorMemberId: initiatorMemberId ?? 'member-001',
-    initiatorMetadataSnapshot: {},
+    initiatorMetadataSnapshot: initiatorMetadataSnapshot ?? {},
     startedAt: new Date('2026-05-04T09:00:00.000Z'),
     state: state ?? ApprovalInstanceStateEnum.RUNNING,
     submittedByMemberId: submittedByMemberId ?? null,

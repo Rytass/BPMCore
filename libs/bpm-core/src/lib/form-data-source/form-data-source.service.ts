@@ -564,6 +564,7 @@ export class FormDataSourceService {
       const launchableTemplates =
         await this.workflowEngineService.listLaunchableApprovalTemplates(
           authContext.memberId,
+          authContext,
         );
       const template = launchableTemplates.find(
         (candidate) => candidate.id === templateId,

@@ -19,6 +19,7 @@ import {
   resolveBPMOrganizationTimeZone,
 } from '../organization/organization-time-zone';
 import { BPMRootSignatureOptions } from '../signature/signature-options';
+import { BPMInitiatorCustomFieldsResolver } from '../workflow-engine/initiator-custom-fields-resolver.token';
 import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
 import { BPMRootWorkflowWebhookOptions } from '../workflow-webhook/workflow-webhook-options';
 import { BPMWorkflowWebhookRegistry } from '../workflow-webhook/workflow-webhook.types';
@@ -104,6 +105,24 @@ export interface BPMRootRuntimeOptions
    * omitted, BPM exposes an empty catalog.
    */
   readonly formDataSourceRegistry?: BPMFormDataSourceRegistry;
+
+  /**
+   * Fills `customFields` of the initiator snapshot the engine builds when a
+   * case is submitted without one (every submission from the GraphQL
+   * `submitApprovalInstance` mutation), as a ready instance. The values are
+   * then readable as `initiator.customFields.*` by the initiator policy at
+   * submit, by conditions and by expression approvers. A snapshot passed in by
+   * a host calling the service is never touched.
+   *
+   * The launchable template list calls it too, once per request, and judges
+   * the initiator policies against its answer; when it fails there, the list
+   * is judged against `{}` instead of failing (a submission does fail). So its
+   * answer must depend on the initiator only.
+   *
+   * `initiatorCustomFieldsResolverProvider` takes precedence when both are
+   * given. When omitted, `customFields` is `{}`.
+   */
+  readonly initiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver;
 
   /**
    * Host identity source, as a ready instance.
