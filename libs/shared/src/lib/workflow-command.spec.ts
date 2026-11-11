@@ -770,6 +770,63 @@ describe('user task return and SLA commands', () => {
     });
   });
 
+  it('stores a manager chain start and start level on the node as given', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const chain: ApproverResolver = {
+      minPositionLevel: 30,
+      startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+      startPositionLevel: 20,
+      type: 'ORG_MANAGER_CHAIN',
+    };
+    const result = applyWorkflowCommand(state, {
+      approverResolver: chain,
+      nodeId,
+      type: 'setUserTaskApprover',
+    });
+
+    expect(readUserTaskNode(result.state).data.approverResolver).toEqual(chain);
+  });
+
+  it('replaces a chain start rather than merging it into the new approver', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const withStart = applyWorkflowCommand(state, {
+      approverResolver: {
+        minPositionLevel: 30,
+        startFrom: { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+        startPositionLevel: 20,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+      type: 'setUserTaskApprover',
+    });
+    const plainChain = applyWorkflowCommand(withStart.state, {
+      approverResolver: { minPositionLevel: 30, type: 'ORG_MANAGER_CHAIN' },
+      nodeId,
+      type: 'setUserTaskApprover',
+    });
+
+    expect(readUserTaskNode(plainChain.state).data.approverResolver).toEqual({
+      minPositionLevel: 30,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('still switches a policy that would end a chain with a start early to SEQUENTIAL', () => {
+    expect(
+      afterApproverChange(
+        { type: 'SINGLE' },
+        {
+          minPositionLevel: 30,
+          startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+          startPositionLevel: 20,
+          type: 'ORG_MANAGER_CHAIN',
+        },
+      ),
+    ).toEqual({ type: 'SEQUENTIAL' });
+  });
+
   it('keeps a quorum whose approver count is only known at run time', () => {
     // A manager resolver may produce any number of approvers, so design time
     // cannot call it unsatisfiable without rejecting workable templates.

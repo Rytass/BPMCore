@@ -345,7 +345,8 @@ async function resolveApprovers(
       return [await managerResolution.findManager(context.initiator.org.id, resolver.levelsUp)];
 
     case 'ORG_MANAGER_CHAIN':
-      // 沿主管鏈往上，直到某位主管的職等達 minPositionLevel（規則見 §4.1.1）
+      // 沿主管鏈往上，直到某位主管的職等達 minPositionLevel（規則見 §4.1.1）；
+      // 起點預設是 initiator，可用 startFrom 換成表單選的人或前面關卡的簽核者
       return await walkManagerChain(context.initiator, resolver.minPositionLevel); // 示意；實作為 resolveOrgManagerChainCandidates
 
     case 'ORG_UNIT_MEMBER':
@@ -405,8 +406,43 @@ async function resolveApprovers(
   （`NONE`／未設定 → 丟 `ConflictException`；改派固定人未填 → 丟錯；固定人是申請人本人且未開
   `allowInitiatorSelfApproval` → 丟錯）。fallback 成功時把改派固定人放在清單**最後**一關；
   若他已在清單裡就不重複加入。
+- **起點（`startFrom`，可省略）**：鏈預設從申請人開始，`startFrom` 可以換成別人。起點本人**不在鏈上**
+  （跟申請人一樣，從他的直屬主管開始爬），並先放進「已走過」名單。三種起點：
+  - `{ type: 'INITIATOR' }`：申請人，等同省略。
+  - `{ type: 'FORM_MEMBER', formPath }`：表單欄位 `formPath` 選的那一位人員，口徑同 `FORM_MEMBER_MANAGER`。
+  - `{ type: 'NODE_ACTOR', nodeIds }`：前面指定關卡**實際按同意**的那一位，口徑同 `NODE_ACTOR`
+    （代理人簽的算代理人；退回重簽取最新一輪；逾時自動核准、臨時加簽、已取消的任務不算）。
+
+  起點必須是**一個人**：欄位選了多位、或指定關卡實際簽核的人不只一位，丟 `ConflictException`，
+  不會默默挑一位（跟「同一層有多位主管」同一個原則）。起點沒有人（欄位是空的、指定關卡沒有同意紀錄）
+  時走 `fallback`，原因文字會說明找不到起點；沒設 `fallback` 就丟錯，跟沒有主管同一條路。
+  `excludeInitiator` 的略過照舊適用：申請人與代送人出現在別人的鏈上時一樣穿過不停；沒開
+  `excludeInitiator` 時，申請人出現在鏈上就是一位普通的主管。
+- **起始職等（`startPositionLevel`，可省略）**：職等**低於**它的主管穿過不簽——不加入清單、不當停點、
+  也不影響「最後一位已加入的職等」；第一位職等 `>=` 它的主管才開始加入，之後規則與上面相同。
+  省略時第一位有職等的主管就開始簽。整條鏈都沒有人達到起始職等時走 `fallback`，原因文字寫出
+  起始職等與簽到的職等。例：`startPositionLevel: 20`、`minPositionLevel: 30` 會略過職等 10 的課長，
+  從職等 20 的主管簽到職等 30。
+- **知會節點**：`NOTIFY.recipients` 也可以用主管鏈，但只能從申請人開始（知會沒有前面的關卡，也不讀表單的人）：
+  `startFrom` 只能省略或 `INITIATOR`，其他起點 publish 會被擋，執行時也會被拒絕。`startPositionLevel` 可用。
+- **設計器**：選「主管鏈（簽到指定職等）」時多「從誰的主管開始」與「從職等幾開始簽」兩個設定（見
+  `08-frontend-schema.md`）；起點的關卡選單不列可能有多位簽核人的關卡，知會節點不開放起點設定。
+- **讀的是案件上的快照**：引擎永遠讀案件的 `workflowSnapshot`，所以改了範本不會影響進行中的案件，
+  進行中的案件也不會因升級而改變行為。兩個欄位都省略時，行為與錯誤訊息跟以前逐字相同。
+- **相容性**：舊版引擎不認得這兩個欄位，會**安靜地照申請人起算**。升級到支援的版本之前，不要發佈用了
+  這兩個設定的範本。本版引擎遇到自己不認得的 `startFrom` 類型（更新版本存的範本）會直接拒絕並指名，
+  不會改從申請人起算。
 - **Publish 檢查**：`minPositionLevel` 必須是整數；`userTask` 的 `decisionPolicy` 必須是
-  `SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。
+  `SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。另外：`startPositionLevel`
+  必須是整數且不可高於 `minPositionLevel`；`startFrom` 的類型要認得、`FORM_MEMBER` 要有 `formPath`、
+  `NODE_ACTOR` 要有 `nodeIds`；`FORM_MEMBER` 指到的欄位必須是**必填、永遠顯示、單選的人員欄位**
+  （規則同 `FORM_MEMBER_MANAGER`）；`NODE_ACTOR` 指到的關卡必須存在、是簽核關卡、在這個節點的上游、
+  不能被跳過、不在平行分支的不同路線上（規則同 `NODE_ACTOR`，用同一個 `readNodeActorSourceIssues`）；
+  另外 `NODE_ACTOR` 起點指到的每個關卡都必須只會有一位實際簽核人：`decisionPolicy` 是 `PARALLEL_ALL`、
+  `SEQUENTIAL`、`COUNT` 門檻大於 1 的 `QUORUM` 或任何百分比門檻的 `QUORUM` 就擋（除非該關卡只列了一位
+  `DIRECT` 成員），因為最後一位簽核人按同意時引擎無法決定從誰起算，而那個 `ConflictException` 會丟在
+  他自己的同意交易裡，使那次同意永遠無法 commit，範本改了也救不了進行中的案件。`NODE_ACTOR`／
+  `NODE_ACTOR_MANAGER` 本身不受這條限制（它們取所有簽核人）。引擎執行時的 Conflict 保留給繞過 publish 檢查的舊資料。
 - **代理人與轉簽對象的職等**：主管鏈解析完之後，代理與轉簽都不會再檢查職等，所以主管鏈節點多一條規則——
   **接手的人職等必須 `>=` 被他取代的那位成員**（不是固定門檻：鏈上本來就會有低於 `minPositionLevel`
   的主管，固定門檻會讓他們完全不能代理）。職等一律在動作當下用上面的〈職等來源〉現算；

@@ -30,7 +30,10 @@ import {
   WorkflowNodeTriggerMode,
   isFallbackCapableApproverResolverType,
   isNotifyRecipientResolverType,
+  isOrgManagerChainStartedFromInitiator,
+  readOrgManagerChainStartPositionLevel,
   readUnsupportedApproverResolverType,
+  readUnsupportedOrgManagerChainStartType,
 } from './workflow';
 import { readNodeFillableFieldKeys } from './field-access';
 import {
@@ -1344,6 +1347,84 @@ export function isOrgManagerChainDecisionPolicyInvalid(
   );
 }
 
+/**
+ * The designer-facing issue with the two optional settings of an
+ * `ORG_MANAGER_CHAIN` (`minPositionLevel`, `startFrom`, `startPositionLevel`),
+ * or `null` when all are well-formed. `subject` names the node kind in the
+ * sentence; a notify node's chain may only start at the initiator (it has no
+ * earlier stage and no form pick to start from). Reads defensively: on the
+ * backend the definition is parsed JSON that no DTO has validated. The form
+ * field and the earlier stages the start names are checked elsewhere, against
+ * the form schema and the graph.
+ */
+export function readOrgManagerChainIssue(
+  resolver: Extract<ApproverResolver, { readonly type: 'ORG_MANAGER_CHAIN' }>,
+  subject: '簽核節點' | '知會節點',
+): string | null {
+  // Checked first, for both subjects: without a whole-number level the climb
+  // never stops (`level >= undefined` is always false) and collects every
+  // manager up to the top.
+  if (!Number.isInteger(resolver.minPositionLevel)) {
+    return `${subject}需要指定有效的職等門檻。`;
+  }
+
+  const startFrom: unknown = resolver.startFrom;
+
+  if (startFrom !== undefined && startFrom !== null) {
+    const start = startFrom as {
+      readonly formPath?: unknown;
+      readonly nodeIds?: unknown;
+      readonly type?: unknown;
+    };
+
+    if (
+      typeof start !== 'object' ||
+      typeof start.type !== 'string' ||
+      readUnsupportedOrgManagerChainStartType({ type: start.type }) !== null
+    ) {
+      return `${subject}的主管鏈起點不在這個版本支援的範圍內，請改選其他起點。`;
+    }
+
+    if (
+      start.type === 'FORM_MEMBER' &&
+      (typeof start.formPath !== 'string' || !start.formPath.trim())
+    ) {
+      return `${subject}需要指定主管鏈起點的表單欄位。`;
+    }
+
+    if (
+      start.type === 'NODE_ACTOR' &&
+      (!Array.isArray(start.nodeIds) || start.nodeIds.length === 0)
+    ) {
+      return `${subject}需要指定主管鏈起點的前面簽核關卡。`;
+    }
+  }
+
+  if (
+    subject === '知會節點' &&
+    !isOrgManagerChainStartedFromInitiator(resolver)
+  ) {
+    return '知會節點的主管鏈只能從發起人開始。';
+  }
+
+  const rawStartLevel: unknown = resolver.startPositionLevel;
+
+  if (rawStartLevel === undefined || rawStartLevel === null) {
+    return null;
+  }
+
+  const startLevel = readOrgManagerChainStartPositionLevel(resolver);
+
+  if (startLevel === null || !Number.isInteger(startLevel)) {
+    return `${subject}需要指定有效的起始職等。`;
+  }
+
+  return Number.isInteger(resolver.minPositionLevel) &&
+    startLevel > resolver.minPositionLevel
+    ? `${subject}的起始職等不可高於職等門檻。`
+    : null;
+}
+
 export function readApproverResolverIssue(
   resolver: ApproverResolver,
 ): string | null {
@@ -1374,11 +1455,13 @@ export function readApproverResolverIssue(
     return '簽核節點需要指定組織與職位。';
   }
 
-  if (
-    resolver.type === 'ORG_MANAGER_CHAIN' &&
-    !Number.isInteger(resolver.minPositionLevel)
-  ) {
-    return '簽核節點需要指定有效的職等門檻。';
+  if (resolver.type === 'ORG_MANAGER_CHAIN') {
+    // The level is checked first inside `readOrgManagerChainIssue`.
+    const chainIssue = readOrgManagerChainIssue(resolver, '簽核節點');
+
+    if (chainIssue !== null) {
+      return chainIssue;
+    }
   }
 
   if (
@@ -1677,6 +1760,97 @@ export function readNodeActorSourceIssues(
   return [...stageIssues, ...parallelIssues];
 }
 
+/**
+ * `true` when a user task can end with more than one person having approved
+ * it, judged from its definition alone. The engine reads "who signed this
+ * stage" as the people with an approval in its newest batch, so a source that
+ * several people approve gives a start that is not one person.
+ *
+ * - `SINGLE` and `PARALLEL_ANY` end on the first approval: one person;
+ * - `PARALLEL_ALL` and `SEQUENTIAL` wait for every seat: several;
+ * - `QUORUM` ends once the threshold is met: several when a `COUNT` threshold
+ *   is above 1 (the engine reads anything below 1 as 1), and always for a
+ *   `PERCENTAGE` threshold, whose head count only the org chart at run time
+ *   knows;
+ * - a `DIRECT` resolver that lists one member can only ever give one person,
+ *   whatever the policy ({@link readDesignTimeApproverCount}), unless the
+ *   stage keeps the initiator (`excludeInitiator`) or an earlier stage's
+ *   approvers (`excludeNodeActors`) out with `whenEmpty: 'INITIATOR_MANAGER'`:
+ *   when that one member is excluded the stage goes to the initiator's
+ *   manager instead, who may be several people, so the policy decides.
+ *
+ * Deliberately conservative on the unknown side: a policy this build does not
+ * recognise reads as one person, because the structural lint reports it.
+ * The designer's stage picker for a manager chain's `NODE_ACTOR` start reads
+ * this too, so it and {@link readSingleApproverSourceIssues} agree.
+ */
+export function canUserTaskHaveMultipleApprovers(node: UserTaskNode): boolean {
+  // `approverResolver` and `decisionPolicy` can be missing on raw JSON that has
+  // not been linted yet.
+  const resolver = node.data.approverResolver as ApproverResolver | undefined;
+  const policy = node.data.decisionPolicy as DecisionPolicy | undefined;
+  const designTimeCount = resolver
+    ? readDesignTimeApproverCount(resolver)
+    : null;
+
+  // Who the initiator's manager is (and how many share the level) is only known
+  // at run time, so a lone listed member is no guarantee of one person here.
+  // Either exclusion can empty the stage and hand it over.
+  const mayHandOverToInitiatorManagers =
+    node.data.excludeInitiator?.whenEmpty === 'INITIATOR_MANAGER' ||
+    node.data.excludeNodeActors?.whenEmpty === 'INITIATOR_MANAGER';
+
+  if (
+    !mayHandOverToInitiatorManagers &&
+    designTimeCount !== null &&
+    designTimeCount <= 1
+  ) {
+    return false;
+  }
+
+  if (policy?.type === 'PARALLEL_ALL' || policy?.type === 'SEQUENTIAL') {
+    return true;
+  }
+
+  return (
+    policy?.type === 'QUORUM' &&
+    (policy.thresholdType === 'PERCENTAGE' || policy.threshold > 1)
+  );
+}
+
+/**
+ * The publish-time issues with the stages a manager chain's `NODE_ACTOR`
+ * start names, beyond what {@link readNodeActorSourceIssues} checks: every
+ * stage must end with one person's approval. A stage several people approve
+ * would make the start ambiguous, and the engine can only say so when the last
+ * of them approves, inside that decision's own transaction, which then never
+ * commits. Returns Chinese issue lines; `[]` means every named stage is a
+ * single-signer stage.
+ *
+ * `NODE_ACTOR_MANAGER` takes the managers of everyone who signed and so has no
+ * such limit; this check is deliberately not part of
+ * {@link readNodeActorSourceIssues}. A stage that does not exist or is not a
+ * user task is reported there, not here.
+ */
+export function readSingleApproverSourceIssues(
+  definition: WorkflowDefinition,
+  sourceNodeIds: readonly string[],
+): readonly string[] {
+  return sourceNodeIds.flatMap((id): readonly string[] => {
+    const node = definition.nodes.find((candidate) => candidate.id === id);
+
+    if (node?.type !== 'userTask' || !canUserTaskHaveMultipleApprovers(node)) {
+      return [];
+    }
+
+    const label = node.data.label ? `「${node.data.label}」` : `「${id}」`;
+
+    return [
+      `主管鏈起點的前面關卡 ${label} 可能有多位實際簽核人，無法決定從誰的主管開始。請改選只會有一位簽核人的關卡。`,
+    ];
+  });
+}
+
 export function hasConfiguredConditionEdges(
   definition: WorkflowDefinition,
 ): boolean {
@@ -1845,6 +2019,10 @@ export function readNotifyRecipientsIssue(
 
   if (recipients.type === 'EXPRESSION' && !recipients.expression.trim()) {
     return '知會節點需要指定知會對象的運算式。';
+  }
+
+  if (recipients.type === 'ORG_MANAGER_CHAIN') {
+    return readOrgManagerChainIssue(recipients, '知會節點');
   }
 
   return null;

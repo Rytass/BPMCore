@@ -10,6 +10,7 @@ import {
   DecisionPolicy,
   ExcludeInitiatorConfig,
   ExcludeNodeActorsConfig,
+  OrgManagerChainStart,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaCalendarMode,
@@ -22,6 +23,7 @@ import {
   WorkflowNodeTriggerMode,
   isFallbackCapableApproverResolverType,
   isNotifyRecipientResolverType,
+  readOrgManagerChainStartPositionLevel,
 } from './workflow';
 import {
   CONDITION_OPERATOR_OPTIONS,
@@ -117,7 +119,9 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     '簽核人員解析策略，以 type 區分。DIRECT: { type, memberIds[] }；POSITION: { type, positionId }；' +
     'ORG_UNIT_MEMBER: { type, orgUnitId, includeDescendants? }；ORG_UNIT_POSITION: { type, orgUnitId, positionId, includeDescendants? }；' +
     'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
-    'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
+    'ORG_MANAGER_CHAIN: { type, minPositionLevel, startFrom?, startPositionLevel?, fallback? }（沿主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽。' +
+    "startFrom 決定鏈從誰的主管開始爬，省略＝從發起人：{ type: 'INITIATOR' }、{ type: 'FORM_MEMBER', formPath }（表單上「人員選擇」單選欄位選的人）、{ type: 'NODE_ACTOR', nodeIds[] }（前面指定關卡實際簽核的那一位）；起點本人不在鏈上，從他的直屬主管開始；知會節點只能從發起人開始。" +
+    "startPositionLevel 為起始職等，職等低於它的主管穿過不簽、第一位達到的主管才開始簽，省略＝第一位有職等的主管就開始簽，不可高於 minPositionLevel。改寫簽核人時，若沒有帶 startFrom／startPositionLevel 這兩個 key，會沿用節點原有的起點與起始職等；要改回從發起人起算請傳 startFrom: { type: 'INITIATOR' } 或 null，要清掉起始職等請傳 startPositionLevel: null）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；" +
     "fallback（無主管時的改派）可為 { type: 'NONE' }（預設，停止流程）、{ type: 'DIRECT', memberId, allowInitiatorSelfApproval? }（改派固定會員）、或 { type: 'POSITION', positionId, allowInitiatorSelfApproval? }（改派給該職位目前的有效成員，多人時全部成為簽核人）；" +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }；' +
     'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
@@ -666,6 +670,25 @@ function readFieldAccessSummary(node: UserTaskNode): string {
     : '';
 }
 
+// Reported only when the chain sets a start, so the assistant can read back
+// what it wrote; a chain without one keeps today's summary.
+function readOrgManagerChainSummary(resolver: ApproverResolver): string {
+  if (resolver.type !== 'ORG_MANAGER_CHAIN') {
+    return '';
+  }
+
+  const startLevel = readOrgManagerChainStartPositionLevel(resolver);
+  const startFrom = resolver.startFrom;
+  const from =
+    startFrom?.type === 'FORM_MEMBER'
+      ? `；主管鏈起點=表單欄位 ${startFrom.formPath}`
+      : startFrom?.type === 'NODE_ACTOR'
+        ? `；主管鏈起點=關卡 ${startFrom.nodeIds.join(',')} 的簽核者`
+        : '';
+
+  return `${from}${startLevel === null ? '' : `；起始職等=${startLevel}`}`;
+}
+
 // Raw JSON that was never linted can carry a `nodeIds` that is not a list; a
 // snapshot must still be readable then, so the summary shows nothing for it.
 function readExcludeNodeActorsNodeIdsSummary(
@@ -680,6 +703,7 @@ function readNodeSummary(node: WorkflowNode): string {
   if (node.type === 'userTask') {
     return (
       `簽核人=${node.data.approverResolver.type}` +
+      readOrgManagerChainSummary(node.data.approverResolver) +
       `；決策=${readDecisionPolicySummary(node.data.decisionPolicy)}` +
       `；觸發=${node.data.triggerMode ?? 'AND'}` +
       // Only reported when set, so the assistant can read back what
@@ -882,7 +906,7 @@ export async function executeWorkflowTool(
       return finalizeMutation('macro', result);
     }
 
-    const command = carryOverApproverFallback(
+    const command = carryOverApproverSettings(
       buildPrimitiveCommand(toolName, input),
       state,
       input,
@@ -920,13 +944,20 @@ function isFallbackCapableApproverResolver(
 }
 
 /**
- * `set_user_task_approver` replaces the whole resolver, so a call that leaves
- * `fallback` out would silently drop the fallback the node already has. When
- * the call omits the key and both the old and the new resolver take a
- * fallback, the existing one is kept. A `fallback` key in the call (including
- * `{ type: 'NONE' }`) is always obeyed as written.
+ * `set_user_task_approver` replaces the whole resolver, so a call that leaves a
+ * setting out would silently drop the one the node already has. Two settings
+ * are carried over when the call leaves their key out, and a key in the call
+ * is always obeyed as written:
+ *
+ * - `fallback`, when both the old and the new resolver take one
+ *   (`{ type: 'NONE' }` clears it);
+ * - `startFrom` and `startPositionLevel`, when both the old and the new
+ *   resolver are `ORG_MANAGER_CHAIN`. Dropping the start would send the chain
+ *   back to the initiator without any error. To reset it, send
+ *   `startFrom: { type: 'INITIATOR' }` or `null`; to clear the start level,
+ *   send `startPositionLevel: null`.
  */
-function carryOverApproverFallback(
+function carryOverApproverSettings(
   command: WorkflowCommand,
   state: WorkflowDesignerState,
   input: Readonly<Record<string, unknown>>,
@@ -936,33 +967,70 @@ function carryOverApproverFallback(
   }
 
   const rawResolver = input['approverResolver'];
-
-  if (isRecord(rawResolver) && 'fallback' in rawResolver) {
-    return command;
-  }
-
-  const nextResolver = command.approverResolver;
+  const writtenKeys: Readonly<Record<string, unknown>> = isRecord(rawResolver)
+    ? rawResolver
+    : {};
   const node = state.definition.nodes.find(
     (candidate) => candidate.id === command.nodeId,
   );
   const currentResolver =
     node?.type === 'userTask' ? node.data.approverResolver : undefined;
+  const approverResolver = carryOverChainStart(
+    carryOverFallback(command.approverResolver, currentResolver, writtenKeys),
+    currentResolver,
+    writtenKeys,
+  );
 
+  return approverResolver === command.approverResolver
+    ? command
+    : { ...command, approverResolver };
+}
+
+function carryOverFallback(
+  nextResolver: ApproverResolver,
+  currentResolver: ApproverResolver | undefined,
+  writtenKeys: Readonly<Record<string, unknown>>,
+): ApproverResolver {
   if (
+    'fallback' in writtenKeys ||
     !isFallbackCapableApproverResolver(nextResolver) ||
     nextResolver.fallback !== undefined ||
     !isFallbackCapableApproverResolver(currentResolver) ||
     currentResolver.fallback === undefined
   ) {
-    return command;
+    return nextResolver;
+  }
+
+  return { ...nextResolver, fallback: currentResolver.fallback };
+}
+
+function carryOverChainStart(
+  nextResolver: ApproverResolver,
+  currentResolver: ApproverResolver | undefined,
+  writtenKeys: Readonly<Record<string, unknown>>,
+): ApproverResolver {
+  if (
+    nextResolver.type !== 'ORG_MANAGER_CHAIN' ||
+    currentResolver?.type !== 'ORG_MANAGER_CHAIN'
+  ) {
+    return nextResolver;
+  }
+
+  const startFrom =
+    'startFrom' in writtenKeys ? undefined : currentResolver.startFrom;
+  const startPositionLevel =
+    'startPositionLevel' in writtenKeys
+      ? undefined
+      : currentResolver.startPositionLevel;
+
+  if (startFrom === undefined && startPositionLevel === undefined) {
+    return nextResolver;
   }
 
   return {
-    ...command,
-    approverResolver: {
-      ...nextResolver,
-      fallback: currentResolver.fallback,
-    },
+    ...nextResolver,
+    ...(startFrom === undefined ? {} : { startFrom }),
+    ...(startPositionLevel === undefined ? {} : { startPositionLevel }),
   };
 }
 
@@ -1514,15 +1582,25 @@ function parseApproverResolver(value: unknown): ApproverResolver {
     case 'ORG_MANAGER_CHAIN': {
       const minPositionLevel = value['minPositionLevel'];
       const fallback = parseApproverResolverFallback(value['fallback']);
+      const startFrom = parseOrgManagerChainStart(value['startFrom']);
+      const startPositionLevel = value['startPositionLevel'];
 
-      return typeof minPositionLevel === 'number' &&
-        Number.isInteger(minPositionLevel)
-        ? {
-            minPositionLevel,
-            type: 'ORG_MANAGER_CHAIN',
-            ...(fallback ? { fallback } : {}),
-          }
-        : DEFAULT_MANAGER_RESOLVER;
+      // A level that is missing, fractional or not a number is kept as written,
+      // like `startFrom` and `startPositionLevel`, so the publish lint reports
+      // it. Falling back to the direct manager here would send the approval to
+      // someone else and drop the start with it.
+      return {
+        minPositionLevel: minPositionLevel as number,
+        type: 'ORG_MANAGER_CHAIN',
+        ...(fallback ? { fallback } : {}),
+        ...(startFrom === null ? {} : { startFrom }),
+        // Anything but an absent or `null` level is kept as written (a
+        // `'20'` as much as a `2.5`), so `readOrgManagerChainIssue`
+        // reports it instead of the start level quietly going away.
+        ...(startPositionLevel === undefined || startPositionLevel === null
+          ? {}
+          : { startPositionLevel: startPositionLevel as number }),
+      };
     }
     case 'ORG_UNIT_MANAGER': {
       const orgUnitId = readNonEmptyString(value['orgUnitId']);
@@ -1564,13 +1642,16 @@ function parseApproverResolver(value: unknown): ApproverResolver {
       };
     }
     case 'NODE_ACTOR':
-      return { nodeIds: readStringArray(value['nodeIds']), type: 'NODE_ACTOR' };
+      return {
+        nodeIds: readNodeIdsAsWritten(value['nodeIds']),
+        type: 'NODE_ACTOR',
+      };
     case 'NODE_ACTOR_MANAGER': {
       const fallback = parseApproverResolverFallback(value['fallback']);
 
       return {
         levelsUp: readPositiveInteger(value['levelsUp'], 1),
-        nodeIds: readStringArray(value['nodeIds']),
+        nodeIds: readNodeIdsAsWritten(value['nodeIds']),
         preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
         type: 'NODE_ACTOR_MANAGER',
         ...(fallback ? { fallback } : {}),
@@ -1592,6 +1673,46 @@ function parseApproverResolver(value: unknown): ApproverResolver {
     }
     default:
       return DEFAULT_MANAGER_RESOLVER;
+  }
+}
+
+/**
+ * The `startFrom` of an `ORG_MANAGER_CHAIN`, **never throwing**. An incomplete
+ * `FORM_MEMBER` / `NODE_ACTOR` keeps its type with an empty `formPath` /
+ * `nodeIds`, and an object with a type this build does not know (or none) is
+ * kept as written, so `validate_workflow` and the publish lint report the gap
+ * rather than the chain quietly starting at the initiator. So is a value that
+ * is not an object (a bare `'FORM_MEMBER'`, say). Only an absent or `null`
+ * value is read as absent.
+ */
+function parseOrgManagerChainStart(
+  value: unknown,
+): OrgManagerChainStart | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (!isRecord(value)) {
+    // `readOrgManagerChainIssue` names it as unsupported.
+    return value as unknown as OrgManagerChainStart;
+  }
+
+  switch (value['type']) {
+    case 'INITIATOR':
+      return { type: 'INITIATOR' };
+    case 'FORM_MEMBER':
+      return {
+        formPath: readNonEmptyString(value['formPath']) ?? '',
+        type: 'FORM_MEMBER',
+      };
+    case 'NODE_ACTOR':
+      return {
+        nodeIds: readNodeIdsAsWritten(value['nodeIds']),
+        type: 'NODE_ACTOR',
+      };
+    default:
+      // The lint names it as unsupported; see `readOrgManagerChainIssue`.
+      return value as unknown as OrgManagerChainStart;
   }
 }
 
@@ -1775,6 +1896,16 @@ function parseServiceAction(value: unknown): ServiceAction {
     type: 'NOTIFY',
     ...readOptionalString(value, 'template', 'template'),
   };
+}
+
+/**
+ * A stage list exactly as the model wrote it. An entry that is not a non-empty
+ * string is kept rather than filtered out: a shorter list can pass every check
+ * while the stage the model named has quietly gone. The publish lint reports
+ * the entry.
+ */
+function readNodeIdsAsWritten(value: unknown): readonly string[] {
+  return Array.isArray(value) ? (value as readonly string[]) : [];
 }
 
 function readStringArray(value: unknown): readonly string[] {

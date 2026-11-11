@@ -1,7 +1,9 @@
 import {
   ApproverResolver,
   ApproverResolverFallback,
+  OrgManagerChainStart,
 } from '@rytass/bpm-core-shared/workflow';
+import { readApproverResolverIssue } from '@rytass/bpm-core-shared/workflow-graph';
 import {
   OrgUnitRecord,
   PositionRecord,
@@ -23,8 +25,22 @@ import {
   readApproverSubjectChoice,
   readApproverSubjectOption,
   readApproverSubjectPick,
+  readOrgManagerChainFallbackHint,
+  readOrgManagerChainStartChoice,
+  readOrgManagerChainStartFormPath,
+  readOrgManagerChainStartLevelChoice,
+  readOrgManagerChainStartLevelPick,
+  readOrgManagerChainStartLevelProblem,
+  readOrgManagerChainStartMode,
+  readOrgManagerChainStartNodeIds,
+  NO_START_POSITION_LEVEL_OPTION_ID,
+  readOrgManagerChainStartPick,
   readStoredManagerLevelOption,
   withApproverSubject,
+  withOrgManagerChainMinPositionLevel,
+  withOrgManagerChainStart,
+  withOrgManagerChainStartFormPath,
+  withOrgManagerChainStartNodeIds,
   withPreferClosestOrgUnit,
   withOrgUnitSource,
   readApproverResolverMemberIds,
@@ -1259,6 +1275,605 @@ describe('approver source gating (6b)', () => {
     expect(withPreferClosestOrgUnit(NODE_ACTOR, true)).toBe(NODE_ACTOR);
     expect(withPreferClosestOrgUnit(FUTURE_RESOLVER, true)).toBe(
       FUTURE_RESOLVER,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 主管鏈 start (從誰的主管開始) and start level (從職等幾開始簽).
+// ---------------------------------------------------------------------------
+
+type ChainResolver = Extract<
+  ApproverResolver,
+  { readonly type: 'ORG_MANAGER_CHAIN' }
+>;
+
+const CHAIN: ChainResolver = { minPositionLevel: 5, type: 'ORG_MANAGER_CHAIN' };
+const CHAIN_FROM_FORM: ChainResolver = {
+  fallback: GONE_FALLBACK,
+  minPositionLevel: 5,
+  startFrom: { formPath: 'owner', type: 'FORM_MEMBER' },
+  startPositionLevel: 3,
+  type: 'ORG_MANAGER_CHAIN',
+};
+const CHAIN_FROM_STAGE: ChainResolver = {
+  minPositionLevel: 5,
+  startFrom: { nodeIds: ['a', 'b'], type: 'NODE_ACTOR' },
+  type: 'ORG_MANAGER_CHAIN',
+};
+const CHAIN_INITIATOR: ChainResolver = {
+  ...CHAIN,
+  startFrom: { type: 'INITIATOR' },
+};
+const CHAIN_LEVEL_ONLY: ChainResolver = {
+  ...CHAIN,
+  startPositionLevel: 3,
+};
+// What an older build reads out of a definition a newer BPMCore saved.
+const CHAIN_FUTURE_START: ChainResolver = {
+  ...CHAIN,
+  startFrom: { type: 'FORM_MEMBER_MANAGER' } as unknown as OrgManagerChainStart,
+};
+const CHAIN_TYPELESS_START: ChainResolver = {
+  ...CHAIN,
+  startFrom: {} as unknown as OrgManagerChainStart,
+};
+
+describe('manager chain start settings: screen state and the saved JSON', () => {
+  it.each([
+    { name: 'no start settings', resolver: CHAIN },
+    { name: 'a start level only', resolver: CHAIN_LEVEL_ONLY },
+    {
+      name: 'a form-field start, a start level and a fallback',
+      resolver: CHAIN_FROM_FORM,
+    },
+    { name: 'an earlier-stage start', resolver: CHAIN_FROM_STAGE },
+    { name: 'an explicit initiator start', resolver: CHAIN_INITIATOR },
+    { name: 'a start this build does not know', resolver: CHAIN_FUTURE_START },
+  ])('reads then builds $name back to the same JSON', ({ resolver }) => {
+    expect(
+      buildApproverResolver(readApproverResolverEditorState(resolver)),
+    ).toStrictEqual(resolver);
+  });
+
+  it('writes no start keys for a default chain', () => {
+    const chain = readDefaultApproverResolver('ORG_MANAGER_CHAIN', POSITIONS);
+
+    expect(chain).toStrictEqual({
+      minPositionLevel: 5,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+    expect('startFrom' in chain).toBe(false);
+    expect('startPositionLevel' in chain).toBe(false);
+  });
+
+  it('keeps the start and the start level when only the source is picked again', () => {
+    expect(
+      readApproverSourcePick(CHAIN_FROM_FORM, 'ORG_MANAGER_CHAIN', POSITIONS),
+    ).toBeNull();
+  });
+
+  it('clears the start and the start level only when the source type is switched', () => {
+    const toDirect = readApproverSourcePick(
+      CHAIN_FROM_FORM,
+      'DIRECT',
+      POSITIONS,
+    );
+    const toManager = readApproverSourcePick(
+      CHAIN_FROM_STAGE,
+      'ORG_MANAGER',
+      POSITIONS,
+    );
+    const backToChain = readApproverSourcePick(
+      { memberIds: ['m1'], type: 'DIRECT' },
+      'ORG_MANAGER_CHAIN',
+      POSITIONS,
+    );
+
+    expect(toDirect).toStrictEqual({ memberIds: [], type: 'DIRECT' });
+    expect(toManager).toStrictEqual({
+      baseFromInitiator: true,
+      levelsUp: 1,
+      type: 'ORG_MANAGER',
+    });
+    expect(backToChain).toStrictEqual(CHAIN);
+  });
+
+  it('keeps the start and the start level when the fallback is updated', () => {
+    expect(
+      updateApproverResolverFallback(CHAIN_FROM_STAGE, GONE_FALLBACK),
+    ).toStrictEqual({ ...CHAIN_FROM_STAGE, fallback: GONE_FALLBACK });
+  });
+});
+
+describe('readOrgManagerChainStartMode / readOrgManagerChainStartChoice', () => {
+  it('reads no start, null and an explicit INITIATOR as the initiator', () => {
+    expect(readOrgManagerChainStartMode(CHAIN)).toBe('INITIATOR');
+    expect(
+      readOrgManagerChainStartMode({
+        ...CHAIN,
+        startFrom: null as unknown as OrgManagerChainStart,
+      }),
+    ).toBe('INITIATOR');
+    expect(
+      readOrgManagerChainStartMode({
+        ...CHAIN,
+        startFrom: { type: 'INITIATOR' },
+      }),
+    ).toBe('INITIATOR');
+  });
+
+  it('reads the form-field and earlier-stage starts', () => {
+    expect(readOrgManagerChainStartMode(CHAIN_FROM_FORM)).toBe('FORM_MEMBER');
+    expect(readOrgManagerChainStartMode(CHAIN_FROM_STAGE)).toBe('NODE_ACTOR');
+    expect(readOrgManagerChainStartFormPath(CHAIN_FROM_FORM)).toBe('owner');
+    expect(readOrgManagerChainStartFormPath(CHAIN_FROM_STAGE)).toBeNull();
+    expect(readOrgManagerChainStartNodeIds(CHAIN_FROM_STAGE)).toEqual([
+      'a',
+      'b',
+    ]);
+    expect(readOrgManagerChainStartNodeIds(CHAIN_FROM_FORM)).toBeNull();
+  });
+
+  it('reads a start with an unknown type, or with no type, as unsupported', () => {
+    expect(readOrgManagerChainStartMode(CHAIN_FUTURE_START)).toBeNull();
+    expect(readOrgManagerChainStartMode(CHAIN_TYPELESS_START)).toBeNull();
+  });
+
+  it('offers 發起人, 表單欄位的人 and 前面關卡的簽核者, in that order', () => {
+    const choice = readOrgManagerChainStartChoice(CHAIN);
+
+    expect(choice.options).toEqual([
+      { id: 'INITIATOR', name: '發起人' },
+      { id: 'FORM_MEMBER', name: '表單欄位的人' },
+      { id: 'NODE_ACTOR', name: '前面關卡的簽核者' },
+    ]);
+    expect(choice.selected).toEqual({ id: 'INITIATOR', name: '發起人' });
+    expect(readOrgManagerChainStartChoice(CHAIN_FROM_FORM).selected).toEqual({
+      id: 'FORM_MEMBER',
+      name: '表單欄位的人',
+    });
+    expect(readOrgManagerChainStartChoice(CHAIN_FROM_STAGE).selected).toEqual({
+      id: 'NODE_ACTOR',
+      name: '前面關卡的簽核者',
+    });
+  });
+
+  it('shows an unsupported start as a read-only entry carrying its name', () => {
+    const future = readOrgManagerChainStartChoice(CHAIN_FUTURE_START);
+    const typeless = readOrgManagerChainStartChoice(CHAIN_TYPELESS_START);
+
+    expect(future.selected).toEqual({
+      id: 'UNSUPPORTED',
+      name: '不支援的起點（FORM_MEMBER_MANAGER）',
+    });
+    expect(future.options).toHaveLength(4);
+    expect(future.options[3]).toBe(future.selected);
+    expect(typeless.selected.name).toBe('不支援的起點（缺少型別）');
+  });
+});
+
+describe('readOrgManagerChainStartPick / withOrgManagerChainStart', () => {
+  it('starts an empty form-field or earlier-stage start for the author to fill', () => {
+    expect(readOrgManagerChainStartPick(CHAIN, 'FORM_MEMBER')).toStrictEqual({
+      ...CHAIN,
+      startFrom: { formPath: '', type: 'FORM_MEMBER' },
+    });
+    expect(readOrgManagerChainStartPick(CHAIN, 'NODE_ACTOR')).toStrictEqual({
+      ...CHAIN,
+      startFrom: { nodeIds: [], type: 'NODE_ACTOR' },
+    });
+  });
+
+  it('keeps the start level, the fallback and 簽到職等 when the start changes', () => {
+    expect(
+      readOrgManagerChainStartPick(CHAIN_FROM_FORM, 'NODE_ACTOR'),
+    ).toStrictEqual({
+      fallback: GONE_FALLBACK,
+      minPositionLevel: 5,
+      startFrom: { nodeIds: [], type: 'NODE_ACTOR' },
+      startPositionLevel: 3,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('drops the startFrom key (no undefined) when the initiator is picked', () => {
+    const next = readOrgManagerChainStartPick(CHAIN_FROM_FORM, 'INITIATOR');
+
+    expect(next).toStrictEqual({
+      fallback: GONE_FALLBACK,
+      minPositionLevel: 5,
+      startPositionLevel: 3,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+    expect(next && 'startFrom' in next).toBe(false);
+  });
+
+  it('writes nothing when the shown start is picked again, so chosen fields survive', () => {
+    expect(readOrgManagerChainStartPick(CHAIN, 'INITIATOR')).toBeNull();
+    expect(
+      readOrgManagerChainStartPick(CHAIN_FROM_FORM, 'FORM_MEMBER'),
+    ).toBeNull();
+    expect(
+      readOrgManagerChainStartPick(CHAIN_FROM_STAGE, 'NODE_ACTOR'),
+    ).toBeNull();
+  });
+
+  it('writes nothing for the unsupported entry, a missing option or a non-chain resolver', () => {
+    expect(
+      readOrgManagerChainStartPick(CHAIN_FUTURE_START, 'UNSUPPORTED'),
+    ).toBeNull();
+    expect(readOrgManagerChainStartPick(CHAIN, null)).toBeNull();
+    expect(readOrgManagerChainStartPick(CHAIN, 'SOMETHING')).toBeNull();
+    expect(readOrgManagerChainStartPick(NODE_ACTOR, 'FORM_MEMBER')).toBeNull();
+  });
+
+  it('replaces an unsupported start when the author picks a supported one', () => {
+    expect(
+      readOrgManagerChainStartPick(CHAIN_FUTURE_START, 'INITIATOR'),
+    ).toStrictEqual(CHAIN);
+    expect(
+      withOrgManagerChainStart(CHAIN_FUTURE_START, 'FORM_MEMBER'),
+    ).toStrictEqual({
+      ...CHAIN,
+      startFrom: { formPath: '', type: 'FORM_MEMBER' },
+    });
+  });
+
+  it('sets the field of a form-field start and the stages of an earlier-stage start', () => {
+    expect(
+      withOrgManagerChainStartFormPath(CHAIN_FROM_FORM, 'reviewer'),
+    ).toStrictEqual({
+      ...CHAIN_FROM_FORM,
+      startFrom: { formPath: 'reviewer', type: 'FORM_MEMBER' },
+    });
+    expect(
+      withOrgManagerChainStartNodeIds(CHAIN_FROM_STAGE, ['c']),
+    ).toStrictEqual({
+      ...CHAIN_FROM_STAGE,
+      startFrom: { nodeIds: ['c'], type: 'NODE_ACTOR' },
+    });
+  });
+
+  it('leaves a chain whose start is another kind untouched when a field or stages are set', () => {
+    expect(withOrgManagerChainStartFormPath(CHAIN_FROM_STAGE, 'owner')).toBe(
+      CHAIN_FROM_STAGE,
+    );
+    expect(withOrgManagerChainStartNodeIds(CHAIN, ['a'])).toBe(CHAIN);
+    expect(withOrgManagerChainStartFormPath(CHAIN_FUTURE_START, 'owner')).toBe(
+      CHAIN_FUTURE_START,
+    );
+  });
+});
+
+describe('readOrgManagerChainStartLevelChoice / readOrgManagerChainStartLevelPick', () => {
+  it('offers 不指定 and the levels up to 簽到職等, with 不指定 shown when none is set', () => {
+    const choice = readOrgManagerChainStartLevelChoice(CHAIN, POSITIONS);
+
+    expect(choice.options.map((option) => option.id)).toEqual([
+      NO_START_POSITION_LEVEL_OPTION_ID,
+      '5',
+      '3',
+    ]);
+    expect(choice.options[0].name).toBe(
+      '不指定（從鏈上第一位有職等的主管開始簽）',
+    );
+    expect(choice.selected.id).toBe(NO_START_POSITION_LEVEL_OPTION_ID);
+    expect(choice.invalid).toBe(false);
+  });
+
+  it('shows the stored start level', () => {
+    const choice = readOrgManagerChainStartLevelChoice(
+      CHAIN_LEVEL_ONLY,
+      POSITIONS,
+    );
+
+    expect(choice.selected).toEqual({ id: '3', name: '職等 3（組長）' });
+  });
+
+  it('leaves out levels above 簽到職等', () => {
+    expect(
+      readOrgManagerChainStartLevelChoice(
+        { ...CHAIN, minPositionLevel: 3 },
+        POSITIONS,
+      ).options.map((option) => option.id),
+    ).toEqual([NO_START_POSITION_LEVEL_OPTION_ID, '3']);
+  });
+
+  it('offers no level that no position has when no start level is stored', () => {
+    // 簽到職等 is 4 and no position sits on level 4: it must not appear as an option.
+    expect(
+      readOrgManagerChainStartLevelChoice(
+        { ...CHAIN, minPositionLevel: 4 },
+        POSITIONS,
+      ).options.map((option) => option.id),
+    ).toEqual([NO_START_POSITION_LEVEL_OPTION_ID, '3']);
+  });
+
+  it('keeps a stored level the directory has no position for, and one above 簽到職等', () => {
+    const missing = readOrgManagerChainStartLevelChoice(
+      { ...CHAIN, startPositionLevel: 4 },
+      POSITIONS,
+    );
+    const above = readOrgManagerChainStartLevelChoice(
+      { ...CHAIN, startPositionLevel: 8 },
+      POSITIONS,
+    );
+
+    expect(missing.selected).toEqual({ id: '4', name: '職等 4' });
+    expect(missing.options.map((option) => option.id)).toEqual([
+      NO_START_POSITION_LEVEL_OPTION_ID,
+      '5',
+      '4',
+      '3',
+    ]);
+    expect(above.selected).toEqual({ id: '8', name: '職等 8' });
+    expect(above.options.map((option) => option.id)).toContain('8');
+  });
+
+  it('shows a stored level that is not a number as invalid, not as 不指定', () => {
+    const choice = readOrgManagerChainStartLevelChoice(
+      { ...CHAIN, startPositionLevel: '20' as unknown as number },
+      POSITIONS,
+    );
+
+    expect(choice.invalid).toBe(true);
+    expect(choice.selected).toEqual({ id: 'invalid', name: '起始職等無效' });
+    expect(readOrgManagerChainStartLevelPick(CHAIN, 'invalid')).toBeNull();
+  });
+
+  it('shows a stored level that is not a whole number the same as one that is not a number', () => {
+    const notANumber = readOrgManagerChainStartLevelChoice(
+      { ...CHAIN, startPositionLevel: '20' as unknown as number },
+      POSITIONS,
+    );
+    const fraction = readOrgManagerChainStartLevelChoice(
+      { ...CHAIN, startPositionLevel: 2.5 },
+      POSITIONS,
+    );
+
+    expect(fraction).toEqual(notANumber);
+    expect(fraction.invalid).toBe(true);
+    expect(fraction.selected).toEqual({ id: 'invalid', name: '起始職等無效' });
+    expect(fraction.options.map((option) => option.id)).not.toContain('2.5');
+  });
+
+  it('leaves the 簽到職等 comparison to a whole-number level only, so a fraction shows the invalid hint', () => {
+    expect(
+      readOrgManagerChainStartLevelProblem({
+        ...CHAIN,
+        minPositionLevel: 2,
+        startPositionLevel: 2.5,
+      }),
+    ).toBeNull();
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        minPositionLevel: 2,
+        startPositionLevel: 2.5,
+      }),
+    ).toBe('簽核節點需要指定有效的起始職等。');
+  });
+
+  it('writes the picked level and keeps the rest of the resolver', () => {
+    expect(
+      readOrgManagerChainStartLevelPick(CHAIN_FROM_FORM, '5'),
+    ).toStrictEqual({
+      ...CHAIN_FROM_FORM,
+      startPositionLevel: 5,
+    });
+    expect(readOrgManagerChainStartLevelPick(CHAIN, '3')).toStrictEqual(
+      CHAIN_LEVEL_ONLY,
+    );
+  });
+
+  it('drops the startPositionLevel key (no undefined) when 不指定 is picked', () => {
+    const next = readOrgManagerChainStartLevelPick(
+      CHAIN_FROM_FORM,
+      NO_START_POSITION_LEVEL_OPTION_ID,
+    );
+
+    expect(next).toStrictEqual({
+      fallback: GONE_FALLBACK,
+      minPositionLevel: 5,
+      startFrom: { formPath: 'owner', type: 'FORM_MEMBER' },
+      type: 'ORG_MANAGER_CHAIN',
+    });
+    expect(next && 'startPositionLevel' in next).toBe(false);
+  });
+
+  it('writes nothing for the level already stored, 不指定 on a chain with none, or no option', () => {
+    expect(readOrgManagerChainStartLevelPick(CHAIN_LEVEL_ONLY, '3')).toBeNull();
+    expect(
+      readOrgManagerChainStartLevelPick(
+        CHAIN,
+        NO_START_POSITION_LEVEL_OPTION_ID,
+      ),
+    ).toBeNull();
+    expect(readOrgManagerChainStartLevelPick(CHAIN, null)).toBeNull();
+    expect(readOrgManagerChainStartLevelPick(NODE_ACTOR, '3')).toBeNull();
+  });
+
+  it('says a start level above 簽到職等 cannot be published, and says nothing otherwise', () => {
+    expect(
+      readOrgManagerChainStartLevelProblem({ ...CHAIN, startPositionLevel: 8 }),
+    ).toBe('起始職等不可高於簽到職等，發布前必須修正。');
+    expect(readOrgManagerChainStartLevelProblem(CHAIN_LEVEL_ONLY)).toBeNull();
+    expect(readOrgManagerChainStartLevelProblem(CHAIN)).toBeNull();
+    expect(
+      readOrgManagerChainStartLevelProblem({ ...CHAIN, startPositionLevel: 5 }),
+    ).toBeNull();
+  });
+});
+
+describe('manager chain start settings: readiness', () => {
+  // The designer's node check is the shared `readApproverResolverIssue`, so a
+  // chain the backend would refuse is refused on the screen too.
+  it('accepts a chain with no start settings and a start level not above 簽到職等', () => {
+    expect(readApproverResolverIssue(CHAIN)).toBeNull();
+    expect(readApproverResolverIssue(CHAIN_LEVEL_ONLY)).toBeNull();
+    expect(
+      readApproverResolverIssue({ ...CHAIN, startPositionLevel: 5 }),
+    ).toBeNull();
+  });
+
+  it('refuses a start level above 簽到職等', () => {
+    expect(
+      readApproverResolverIssue({ ...CHAIN, startPositionLevel: 8 }),
+    ).toBe('簽核節點的起始職等不可高於職等門檻。');
+  });
+
+  it('refuses a form-field start with no field, an earlier-stage start with no stage, and an unsupported start', () => {
+    expect(
+      readApproverResolverIssue(
+        withOrgManagerChainStart(CHAIN, 'FORM_MEMBER'),
+      ),
+    ).toBe('簽核節點需要指定主管鏈起點的表單欄位。');
+    expect(
+      readApproverResolverIssue(withOrgManagerChainStart(CHAIN, 'NODE_ACTOR')),
+    ).toBe('簽核節點需要指定主管鏈起點的前面簽核關卡。');
+    expect(readApproverResolverIssue(CHAIN_FUTURE_START)).toBe(
+      '簽核節點的主管鏈起點不在這個版本支援的範圍內，請改選其他起點。',
+    );
+  });
+
+  it('accepts a start with its field or stages chosen', () => {
+    expect(readApproverResolverIssue(CHAIN_FROM_FORM)).toBeNull();
+    expect(readApproverResolverIssue(CHAIN_FROM_STAGE)).toBeNull();
+  });
+});
+
+describe('readApproverResolverSummary (manager chain start settings)', () => {
+  const nodes = [
+    { id: 'a', name: '主管審核' },
+    { id: 'b', name: '財務審核' },
+  ];
+  const summarizeChain = (
+    resolver: ApproverResolver,
+    withNodes = true,
+  ): string =>
+    readApproverResolverSummary(
+      resolver,
+      MEMBERS,
+      ORG_UNITS,
+      POSITIONS,
+      FORM_SCHEMA,
+      withNodes ? nodes : undefined,
+    );
+
+  it('reads as it always did when neither setting is set', () => {
+    expect(summarizeChain(CHAIN)).toBe('主管鏈：簽到職等 5');
+    expect(summarizeChain(CHAIN_INITIATOR)).toBe('主管鏈：簽到職等 5');
+  });
+
+  it('adds the start level', () => {
+    expect(summarizeChain(CHAIN_LEVEL_ONLY)).toBe(
+      '主管鏈：簽到職等 5（從職等 3 開始）',
+    );
+  });
+
+  it('names the form field a form-field start reads', () => {
+    expect(
+      summarizeChain({
+        ...CHAIN,
+        startFrom: { formPath: 'owner', type: 'FORM_MEMBER' },
+      }),
+    ).toBe('主管鏈：從表單欄位「負責人」的主管起算，簽到職等 5');
+    expect(summarizeChain(CHAIN_FROM_FORM)).toBe(
+      '主管鏈：從表單欄位「負責人」的主管起算，簽到職等 5（從職等 3 開始）',
+    );
+    expect(
+      summarizeChain(withOrgManagerChainStart(CHAIN, 'FORM_MEMBER')),
+    ).toBe('主管鏈：從表單欄位（未指定）的主管起算，簽到職等 5');
+  });
+
+  it('names the stages an earlier-stage start reads', () => {
+    expect(summarizeChain(CHAIN_FROM_STAGE)).toBe(
+      '主管鏈：從前面關卡「主管審核、財務審核」簽核者的主管起算，簽到職等 5',
+    );
+    expect(summarizeChain(CHAIN_FROM_STAGE, false)).toBe(
+      '主管鏈：從前面關卡「2 個關卡」簽核者的主管起算，簽到職等 5',
+    );
+    expect(
+      summarizeChain(withOrgManagerChainStart(CHAIN, 'NODE_ACTOR')),
+    ).toBe('主管鏈：從前面關卡（未指定）簽核者的主管起算，簽到職等 5');
+  });
+
+  it('marks a stage that is no longer in the workflow', () => {
+    expect(
+      summarizeChain(
+        withOrgManagerChainStartNodeIds(CHAIN_FROM_STAGE, ['gone']),
+      ),
+    ).toBe(
+      '主管鏈：從前面關卡「gone（已不存在）」簽核者的主管起算，簽到職等 5',
+    );
+  });
+
+  it('names an unsupported start rather than reading it as the initiator', () => {
+    expect(summarizeChain(CHAIN_FUTURE_START)).toBe(
+      '主管鏈：不支援的起點（FORM_MEMBER_MANAGER），簽到職等 5',
+    );
+  });
+});
+
+describe('withOrgManagerChainMinPositionLevel', () => {
+  it('sets 簽到職等 and keeps the start, the start level and the fallback', () => {
+    expect(
+      withOrgManagerChainMinPositionLevel(CHAIN_FROM_FORM, 4),
+    ).toStrictEqual({ ...CHAIN_FROM_FORM, minPositionLevel: 4 });
+    expect(
+      withOrgManagerChainMinPositionLevel(CHAIN_FROM_STAGE, 3),
+    ).toStrictEqual({ ...CHAIN_FROM_STAGE, minPositionLevel: 3 });
+  });
+
+  it('adds no start keys to a chain that has none', () => {
+    const next = withOrgManagerChainMinPositionLevel(CHAIN, 3);
+
+    expect(next).toStrictEqual({
+      minPositionLevel: 3,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+    expect('startFrom' in next).toBe(false);
+    expect('startPositionLevel' in next).toBe(false);
+  });
+});
+
+describe('readOrgManagerChainFallbackHint', () => {
+  const ORIGINAL =
+    '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關。';
+
+  it('is the text it always was when neither the start nor the start level is set', () => {
+    expect(readOrgManagerChainFallbackHint(CHAIN)).toBe(ORIGINAL);
+    expect(readOrgManagerChainFallbackHint(CHAIN_INITIATOR)).toBe(ORIGINAL);
+    expect(readOrgManagerChainFallbackHint(CHAIN_FUTURE_START)).toBe(ORIGINAL);
+  });
+
+  it('adds a missing start for a form-field start', () => {
+    expect(
+      readOrgManagerChainFallbackHint({
+        ...CHAIN,
+        startFrom: { formPath: 'owner', type: 'FORM_MEMBER' },
+      }),
+    ).toBe(
+      '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關；找不到起點（表單欄位沒選人）時，則改派給該會員。',
+    );
+  });
+
+  it('adds a missing start for an earlier-stage start', () => {
+    expect(readOrgManagerChainFallbackHint(CHAIN_FROM_STAGE)).toBe(
+      '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關；找不到起點（前面關卡沒有同意紀錄）時，則改派給該會員。',
+    );
+  });
+
+  it('adds nobody reaching the start level for a start level only', () => {
+    expect(readOrgManagerChainFallbackHint(CHAIN_LEVEL_ONLY)).toBe(
+      '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關；鏈上沒有人達到起始職等時，則改派給該會員。',
+    );
+  });
+
+  it('adds both cases when the start and the start level are set', () => {
+    expect(readOrgManagerChainFallbackHint(CHAIN_FROM_FORM)).toBe(
+      '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關；找不到起點（表單欄位沒選人），或鏈上沒有人達到起始職等時，則改派給該會員。',
     );
   });
 });

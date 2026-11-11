@@ -1028,6 +1028,24 @@ none:
   `NONE`, a walk that ends below the level fails the whole step with a conflict
   error; the managers it did find are not used on their own.
 
+`ORG_MANAGER_CHAIN` also takes two optional settings. `startFrom` says whose
+manager the chain starts climbing from: `{ type: 'INITIATOR' }` (the default),
+`{ type: 'FORM_MEMBER', formPath }` (the one person picked in a single-person
+member field) or `{ type: 'NODE_ACTOR', nodeIds }` (the one person who actually
+approved the listed earlier nodes). The start person is not on the chain; the
+walk begins at their direct manager. A start that names several people is
+refused with a conflict error, and one that names nobody takes the `fallback`.
+Publish therefore refuses a `NODE_ACTOR` start whose stage can have several
+signers (`PARALLEL_ALL`, `SEQUENTIAL`, a `COUNT` quorum above 1 or a
+`PERCENTAGE` quorum), since the conflict would surface inside the last signer's
+own approval and keep it from ever committing.
+`startPositionLevel` makes managers below that position level pass without
+signing: the first manager at or above it starts the chain, and the walk then
+ends at `minPositionLevel` as before. A notify node's chain may only start at
+the initiator. Both settings are read from the instance's workflow snapshot;
+left out, the chain behaves exactly as before. An engine from before this
+change ignores them and climbs from the initiator.
+
 Fallback types:
 
 | Type       | Behavior                                                                                                                                                                                                                                        |

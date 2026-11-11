@@ -3,6 +3,7 @@ import {
   NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX,
   NOTIFY_WEBHOOK_TARGET_LIMIT,
   createNotifyWebhookTarget,
+  canUserTaskHaveMultipleApprovers,
   createWorkflowNode,
   isDecisionPolicyUnsatisfiable,
   isOrgManagerChainDecisionPolicyInvalid,
@@ -18,6 +19,7 @@ import {
   readNodeActorSourceIssues,
   readNodeActorSourceSkipReasons,
   readNotifyRecipientsIssue,
+  readSingleApproverSourceIssues,
   readNotifyServiceTaskIssue,
   readNotifyWebhookCatalogIssueMessage,
   readNotifyWebhookStructureIssues,
@@ -34,6 +36,7 @@ import {
   ExcludeNodeActorsConfig,
   NotifyWebhookTarget,
   ServiceAction,
+  UserTaskNode,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowNode,
@@ -1504,6 +1507,188 @@ describe('readNotifyRecipientsIssue — new approver sources', () => {
   });
 });
 
+describe('ORG_MANAGER_CHAIN start settings', () => {
+  const CHAIN = {
+    minPositionLevel: 30,
+    type: 'ORG_MANAGER_CHAIN',
+  } as const;
+
+  it('accepts a chain that sets neither start setting (control)', () => {
+    expect(readApproverResolverIssue(CHAIN)).toBeNull();
+    expect(readNotifyRecipientsIssue(CHAIN)).toBeNull();
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['fractional', 2.5],
+    ['a string', '30'],
+  ])(
+    'refuses a chain whose minPositionLevel is %s, for both a signer and a notify recipient',
+    (_label, minPositionLevel) => {
+      const broken = {
+        minPositionLevel,
+        type: 'ORG_MANAGER_CHAIN',
+      } as unknown as ApproverResolver;
+
+      expect(readApproverResolverIssue(broken)).toBe(
+        '簽核節點需要指定有效的職等門檻。',
+      );
+      expect(readNotifyRecipientsIssue(broken)).toBe(
+        '知會節點需要指定有效的職等門檻。',
+      );
+    },
+  );
+
+  it('accepts every start the designer can write', () => {
+    [
+      { type: 'INITIATOR' },
+      { formPath: 'picked', type: 'FORM_MEMBER' },
+      { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+    ].forEach((startFrom) => {
+      expect(
+        readApproverResolverIssue({
+          ...CHAIN,
+          startFrom,
+          startPositionLevel: 20,
+        } as ApproverResolver),
+      ).toBeNull();
+    });
+  });
+
+  it('accepts a start level equal to the required level', () => {
+    expect(
+      readApproverResolverIssue({ ...CHAIN, startPositionLevel: 30 }),
+    ).toBeNull();
+  });
+
+  it('refuses a start level above the required level', () => {
+    expect(
+      readApproverResolverIssue({ ...CHAIN, startPositionLevel: 31 }),
+    ).toBe('簽核節點的起始職等不可高於職等門檻。');
+  });
+
+  it.each([2.5, Number.NaN, '20'])(
+    'refuses a start level that is not a whole number (%s)',
+    (startPositionLevel) => {
+      expect(
+        readApproverResolverIssue({
+          ...CHAIN,
+          startPositionLevel: startPositionLevel as number,
+        }),
+      ).toBe('簽核節點需要指定有效的起始職等。');
+    },
+  );
+
+  it('reads a null start level and a null start as absent', () => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        startFrom: null as unknown as undefined,
+        startPositionLevel: null as unknown as undefined,
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['a form start without a field', { formPath: ' ', type: 'FORM_MEMBER' }],
+    ['a form start with no formPath key', { type: 'FORM_MEMBER' }],
+  ])('refuses %s', (_label, startFrom) => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        startFrom,
+      } as unknown as ApproverResolver),
+    ).toBe('簽核節點需要指定主管鏈起點的表單欄位。');
+  });
+
+  it.each([
+    ['a stage start without a stage', { nodeIds: [], type: 'NODE_ACTOR' }],
+    ['a stage start with no nodeIds key', { type: 'NODE_ACTOR' }],
+  ])('refuses %s', (_label, startFrom) => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        startFrom,
+      } as unknown as ApproverResolver),
+    ).toBe('簽核節點需要指定主管鏈起點的前面簽核關卡。');
+  });
+
+  it.each([
+    ['a type this build does not know', { type: 'FUTURE_START' }],
+    ['a start that is not an object', 'INITIATOR'],
+    ['a start without a type', {}],
+  ])('refuses %s', (_label, startFrom) => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        startFrom,
+      } as unknown as ApproverResolver),
+    ).toBe('簽核節點的主管鏈起點不在這個版本支援的範圍內，請改選其他起點。');
+  });
+
+  it('keeps reporting a bad required level before the start settings (control)', () => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        minPositionLevel: 2.5,
+        startPositionLevel: 99,
+      }),
+    ).toBe('簽核節點需要指定有效的職等門檻。');
+  });
+
+  it('keeps reporting a blank fallback when the start settings are fine (control)', () => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        fallback: { memberId: ' ', type: 'DIRECT' },
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+      }),
+    ).toBe('簽核節點需要指定改派固定人。');
+  });
+
+  describe('as a notify recipient', () => {
+    it('accepts a start level and an INITIATOR start', () => {
+      expect(
+        readNotifyRecipientsIssue({ ...CHAIN, startPositionLevel: 20 }),
+      ).toBeNull();
+      expect(
+        readNotifyRecipientsIssue({
+          ...CHAIN,
+          startFrom: { type: 'INITIATOR' },
+        }),
+      ).toBeNull();
+    });
+
+    it.each([
+      { formPath: 'picked', type: 'FORM_MEMBER' },
+      { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+    ] as const)('refuses a $type start', (startFrom) => {
+      expect(readNotifyRecipientsIssue({ ...CHAIN, startFrom })).toBe(
+        '知會節點的主管鏈只能從發起人開始。',
+      );
+    });
+
+    it('refuses a start level above the required level', () => {
+      expect(
+        readNotifyRecipientsIssue({ ...CHAIN, startPositionLevel: 31 }),
+      ).toBe('知會節點的起始職等不可高於職等門檻。');
+    });
+
+    it('reaches the node-level lint through readNotifyServiceTaskIssue', () => {
+      expect(
+        readNotifyServiceTaskIssue(
+          definitionWithNotify(
+            notifyAction({
+              ...CHAIN,
+              startFrom: { nodeIds: ['a'], type: 'NODE_ACTOR' },
+            }),
+          ).nodes.find((node) => node.id === 'notify') as WorkflowNode,
+        ),
+      ).toBe('知會節點的主管鏈只能從發起人開始。');
+    });
+  });
+});
+
 describe('readNotifyRecipientsIssue — 指定組織主管 needs an organization', () => {
   it('refuses 指定組織主管 with an empty organization', () => {
     expect(
@@ -1926,6 +2111,378 @@ describe('readNodeActorSourceIssues', () => {
 
       expect(readNodeActorSourceIssues(afterJoin, 'me', ['a', 'b'])).toEqual([]);
     });
+  });
+});
+
+describe('canUserTaskHaveMultipleApprovers', () => {
+  const ONE_MEMBER: ApproverResolver = { memberIds: ['m1'], type: 'DIRECT' };
+  const CHAIN: ApproverResolver = {
+    minPositionLevel: 30,
+    type: 'ORG_MANAGER_CHAIN',
+  };
+
+  function taskWith(
+    resolver: ApproverResolver,
+    policy: DecisionPolicy,
+    excludeInitiator?: ExcludeInitiatorConfig,
+  ): UserTaskNode {
+    return definitionWithUserTask(
+      resolver,
+      policy,
+      excludeInitiator,
+    ).nodes.find((node) => node.id === 'task') as UserTaskNode;
+  }
+
+  it.each<{
+    readonly expected: boolean;
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+    readonly resolver: ApproverResolver;
+  }>([
+    {
+      expected: false,
+      name: 'SINGLE over three members',
+      policy: { type: 'SINGLE' },
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: false,
+      name: 'PARALLEL_ANY over three members',
+      policy: { type: 'PARALLEL_ANY' },
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'PARALLEL_ALL over three members',
+      policy: { type: 'PARALLEL_ALL' },
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'SEQUENTIAL over three members',
+      policy: { type: 'SEQUENTIAL' },
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'PARALLEL_ALL over a resolver only the org chart can count',
+      policy: { type: 'PARALLEL_ALL' },
+      resolver: ONE_MANAGER,
+    },
+    {
+      expected: true,
+      name: 'SEQUENTIAL over a manager chain',
+      policy: { type: 'SEQUENTIAL' },
+      resolver: CHAIN,
+    },
+    {
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member',
+      policy: { type: 'PARALLEL_ALL' },
+      resolver: ONE_MEMBER,
+    },
+    {
+      expected: false,
+      name: 'SEQUENTIAL over one listed member',
+      policy: { type: 'SEQUENTIAL' },
+      resolver: ONE_MEMBER,
+    },
+    {
+      expected: false,
+      name: 'a COUNT quorum of 1',
+      policy: quorum(1),
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: false,
+      name: 'a COUNT quorum below 1, which the engine reads as 1',
+      policy: quorum(0),
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'a COUNT quorum of 2',
+      policy: quorum(2),
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'a PERCENTAGE quorum, whose head count is not known',
+      policy: quorum(50, 'PERCENTAGE'),
+      resolver: ONE_MANAGER,
+    },
+    {
+      expected: false,
+      name: 'a policy this build does not know',
+      policy: { type: 'FUTURE_POLICY' } as unknown as DecisionPolicy,
+      resolver: THREE_MEMBERS,
+    },
+  ])('reads $name as $expected', ({ expected, policy, resolver }) => {
+    expect(canUserTaskHaveMultipleApprovers(taskWith(resolver, policy))).toBe(
+      expected,
+    );
+  });
+
+  // The one listed member may be the initiator, in which case an
+  // `INITIATOR_MANAGER` stage goes to the initiator's managers instead.
+  it.each<{
+    readonly excludeInitiator: ExcludeInitiatorConfig;
+    readonly expected: boolean;
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+  }>([
+    {
+      excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'PARALLEL_ALL over one listed member that hands over to the initiator manager',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+    {
+      excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'SEQUENTIAL over one listed member that hands over to the initiator manager',
+      policy: { type: 'SEQUENTIAL' },
+    },
+    {
+      excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'a COUNT quorum of 2 over one listed member that hands over to the initiator manager',
+      policy: quorum(2),
+    },
+    {
+      excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      expected: false,
+      name: 'SINGLE over one listed member that hands over to the initiator manager',
+      policy: { type: 'SINGLE' },
+    },
+    {
+      excludeInitiator: { whenEmpty: 'SKIP_NODE' },
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member that skips the stage (control)',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+    {
+      excludeInitiator: { whenEmpty: 'FAIL' },
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member that fails (control)',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+  ])('reads $name as $expected', ({ excludeInitiator, expected, policy }) => {
+    expect(
+      canUserTaskHaveMultipleApprovers(
+        taskWith(ONE_MEMBER, policy, excludeInitiator),
+      ),
+    ).toBe(expected);
+  });
+
+  // The one listed member may have approved an earlier stage, in which case an
+  // `INITIATOR_MANAGER` stage goes to the initiator's managers instead.
+  it.each<{
+    readonly excludeNodeActors: ExcludeNodeActorsConfig;
+    readonly expected: boolean;
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+  }>([
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'PARALLEL_ALL over one listed member whose earlier-stage exclusion hands over to the initiator manager',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'SEQUENTIAL over one listed member whose earlier-stage exclusion hands over to the initiator manager',
+      policy: { type: 'SEQUENTIAL' },
+    },
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'INITIATOR_MANAGER' },
+      expected: false,
+      name: 'SINGLE over one listed member whose earlier-stage exclusion hands over to the initiator manager',
+      policy: { type: 'SINGLE' },
+    },
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'SKIP_NODE' },
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member whose earlier-stage exclusion skips the stage (control)',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'FAIL' },
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member whose earlier-stage exclusion fails (control)',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+  ])('reads $name as $expected', ({ excludeNodeActors, expected, policy }) => {
+    const task = taskWith(ONE_MEMBER, policy);
+
+    expect(
+      canUserTaskHaveMultipleApprovers({
+        ...task,
+        data: { ...task.data, excludeNodeActors },
+      }),
+    ).toBe(expected);
+  });
+});
+
+describe('readSingleApproverSourceIssues', () => {
+  // `task` is the source stage; `me` is a later stage that reads "who signed
+  // `task`" and sits between `task` and the end, so `task` is a sound
+  // `NODE_ACTOR` source for it.
+  function withSource(
+    policy: DecisionPolicy,
+    resolver: ApproverResolver = THREE_MEMBERS,
+    excludeInitiator?: ExcludeInitiatorConfig,
+  ): WorkflowDefinition {
+    const base = definitionWithUserTask(resolver, policy, excludeInitiator);
+
+    return {
+      ...base,
+      edges: [
+        {
+          data: {},
+          id: 'edge_start_task',
+          source: 'start',
+          target: 'task',
+          type: 'smoothstep',
+        },
+        {
+          data: {},
+          id: 'edge_task_me',
+          source: 'task',
+          target: 'me',
+          type: 'smoothstep',
+        },
+        {
+          data: {},
+          id: 'edge_me_end',
+          source: 'me',
+          target: 'end',
+          type: 'smoothstep',
+        },
+      ],
+      nodes: [
+        ...base.nodes,
+        {
+          data: {
+            allowAddSigner: false,
+            allowReject: true,
+            allowTransfer: true,
+            approverResolver: { nodeIds: ['task'], type: 'NODE_ACTOR' },
+            decisionPolicy: { type: 'SINGLE' },
+            label: '來源的主管',
+            returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+          },
+          id: 'me',
+          position: { x: 600, y: 160 },
+          type: 'userTask',
+        },
+      ],
+    };
+  }
+
+  const ISSUE =
+    '主管鏈起點的前面關卡 「部門會簽」 可能有多位實際簽核人，無法決定從誰的主管開始。請改選只會有一位簽核人的關卡。';
+
+  it.each<{
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+  }>([
+    { name: 'PARALLEL_ALL', policy: { type: 'PARALLEL_ALL' } },
+    { name: 'SEQUENTIAL', policy: { type: 'SEQUENTIAL' } },
+    { name: 'a COUNT quorum of 2', policy: quorum(2) },
+  ])('refuses a $name source stage, naming it', ({ policy }) => {
+    expect(
+      readSingleApproverSourceIssues(withSource(policy), ['task']),
+    ).toEqual([ISSUE]);
+  });
+
+  it.each<{
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+  }>([
+    { name: 'SINGLE', policy: { type: 'SINGLE' } },
+    { name: 'PARALLEL_ANY', policy: { type: 'PARALLEL_ANY' } },
+    { name: 'a COUNT quorum of 1', policy: quorum(1) },
+  ])('accepts a $name source stage (control)', ({ policy }) => {
+    expect(
+      readSingleApproverSourceIssues(withSource(policy), ['task']),
+    ).toEqual([]);
+  });
+
+  it('accepts a multi-seat policy over a single listed member', () => {
+    const oneMember: ApproverResolver = { memberIds: ['m1'], type: 'DIRECT' };
+
+    expect(
+      readSingleApproverSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }, oneMember),
+        ['task'],
+      ),
+    ).toEqual([]);
+  });
+
+  it('refuses a single listed member that hands over to the initiator manager under a multi-seat policy', () => {
+    const oneMember: ApproverResolver = { memberIds: ['m1'], type: 'DIRECT' };
+
+    expect(
+      readSingleApproverSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }, oneMember, {
+          whenEmpty: 'INITIATOR_MANAGER',
+        }),
+        ['task'],
+      ),
+    ).toEqual([ISSUE]);
+  });
+
+  it('accepts a single listed member that fails when no one else is left (control)', () => {
+    const oneMember: ApproverResolver = { memberIds: ['m1'], type: 'DIRECT' };
+
+    expect(
+      readSingleApproverSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }, oneMember, {
+          whenEmpty: 'FAIL',
+        }),
+        ['task'],
+      ),
+    ).toEqual([]);
+  });
+
+  it('reports only the stage with several signers among those listed', () => {
+    const base = withSource({ type: 'SEQUENTIAL' });
+
+    expect(
+      readSingleApproverSourceIssues(base, ['task', 'start', 'ghost']),
+    ).toEqual([ISSUE]);
+  });
+
+  it('leaves a missing or non-user-task stage to readNodeActorSourceIssues', () => {
+    const base = withSource({ type: 'SEQUENTIAL' });
+
+    expect(
+      readSingleApproverSourceIssues(base, ['ghost', 'start']),
+    ).toEqual([]);
+  });
+
+  it('does not change what readNodeActorSourceIssues says about the same stage (NODE_ACTOR / NODE_ACTOR_MANAGER keep taking it)', () => {
+    expect(
+      readNodeActorSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }),
+        'me',
+        ['task'],
+      ),
+    ).toEqual([]);
+    // The fixture is a real graph: the same call the other way round is
+    // refused because `me` is downstream of `task`, not because `me` is
+    // missing.
+    expect(
+      readNodeActorSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }),
+        'task',
+        ['me'],
+      ),
+    ).toEqual(
+      expect.arrayContaining([expect.stringMatching(/不在 .* 的上游/)]),
+    );
   });
 });
 

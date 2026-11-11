@@ -1451,6 +1451,205 @@ describe('workflow definition validator: the form and earlier-signer approver so
   });
 });
 
+describe('workflow definition validator: manager chain start settings', (): void => {
+  const PATH = 'workflow.nodes.task_manager.approverResolver';
+  const chain = (
+    overrides: Record<string, unknown> = {},
+  ): ApproverResolver =>
+    ({
+      minPositionLevel: 30,
+      type: 'ORG_MANAGER_CHAIN',
+      ...overrides,
+    }) as ApproverResolver;
+  const lintChain = (
+    overrides: Record<string, unknown> = {},
+  ): readonly string[] =>
+    lintWorkflowDefinition(
+      createUserTaskWorkflow({
+        approverResolver: chain(overrides),
+        decisionPolicy: { type: 'SEQUENTIAL' },
+      }),
+    ).errors;
+  // `task_first` runs before the chain node, which is the shape a stage start
+  // needs; the chain node itself must sign in order.
+  const lintChainAfterFirstStage = (
+    overrides: Record<string, unknown>,
+  ): readonly string[] => {
+    const base = createTwoStepWorkflow(chain(overrides));
+
+    return lintWorkflowDefinition({
+      ...base,
+      nodes: base.nodes.map((node) =>
+        node.type === 'userTask' && node.id === 'task_manager'
+          ? {
+              ...node,
+              data: { ...node.data, decisionPolicy: { type: 'SEQUENTIAL' } },
+            }
+          : node,
+      ),
+    } as WorkflowDefinition).errors;
+  };
+
+  it('accepts a chain that sets neither setting (control: today\'s templates)', (): void => {
+    expect(lintChain()).toEqual([]);
+  });
+
+  it('accepts a form start, a stage start and a start level', (): void => {
+    expect(
+      lintChain({
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+        startPositionLevel: 20,
+      }),
+    ).toEqual([]);
+    expect(lintChain({ startFrom: { type: 'INITIATOR' } })).toEqual([]);
+    expect(
+      lintChainAfterFirstStage({
+        startFrom: { nodeIds: ['task_first'], type: 'NODE_ACTOR' },
+        startPositionLevel: 30,
+      }),
+    ).toEqual([]);
+  });
+
+  it('refuses a start level above the required level', (): void => {
+    expect(lintChain({ startPositionLevel: 31 })).toEqual([
+      `${PATH}: 簽核節點的起始職等不可高於職等門檻。`,
+    ]);
+  });
+
+  it.each([2.5, Number.NaN, '20'])(
+    'refuses a start level that is not a whole number (%s)',
+    (startPositionLevel): void => {
+      expect(lintChain({ startPositionLevel })).toEqual([
+        `${PATH}: 簽核節點需要指定有效的起始職等。`,
+      ]);
+    },
+  );
+
+  it('refuses a form start without a field', (): void => {
+    expect(
+      lintChain({ startFrom: { formPath: ' ', type: 'FORM_MEMBER' } }),
+    ).toEqual([`${PATH}: 簽核節點需要指定主管鏈起點的表單欄位。`]);
+  });
+
+  it('refuses a start type this build does not know', (): void => {
+    expect(lintChain({ startFrom: { type: 'FUTURE_START' } })).toEqual([
+      `${PATH}: 簽核節點的主管鏈起點不在這個版本支援的範圍內，請改選其他起點。`,
+    ]);
+  });
+
+  it.each([
+    ['empty', [], 'startFrom.nodeIds is required'],
+    [
+      'the node itself',
+      ['task_manager'],
+      'startFrom.nodeIds must not include the node itself',
+    ],
+    [
+      'a node that does not exist',
+      ['ghost'],
+      'startFrom.nodeIds references a missing node: ghost',
+    ],
+    [
+      'a node that is not a user task',
+      ['start'],
+      'startFrom.nodeIds must reference userTask nodes: start',
+    ],
+  ])(
+    'refuses a stage start whose stages are %s',
+    (_kind, nodeIds, message): void => {
+      const errors = lintChainAfterFirstStage({
+        startFrom: { nodeIds, type: 'NODE_ACTOR' },
+      });
+
+      // An empty list is reported as "needs a stage" by the shared check
+      // first; every other case is a lookup only the definition can answer.
+      expect(errors).toEqual(
+        nodeIds.length === 0
+          ? [`${PATH}: 簽核節點需要指定主管鏈起點的前面簽核關卡。`]
+          : [`${PATH}.${message}`],
+      );
+    },
+  );
+
+  it('keeps reporting a bad required level before the start settings (control)', (): void => {
+    expect(
+      lintChain({ minPositionLevel: 2.5, startPositionLevel: 99 }),
+    ).toEqual([`${PATH}.minPositionLevel is invalid`]);
+  });
+
+  describe('as a notify recipient', (): void => {
+    const lintRecipients = (recipients: ApproverResolver): readonly string[] =>
+      lintWorkflowDefinition({
+        ...EMPTY_WORKFLOW_DEFINITION,
+        edges: [
+          {
+            data: {},
+            id: 'edge_start_end',
+            source: 'start',
+            target: 'end',
+            type: 'smoothstep',
+          },
+          {
+            data: {},
+            id: 'edge_start_notify',
+            source: 'start',
+            target: 'notify_peer',
+            type: 'smoothstep',
+          },
+        ],
+        nodes: [
+          ...EMPTY_WORKFLOW_DEFINITION.nodes,
+          {
+            data: {
+              action: { channels: ['IN_APP'], recipients, type: 'NOTIFY' },
+              label: '通知',
+            },
+            id: 'notify_peer',
+            position: { x: 300, y: 300 },
+            type: 'serviceTask',
+          },
+        ],
+      }).errors;
+    const RECIPIENTS = 'workflow.nodes.notify_peer.action.recipients';
+
+    it('accepts a chain with a start level or an INITIATOR start, and one with neither (control)', (): void => {
+      expect(lintRecipients(chain())).toEqual([]);
+      expect(lintRecipients(chain({ startPositionLevel: 20 }))).toEqual([]);
+      expect(
+        lintRecipients(chain({ startFrom: { type: 'INITIATOR' } })),
+      ).toEqual([]);
+    });
+
+    it.each([
+      { formPath: 'picked', type: 'FORM_MEMBER' },
+      { nodeIds: ['task_first'], type: 'NODE_ACTOR' },
+    ])('refuses a %j start', (startFrom): void => {
+      expect(lintRecipients(chain({ startFrom }))).toEqual([
+        `${RECIPIENTS}: 知會節點的主管鏈只能從發起人開始。`,
+      ]);
+    });
+
+    it('refuses a start level above the required level', (): void => {
+      expect(lintRecipients(chain({ startPositionLevel: 31 }))).toEqual([
+        `${RECIPIENTS}: 知會節點的起始職等不可高於職等門檻。`,
+      ]);
+    });
+
+    it.each([
+      ['missing', undefined],
+      ['fractional', 2.5],
+      ['a string', '30'],
+    ])(
+      'refuses a chain whose minPositionLevel is %s, instead of climbing to the top',
+      (_label, minPositionLevel): void => {
+        expect(lintRecipients(chain({ minPositionLevel }))).toEqual([
+          `${RECIPIENTS}: 知會節點需要指定有效的職等門檻。`,
+        ]);
+      },
+    );
+  });
+});
+
 function createTwoStepWorkflow(
   approverResolver: ApproverResolver,
   excludeNodeActors?: ExcludeNodeActorsConfig,

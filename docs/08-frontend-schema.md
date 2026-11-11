@@ -236,6 +236,10 @@ type ApproverResolver =
   | {
       readonly fallback?: ApproverResolverFallback;
       readonly minPositionLevel: number;
+      // 鏈從誰的主管開始爬；省略＝申請人。舊版引擎不認得，會照申請人起算
+      readonly startFrom?: OrgManagerChainStart;
+      // 職等低於它的主管穿過不簽；省略＝第一位有職等的主管就開始簽
+      readonly startPositionLevel?: number;
       readonly type: 'ORG_MANAGER_CHAIN';
     }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
@@ -266,6 +270,12 @@ type ApproverResolver =
       readonly type: 'NODE_ACTOR_MANAGER';
     };
 
+// 主管鏈的起點（起點本人不在鏈上，從他的直屬主管開始爬）
+type OrgManagerChainStart =
+  | { readonly type: 'INITIATOR' }
+  | { readonly formPath: string; readonly type: 'FORM_MEMBER' }
+  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' };
+
 type ApproverResolverFallback =
   | { readonly type: 'NONE' }
   | {
@@ -293,6 +303,21 @@ Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC
 已不再指向人員選擇欄位時保留顯示並警告，不會自動清掉。
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
+
+主管鏈（`ORG_MANAGER_CHAIN`）在「簽到職等」之外多兩個設定（`startFrom`／`startPositionLevel`，未發佈）：
+「從誰的主管開始」（發起人／表單欄位的人／前面關卡的簽核者）與「從職等幾開始簽」（可留白）。
+選「表單欄位的人」時欄位選單只列單選的人員欄位（與 `FORM_MEMBER_MANAGER` 同一組，必填、可見的警告也相同）；
+選「前面關卡的簽核者」時關卡選單與 `NODE_ACTOR` 同一組，再濾掉 `canUserTaskHaveMultipleApprovers`
+為真的關卡（`PARALLEL_ALL` 這類可能有多位簽核人的關卡不會出現在這裡，但照樣出現在 `NODE_ACTOR` 的選單）；
+已存的關卡若刪掉了或不再合格，會保留並標示「（已不存在）」／「（無法使用）」，由發布檢查擋下。
+「從職等幾開始簽」只列不高於「簽到職等」的職等；已存的值高於它，或不是整數（不是數字、或 2.5 這類小數）時保留顯示並提示，就緒檢查擋下。
+前面只剩可能有多位簽核人的關卡時，關卡選單會說明「前面的關卡都可能有多位簽核人，所以不能當起點」，而不是「前面沒有可選的關卡」。
+兩個設定都沒設時，「無主管時」的說明維持原文；設了之後會補上「找不到起點」與「鏈上沒有人達到起始職等」這兩種也會走改派的情況。
+只在「切換簽核來源」時才會清掉這兩個設定，切換「從誰的主管開始」只重設起點，不動起始職等與 `fallback`；
+本版不認得的起點以唯讀的「不支援的起點（…）」顯示，不會被重寫。節點摘要會寫出起點與起始職等；
+試跑的處理者文字則把占位字串（用 `parseOrgManagerChainPlaceholder` 解析）轉成同樣的寫法，
+例如「主管鏈：從表單欄位「負責人」的主管起算，簽到職等 30（從職等 20 開始）」。
+知會節點的收件人在設計器裡本來就不開放主管鏈的設定面板（只顯示摘要），所以不會出現「從誰的主管開始」。
 
 四種新來源（`FORM_MEMBER_MANAGER`、`FORM_ORG_UNIT_MANAGER`、`NODE_ACTOR`、`NODE_ACTOR_MANAGER`，未發佈）
 的就緒檢查（`readApproverResolverIssue`）：`formPath` 不可空白、`nodeIds` 不可為空、
@@ -344,7 +369,9 @@ AI 工具組（`set_user_task_approver` 的 `approverResolver`）認得這四種
 
 試跑（dry run）對「依職位／組織」這類要到送出時才能決定人選的 resolver，回傳的
 `assigneeMemberId` 是占位字串（`position:<id>`、`orgUnitMember:<id>`、
-`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`，以及
+`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`（主管鏈用了起點或起始職等時後面會多接：只設起始職等寫成
+`orgManagerChain:<level>:<起始職等>`，有起點則是 `:<起始職等>:<formMember|nodeActor>:<key>`，
+沒有起始職等時 `<起始職等>` 留空；用 `parseOrgManagerChainPlaceholder` 解析；關卡 id 不可含逗號），以及
 四種新來源的 `formMemberManager:<formPath>:<levelsUp>`、`formOrgUnitManager:<formPath>`、
 `nodeActor:<nodeId,nodeId…>`、`nodeActorManager:<nodeId,nodeId…>:<levelsUp>`）；
 designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」；
@@ -416,6 +443,16 @@ type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
 `minPositionLevel` 必須是有限整數；`userTask` 的 `decisionPolicy` 只能是
 `SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。同一個 resolver
 用在 `NOTIFY.recipients` 時不受 decision policy 限制（所有人都會收到通知）。
+
+可省略的 `startFrom`（鏈從誰的主管開始）與 `startPositionLevel`（職等低於它的主管穿過不簽）
+也在 publish 時檢查：`startPositionLevel` 必須是整數且不可高於 `minPositionLevel`；
+`startFrom: { type: 'FORM_MEMBER', formPath }` 指到的欄位須是必填、永遠顯示的單選人員欄位，
+`startFrom: { type: 'NODE_ACTOR', nodeIds }` 指到的關卡須符合 `NODE_ACTOR` 的圖規則，
+而且每個關卡都只能有一位實際簽核人（`canUserTaskHaveMultipleApprovers`：`PARALLEL_ALL`、
+`SEQUENTIAL`、`COUNT` 門檻大於 1 或任何百分比門檻的 `QUORUM` 都不行，除非它只列了一位 `DIRECT` 成員；但那一關若開了「申請人不可簽核自己的單」
+且沒人可簽時改派申請人主管（`whenEmpty: 'INITIATOR_MANAGER'`），仍照決策方式判斷，因為唯一成員
+剛好是申請人時會改派給可能是多人的主管），設計器的關卡選項請用同一個函式過濾。
+用在 `NOTIFY.recipients` 時 `startFrom` 只能省略或 `INITIATOR`。
 
 ### Service Task
 

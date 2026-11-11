@@ -1,13 +1,16 @@
 import { readReachableWorkflowNodeIds } from '@rytass/bpm-core-shared';
 import {
+  ApproverResolver,
   ExcludeInitiatorWhenEmpty,
   WorkflowDefinition,
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  canUserTaskHaveMultipleApprovers,
   readExcludeNodeActorsIssues,
   readNodeActorSourceIssues,
   readNodeActorSourceSkipReasons,
+  readSingleApproverSourceIssues,
 } from '@rytass/bpm-core-shared/workflow-graph';
 
 export type NodeActorOption = Readonly<{
@@ -32,6 +35,20 @@ export const NO_UPSTREAM_USER_TASK_HINT =
 /** The 關卡 picker's hint while the selection has no problem to report. */
 export const NODE_ACTOR_STAGE_HINT =
   '簽核人取自你選的前面關卡實際簽核的人；可複選，整組要涵蓋每條路徑。複選多個關卡時，取最近實際走到的那一關的簽核人，不是全部關卡的簽核人。';
+
+/**
+ * The 關卡 picker's hint for a manager chain's 前面關卡的簽核者 start, while
+ * the selection has no problem to report.
+ */
+export const ORG_MANAGER_CHAIN_STAGE_HINT =
+  '起點是你選的前面關卡實際簽核的那一位，從他的主管開始往上簽；只能選每次只會有一位簽核人的關卡。可複選，整組要涵蓋每條路徑，取最近實際走到的那一關的簽核者。';
+
+/**
+ * The 關卡 picker's hint when every stage upstream of a manager chain may end
+ * with several signers, so none can be the start.
+ */
+export const ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT =
+  '前面的簽核關卡都可能有多位簽核人，所以不能當主管鏈的起點；請改用只有一位簽核人的關卡，或改選其他起點。';
 
 const UNUSABLE_STAGE_SUFFIX = '（無法使用）';
 const MISSING_STAGE_SUFFIX = '（已不存在）';
@@ -63,12 +80,66 @@ export function readNodeActorStageChoice(
   nodeId: string,
   selectedIds: readonly string[],
 ): NodeActorStageChoice {
+  return readStageChoice(
+    definition,
+    nodeId,
+    selectedIds,
+    () => true,
+    () => [],
+  );
+}
+
+/**
+ * The 關卡 picker of a manager chain's 前面關卡的簽核者 start: the same stages
+ * as {@link readNodeActorStageChoice} offers, minus the ones that may end with
+ * several signers. The chain climbs from one person, so a stage that
+ * `canUserTaskHaveMultipleApprovers` is not offered (a 並行全部同意 stage still
+ * is for 依前面關卡的簽核者, which takes everyone). A stored stage of that kind
+ * stays in the list, marked, and the selection's problems include the
+ * single-signer rule the publish lint runs (`readSingleApproverSourceIssues`).
+ */
+export function readOrgManagerChainStageChoice(
+  definition: WorkflowDefinition,
+  nodeId: string,
+  selectedIds: readonly string[],
+): NodeActorStageChoice {
+  const choice = readStageChoice(
+    definition,
+    nodeId,
+    selectedIds,
+    (node) => !canUserTaskHaveMultipleApprovers(node),
+    (ids) => readSingleApproverSourceIssues(definition, ids),
+  );
+
+  // Empty only because of the single-signer filter: saying "add an approval
+  // node" would be wrong, there are some, just none that can start a chain.
+  const onlyMultiApproverStages =
+    choice.options.length === 0 &&
+    selectedIds.length === 0 &&
+    readNodeActorStageChoice(definition, nodeId, []).options.length > 0;
+
+  return onlyMultiApproverStages
+    ? {
+        ...choice,
+        problems: [ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT],
+      }
+    : choice;
+}
+
+function readStageChoice(
+  definition: WorkflowDefinition,
+  nodeId: string,
+  selectedIds: readonly string[],
+  isOfferable: (node: UserTaskNode) => boolean,
+  readExtraIssues: (selectedIds: readonly string[]) => readonly string[],
+): NodeActorStageChoice {
   const offered: readonly NodeActorOption[] = definition.nodes
     .filter(isUserTaskNode)
     .filter(
       (node) =>
         node.id !== nodeId &&
         readNodeActorSourceSkipReasons(node).length === 0 &&
+        isOfferable(node) &&
         readReachableWorkflowNodeIds(definition.edges, [node.id]).has(nodeId),
     )
     .map((node) => ({ id: node.id, name: readNodeName(node) }));
@@ -95,7 +166,10 @@ export function readNodeActorStageChoice(
     options,
     problems:
       selectedIds.length > 0
-        ? readNodeActorSourceIssues(definition, nodeId, selectedIds)
+        ? [
+            ...readNodeActorSourceIssues(definition, nodeId, selectedIds),
+            ...readExtraIssues(selectedIds),
+          ]
         : options.length === 0
           ? [NO_UPSTREAM_USER_TASK_HINT]
           : [],
@@ -114,19 +188,44 @@ export function readNodeActorGraphIssues(
 ): readonly string[] {
   return definition.nodes.filter(isUserTaskNode).flatMap((node) => {
     const resolver = node.data.approverResolver;
+    const nodeIds = readGraphCheckedNodeIds(resolver);
 
-    if (
-      (resolver.type !== 'NODE_ACTOR' &&
-        resolver.type !== 'NODE_ACTOR_MANAGER') ||
-      resolver.nodeIds.length === 0
-    ) {
+    if (nodeIds.length === 0) {
       return [];
     }
 
-    return readNodeActorSourceIssues(definition, node.id, resolver.nodeIds).map(
-      (issue) => `簽核節點「${readNodeName(node)}」：${issue}`,
-    );
+    return [
+      ...readNodeActorSourceIssues(definition, node.id, nodeIds),
+      // A manager chain starting from a stage also needs that stage to end
+      // with one person; `NODE_ACTOR`/`NODE_ACTOR_MANAGER` take everyone.
+      ...(resolver.type === 'ORG_MANAGER_CHAIN'
+        ? readSingleApproverSourceIssues(definition, nodeIds)
+        : []),
+    ].map((issue) => `簽核節點「${readNodeName(node)}」：${issue}`);
   });
+}
+
+// The stages a resolver reads its signers from, when it is one of the three
+// that name earlier stages (a manager chain only with a `NODE_ACTOR` start).
+function readGraphCheckedNodeIds(
+  resolver: ApproverResolver,
+): readonly string[] {
+  if (
+    resolver.type === 'NODE_ACTOR' ||
+    resolver.type === 'NODE_ACTOR_MANAGER'
+  ) {
+    return resolver.nodeIds;
+  }
+
+  if (
+    resolver.type === 'ORG_MANAGER_CHAIN' &&
+    resolver.startFrom?.type === 'NODE_ACTOR' &&
+    Array.isArray(resolver.startFrom.nodeIds)
+  ) {
+    return resolver.startFrom.nodeIds;
+  }
+
+  return [];
 }
 
 /** The hint under the 不可與前面關卡同一人 picker while it has no problem to report. */

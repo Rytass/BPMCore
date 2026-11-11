@@ -156,3 +156,73 @@ describe('readDryRunAssigneeLabel (form-field and prior-node sources)', () => {
     );
   });
 });
+
+describe('readDryRunAssigneeLabel (manager chain start and start level)', () => {
+  it('keeps the wording of a chain with neither setting', () => {
+    expect(readDryRunAssigneeLabel('orgManagerChain:3', directory)).toBe(
+      '主管鏈：簽到職等 3（送出時依組織決定實際主管）',
+    );
+  });
+
+  it('adds the start level', () => {
+    expect(readDryRunAssigneeLabel('orgManagerChain:30:20', directory)).toBe(
+      '主管鏈：簽到職等 30（從職等 20 開始）（送出時依組織決定實際主管）',
+    );
+  });
+
+  it('names the form field a form-field start reads', () => {
+    expect(
+      readDryRunAssigneeLabel(
+        'orgManagerChain:30::formMember:reviewer',
+        directory,
+      ),
+    ).toBe(
+      '主管鏈：從表單欄位「複核人」的主管起算，簽到職等 30（送出時依組織決定實際主管）',
+    );
+  });
+
+  it('falls back to the field key, and keeps a field key that holds a colon', () => {
+    expect(
+      readDryRunAssigneeLabel('orgManagerChain:30::formMember:a:b', directory),
+    ).toBe(
+      '主管鏈：從表單欄位「a:b」的主管起算，簽到職等 30（送出時依組織決定實際主管）',
+    );
+  });
+
+  it('names the stages an earlier-stage start reads, with the start level', () => {
+    expect(
+      readDryRunAssigneeLabel(
+        'orgManagerChain:30:20:nodeActor:node-a,node-b',
+        directory,
+      ),
+    ).toBe(
+      '主管鏈：從前面關卡「主管審核、財務審核」簽核者的主管起算，簽到職等 30（從職等 20 開始）（送出時依組織決定實際主管）',
+    );
+  });
+
+  it('reads a fractional level back the way it was written', () => {
+    expect(readDryRunAssigneeLabel('orgManagerChain:3.5:2.5', directory)).toBe(
+      '主管鏈：簽到職等 3.5（從職等 2.5 開始）（送出時依組織決定實際主管）',
+    );
+  });
+
+  it('shows the stage id when the stage is no longer in the workflow', () => {
+    expect(
+      readDryRunAssigneeLabel('orgManagerChain:30::nodeActor:gone', directory),
+    ).toBe(
+      '主管鏈：從前面關卡「gone」簽核者的主管起算，簽到職等 30（送出時依組織決定實際主管）',
+    );
+  });
+
+  it('leaves a malformed chain placeholder as it came', () => {
+    expect(
+      readDryRunAssigneeLabel('orgManagerChain:30:20:formMember:', directory),
+    ).toBe('orgManagerChain:30:20:formMember:');
+    expect(
+      readDryRunAssigneeLabel('orgManagerChain:30:20:other:x', directory),
+    ).toBe('orgManagerChain:30:20:other:x');
+    expect(readDryRunAssigneeLabel('orgManagerChain:30:x', directory)).toBe(
+      'orgManagerChain:30:x',
+    );
+  });
+});

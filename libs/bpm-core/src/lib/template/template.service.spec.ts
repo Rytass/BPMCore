@@ -1107,6 +1107,22 @@ describe('TemplateService', () => {
       },
     );
 
+    it.each([
+      { nodeIds: ['task_1'], type: 'NODE_ACTOR' },
+      { levelsUp: 1, nodeIds: ['task_1'], type: 'NODE_ACTOR_MANAGER' },
+    ] as const)(
+      'still publishes %j when the earlier node has several signers (only a manager chain start needs one)',
+      async (resolver): Promise<void> => {
+        await expect(
+          publish(
+            withSecondNode(resolver as ApproverResolver, {
+              decisionPolicy: { type: 'PARALLEL_ALL' },
+            }),
+          ),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      },
+    );
+
     it('rejects a source that is not upstream of the node', async (): Promise<void> => {
       // task_2 listing itself downstream: task_1 reading task_2 is not upstream.
       const base = withSecondNode({ nodeIds: ['task_1'], type: 'NODE_ACTOR' });
@@ -1126,6 +1142,283 @@ describe('TemplateService', () => {
       } as WorkflowDefinition;
 
       await expect(publish(reversed)).rejects.toThrow(/不在 .* 的上游/);
+    });
+  });
+
+  describe('ORG_MANAGER_CHAIN start settings', (): void => {
+    const schema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'boss', label: '主管', required: true, type: 'member' },
+        {
+          fieldKey: 'bosses',
+          label: '多位主管',
+          multiple: true,
+          required: true,
+          type: 'member',
+        },
+        {
+          fieldKey: 'optionalBoss',
+          label: '選填',
+          required: false,
+          type: 'member',
+        },
+        {
+          fieldKey: 'shownBoss',
+          label: '條件顯示',
+          required: true,
+          type: 'member',
+          visibleWhen: 'form.note == "x"',
+        },
+        {
+          fieldKey: 'storedBoss',
+          hidden: true,
+          label: '外部',
+          required: false,
+          type: 'member',
+        },
+        { fieldKey: 'unit', label: '部門', required: true, type: 'org_unit' },
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+      ],
+      schemaVersion: 1,
+    };
+    // A chain needs every manager to sign, so the node signs in order.
+    const withChain = (
+      definition: WorkflowDefinition,
+      nodeId: string,
+      resolver: Readonly<Record<string, unknown>>,
+    ): WorkflowDefinition =>
+      ({
+        ...definition,
+        nodes: definition.nodes.map((node) =>
+          node.id === nodeId && node.type === 'userTask'
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  approverResolver: {
+                    minPositionLevel: 30,
+                    type: 'ORG_MANAGER_CHAIN',
+                    ...resolver,
+                  },
+                  decisionPolicy: { type: 'SEQUENTIAL' },
+                },
+              }
+            : node,
+        ),
+      }) as WorkflowDefinition;
+    const publishFormStart = (formPath: string): Promise<unknown> =>
+      createTableConditionPublishService({
+        schema,
+        workflowDefinition: withChain(
+          VALID_WORKFLOW_DEFINITION as unknown as WorkflowDefinition,
+          'task_manager',
+          { startFrom: { formPath, type: 'FORM_MEMBER' } },
+        ),
+      }).publishApprovalTemplateVersion('template-version-1');
+    const path =
+      'workflow.nodes.task_manager.approverResolver.startFrom.formPath';
+
+    it('publishes a chain that sets neither setting (control: today\'s templates)', async (): Promise<void> => {
+      await expect(
+        createTableConditionPublishService({
+          schema,
+          workflowDefinition: withChain(
+            VALID_WORKFLOW_DEFINITION as unknown as WorkflowDefinition,
+            'task_manager',
+            {},
+          ),
+        }).publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('publishes a form start on a required, single, always-visible member field', async (): Promise<void> => {
+      await expect(publishFormStart('boss')).resolves.toMatchObject({
+        id: 'template-version-1',
+      });
+    });
+
+    it.each(['missing', 'note', 'unit'])(
+      'rejects a form start on %s, which is not a member field',
+      async (formPath): Promise<void> => {
+        await expect(publishFormStart(formPath)).rejects.toThrow(
+          `${path} must reference a member (人員選擇) field of the bound form: ${formPath}`,
+        );
+      },
+    );
+
+    it('rejects a form start on a multiple member field', async (): Promise<void> => {
+      await expect(publishFormStart('bosses')).rejects.toThrow(
+        `${path} must reference a single-person member field, not a multiple one: bosses`,
+      );
+    });
+
+    it.each(['optionalBoss', 'shownBoss', 'storedBoss'])(
+      'rejects a form start on %s, which can be left empty',
+      async (formPath): Promise<void> => {
+        await expect(publishFormStart(formPath)).rejects.toThrow(
+          `${path} must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+        );
+      },
+    );
+
+    describe('a stage start', (): void => {
+      // task_1 runs before task_2; the chain sits on the node under test.
+      const publishStageStart = (
+        nodeId: string,
+        nodeIds: readonly string[],
+        firstNodeData: Readonly<Record<string, unknown>> = {},
+      ): Promise<unknown> => {
+        const base = createFieldAccessWorkflow([[], []]);
+        const withFirstData = {
+          ...base,
+          nodes: base.nodes.map((node) =>
+            node.id === 'task_1' && node.type === 'userTask'
+              ? { ...node, data: { ...node.data, ...firstNodeData } }
+              : node,
+          ),
+        } as WorkflowDefinition;
+
+        return createTableConditionPublishService({
+          workflowDefinition: withChain(withFirstData, nodeId, {
+            startFrom: { nodeIds, type: 'NODE_ACTOR' },
+          }),
+        }).publishApprovalTemplateVersion('template-version-1');
+      };
+
+      it('publishes when the earlier node is unskippable and upstream', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_2', ['task_1']),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      });
+
+      it('rejects an earlier node that an entry condition can skip, naming the start key', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_2', ['task_1'], {
+            entryCondition: 'form.amount > 10',
+          }),
+        ).rejects.toThrow(
+          /workflow\.nodes\.task_2\.approverResolver\.startFrom\.nodeIds: .*設有進入條件，可能被跳過/,
+        );
+      });
+
+      it('rejects a source that is not upstream of the chain node', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_1', ['task_2']),
+        ).rejects.toThrow(/不在 .* 的上游/);
+      });
+
+      it('reports an empty stage start once, not once per lint', async (): Promise<void> => {
+        const message = await publishStageStart('task_2', []).then(
+          () => null,
+          (error: Error): string => error.message,
+        );
+
+        expect(message?.split('; ')).toHaveLength(1);
+      });
+
+      // The engine cannot pick one person out of several signers, and says so
+      // inside the last signer's own approval, which then never commits.
+      it.each([
+        { name: 'PARALLEL_ALL', policy: { type: 'PARALLEL_ALL' } },
+        { name: 'SEQUENTIAL', policy: { type: 'SEQUENTIAL' } },
+        {
+          name: 'a COUNT quorum of 2',
+          policy: { threshold: 2, thresholdType: 'COUNT', type: 'QUORUM' },
+        },
+      ])(
+        'rejects an earlier node that $name can leave with several signers, naming it',
+        async ({ policy }): Promise<void> => {
+          await expect(
+            publishStageStart('task_2', ['task_1'], { decisionPolicy: policy }),
+          ).rejects.toThrow(
+            /workflow\.nodes\.task_2\.approverResolver\.startFrom\.nodeIds: 主管鏈起點的前面關卡 「補填 1」 可能有多位實際簽核人/,
+          );
+        },
+      );
+
+      it.each([
+        { name: 'SINGLE', policy: { type: 'SINGLE' } },
+        { name: 'PARALLEL_ANY', policy: { type: 'PARALLEL_ANY' } },
+        {
+          name: 'a COUNT quorum of 1',
+          policy: { threshold: 1, thresholdType: 'COUNT', type: 'QUORUM' },
+        },
+      ])(
+        'publishes when the earlier node is $name, so one person signs (control)',
+        async ({ policy }): Promise<void> => {
+          await expect(
+            publishStageStart('task_2', ['task_1'], { decisionPolicy: policy }),
+          ).resolves.toMatchObject({ id: 'template-version-1' });
+        },
+      );
+
+      // A lone listed member can only ever be one person, unless that member
+      // is the initiator and the stage then goes to the initiator's managers.
+      const ONE_LISTED_MEMBER = {
+        approverResolver: { memberIds: ['m1'], type: 'DIRECT' },
+        decisionPolicy: { type: 'PARALLEL_ALL' },
+      };
+
+      it('publishes a multi-seat policy over one listed member, so one person signs (control)', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_2', ['task_1'], ONE_LISTED_MEMBER),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      });
+
+      it('rejects a multi-seat policy over one listed member that hands over to the initiator manager', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_2', ['task_1'], {
+            ...ONE_LISTED_MEMBER,
+            excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+          }),
+        ).rejects.toThrow(
+          /workflow\.nodes\.task_2\.approverResolver\.startFrom\.nodeIds: 主管鏈起點的前面關卡 「補填 1」 可能有多位實際簽核人/,
+        );
+      });
+
+      // task_1 -> task_2 -> task_3: task_2 lists one member but keeps task_1's
+      // approver out; when that member signed task_1, task_2 goes to the
+      // initiator's managers, so the chain on task_3 cannot start from it.
+      const publishExcludedStageStart = (
+        whenEmpty: string,
+      ): Promise<unknown> => {
+        const base = createFieldAccessWorkflow([[], [], []]);
+        const withExclusion = {
+          ...base,
+          nodes: base.nodes.map((node) =>
+            node.id === 'task_2' && node.type === 'userTask'
+              ? {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    ...ONE_LISTED_MEMBER,
+                    excludeNodeActors: { nodeIds: ['task_1'], whenEmpty },
+                  },
+                }
+              : node,
+          ),
+        } as WorkflowDefinition;
+
+        return createTableConditionPublishService({
+          workflowDefinition: withChain(withExclusion, 'task_3', {
+            startFrom: { nodeIds: ['task_2'], type: 'NODE_ACTOR' },
+          }),
+        }).publishApprovalTemplateVersion('template-version-1');
+      };
+
+      it('publishes a multi-seat policy over one listed member whose earlier-stage exclusion fails (control)', async (): Promise<void> => {
+        await expect(publishExcludedStageStart('FAIL')).resolves.toMatchObject({
+          id: 'template-version-1',
+        });
+      });
+
+      it('rejects a multi-seat policy over one listed member whose earlier-stage exclusion hands over to the initiator manager', async (): Promise<void> => {
+        await expect(
+          publishExcludedStageStart('INITIATOR_MANAGER'),
+        ).rejects.toThrow(
+          /workflow\.nodes\.task_3\.approverResolver\.startFrom\.nodeIds: 主管鏈起點的前面關卡 「補填 2」 可能有多位實際簽核人/,
+        );
+      });
     });
   });
 

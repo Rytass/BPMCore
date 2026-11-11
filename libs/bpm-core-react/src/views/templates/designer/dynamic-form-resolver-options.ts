@@ -193,6 +193,20 @@ export function readFormOrgUnitFieldChoice(
 }
 
 /**
+ * What a form field is called in a sentence: its label, or the field key when
+ * the form has no such field (any more) or the field has no label.
+ */
+export function readFormFieldDisplayName(
+  schema: FormDefinitionSchema | null,
+  formPath: string,
+): string {
+  return (
+    schema?.fields.find((candidate) => candidate.fieldKey === formPath)
+      ?.label || formPath
+  );
+}
+
+/**
  * 依表單欄位：<label>; the field key when the form does not have it (any
  * more), and a marker when the key names something that is not a member field.
  */
