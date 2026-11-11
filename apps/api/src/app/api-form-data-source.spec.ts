@@ -17,6 +17,7 @@ describe('ApiFormDataSourceRegistry', () => {
       ['demo.cost-centers-complete', 1],
       ['demo.cost-centers-always', 1],
       ['demo.cost-centers-optional-filter', 1],
+      ['demo.vendors', 1],
     ]);
     expect(registry.get('demo.cost-centers', 1)).not.toBeNull();
     expect(registry.get('demo.cost-centers', 2)).toBeNull();
@@ -183,3 +184,32 @@ function createAuthContext(): BPMAuthContext {
     roles: ['REQUESTER'],
   };
 }
+
+describe('ApiFormDataSourceRegistry vendor source', () => {
+  it('searches the unscoped vendor rows without a plant binding', async (): Promise<void> => {
+    const query = jest.fn(
+      async (): Promise<readonly Record<string, string | number>[]> => [
+        { label: '甲供應商', sort_order: 1, value: 'V-001' },
+      ],
+    );
+    const source = new ApiFormDataSourceRegistry(createDataSource(query)).get(
+      'demo.vendors',
+      1,
+    );
+
+    if (!source) {
+      throw new Error('Expected demo.vendors@1');
+    }
+
+    await expect(
+      source.search({ ...createSearchRequest(), bindings: {}, searchText: '甲' }),
+    ).resolves.toEqual({
+      nextCursor: null,
+      options: [{ label: '甲供應商', value: 'V-001' }],
+    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining(API_FORM_DATA_SOURCE_OPTIONS_TABLE),
+      expect.arrayContaining(['demo.vendors', 1, 'ALL']),
+    );
+  });
+});

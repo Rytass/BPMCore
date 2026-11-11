@@ -18,7 +18,10 @@ import {
   type FilterLineProps,
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
-import { FormFieldLayout } from '@mezzanine-ui/core/form';
+import {
+  ControlFieldSlotLayout,
+  FormFieldLayout,
+} from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import {
   resolveMembers,
@@ -467,9 +470,10 @@ export function ApprovalInstanceListPage({
 
   const searchFilterLine = (
     <FilterLine key="search">
-      <Filter span={3}>
+      <Filter span={2}>
         <FormField
           fullWidth
+          controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
           layout={FormFieldLayout.VERTICAL}
           name="instanceSearchText"
         >
@@ -489,6 +493,7 @@ export function ApprovalInstanceListPage({
       <Filter span={2}>
         <FormField
           fullWidth
+          controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
           layout={FormFieldLayout.VERTICAL}
           name="instanceState"
         >
@@ -512,6 +517,7 @@ export function ApprovalInstanceListPage({
       <Filter span={2}>
         <FormField
           fullWidth
+          controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
           layout={FormFieldLayout.VERTICAL}
           label="範本"
           name="instanceTemplate"
@@ -535,6 +541,7 @@ export function ApprovalInstanceListPage({
       <Filter span={2}>
         <FormField
           fullWidth
+          controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
           layout={FormFieldLayout.VERTICAL}
           label="排序欄位"
           name="instanceSortField"
@@ -559,6 +566,7 @@ export function ApprovalInstanceListPage({
       <Filter span={2}>
         <FormField
           fullWidth
+          controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
           layout={FormFieldLayout.VERTICAL}
           label="排序方向"
           name="instanceSortDirection"
@@ -596,6 +604,7 @@ export function ApprovalInstanceListPage({
               onReset={handleFilterReset}
               onSubmit={handleFilterSubmit}
               resetText="清除條件"
+              rowAlign="end"
               size="sub"
               submitText="重新查詢"
             >

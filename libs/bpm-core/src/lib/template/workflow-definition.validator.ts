@@ -307,6 +307,12 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
           : [
               `workflow.nodes.${node.id}.returnBehavior.requireComment must be a boolean`,
             ]),
+        ...(data.requireApprovalComment === undefined ||
+        typeof data.requireApprovalComment === 'boolean'
+          ? []
+          : [
+              `workflow.nodes.${node.id}.requireApprovalComment must be a boolean`,
+            ]),
         ...lintExcludeInitiator(data.excludeInitiator, node.id),
         ...lintSlaConfig(data.sla, node.id),
         ...readNodeFieldAccessIssues(node).map((issue) => issue.message),

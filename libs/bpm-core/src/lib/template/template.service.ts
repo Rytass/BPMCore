@@ -261,6 +261,15 @@ export class TemplateService {
         readonly event: BPMTemplateChangedEvent;
         readonly result: ComposeApprovalTemplateWithFormObject;
       }> => {
+        // ADR 25 §15: an existing template's row is locked before anything
+        // else, so this compose takes the template lock before it forks or
+        // writes the draft row, the same order a standalone publish uses.
+        // Taking it later (after the draft write, inside publishVersion) let a
+        // concurrent publish of the same draft deadlock against this one.
+        if (input.templateId) {
+          await this.readLockedTemplateOrThrow(manager, input.templateId);
+        }
+
         const formDefinitionVersion = await this.resolveComposedFormVersion(
           manager,
           input,
@@ -454,31 +463,40 @@ export class TemplateService {
   async updateApprovalTemplate(
     input: UpdateApprovalTemplateInput,
   ): Promise<ApprovalTemplateEntity> {
-    const existing = await this.getTemplateOrThrow(input.id);
     const category =
       input.categoryId === undefined
         ? undefined
         : await this.validateOptionalTemplateCategory(input.categoryId);
-    const next = this.templateRepository.merge(existing, {
-      category:
-        input.category !== undefined
-          ? input.category
-          : category !== undefined
-            ? (category?.name ?? null)
-            : existing.category,
-      description: input.description ?? existing.description,
-      name: input.name ?? existing.name,
-    });
 
-    // Assigned outside `merge` because the relation, not the `categoryId`
-    // scalar, owns `category_id`. Leaving `categoryDetail` untouched when the
-    // caller omitted `categoryId` keeps the loaded relation, which persists
-    // the current category unchanged.
-    if (category !== undefined) {
-      next.categoryDetail = category;
-    }
+    await this.templateRepository.manager.transaction(
+      async (manager): Promise<void> => {
+        const existing = await this.readLockedTemplateOrThrow(
+          manager,
+          input.id,
+        );
+        const templates = manager.getRepository(ApprovalTemplateEntity);
+        const next = templates.merge(existing, {
+          category:
+            input.category !== undefined
+              ? input.category
+              : category !== undefined
+                ? (category?.name ?? null)
+                : existing.category,
+          description: input.description ?? existing.description,
+          name: input.name ?? existing.name,
+        });
 
-    await this.templateRepository.save(next);
+        // Assigned outside `merge` because the relation, not the `categoryId`
+        // scalar, owns `category_id`. Leaving `categoryDetail` untouched when the
+        // caller omitted `categoryId` keeps the loaded relation, which persists
+        // the current category unchanged.
+        if (category !== undefined) {
+          next.categoryDetail = category;
+        }
+
+        await templates.save(next);
+      },
+    );
 
     // Re-read rather than returning the saved entity: `categoryId` is not
     // written by `save()` any more, so the in-memory copy would still carry
@@ -674,42 +692,88 @@ export class TemplateService {
     input: UpdateApprovalTemplateDraftInput,
     manager?: EntityManager,
   ): Promise<ApprovalTemplateVersionEntity> {
-    const versionRepository = this.templateVersions(manager);
-    const existing = await this.getTemplateVersionOrThrow(
-      input.versionId,
+    return this.runInTemplateTransaction(
       manager,
-    );
+      async (txManager): Promise<ApprovalTemplateVersionEntity> => {
+        const versionRepository = this.templateVersions(txManager);
+        // Read once to learn the template, lock its row (ADR 25 §15), then read
+        // the draft again: a publish that committed before the lock has turned
+        // it PUBLISHED, and saving the copy read before would write the old
+        // DRAFT status and empty publish fields back over it.
+        const unlocked = await this.getTemplateVersionOrThrow(
+          input.versionId,
+          txManager,
+        );
 
-    if (existing.status !== ApprovalTemplateVersionStatusEnum.DRAFT) {
-      throw new ConflictException(
-        'Only draft approval template versions can be updated',
-      );
-    }
+        await this.readLockedTemplateOrThrow(txManager, unlocked.templateId);
 
-    await this.validateOptionalFormDefinitionVersion(
-      input.formDefinitionVersionId,
-      manager,
-    );
-    const workflowDefinition = this.parseWorkflowDefinitionOrThrow(
-      input.workflowDefinitionJson,
-    );
-    const next = versionRepository.merge(existing, {
-      formDefinitionVersionId: input.formDefinitionVersionId,
-      initiatorPolicyCel: input.initiatorPolicyCel,
-      notificationConfig: parseOptionalJsonObject(input.notificationConfigJson),
-      slaDefaults: parseOptionalJsonObject(input.slaDefaultsJson),
-      workflowDefinition,
-    });
+        const existing = await this.getTemplateVersionOrThrow(
+          input.versionId,
+          txManager,
+        );
 
-    return versionRepository.save(next);
+        if (existing.status !== ApprovalTemplateVersionStatusEnum.DRAFT) {
+          throw new ConflictException(
+            'Only draft approval template versions can be updated',
+          );
+        }
+
+        await this.validateOptionalFormDefinitionVersion(
+          input.formDefinitionVersionId,
+          txManager,
+        );
+        const workflowDefinition = this.parseWorkflowDefinitionOrThrow(
+          input.workflowDefinitionJson,
+        );
+        const next = versionRepository.merge(existing, {
+          formDefinitionVersionId: input.formDefinitionVersionId,
+          initiatorPolicyCel: input.initiatorPolicyCel,
+          notificationConfig: parseOptionalJsonObject(
+            input.notificationConfigJson,
+          ),
+          slaDefaults: parseOptionalJsonObject(input.slaDefaultsJson),
+          workflowDefinition,
+        });
+
+        return versionRepository.save(next);
+      },
+    );
+  }
+
+  /**
+   * Runs `run` in the caller's transaction when one is passed, otherwise in a
+   * new one, so a template lock taken inside it is held until the write
+   * commits.
+   */
+  private runInTemplateTransaction<TResult>(
+    manager: EntityManager | undefined,
+    run: (txManager: EntityManager) => Promise<TResult>,
+  ): Promise<TResult> {
+    return manager
+      ? run(manager)
+      : this.templateRepository.manager.transaction(run);
   }
 
   async forkApprovalTemplate(
     templateId: string,
     manager?: EntityManager,
   ): Promise<ApprovalTemplateVersionEntity> {
+    return this.runInTemplateTransaction(manager, (txManager) =>
+      this.forkApprovalTemplateLocked(templateId, txManager),
+    );
+  }
+
+  /**
+   * Forks under the template row lock (ADR 25 §15): the draft check, the
+   * source read and the insert see the template as no concurrent publish or
+   * fork can change it until this commits.
+   */
+  private async forkApprovalTemplateLocked(
+    templateId: string,
+    manager: EntityManager,
+  ): Promise<ApprovalTemplateVersionEntity> {
     const versionRepository = this.templateVersions(manager);
-    const template = await this.getTemplateOrThrow(templateId, manager);
+    const template = await this.readLockedTemplateOrThrow(manager, templateId);
     const existingDraft = await versionRepository.findOne({
       where: {
         status: ApprovalTemplateVersionStatusEnum.DRAFT,
@@ -788,19 +852,70 @@ export class TemplateService {
       );
     }
 
-    const formSchema = await this.validatePublishableVersion(version, manager);
+    // Early refusals only: they run outside the lock and are repeated below.
+    await this.validatePublishableVersion(version, manager);
 
-    const run = (txManager: EntityManager): Promise<PublishedVersionResult> =>
-      this.publishApprovalTemplateVersionWithManager(
+    // ADR 25 §5.4 and §15: the template row is locked before the enable check
+    // and before the draft is read again, so a concurrent form-data write
+    // (which takes FOR SHARE on the same row) cannot slip between the check
+    // and the commit, and the draft is judged as it is under the lock.
+    const run = async (
+      txManager: EntityManager,
+    ): Promise<PublishedVersionResult> => {
+      const lockedTemplate = await this.lockTemplateRow(
         txManager,
-        version,
+        version.templateId,
+        'pessimistic_write',
+      );
+
+      if (!lockedTemplate) {
+        throw new NotFoundException(
+          `Approval template ${version.templateId} was not found`,
+        );
+      }
+
+      const lockedVersion = await this.getTemplateVersionOrThrow(
+        versionId,
+        txManager,
+      );
+
+      if (lockedVersion.status !== ApprovalTemplateVersionStatusEnum.DRAFT) {
+        throw new ConflictException(
+          'Only draft approval template versions can be published',
+        );
+      }
+
+      const formSchema = await this.validatePublishableVersion(
+        lockedVersion,
+        txManager,
+      );
+
+      return this.publishApprovalTemplateVersionWithManager(
+        txManager,
+        lockedVersion,
         publishedByMemberId,
         formSchema,
       );
+    };
 
     return manager
       ? run(manager)
       : this.templateRepository.manager.transaction(run);
+  }
+
+  /**
+   * Reads one template row, optionally locked. Locks are only taken inside a
+   * transaction; the caller passes the transaction's manager.
+   */
+  private async lockTemplateRow(
+    manager: EntityManager,
+    templateId: string,
+    mode: 'pessimistic_read' | 'pessimistic_write',
+  ): Promise<ApprovalTemplateEntity | null> {
+    return manager.getRepository(ApprovalTemplateEntity).findOne({
+      lock: { mode },
+      where: { deletedAt: IsNull(), id: templateId },
+    });
   }
 
   private async publishApprovalTemplateVersionWithManager(
@@ -813,9 +928,14 @@ export class TemplateService {
     const versionRepository = manager.getRepository(
       ApprovalTemplateVersionEntity,
     );
-    const template = await templateRepository.findOne({
-      where: { deletedAt: IsNull(), id: version.templateId },
-    });
+    // Already locked by the caller (`publishVersion`); the lock is taken again
+    // here so this method is safe on its own, and the lock is re-entrant
+    // within one transaction.
+    const template = await this.lockTemplateRow(
+      manager,
+      version.templateId,
+      'pessimistic_write',
+    );
 
     if (!template) {
       throw new NotFoundException(
@@ -833,10 +953,13 @@ export class TemplateService {
     // ADR 25 §5.4: a field that becomes filterable must not hold values the
     // template's existing instances cannot satisfy. Checked here, inside the
     // publish transaction, so the instances it reads are the ones it archives.
+    // Only what this publish makes filterable is scanned (ADR 25 §15).
     await assertTemplateFilterableFieldsEnabled(
       manager,
       template.id,
       formSchema,
+      (): Promise<FormDefinitionSchema | null> =>
+        this.readInForceFormSchema(manager, template),
     );
 
     const previousVersionId = template.currentVersionId;
@@ -906,9 +1029,13 @@ export class TemplateService {
         const versionRepository = manager.getRepository(
           ApprovalTemplateVersionEntity,
         );
-        const template = await templateRepository.findOne({
-          where: { deletedAt: IsNull(), id: target.templateId },
-        });
+        // ADR 25 §5.4 and §15: lock the template row before the enable check,
+        // the same lock a publish takes (see `publishVersion`).
+        const template = await this.lockTemplateRow(
+          manager,
+          target.templateId,
+          'pessimistic_write',
+        );
 
         if (!template) {
           throw new NotFoundException(
@@ -931,6 +1058,8 @@ export class TemplateService {
             manager,
             target.formDefinitionVersionId,
           ),
+          (): Promise<FormDefinitionSchema | null> =>
+            this.readInForceFormSchema(manager, template),
         );
 
         const previousVersionId = template.currentVersionId;
@@ -1310,6 +1439,31 @@ export class TemplateService {
       : this.formDefinitionVersionRepository;
   }
 
+  /**
+   * The form schema of the template's current version: the one whose
+   * filterable fields the stored instances already satisfy. Null when the
+   * template has no published version yet. Read under the caller's template
+   * row lock, so no write can change what it guarantees before the publish
+   * commits.
+   */
+  private async readInForceFormSchema(
+    manager: EntityManager,
+    template: ApprovalTemplateEntity,
+  ): Promise<FormDefinitionSchema | null> {
+    if (!template.currentVersionId) {
+      return null;
+    }
+
+    const current = await manager
+      .getRepository(ApprovalTemplateVersionEntity)
+      .findOne({ where: { id: template.currentVersionId } });
+
+    return this.readFormSchemaOfVersion(
+      manager,
+      current?.formDefinitionVersionId ?? null,
+    );
+  }
+
   private async readFormSchemaOfVersion(
     manager: EntityManager,
     formDefinitionVersionId: string | null,
@@ -1362,13 +1516,37 @@ export class TemplateService {
     id: string,
     isActive: boolean,
   ): Promise<ApprovalTemplateEntity> {
-    const template = await this.getTemplateOrThrow(id);
+    return this.templateRepository.manager.transaction(
+      async (manager): Promise<ApprovalTemplateEntity> => {
+        const template = await this.readLockedTemplateOrThrow(manager, id);
+        const templates = manager.getRepository(ApprovalTemplateEntity);
 
-    return this.templateRepository.save(
-      this.templateRepository.merge(template, {
-        isActive,
-      }),
+        return templates.save(templates.merge(template, { isActive }));
+      },
     );
+  }
+
+  /**
+   * Locks the template row FOR UPDATE, the lock a publish, compose or rollback
+   * takes (ADR 25 §15), then reads the row with its category. A template edit
+   * saves the whole entity it read, so reading it unlocked would let a publish
+   * that commits in between be overwritten with the pre-publish
+   * `currentVersionId`; under the lock the read is the latest committed row
+   * and a publish waits for this edit instead.
+   */
+  private async readLockedTemplateOrThrow(
+    manager: EntityManager,
+    id: string,
+  ): Promise<ApprovalTemplateEntity> {
+    // The lock is taken without the category join: Postgres refuses FOR
+    // UPDATE on the nullable side of an outer join.
+    const locked = await this.lockTemplateRow(manager, id, 'pessimistic_write');
+
+    if (!locked) {
+      throw new NotFoundException(`Approval template ${id} was not found`);
+    }
+
+    return this.getTemplateOrThrow(id, manager);
   }
 
   private async setApprovalTemplateCategoryActive(

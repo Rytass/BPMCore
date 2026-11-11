@@ -1993,6 +1993,20 @@ export function TemplateDesignerView({
     });
   }
 
+  function updateUserTaskRequireApprovalComment(
+    requireApprovalComment: boolean,
+  ): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    controller.dispatch({
+      nodeId: selectedNode.id,
+      requireApprovalComment,
+      type: 'setUserTaskRequireApprovalComment',
+    });
+  }
+
   function updateUserTaskSla(sla: SlaConfig | null): void {
     if (!selectedNode || selectedNode.type !== 'userTask') {
       return;
@@ -3858,6 +3872,24 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
+        <BPMFormField
+          hintText="開啟後，簽核者按下同意時必須填寫意見，未填寫會被擋下；逾時自動同意不受影響。"
+          label="核准時意見必填"
+          name="approvalRequireComment"
+        >
+          <Toggle
+            checked={node.data.requireApprovalComment === true}
+            // FormField renders `<label htmlFor={name}>`, so the control needs
+            // the matching id for the label to be clickable.
+            inputProps={{
+              id: 'approvalRequireComment',
+              name: 'approvalRequireComment',
+            }}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateUserTaskRequireApprovalComment(event.target.checked)
+            }
+          />
+        </BPMFormField>
         <BPMFormField
           hintText="開啟後可設定簽核期限，逾時將依下方設定處理。"
           label="啟用時效"

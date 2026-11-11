@@ -7,6 +7,17 @@ import {
 } from '../src/app/api-simulation-members';
 import { ensureApiTestMemberTable } from '../src/app/api-test-member-schema';
 import {
+  FILTERABLE_EXPENSE_APPROVAL_NODES,
+  FILTERABLE_EXPENSE_FORM_SCHEMA,
+  FILTERABLE_EXPENSE_FORM_UI_SCHEMA,
+  FILTERABLE_EXPENSE_IDS,
+  FILTERABLE_EXPENSE_NOTIFICATION_BODY,
+  FILTERABLE_EXPENSE_TEMPLATE_DESCRIPTION,
+  FILTERABLE_EXPENSE_TEMPLATE_NAME,
+  readFilterableExpenseInstances,
+  readFilterableExpenseNotifications,
+} from '../src/app/filterable-expense-demo.seed';
+import {
   API_FORM_DATA_SOURCE_OPTIONS_TABLE,
   API_FORM_DATA_SOURCE_OPTION_SEEDS,
   ensureApiFormDataSourceOptionsTable,
@@ -1337,8 +1348,24 @@ const DYNAMIC_OPTIONS_WORKFLOW = createWorkflowDefinition({
   ],
 });
 
+/**
+ * `BPM_RESET_DB_HOST` replaces the Vault `DB_HOST` for this run only. The
+ * staging secret points at the database's private VPC address, which a
+ * workstation cannot reach; the same instance also answers on its public
+ * address, so `staging:reset` can be run from outside the cluster with it.
+ */
+function applyHostOverride(
+  options: DataSourceOptions,
+  host: string | undefined,
+): DataSourceOptions {
+  return host && options.type === 'postgres' ? { ...options, host } : options;
+}
+
 async function main(): Promise<void> {
-  const options = await buildDataSourceOptionsFromVaultEnv(process.env);
+  const options = applyHostOverride(
+    await buildDataSourceOptionsFromVaultEnv(process.env),
+    process.env.BPM_RESET_DB_HOST?.trim(),
+  );
   const dataSource = new DataSource(options);
 
   await dataSource.initialize();
@@ -1374,6 +1401,7 @@ async function resetAndSeed(
     await seedForms(queryRunner);
     await seedTemplates(queryRunner);
     await seedRuntimeData(queryRunner);
+    await seedFilterableExpenseDemo(queryRunner);
     await queryRunner.commitTransaction();
   } catch (error: unknown) {
     await queryRunner.rollbackTransaction();
@@ -3406,6 +3434,275 @@ async function seedNotifications(queryRunner: QueryRunner): Promise<void> {
   );
 }
 
+/**
+ * The ADR 25 acceptance template (請款範本) and its 24 cases. The ids are the
+ * constants in `filterable-expense-demo.seed.ts`; the data and its coverage
+ * notes live there too.
+ */
+async function seedFilterableExpenseDemo(queryRunner: QueryRunner): Promise<void> {
+  const workflowDefinition = createWorkflowDefinition({
+    approvalNodes: FILTERABLE_EXPENSE_APPROVAL_NODES,
+  });
+  const instances = readFilterableExpenseInstances();
+
+  await insertRows(
+    queryRunner,
+    'form_definitions',
+    [
+      'id',
+      'name',
+      'description',
+      'current_version_id',
+      'created_by_member_id',
+      'created_at',
+      'updated_at',
+    ],
+    [
+      formDefinitionRow(
+        FILTERABLE_EXPENSE_IDS.FORM_DEFINITION,
+        FILTERABLE_EXPENSE_TEMPLATE_NAME,
+        FILTERABLE_EXPENSE_TEMPLATE_DESCRIPTION,
+        'member-102',
+      ),
+    ],
+  );
+  await insertRows(
+    queryRunner,
+    'form_definition_versions',
+    [
+      'id',
+      'form_definition_id',
+      'version',
+      'status',
+      'schema',
+      'ui_schema',
+      'published_at',
+      'published_by_member_id',
+      'archived_at',
+      'created_at',
+      'updated_at',
+    ],
+    [
+      formVersionRow(
+        FILTERABLE_EXPENSE_IDS.FORM_VERSION,
+        FILTERABLE_EXPENSE_IDS.FORM_DEFINITION,
+        1,
+        'PUBLISHED',
+        FILTERABLE_EXPENSE_FORM_SCHEMA,
+        FILTERABLE_EXPENSE_FORM_UI_SCHEMA,
+        '2026-05-22T03:00:00.000Z',
+        'member-102',
+        null,
+      ),
+    ],
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'form_definitions',
+    FILTERABLE_EXPENSE_IDS.FORM_DEFINITION,
+    FILTERABLE_EXPENSE_IDS.FORM_VERSION,
+  );
+
+  await insertRows(
+    queryRunner,
+    'approval_templates',
+    [
+      'id',
+      'name',
+      'description',
+      'category',
+      'category_id',
+      'created_by_member_id',
+      'current_version_id',
+      'created_at',
+      'updated_at',
+    ],
+    [
+      templateRow(
+        FILTERABLE_EXPENSE_IDS.TEMPLATE,
+        FILTERABLE_EXPENSE_TEMPLATE_NAME,
+        FILTERABLE_EXPENSE_TEMPLATE_DESCRIPTION,
+        '採購請款',
+        CATEGORY_IDS.FINANCE,
+        'member-102',
+      ),
+    ],
+  );
+  await insertRows(
+    queryRunner,
+    'approval_template_versions',
+    [
+      'id',
+      'template_id',
+      'version',
+      'status',
+      'workflow_definition',
+      'form_definition_version_id',
+      'published_at',
+      'published_by_member_id',
+      'archived_at',
+      'created_at',
+      'updated_at',
+      'initiator_policy_cel',
+      'notification_config',
+      'sla_defaults',
+    ],
+    [
+      templateVersionRow(
+        FILTERABLE_EXPENSE_IDS.TEMPLATE_VERSION,
+        FILTERABLE_EXPENSE_IDS.TEMPLATE,
+        1,
+        'PUBLISHED',
+        workflowDefinition,
+        FILTERABLE_EXPENSE_IDS.FORM_VERSION,
+        '2026-05-22T04:00:00.000Z',
+        'member-102',
+        null,
+      ),
+    ],
+  );
+  await updateCurrentVersion(
+    queryRunner,
+    'approval_templates',
+    FILTERABLE_EXPENSE_IDS.TEMPLATE,
+    FILTERABLE_EXPENSE_IDS.TEMPLATE_VERSION,
+  );
+
+  await insertRows(
+    queryRunner,
+    'approval_instances',
+    [
+      'id',
+      'template_id',
+      'template_version_id',
+      'initiator_member_id',
+      'initiator_metadata_snapshot',
+      'workflow_snapshot',
+      'form_definition_snapshot',
+      'form_data',
+      'form_data_option_snapshot',
+      'state',
+      'title',
+      'started_at',
+      'completed_at',
+      'created_at',
+      'updated_at',
+    ],
+    instances.map((instance) =>
+      instanceRow(
+        instance.id,
+        FILTERABLE_EXPENSE_IDS.TEMPLATE,
+        FILTERABLE_EXPENSE_IDS.TEMPLATE_VERSION,
+        instance.initiatorMemberId,
+        workflowDefinition,
+        FILTERABLE_EXPENSE_FORM_SCHEMA,
+        FILTERABLE_EXPENSE_FORM_UI_SCHEMA,
+        instance.formData,
+        instance.state,
+        instance.title,
+        instance.startedAt,
+        instance.completedAt,
+        instance.optionSnapshot,
+        instance.updatedAt,
+      ),
+    ),
+  );
+
+  await insertRows(
+    queryRunner,
+    'workflow_tokens',
+    [
+      'id',
+      'instance_id',
+      'current_node_id',
+      'status',
+      'parent_token_id',
+      'created_at',
+      'consumed_at',
+    ],
+    instances.map((instance) =>
+      tokenRow(
+        instance.token.id,
+        instance.id,
+        instance.token.currentNodeId,
+        instance.token.status,
+        instance.token.createdAt,
+        instance.token.consumedAt,
+      ),
+    ),
+  );
+
+  await insertRows(
+    queryRunner,
+    'tasks',
+    [
+      'id',
+      'instance_id',
+      'token_id',
+      'node_id',
+      'original_assignee_member_id',
+      'assignee_member_id',
+      'delegation_chain',
+      'status',
+      'sla_due_at',
+      'created_at',
+      'opened_at',
+      'completed_at',
+    ],
+    instances.flatMap((instance) =>
+      instance.tasks.map((task) =>
+        taskRow(
+          task.id,
+          instance.id,
+          instance.token.id,
+          task.nodeId,
+          task.assigneeMemberId,
+          task.assigneeMemberId,
+          task.status,
+          task.slaDueAt,
+          task.createdAt,
+          task.openedAt,
+          task.completedAt,
+        ),
+      ),
+    ),
+  );
+
+  await insertRows(
+    queryRunner,
+    'notifications',
+    [
+      'id',
+      'recipient_member_id',
+      'channel',
+      'type',
+      'instance_id',
+      'task_id',
+      'title',
+      'body',
+      'payload',
+      'status',
+      'sent_at',
+      'read_at',
+      'created_at',
+    ],
+    readFilterableExpenseNotifications().map((notification) =>
+      notificationRow(
+        notification.id,
+        notification.recipientMemberId,
+        'WORKFLOW_NOTIFICATION',
+        notification.instanceId,
+        null,
+        notification.title,
+        FILTERABLE_EXPENSE_NOTIFICATION_BODY,
+        'SENT',
+        notification.sentAt,
+        null,
+      ),
+    ),
+  );
+}
+
 async function seedDelegations(queryRunner: QueryRunner): Promise<void> {
   await insertRows(
     queryRunner,
@@ -3828,6 +4125,7 @@ function instanceRow(
   startedAt: string,
   completedAt: string | null,
   formDataOptionSnapshot: unknown = {},
+  updatedAt: string | null = null,
 ): SeedRow {
   return {
     completed_at: text(completedAt),
@@ -3846,7 +4144,7 @@ function instanceRow(
     template_id: text(templateId),
     template_version_id: text(templateVersionId),
     title: text(title),
-    updated_at: text(completedAt ?? NOW),
+    updated_at: text(updatedAt ?? completedAt ?? NOW),
     workflow_snapshot: jsonb(workflowSnapshot),
   };
 }
@@ -4047,7 +4345,7 @@ function notificationRow(
   recipientMemberId: string,
   typeValue: string,
   instanceId: string,
-  taskId: string,
+  taskId: string | null,
   title: string,
   body: string,
   status: string,

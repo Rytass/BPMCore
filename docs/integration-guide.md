@@ -226,6 +226,57 @@ for the route shape.
 
 ---
 
+## 依表單欄位篩選案件（ADR 25）
+
+案件列表可依表單欄位篩選與排序。只有表單設計者逐欄勾選 `filterable` 的欄位能用；
+送出 `fieldFilters` 或欄位排序時**必須同時指定 `templateId`**，否則伺服端拒絕。
+條件與排序都套在可見範圍之後，不會放寬權限。
+
+最小範例（`listApprovalInstancesPage`）：
+
+```ts
+import { listApprovalInstancesPage } from '@rytass/bpm-core-client/workflow';
+
+const result = await listApprovalInstancesPage({
+  view: 'ALL',
+  state: null,
+  searchText: null,
+  templateId: '<templateId>',
+  fieldFilters: [
+    { fieldKey: 'companyCode', operator: 'EQUALS', values: ['C100'] },
+    { fieldKey: 'amountTwd', operator: 'RANGE', from: '10000', to: '500000' },
+  ],
+  sort: [{ field: 'applyDate', direction: 'DESC' }],
+  page: 1,
+  pageSize: 10,
+});
+
+// result.instances、result.totalCount
+```
+
+條件值格式（型別定義見 `@rytass/bpm-core-shared` 的 `ApprovalInstanceFieldFilter`）：
+
+| 欄位型別 | 可用運算子 | `values` / `from` / `to` |
+| --- | --- | --- |
+| `text` | `EQUALS`、`NOT_EQUALS`、`IN`、`CONTAINS` | `values` 字串陣列；`CONTAINS` 只讀第一個值，不分大小寫 |
+| 選項型（`select`、`radio`、`checkbox`、`autocomplete`，單選或多選） | `EQUALS`、`NOT_EQUALS`、`IN`、`CONTAINS` | 選項值字串；多選欄位任一值命中即符合 |
+| `number`、`money` | `EQUALS`、`NOT_EQUALS`、`IN`、`RANGE` | 十進位字串，例如 `"10000"`；`RANGE` 的 `from` / `to` 含兩端，可只給一端 |
+| `date` | `EQUALS`、`NOT_EQUALS`、`RANGE` | `YYYY-MM-DD`；`RANGE` 含兩端 |
+| `datetime` | `EQUALS`、`NOT_EQUALS`、`RANGE` | ISO 8601（UTC） |
+| `boolean` | `EQUALS` | `"true"` 或 `"false"` |
+| `textarea` | `CONTAINS` | 同 `text` |
+| `member`、`org_unit` | `EQUALS`、`NOT_EQUALS`、`IN` | 成員或組織 id 字串 |
+| table 欄位 | 依欄位型別，同上 | `fieldKey` 寫成 `<tableKey>.<columnKey>` |
+
+- 多個 `fieldFilters` 之間為 AND；同一路徑可出現多次（例如範圍兩端分開傳）。
+- 同一個 table 的多個欄位條件必須由**同一列**同時滿足：品號 `SKU-A` 加數量 ≥ 10，
+  不會命中「一列是 `SKU-A`、另一列數量 ≥ 10」的案件。
+- 排序欄位可以是 `filterable` 的表單欄位，或時間欄位 `submittedAt`、`updatedAt`、`completedAt`。
+  `direction` 省略時 SDK 送 `DESC`。
+- 選項型欄位做 `CONTAINS` 時，同時比對選項值與送出當時的顯示名稱快照；改名後舊案件仍以舊名稱被搜到。
+
+---
+
 ## What lives in the lib vs. the host (quick reference)
 
 | Concern | Owned by lib | Owned by host |

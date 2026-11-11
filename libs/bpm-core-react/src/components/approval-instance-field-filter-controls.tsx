@@ -10,7 +10,10 @@ import {
   Select,
   type FilterProps,
 } from '@mezzanine-ui/react';
-import { FormFieldLayout } from '@mezzanine-ui/core/form';
+import {
+  ControlFieldSlotLayout,
+  FormFieldLayout,
+} from '@mezzanine-ui/core/form';
 import {
   formatDatePickerValue,
   formatDateTimePickerValue,
@@ -94,7 +97,9 @@ export function readFieldFilterElements(
         item.path,
         item.label,
         renderControl(item, draft, change, item.label),
-        control.kind === 'id-in' ? '多個成員以逗號分隔' : undefined,
+        control.kind === 'id-in'
+          ? `多個${readIdNoun(item)}以逗號分隔`
+          : undefined,
       ),
     ];
   });
@@ -111,6 +116,7 @@ function renderFilter(
       <FormField
         fullWidth
         hintText={hintText}
+        controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
         layout={FormFieldLayout.VERTICAL}
         label={label}
         name={`fieldFilter-${key}`}
@@ -119,6 +125,11 @@ function renderFilter(
       </FormField>
     </Filter>
   );
+}
+
+/** What an id-in field holds: members, or org units for an `org_unit` field. */
+function readIdNoun(item: FilterableFieldPath): string {
+  return item.kind === 'org_unit' ? '組織' : '成員';
 }
 
 function readNumberHint(value: string): string | undefined {
@@ -222,7 +233,7 @@ function renderControl(
         onChange={(event): void => {
           change({ ...draft, text: event.target.value });
         }}
-        placeholder={`${label}：成員 ID`}
+        placeholder={`${label}：${readIdNoun(item)} ID`}
         size="sub"
         value={draft.text}
         variant="base"

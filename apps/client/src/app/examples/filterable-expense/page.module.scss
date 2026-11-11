@@ -1,0 +1,21 @@
+// 版面契約見 using-mezzanine-ui-react 的 Page Layout Skeleton：
+// page 容器不加水平 padding，PageHeader / FilterArea 直接掛在容器下；
+// 內容區自行補上與 PageHeader 相同的水平 gutter。
+
+.page {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--mzn-spacing-gap-calm);
+  width: 100%;
+  min-height: 100%;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--mzn-spacing-gap-calm);
+  flex: 1;
+  min-height: 0;
+  padding-inline: var(--mzn-spacing-padding-horizontal-spacious);
+  padding-block-end: var(--mzn-spacing-padding-vertical-spacious);
+}

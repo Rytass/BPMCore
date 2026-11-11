@@ -582,11 +582,13 @@ describe('NotificationService', () => {
       fieldAccess,
       fieldPermissions,
       isAdhoc,
+      requireApprovalComment,
       transferred,
     }: {
       readonly fieldAccess?: UserTaskNode['data']['fieldAccess'];
       readonly fieldPermissions?: unknown;
       readonly isAdhoc: boolean;
+      readonly requireApprovalComment?: boolean;
       readonly transferred?: boolean;
     }): Promise<Readonly<Record<string, unknown>>> => {
       const savedNotifications: NotificationEntity[] = [];
@@ -632,6 +634,9 @@ describe('NotificationService', () => {
           ...sourceNode.data,
           fieldAccess,
           ...(fieldPermissions === undefined ? {} : { fieldPermissions }),
+          ...(requireApprovalComment === undefined
+            ? {}
+            : { requireApprovalComment }),
         } as UserTaskNode['data'],
       };
 
@@ -710,6 +715,41 @@ describe('NotificationService', () => {
       });
 
       expect(payload['hasFillableFields']).toBe(false);
+    });
+
+    describe('task notification requireApprovalComment flag', () => {
+      it('carries the flag when the node requires an approval comment', async (): Promise<void> => {
+        const payload = await createdPayload({
+          isAdhoc: false,
+          requireApprovalComment: true,
+        });
+
+        expect(payload['requireApprovalComment']).toBe(true);
+      });
+
+      it('carries it on the transferred notification too', async (): Promise<void> => {
+        const payload = await createdPayload({
+          isAdhoc: false,
+          requireApprovalComment: true,
+          transferred: true,
+        });
+
+        expect(payload['requireApprovalComment']).toBe(true);
+      });
+
+      it.each([undefined, false])(
+        'leaves the key out of the payload when requireApprovalComment is %j',
+        async (
+          requireApprovalComment: boolean | undefined,
+        ): Promise<void> => {
+          const payload = await createdPayload({
+            isAdhoc: false,
+            requireApprovalComment,
+          });
+
+          expect(payload).not.toHaveProperty('requireApprovalComment');
+        },
+      );
     });
   });
 
