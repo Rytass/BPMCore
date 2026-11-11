@@ -73,6 +73,7 @@ import {
   SelectQueryBuilder,
 } from 'typeorm';
 import { AttachmentService } from '../attachment/attachment.service';
+import { readFileUploadValueIds } from '../attachment/file-upload-value-ids';
 import {
   DelegationResolution,
   DelegationService,
@@ -10882,9 +10883,9 @@ function validateSubmittedFormData(
  * stops at the cap, but nothing kept a caller that writes the form data itself
  * from going past it. On a resubmit the value lists the files kept from the
  * returned case and the ones uploaded since, so both count, as they do in the
- * renderer. Each non-empty id in the value is one file, duplicates included:
- * the renderer never writes the same id twice, and the stored value is what
- * readers list. A field without `maxFiles` takes any number, as it does in the
+ * renderer. Each distinct non-empty id in the value is one file: the binding
+ * attaches an id once however often it repeats, so a repeat is not a second
+ * file. A field without `maxFiles` takes any number, as it does in the
  * renderer.
  */
 function readSubmittedFileUploadErrors(
@@ -10914,15 +10915,12 @@ function readSubmittedFileUploadErrors(
 }
 
 /**
- * The files a `file_upload` value names, read the way the attachment binding
- * reads it: an array of ids, or a single id, with empty strings holding no file.
+ * The distinct files a `file_upload` value names. The ids are read by the same
+ * helper the attachment binding uses, and collapsed the way the binding
+ * collapses them (one attachment per id).
  */
 function countFileUploadValueIds(value: unknown): number {
-  const entries: readonly unknown[] = Array.isArray(value) ? value : [value];
-
-  return entries.filter(
-    (entry): boolean => typeof entry === 'string' && entry !== '',
-  ).length;
+  return new Set(readFileUploadValueIds(value)).size;
 }
 
 /**

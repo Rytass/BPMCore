@@ -3128,12 +3128,28 @@ describe('WorkflowEngineService', () => {
       ).resolves.toMatchObject({ id: 'instance-1' });
     });
 
-    it('counts a repeated id once per entry, as the stored value lists it', async (): Promise<void> => {
+    // The binding attaches an id once however often it repeats, so the count
+    // collapses repeats too: three entries of one id are one file.
+    it('counts a repeated id once, as the attachment binding attaches it', async (): Promise<void> => {
       const fixture = createFilesFixture();
 
       await expect(
         submitFiles(fixture, { files: ['file-a', 'file-a', 'file-a'] }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      expect(fixture.bindFormDataAttachmentsToInstance).toHaveBeenCalledTimes(
+        1,
+      );
+    });
+
+    it('still refuses distinct ids past maxFiles when a repeat is among them', async (): Promise<void> => {
+      const fixture = createFilesFixture();
+
+      await expect(
+        submitFiles(fixture, {
+          files: ['file-a', 'file-a', 'file-b', 'file-c'],
+        }),
       ).rejects.toThrow('欄位「附件」最多 2 個檔案');
+      expect(fixture.bindFormDataAttachmentsToInstance).not.toHaveBeenCalled();
     });
 
     it('leaves the file count open when the field sets no maxFiles', async (): Promise<void> => {
