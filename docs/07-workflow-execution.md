@@ -717,7 +717,7 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
 
 - **誰算「那一關的簽核者」**：與 `NODE_ACTOR`（§4.1）同一套讀法（`readNodeActorMemberIds`）：該關**最近一輪**
   裡實際按下同意的人；不含加簽（ad-hoc）、不含取消的任務、不含 SLA 自動核准；代理人替人簽的，取實際按同意的
-  代理人；轉簽的，含接手並按同意的人。**差別只有一處**：`NODE_ACTOR` 列了多個關卡時只取「最近實際走到的那一關」，
+  代理人，**連同其委託人一起排除**（委託人是代理鏈上以規則代理委派出去的人；轉簽的轉出人不算，原指派人只在整條鏈都是規則代理時才算）；轉簽的，含接手並按同意的人。**差別只有一處**：`NODE_ACTOR` 列了多個關卡時只取「最近實際走到的那一關」，
   排除則是**每個關卡各讀各的最近一輪，再合併**——「不能與信管和資安兩關同一人」兩關都要排除。
 - **來源關必須是每條路徑都會經過、而且一定有人實際簽核的關卡（發布時檢查）**：引擎讀的是來源關
   「最近一批」任務，沒有輪次邊界；來源關若這一輪沒走到（進入條件不成立、被略過、走了別的分支），
@@ -743,11 +743,11 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
     `skippedByInitiatorExclusion`），token 直接往下走。
   - 一開始就解析不出任何人仍是原本的錯誤，不套用 `whenEmpty`。
 - **後門一起關**：
-  - **手動轉簽**（`decideTask` 的 `TRANSFERRED`，含群組席位轉簽）：目標是被排除者時回 `ConflictException`。
+  - **手動轉簽**（`decideTask` 的 `TRANSFERRED`，含群組席位轉簽）：目標是被排除者，或目標與被排除者之間有代理關係（目標是被排除者的代理人，或目標把席位代理給被排除者，兩端任一在名單上）時回 `ConflictException`。
   - **臨時加簽／會簽**：指定對象只剩被排除者時回 `ConflictException`（時機同 §4.4）。
   - **依序簽（`SEQUENTIAL`）輪到下一位**：重新解析代理時，若新的代理路徑會經過被排除者，沿用建立時存下的值。
   - **管理員改派**（`reassignTask`／`reassignMemberTasks`）：接手人是被排除者時回報
-    `TARGET_IS_EXCLUDED_NODE_ACTOR`，與 `TARGET_IS_INITIATOR` 並列。
+    `TARGET_IS_EXCLUDED_NODE_ACTOR`，與 `TARGET_IS_INITIATOR` 並列；接手人與被排除者的代理關係同樣適用（判斷與手動轉簽相同）。
   - **SLA 升級轉派**（帶 `transferReason`）：與 `excludeInitiator` 一樣**不檢查**。
 - **發布檢查**：`nodeIds` 非空、不重複、不含本節點、每一個都存在且是 userTask。之後**每一個來源關各自**要通過
   （不是「列表合起來蓋住每條路徑」就算過）：
