@@ -86,6 +86,16 @@ import {
 } from '../form-data-source/form-data-source.errors';
 import { readSubmittedMemberValueErrors } from '../form/form-member-value.validator';
 import {
+  createFormDataBadRequest,
+  createFormDataIssue,
+  readCellIssueLocation,
+  readFieldIssueLocation,
+  readFormDataIssueMessage,
+  readRowIssueLocation,
+  type FormDataIssueLocation,
+} from '../form/form-data-issue';
+import type { FormDataIssue } from '@rytass/bpm-core-shared/form';
+import {
   isSubmittableOrgUnitValue,
   readSubmittedOrgUnitValueErrors,
 } from '../form/form-org-unit-value.validator';
@@ -9099,25 +9109,28 @@ function assertFilterableFormDataValues(
     return;
   }
 
-  const details = problems
-    .map((problem) => `${readFilterableProblemRef(schema, problem)}必須是${problem.expected}`)
-    .join('；');
+  const issues = problems.map((problem) =>
+    createFormDataIssue(
+      readFilterableProblemLocation(schema, problem),
+      'TYPE',
+      `必須是${problem.expected}`,
+    ),
+  );
+  const details = readFormDataIssueMessage(issues);
 
-  throw new BadRequestException(
+  throw createFormDataBadRequest(
     serviceNodeLabel
       ? `系統節點「${serviceNodeLabel}」要寫入的表單值不符合可篩選欄位的型別（${details}），這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`
       : `可篩選欄位的值型別不正確：${details}`,
+    issues,
   );
 }
 
-/**
- * The reference a filterable problem names: `欄位「標籤」` for a top-level
- * field, `「表格」第 N 列` for a row, `「表格」第 N 列的「欄位」` for a cell.
- */
-function readFilterableProblemRef(
+/** Where a filterable problem sits: a field, a table row, or one cell of a row. */
+function readFilterableProblemLocation(
   schema: FormDefinitionSchema | null,
   problem: FilterableValueProblem,
-): string {
+): FormDataIssueLocation {
   const [tableKey, columnKey] = problem.path.split('.');
   const table = schema?.fields.find(
     (field) => field.fieldKey === tableKey && isTableFieldDefinition(field),
@@ -9129,41 +9142,21 @@ function readFilterableProblemRef(
 
   if (table && isTableFieldDefinition(table)) {
     if (problem.rowIndex === null) {
-      return readFieldRef(table);
+      return readFieldIssueLocation(table);
     }
 
-    const rowRef = readRowRef(table, problem.rowIndex);
+    const rowLocation = readRowIssueLocation(table, problem.rowIndex);
 
-    return column ? readCellRef(rowRef, column) : rowRef;
+    return column ? readCellIssueLocation(rowLocation, column) : rowLocation;
   }
 
-  const field = schema?.fields.find((candidate) => candidate.fieldKey === problem.path);
+  const field = schema?.fields.find(
+    (candidate) => candidate.fieldKey === problem.path,
+  );
 
-  return field ? readFieldRef(field) : `欄位「${problem.path}」`;
-}
-
-/** `欄位「標籤」`: the reference a user-facing form-data message names. */
-function readFieldRef(field: {
-  readonly fieldKey: string;
-  readonly label?: string;
-}): string {
-  return `欄位「${field.label || field.fieldKey}」`;
-}
-
-/** `「表格」第 N 列`: a table row, numbered from 1 as the user reads it. */
-function readRowRef(
-  table: { readonly fieldKey: string; readonly label?: string },
-  index: number,
-): string {
-  return `「${table.label || table.fieldKey}」第 ${index + 1} 列`;
-}
-
-/** `「表格」第 N 列的「欄位」`: one cell of a table row. */
-function readCellRef(
-  rowRef: string,
-  column: { readonly fieldKey: string; readonly label?: string },
-): string {
-  return `${rowRef}的「${column.label || column.fieldKey}」`;
+  return field
+    ? readFieldIssueLocation(field)
+    : { path: problem.path, ref: `欄位「${problem.path}」` };
 }
 
 /**
@@ -9203,7 +9196,7 @@ function assertServiceTaskTextValue(
   }
 
   throw new BadRequestException(
-    `系統節點「${nodeLabel}」要寫入的值不符合欄位規則（${errors.join('；')}），` +
+    `系統節點「${nodeLabel}」要寫入的值不符合欄位規則（${readFormDataIssueMessage(errors)}），` +
       `這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`,
   );
 }
@@ -10925,7 +10918,9 @@ function validateFilledFormFields(
  * field wins over a text value breaking its length or format rule, which wins
  * over a malformed member value, which wins over a malformed org unit value,
  * which wins over a table problem, and the later checks are only evaluated
- * when the earlier ones pass.
+ * when the earlier ones pass. The refusal carries every issue of the winning
+ * check, and its message is those issues' sentences joined, so the list and
+ * the sentence cannot disagree.
  */
 function throwFirstFormDataFieldError({
   missingFields,
@@ -10935,41 +10930,36 @@ function throwFirstFormDataFieldError({
   readTextErrors,
 }: {
   readonly missingFields: readonly FormFieldDefinition[];
-  readonly readMemberErrors: () => readonly string[];
-  readonly readOrgUnitErrors: () => readonly string[];
-  readonly readTableErrors: () => readonly string[];
-  readonly readTextErrors: () => readonly string[];
+  readonly readMemberErrors: () => readonly FormDataIssue[];
+  readonly readOrgUnitErrors: () => readonly FormDataIssue[];
+  readonly readTableErrors: () => readonly FormDataIssue[];
+  readonly readTextErrors: () => readonly FormDataIssue[];
 }): void {
   if (missingFields.length > 0) {
-    throw new BadRequestException(
+    throw createFormDataBadRequest(
       `缺少必填欄位：${missingFields
         .map((field) => field.label || field.fieldKey)
         .join(', ')}`,
+      missingFields.map((field) =>
+        createFormDataIssue(readFieldIssueLocation(field), 'REQUIRED', '為必填'),
+      ),
     );
   }
 
-  const textErrors = readTextErrors();
+  // Each check runs only when every earlier one passed, so a later check's
+  // work is never done for a request that is already refused.
+  const winning = [
+    readTextErrors,
+    readMemberErrors,
+    readOrgUnitErrors,
+    readTableErrors,
+  ].reduce<readonly FormDataIssue[]>(
+    (found, check) => (found.length > 0 ? found : check()),
+    [],
+  );
 
-  if (textErrors.length > 0) {
-    throw new BadRequestException(textErrors.join('；'));
-  }
-
-  const memberErrors = readMemberErrors();
-
-  if (memberErrors.length > 0) {
-    throw new BadRequestException(memberErrors.join('；'));
-  }
-
-  const orgUnitErrors = readOrgUnitErrors();
-
-  if (orgUnitErrors.length > 0) {
-    throw new BadRequestException(orgUnitErrors.join('；'));
-  }
-
-  const tableErrors = readTableErrors();
-
-  if (tableErrors.length > 0) {
-    throw new BadRequestException(tableErrors.join('；'));
+  if (winning.length > 0) {
+    throw createFormDataBadRequest(readFormDataIssueMessage(winning), winning);
   }
 }
 
@@ -10984,19 +10974,27 @@ function validateSubmittedTableValue(
   required: boolean,
   testPattern: TextFieldPatternTest,
   shapeOnly = false,
-): readonly string[] {
-  const path = readFieldRef(field);
+): readonly FormDataIssue[] {
+  const location = readFieldIssueLocation(field);
 
   if (typeof value === 'undefined' || value === null) {
-    return shapeOnly
-      ? []
-      : required || readTableMinRows(field) > 0
-      ? [`${path}至少需要 ${readTableRequiredRowCount(field)} 列`]
-      : [];
+    if (shapeOnly) {
+      return [];
+    }
+
+    if (required || readTableMinRows(field) > 0) {
+      const rows = readTableRequiredRowCount(field);
+
+      return [
+        createFormDataIssue(location, 'MIN_ROWS', `至少需要 ${rows} 列`, rows),
+      ];
+    }
+
+    return [];
   }
 
   if (!Array.isArray(value)) {
-    return [`${path}必須是表格列的清單`];
+    return [createFormDataIssue(location, 'TYPE', '必須是表格列的清單')];
   }
 
   // Too many rows is refused before any row is checked: the rows a submitter
@@ -11004,14 +11002,16 @@ function validateSubmittedTableValue(
   const maxRows = readTableMaxRows(field);
 
   if (value.length > maxRows) {
-    return [`${path}最多 ${maxRows} 列`];
+    return [
+      createFormDataIssue(location, 'MAX_ROWS', `最多 ${maxRows} 列`, maxRows),
+    ];
   }
 
   const rowErrors = value.flatMap((row, index) =>
     validateSubmittedTableRow(
       field,
       row,
-      readRowRef(field, index),
+      readRowIssueLocation(field, index),
       testPattern,
       shapeOnly,
     ),
@@ -11027,7 +11027,7 @@ function validateSubmittedTableValue(
     field,
     value.length,
     required,
-    path,
+    location,
     shapeOnly,
   );
 }
@@ -11037,27 +11037,36 @@ function validateSubmittedTableRowCount(
   field: TableFieldDefinition,
   rowCount: number,
   required: boolean,
-  path: string,
+  location: FormDataIssueLocation,
   shapeOnly = false,
-): readonly string[] {
+): readonly FormDataIssue[] {
   const minRows = shapeOnly
     ? 0
     : required
       ? Math.max(readTableMinRows(field), 1)
       : readTableMinRows(field);
 
-  return rowCount < minRows ? [`${path}至少需要 ${minRows} 列`] : [];
+  return rowCount < minRows
+    ? [
+        createFormDataIssue(
+          location,
+          'MIN_ROWS',
+          `至少需要 ${minRows} 列`,
+          minRows,
+        ),
+      ]
+    : [];
 }
 
 function validateSubmittedTableRow(
   field: TableFieldDefinition,
   row: unknown,
-  path: string,
+  location: FormDataIssueLocation,
   testPattern: TextFieldPatternTest,
   shapeOnly = false,
-): readonly string[] {
+): readonly FormDataIssue[] {
   if (!isRecord(row)) {
-    return [`${path}必須是物件`];
+    return [createFormDataIssue(location, 'TYPE', '必須是物件')];
   }
 
   const columnsByKey = new Map(
@@ -11065,17 +11074,28 @@ function validateSubmittedTableRow(
   );
   const unknownKeyErrors = Object.keys(row)
     .filter((columnKey) => !columnsByKey.has(columnKey))
-    .map((columnKey) => `${path}含有不屬於此表格的欄位「${columnKey}」`);
+    .map((columnKey) =>
+      createFormDataIssue(
+        location,
+        'UNKNOWN_COLUMN',
+        `含有不屬於此表格的欄位「${columnKey}」`,
+      ),
+    );
   const cellErrors = Object.entries(row)
     .filter(
       ([columnKey, cellValue]) =>
         columnsByKey.has(columnKey) && !isFormTableCellValue(cellValue),
     )
-    .map(([columnKey]) => {
-      const column = columnsByKey.get(columnKey);
-
-      return `${readCellRef(path, column ?? { fieldKey: columnKey })}不是有效的值`;
-    });
+    .map(([columnKey]) =>
+      createFormDataIssue(
+        readCellIssueLocation(
+          location,
+          columnsByKey.get(columnKey) ?? { fieldKey: columnKey },
+        ),
+        'TYPE',
+        '不是有效的值',
+      ),
+    );
   const requiredErrors = shapeOnly
     ? []
     : field.columns
@@ -11086,16 +11106,26 @@ function validateSubmittedTableRow(
               readRowCellValue(row, column.fieldKey),
             ),
         )
-        .map((column) => `${readCellRef(path, column)}為必填`);
+        .map((column) =>
+          createFormDataIssue(
+            readCellIssueLocation(location, column),
+            'REQUIRED',
+            '為必填',
+          ),
+        );
   // A shape-only pass covers a table nobody fills in, so the filler-facing
   // rules do not apply to it, the same as the required check above; only a
   // cell of the wrong type is still refused.
   const textErrors = field.columns.flatMap((column) =>
-    readSubmittedTextValueErrors(column, readRowCellValue(row, column.fieldKey), {
-      path: readCellRef(path, column),
-      shapeOnly,
-      testPattern,
-    }),
+    readSubmittedTextValueErrors(
+      column,
+      readRowCellValue(row, column.fieldKey),
+      {
+        location: readCellIssueLocation(location, column),
+        shapeOnly,
+        testPattern,
+      },
+    ),
   );
 
   return [...unknownKeyErrors, ...cellErrors, ...requiredErrors, ...textErrors];
@@ -11116,15 +11146,15 @@ function readSubmittedTextValueErrors(
   field: FormFieldDefinition,
   value: unknown,
   {
-    path = readFieldRef(field),
+    location = readFieldIssueLocation(field),
     shapeOnly = false,
     testPattern,
   }: {
-    readonly path?: string;
+    readonly location?: FormDataIssueLocation;
     readonly shapeOnly?: boolean;
     readonly testPattern: TextFieldPatternTest;
   },
-): readonly string[] {
+): readonly FormDataIssue[] {
   if (field.type !== 'text' && field.type !== 'textarea') {
     return [];
   }
@@ -11145,7 +11175,13 @@ function readSubmittedTextValueErrors(
   const issue = readIssue();
 
   if (issue === 'timeout') {
-    return [`${path}無法在時限內完成格式檢查`];
+    return [
+      createFormDataIssue(
+        location,
+        'PATTERN_TIMEOUT',
+        '無法在時限內完成格式檢查',
+      ),
+    ];
   }
 
   if (!issue || (shapeOnly && issue.kind !== 'type')) {
@@ -11153,18 +11189,32 @@ function readSubmittedTextValueErrors(
   }
 
   if (issue.kind === 'type') {
-    return [`${path}必須是文字`];
+    return [createFormDataIssue(location, 'TYPE', '必須是文字')];
   }
 
   if (issue.kind === 'minLength') {
-    return [`${path}至少需要 ${issue.limit} 個字`];
+    return [
+      createFormDataIssue(
+        location,
+        'MIN_LENGTH',
+        `至少需要 ${issue.limit} 個字`,
+        issue.limit,
+      ),
+    ];
   }
 
   if (issue.kind === 'maxLength') {
-    return [`${path}最多 ${issue.limit} 個字`];
+    return [
+      createFormDataIssue(
+        location,
+        'MAX_LENGTH',
+        `最多 ${issue.limit} 個字`,
+        issue.limit,
+      ),
+    ];
   }
 
-  return [`${path}格式不正確`];
+  return [createFormDataIssue(location, 'PATTERN', '格式不正確')];
 }
 
 /**

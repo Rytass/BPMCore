@@ -1,8 +1,10 @@
 import {
+  FormDataIssue,
   FormFieldDefinition,
   isFormMemberValue,
   isMemberFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
+import { createFormDataIssue, readFieldIssueLocation } from './form-data-issue';
 
 /**
  * Shape errors for the member fields among `fields` (the visible ones the
@@ -21,7 +23,7 @@ import {
 export function readSubmittedMemberValueErrors(
   fields: readonly FormFieldDefinition[],
   formData: Readonly<Record<string, unknown>>,
-): readonly string[] {
+): readonly FormDataIssue[] {
   return fields.filter(isMemberFieldDefinition).flatMap((field) => {
     const value = Object.prototype.hasOwnProperty.call(formData, field.fieldKey)
       ? formData[field.fieldKey]
@@ -36,9 +38,11 @@ export function readSubmittedMemberValueErrors(
     return isFormMemberValue(value, multiple)
       ? []
       : [
-          multiple
-            ? `欄位「${field.label || field.fieldKey}」必須是成員 ID 清單`
-            : `欄位「${field.label || field.fieldKey}」必須是成員 ID`,
+          createFormDataIssue(
+            readFieldIssueLocation(field),
+            'TYPE',
+            multiple ? '必須是成員 ID 清單' : '必須是成員 ID',
+          ),
         ];
   });
 }

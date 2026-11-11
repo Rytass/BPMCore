@@ -45,7 +45,9 @@ describe('readSubmittedMemberValueErrors', () => {
     for (const bad of ['', '   ', ['member-1'], 7, true, { id: 'member-1' }]) {
       expect(
         readSubmittedMemberValueErrors([SINGLE], { reviewer: bad }),
-      ).toEqual(['欄位「審核人」必須是成員 ID']);
+      ).toEqual([
+        { message: '欄位「審核人」必須是成員 ID', path: 'reviewer', reason: 'TYPE' },
+      ]);
     }
   });
 
@@ -59,7 +61,9 @@ describe('readSubmittedMemberValueErrors', () => {
     ]) {
       expect(
         readSubmittedMemberValueErrors([MULTIPLE], { watchers: bad }),
-      ).toEqual(['欄位「關注者」必須是成員 ID 清單']);
+      ).toEqual([
+        { message: '欄位「關注者」必須是成員 ID 清單', path: 'watchers', reason: 'TYPE' },
+      ]);
     }
   });
 
