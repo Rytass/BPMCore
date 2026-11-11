@@ -11,6 +11,7 @@ import {
   readFilterableValueProblems,
   type ApprovalInstanceFieldFilter,
   type ApprovalInstanceSort,
+  type FilterableValueProblem,
   isApprovalInstanceSortTimeField,
 } from '@rytass/bpm-core-shared';
 import {
@@ -9062,17 +9063,72 @@ function assertFilterableFormDataValues(
   }
 
   const details = problems
-    .map(
-      (problem) =>
-        `formData.${problem.rowIndex === null ? problem.path : problem.path.replace('.', `[${problem.rowIndex}].`)} must be ${problem.expected}`,
-    )
-    .join('; ');
+    .map((problem) => `${readFilterableProblemRef(schema, problem)}必須是${problem.expected}`)
+    .join('；');
 
   throw new BadRequestException(
     serviceNodeLabel
       ? `系統節點「${serviceNodeLabel}」要寫入的表單值不符合可篩選欄位的型別（${details}），這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`
       : `可篩選欄位的值型別不正確：${details}`,
   );
+}
+
+/**
+ * The reference a filterable problem names: `欄位「標籤」` for a top-level
+ * field, `「表格」第 N 列` for a row, `「表格」第 N 列的「欄位」` for a cell.
+ */
+function readFilterableProblemRef(
+  schema: FormDefinitionSchema | null,
+  problem: FilterableValueProblem,
+): string {
+  const [tableKey, columnKey] = problem.path.split('.');
+  const table = schema?.fields.find(
+    (field) => field.fieldKey === tableKey && isTableFieldDefinition(field),
+  );
+  const column =
+    table && isTableFieldDefinition(table) && columnKey !== undefined
+      ? table.columns.find((candidate) => candidate.fieldKey === columnKey)
+      : undefined;
+
+  if (table && isTableFieldDefinition(table)) {
+    const tableLabel = table.label || table.fieldKey;
+
+    if (problem.rowIndex === null) {
+      return readFieldRef(table);
+    }
+
+    const rowRef = `「${tableLabel}」第 ${problem.rowIndex + 1} 列`;
+
+    return column ? readCellRef(rowRef, column) : rowRef;
+  }
+
+  const field = schema?.fields.find((candidate) => candidate.fieldKey === problem.path);
+
+  return field ? readFieldRef(field) : `欄位「${problem.path}」`;
+}
+
+/** `欄位「標籤」`: the reference a user-facing form-data message names. */
+function readFieldRef(field: {
+  readonly fieldKey: string;
+  readonly label?: string;
+}): string {
+  return `欄位「${field.label || field.fieldKey}」`;
+}
+
+/** `「表格」第 N 列`: a table row, numbered from 1 as the user reads it. */
+function readRowRef(
+  table: { readonly fieldKey: string; readonly label?: string },
+  index: number,
+): string {
+  return `「${table.label || table.fieldKey}」第 ${index + 1} 列`;
+}
+
+/** `「表格」第 N 列的「欄位」`: one cell of a table row. */
+function readCellRef(
+  rowRef: string,
+  column: { readonly fieldKey: string; readonly label?: string },
+): string {
+  return `${rowRef}的「${column.label || column.fieldKey}」`;
 }
 
 /**
@@ -9112,8 +9168,8 @@ function assertServiceTaskTextValue(
   }
 
   throw new BadRequestException(
-    `系統節點「${nodeLabel}」要寫入欄位「${field.label || field.fieldKey}」的值不符合該欄位的規則` +
-      `（${errors.join('; ')}），這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`,
+    `系統節點「${nodeLabel}」要寫入的值不符合欄位規則（${errors.join('；')}），` +
+      `這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`,
   );
 }
 
@@ -10851,7 +10907,7 @@ function throwFirstFormDataFieldError({
 }): void {
   if (missingFields.length > 0) {
     throw new BadRequestException(
-      `Form data is missing required fields: ${missingFields
+      `缺少必填欄位：${missingFields
         .map((field) => field.label || field.fieldKey)
         .join(', ')}`,
     );
@@ -10860,25 +10916,25 @@ function throwFirstFormDataFieldError({
   const textErrors = readTextErrors();
 
   if (textErrors.length > 0) {
-    throw new BadRequestException(textErrors.join('; '));
+    throw new BadRequestException(textErrors.join('；'));
   }
 
   const memberErrors = readMemberErrors();
 
   if (memberErrors.length > 0) {
-    throw new BadRequestException(memberErrors.join('; '));
+    throw new BadRequestException(memberErrors.join('；'));
   }
 
   const orgUnitErrors = readOrgUnitErrors();
 
   if (orgUnitErrors.length > 0) {
-    throw new BadRequestException(orgUnitErrors.join('; '));
+    throw new BadRequestException(orgUnitErrors.join('；'));
   }
 
   const tableErrors = readTableErrors();
 
   if (tableErrors.length > 0) {
-    throw new BadRequestException(tableErrors.join('; '));
+    throw new BadRequestException(tableErrors.join('；'));
   }
 }
 
@@ -10894,18 +10950,18 @@ function validateSubmittedTableValue(
   testPattern: TextFieldPatternTest,
   shapeOnly = false,
 ): readonly string[] {
-  const path = `formData.${field.fieldKey}`;
+  const path = readFieldRef(field);
 
   if (typeof value === 'undefined' || value === null) {
     return shapeOnly
       ? []
       : required || readTableMinRows(field) > 0
-      ? [`${path} must include at least ${readTableRequiredRowCount(field)} row(s)`]
+      ? [`${path}至少需要 ${readTableRequiredRowCount(field)} 列`]
       : [];
   }
 
   if (!Array.isArray(value)) {
-    return [`${path} must be an array of rows`];
+    return [`${path}必須是表格列的清單`];
   }
 
   // Too many rows is refused before any row is checked: the rows a submitter
@@ -10913,14 +10969,14 @@ function validateSubmittedTableValue(
   const maxRows = readTableMaxRows(field);
 
   if (value.length > maxRows) {
-    return [`${path} must include at most ${maxRows} row(s)`];
+    return [`${path}最多 ${maxRows} 列`];
   }
 
   const rowErrors = value.flatMap((row, index) =>
     validateSubmittedTableRow(
       field,
       row,
-      `${path}[${index}]`,
+      readRowRef(field, index),
       testPattern,
       shapeOnly,
     ),
@@ -10955,9 +11011,7 @@ function validateSubmittedTableRowCount(
       ? Math.max(readTableMinRows(field), 1)
       : readTableMinRows(field);
 
-  return rowCount < minRows
-    ? [`${path} must include at least ${minRows} row(s)`]
-    : [];
+  return rowCount < minRows ? [`${path}至少需要 ${minRows} 列`] : [];
 }
 
 function validateSubmittedTableRow(
@@ -10968,7 +11022,7 @@ function validateSubmittedTableRow(
   shapeOnly = false,
 ): readonly string[] {
   if (!isRecord(row)) {
-    return [`${path} must be an object`];
+    return [`${path}必須是物件`];
   }
 
   const columnsByKey = new Map(
@@ -10976,13 +11030,17 @@ function validateSubmittedTableRow(
   );
   const unknownKeyErrors = Object.keys(row)
     .filter((columnKey) => !columnsByKey.has(columnKey))
-    .map((columnKey) => `${path}.${columnKey} is not a table column`);
+    .map((columnKey) => `${path}含有不屬於此表格的欄位「${columnKey}」`);
   const cellErrors = Object.entries(row)
     .filter(
       ([columnKey, cellValue]) =>
         columnsByKey.has(columnKey) && !isFormTableCellValue(cellValue),
     )
-    .map(([columnKey]) => `${path}.${columnKey} is not a valid cell value`);
+    .map(([columnKey]) => {
+      const column = columnsByKey.get(columnKey);
+
+      return `${readCellRef(path, column ?? { fieldKey: columnKey })}不是有效的值`;
+    });
   const requiredErrors = shapeOnly
     ? []
     : field.columns
@@ -10993,13 +11051,13 @@ function validateSubmittedTableRow(
               readRowCellValue(row, column.fieldKey),
             ),
         )
-        .map((column) => `${path}.${column.fieldKey} is required`);
+        .map((column) => `${readCellRef(path, column)}為必填`);
   // A shape-only pass covers a table nobody fills in, so the filler-facing
   // rules do not apply to it, the same as the required check above; only a
   // cell of the wrong type is still refused.
   const textErrors = field.columns.flatMap((column) =>
     readSubmittedTextValueErrors(column, readRowCellValue(row, column.fieldKey), {
-      path: `${path}.${column.fieldKey}`,
+      path: readCellRef(path, column),
       shapeOnly,
       testPattern,
     }),
@@ -11023,7 +11081,7 @@ function readSubmittedTextValueErrors(
   field: FormFieldDefinition,
   value: unknown,
   {
-    path = `formData.${field.fieldKey}`,
+    path = readFieldRef(field),
     shapeOnly = false,
     testPattern,
   }: {
@@ -11052,7 +11110,7 @@ function readSubmittedTextValueErrors(
   const issue = readIssue();
 
   if (issue === 'timeout') {
-    return [`${path} could not be checked against the required format in time`];
+    return [`${path}無法在時限內完成格式檢查`];
   }
 
   if (!issue || (shapeOnly && issue.kind !== 'type')) {
@@ -11060,18 +11118,18 @@ function readSubmittedTextValueErrors(
   }
 
   if (issue.kind === 'type') {
-    return [`${path} must be text`];
+    return [`${path}必須是文字`];
   }
 
   if (issue.kind === 'minLength') {
-    return [`${path} must be at least ${issue.limit} characters`];
+    return [`${path}至少需要 ${issue.limit} 個字`];
   }
 
   if (issue.kind === 'maxLength') {
-    return [`${path} must be at most ${issue.limit} characters`];
+    return [`${path}最多 ${issue.limit} 個字`];
   }
 
-  return [`${path} does not match the required format`];
+  return [`${path}格式不正確`];
 }
 
 /**

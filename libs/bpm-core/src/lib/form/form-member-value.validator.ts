@@ -37,8 +37,8 @@ export function readSubmittedMemberValueErrors(
       ? []
       : [
           multiple
-            ? `formData.${field.fieldKey} must be an array of member ids`
-            : `formData.${field.fieldKey} must be a member id`,
+            ? `欄位「${field.label || field.fieldKey}」必須是成員 ID 清單`
+            : `欄位「${field.label || field.fieldKey}」必須是成員 ID`,
         ];
   });
 }

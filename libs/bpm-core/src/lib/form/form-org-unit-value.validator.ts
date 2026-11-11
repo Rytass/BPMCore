@@ -46,6 +46,6 @@ export function readSubmittedOrgUnitValueErrors(
 
     return isSubmittableOrgUnitValue(value)
       ? []
-      : [`formData.${field.fieldKey} must be an organization unit id`];
+      : [`欄位「${field.label || field.fieldKey}」必須是組織單位 ID`];
   });
 }
