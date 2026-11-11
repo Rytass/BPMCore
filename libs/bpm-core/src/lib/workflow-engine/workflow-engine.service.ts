@@ -10869,7 +10869,60 @@ function validateSubmittedFormData(
           ),
         ),
     ],
+    // Every `file_upload` field, shown or not: the submit binds the files of
+    // each one to the case, so a cap only the visible ones obey could be
+    // stepped around by sending files in a hidden field.
+    readFileUploadErrors: () =>
+      readSubmittedFileUploadErrors(schema.fields, formData),
   });
+}
+
+/**
+ * A `file_upload` field holding more files than its `maxFiles`. The renderer
+ * stops at the cap, but nothing kept a caller that writes the form data itself
+ * from going past it. On a resubmit the value lists the files kept from the
+ * returned case and the ones uploaded since, so both count, as they do in the
+ * renderer. Each non-empty id in the value is one file, duplicates included:
+ * the renderer never writes the same id twice, and the stored value is what
+ * readers list. A field without `maxFiles` takes any number, as it does in the
+ * renderer.
+ */
+function readSubmittedFileUploadErrors(
+  fields: readonly FormFieldDefinition[],
+  formData: Readonly<Record<string, unknown>>,
+): readonly FormDataIssue[] {
+  return fields.flatMap((field): readonly FormDataIssue[] => {
+    if (field.type !== 'file_upload' || typeof field.maxFiles !== 'number') {
+      return [];
+    }
+
+    const fileCount = countFileUploadValueIds(
+      readRowCellValue(formData, field.fieldKey),
+    );
+
+    return fileCount > field.maxFiles
+      ? [
+          createFormDataIssue(
+            readFieldIssueLocation(field),
+            'MAX_FILES',
+            `最多 ${field.maxFiles} 個檔案`,
+            field.maxFiles,
+          ),
+        ]
+      : [];
+  });
+}
+
+/**
+ * The files a `file_upload` value names, read the way the attachment binding
+ * reads it: an array of ids, or a single id, with empty strings holding no file.
+ */
+function countFileUploadValueIds(value: unknown): number {
+  const entries: readonly unknown[] = Array.isArray(value) ? value : [value];
+
+  return entries.filter(
+    (entry): boolean => typeof entry === 'string' && entry !== '',
+  ).length;
 }
 
 /**
@@ -10927,7 +10980,8 @@ function validateFilledFormFields(
  * The shared tail of submit and approver-fill validation: a missing required
  * field wins over a text value breaking its length or format rule, which wins
  * over a malformed member value, which wins over a malformed org unit value,
- * which wins over a table problem, and the later checks are only evaluated
+ * which wins over a table problem, which wins over a `file_upload` field
+ * holding more files than it allows, and the later checks are only evaluated
  * when the earlier ones pass. The refusal carries every issue of the winning
  * check. Its message is those issues' sentences joined, except for missing
  * required fields, which keep the one-line summary `缺少必填欄位：A, B` that
@@ -10936,12 +10990,16 @@ function validateFilledFormFields(
  */
 function throwFirstFormDataFieldError({
   missingFields,
+  readFileUploadErrors = (): readonly FormDataIssue[] => [],
   readMemberErrors,
   readOrgUnitErrors,
   readTableErrors,
   readTextErrors,
 }: {
   readonly missingFields: readonly FormFieldDefinition[];
+  // Optional: an approver cannot be given a `file_upload` field to fill in
+  // (workflow lint `approverFilledFieldFileUpload`), so only submit passes it.
+  readonly readFileUploadErrors?: () => readonly FormDataIssue[];
   readonly readMemberErrors: () => readonly FormDataIssue[];
   readonly readOrgUnitErrors: () => readonly FormDataIssue[];
   readonly readTableErrors: () => readonly FormDataIssue[];
@@ -10965,6 +11023,7 @@ function throwFirstFormDataFieldError({
     readMemberErrors,
     readOrgUnitErrors,
     readTableErrors,
+    readFileUploadErrors,
   ].reduce<readonly FormDataIssue[]>(
     (found, check) => (found.length > 0 ? found : check()),
     [],
