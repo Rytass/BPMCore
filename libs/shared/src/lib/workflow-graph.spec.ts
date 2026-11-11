@@ -2059,7 +2059,10 @@ describe('excludeNodeActors', () => {
     });
 
     it('refuses a node that sits after this one', () => {
+      // No path from the start passes it before this node, and it is not
+      // upstream either: both rules speak.
       expect(readExcludeNodeActorsIssues(LINE, 'a', exclude(['b']))).toEqual([
+        expect.stringContaining('不會經過排除對象的前面關卡 「b」'),
         expect.stringContaining('前面關卡 「b」 不在 「a」 的上游'),
       ]);
     });
@@ -2072,10 +2075,13 @@ describe('excludeNodeActors', () => {
 
       expect(
         readExcludeNodeActorsIssues(withIsolated, 'me', exclude(['iso'])),
-      ).toEqual([expect.stringContaining('不在')]);
+      ).toEqual([
+        expect.stringContaining('不會經過'),
+        expect.stringContaining('不在'),
+      ]);
     });
 
-    it('does not require every path to pass the listed node (a node that did not run excludes nobody)', () => {
+    describe('a listed node that some path to this one does not pass', () => {
       // start -> choice -> a -> me, choice -> me directly
       const bypass = graph(
         [
@@ -2094,27 +2100,140 @@ describe('excludeNodeActors', () => {
         ],
       );
 
-      expect(readExcludeNodeActorsIssues(bypass, 'me', exclude(['a']))).toEqual([]);
+      it('refuses it: the case that skips it would read the previous round\'s approver', () => {
+        expect(readExcludeNodeActorsIssues(bypass, 'me', exclude(['a']))).toEqual([
+          expect.stringContaining('不會經過排除對象的前面關卡 「a」 就走到 「me」'),
+        ]);
+      });
+
+      it('words the refusal about the exclusion and tells the author what to change', () => {
+        const [issue] = readExcludeNodeActorsIssues(bypass, 'me', exclude(['a']));
+
+        expect(issue).toContain('排除不到本輪的簽核者');
+        expect(issue).toContain('改用分流');
+        expect(issue).not.toContain('沒有人可以當簽核人');
+      });
+
+      it('refuses two nodes on mutually exclusive branches, each on its own', () => {
+        // start -> route -> (sea | air) -> me. Neither lies on every path, so
+        // "one of them covers every path" must not let the pair through.
+        const exclusive = graph(
+          [
+            plainNode('start', 'startEvent'),
+            plainNode('route', 'exclusiveGateway'),
+            taskNode('sea'),
+            taskNode('air'),
+            taskNode('me'),
+            plainNode('end', 'endEvent'),
+          ],
+          [
+            link('start', 'route'),
+            link('route', 'sea'),
+            link('route', 'air'),
+            link('sea', 'me'),
+            link('air', 'me'),
+            link('me', 'end'),
+          ],
+        );
+
+        expect(
+          readExcludeNodeActorsIssues(exclusive, 'me', exclude(['sea', 'air'])),
+        ).toEqual([
+          expect.stringContaining('排除對象的前面關卡 「sea」'),
+          expect.stringContaining('排除對象的前面關卡 「air」'),
+        ]);
+        // Control: the same pair is a sound NODE_ACTOR source list.
+        expect(readNodeActorSourceIssues(exclusive, 'me', ['sea', 'air'])).toEqual(
+          [],
+        );
+      });
+
+      it('passes two stages that sit on the same route (the 代墊款 shape: only that category goes through 信管 and 會計)', () => {
+        // start -> category -> (review -> audit | other) -> merge
+        const sameRoute = graph(
+          [
+            plainNode('start', 'startEvent'),
+            plainNode('category', 'exclusiveGateway'),
+            taskNode('review'),
+            taskNode('audit'),
+            taskNode('other'),
+            plainNode('merge', 'exclusiveGateway'),
+            plainNode('end', 'endEvent'),
+          ],
+          [
+            link('start', 'category'),
+            link('category', 'review'),
+            link('category', 'other'),
+            link('review', 'audit'),
+            link('audit', 'merge'),
+            link('other', 'merge'),
+            link('merge', 'end'),
+          ],
+        );
+
+        expect(
+          readExcludeNodeActorsIssues(sameRoute, 'audit', exclude(['review'])),
+        ).toEqual([]);
+      });
     });
 
-    it.each([
-      ['an entry condition', { entryCondition: 'form.x > 1' }],
-      ['SKIP_NODE', { excludeInitiator: { whenEmpty: 'SKIP_NODE' } }],
-      ['an SLA auto-approval', { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } }],
-    ])('does not refuse a listed node with %s (it excludes nobody when skipped)', (_name, data) => {
-      const definition = graph(
-        [
-          plainNode('start', 'startEvent'),
-          taskNode('a', data),
-          taskNode('me'),
-          plainNode('end', 'endEvent'),
-        ],
-        [link('start', 'a'), link('a', 'me'), link('me', 'end')],
-      );
+    describe('a listed node that may run without a signer', () => {
+      const withListed = (data: Readonly<Record<string, unknown>>): WorkflowDefinition =>
+        graph(
+          [
+            plainNode('start', 'startEvent'),
+            taskNode('a', data),
+            taskNode('me'),
+            plainNode('end', 'endEvent'),
+          ],
+          [link('start', 'a'), link('a', 'me'), link('me', 'end')],
+        );
 
-      expect(readExcludeNodeActorsIssues(definition, 'me', exclude(['a']))).toEqual(
-        [],
-      );
+      it.each([
+        ['an entry condition', { entryCondition: 'form.x > 1' }, '設有進入條件'],
+        [
+          'excludeInitiator SKIP_NODE',
+          { excludeInitiator: { whenEmpty: 'SKIP_NODE' } },
+          '在排除發起人後沒人時會跳過此關',
+        ],
+        [
+          'excludeNodeActors SKIP_NODE',
+          { excludeNodeActors: exclude(['x'], 'SKIP_NODE') },
+          '在排除前面關卡的簽核者後沒人時會跳過此關',
+        ],
+        [
+          'an SLA auto-approval',
+          { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } },
+          '設有逾時自動核准',
+        ],
+      ])('refuses a listed node with %s', (_name, data, wording) => {
+        expect(
+          readExcludeNodeActorsIssues(withListed(data), 'me', exclude(['a'])),
+        ).toEqual([expect.stringContaining(wording)]);
+      });
+
+      it('words the entry-condition refusal about the exclusion, not about a source', () => {
+        const [issue] = readExcludeNodeActorsIssues(
+          withListed({ entryCondition: 'form.x > 1' }),
+          'me',
+          exclude(['a']),
+        );
+
+        expect(issue).toContain('排除對象的前面關卡 「a」');
+        expect(issue).toContain('改用分流');
+        expect(issue).not.toContain('簽核來源');
+      });
+
+      it.each([
+        ['an SLA timeout that only reminds', { sla: { duration: 'PT1H', onTimeout: 'REMIND' } }],
+        ['an SLA timeout that escalates', { sla: { duration: 'PT1H', onTimeout: 'ESCALATE' } }],
+        ['a blank entry condition', { entryCondition: '  ' }],
+        ['excludeInitiator FAIL', { excludeInitiator: { whenEmpty: 'FAIL' } }],
+      ])('passes a listed node with %s (control: it still ends with a signer)', (_name, data) => {
+        expect(
+          readExcludeNodeActorsIssues(withListed(data), 'me', exclude(['a'])),
+        ).toEqual([]);
+      });
     });
 
     describe('parallel branches', () => {
@@ -2138,20 +2257,31 @@ describe('excludeNodeActors', () => {
           ],
         );
 
-      it('passes a branch node when the join waits for every branch (AND)', () => {
-        expect(
-          readExcludeNodeActorsIssues(parallel({ triggerMode: 'AND' }), 'me', exclude(['a'])),
-        ).toEqual([]);
-      });
-
-      it('passes a branch node when the join has no trigger mode (defaults to AND)', () => {
-        expect(readExcludeNodeActorsIssues(parallel(), 'me', exclude(['a']))).toEqual([]);
-      });
-
-      it('refuses a branch node when the join fires on the first branch to arrive (OR)', () => {
+      it('refuses a node on one branch of an OR merge: the other branch reaches this node without it', () => {
         expect(
           readExcludeNodeActorsIssues(parallel({ triggerMode: 'OR' }), 'me', exclude(['a'])),
-        ).toEqual([expect.stringContaining('可能還沒簽完')]);
+        ).toEqual([expect.stringContaining('不會經過排除對象的前面關卡 「a」')]);
+      });
+
+      // Conservative, the same limit as a NODE_ACTOR source: coverage reads a
+      // parallel gateway like an exclusive one.
+      it('refuses a node on one branch of an AND join as well', () => {
+        expect(
+          readExcludeNodeActorsIssues(parallel({ triggerMode: 'AND' }), 'me', exclude(['a'])),
+        ).toEqual([expect.stringContaining('不會經過')]);
+        expect(readExcludeNodeActorsIssues(parallel(), 'me', exclude(['a']))).toEqual([
+          expect.stringContaining('不會經過'),
+        ]);
+      });
+
+      it('does not add the NODE_ACTOR "different parallel branches" rule for two listed branch nodes', () => {
+        const issues = readExcludeNodeActorsIssues(parallel(), 'me', exclude(['a', 'b']));
+
+        expect(issues).toHaveLength(2);
+        expect(issues.join('\n')).not.toContain('平行分支');
+        expect(readNodeActorSourceIssues(parallel(), 'me', ['a', 'b'])).toEqual([
+          expect.stringContaining('平行分支'),
+        ]);
       });
 
       it('passes a node on the same branch as this one (control: no split between them)', () => {
@@ -2179,6 +2309,7 @@ describe('excludeNodeActors', () => {
 
       it('refuses a node on a different branch of the split (it is not upstream)', () => {
         expect(readExcludeNodeActorsIssues(parallel(), 'a', exclude(['b']))).toEqual([
+          expect.stringContaining('不會經過'),
           expect.stringContaining('不在'),
         ]);
       });

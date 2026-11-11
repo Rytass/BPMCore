@@ -1229,23 +1229,27 @@ export function readExcludeNodeActorsShapeIssue(
  *
  * 1. shape ({@link readExcludeNodeActorsShapeIssue}) and never the node itself;
  * 2. every listed node exists and is a `userTask`;
- * 3. every listed node is upstream of `nodeId`: some path leads from it to the
- *    node, otherwise its approver cannot be known when this node starts;
- * 4. no listed node can still be open when this node starts: a listed node
- *    that sits on a parallel branch of its own and reaches `nodeId` through a
- *    node that fires on the first arriving branch (`triggerMode: 'OR'`) is
- *    refused, because the exclusion would read an approval that has not
- *    happened yet;
- * 5. `whenEmpty: 'SKIP_NODE'` is refused on a node whose approver fills
+ * 3. each listed node on its own passes the source rules that
+ *    {@link readNodeActorSourceIssues} applies to a `NODE_ACTOR` source (same
+ *    judgement, wording about the exclusion):
+ *    - it may not be skipped or pass without a signer
+ *      ({@link readNodeActorSourceSkipReasons});
+ *    - every path from the start to `nodeId` goes through it, checked for
+ *      each listed node separately (never "one of them covers it");
+ *    - it is upstream of `nodeId`;
+ * 4. `whenEmpty: 'SKIP_NODE'` is refused on a node whose approver fills
  *    fields in, for the same reason `excludeInitiator` is.
  *
- * Unlike the `NODE_ACTOR` source ({@link readNodeActorSourceIssues}) a listed
- * node may carry an entry condition, `SKIP_NODE` or an SLA auto-approval, and
- * need not be on every path to `nodeId`: a node that did not run or that
- * nobody approved has no signer, so it excludes nobody and the node proceeds
- * as it would without the setting. The same holds for the "every path passes
- * a source" and "two sources on different branches" rules: they protect a
- * source that has to name a person, and an exclusion does not.
+ * Why every listed node has to be on every path: the engine reads the newest
+ * round of approvals of a node, and a return can send the instance back to the
+ * start. A listed node that this round did not pass would leave its previous
+ * round's approver in the exclusion list, and the node would refuse a person
+ * who never signed an earlier stage in this round. Requiring a listed node to
+ * be run, and signed by a person, every time rules that out.
+ *
+ * Unlike a `NODE_ACTOR` source, two listed nodes may sit on different branches
+ * of one parallel split: both run before the join and both are excluded, so
+ * the "two sources on different branches" rule does not apply.
  */
 export function readExcludeNodeActorsIssues(
   definition: WorkflowDefinition,
@@ -1294,55 +1298,16 @@ export function readExcludeNodeActorsIssues(
     ];
   }
 
-  const notUpstreamIds = sourceNodeIds.filter(
-    (id) => !readReachableWorkflowNodeIds(definition.edges, [id]).has(nodeId),
+  const stageIssues = readSourceStageIssues(
+    definition,
+    nodeId,
+    sourceNodeIds,
+    sourceNodeIds.map((id) => [id]),
+    EXCLUDE_NODE_ACTORS_STAGE_TEXTS,
   );
 
-  if (notUpstreamIds.length > 0) {
-    return notUpstreamIds.map(
-      (id) =>
-        `前面關卡 ${labelOf(id)} 不在 ${labelOf(nodeId)} 的上游，走不到這個節點，無法排除該關的簽核者。`,
-    );
-  }
-
-  const parallelBranches = readWorkflowParallelBranchSets(definition);
-  const incomingEdgeCount = (id: string): number =>
-    definition.edges.filter((edge) => edge.target === id).length;
-  const concurrentIds = sourceNodeIds.filter((id) => {
-    const isOnOwnBranch = parallelBranches.some((branches) =>
-      branches.some(
-        (branch, index) =>
-          branch.has(id) &&
-          branches.some(
-            (other, otherIndex) => otherIndex !== index && !other.has(id),
-          ),
-      ),
-    );
-
-    if (!isOnOwnBranch) {
-      return false;
-    }
-
-    const downstream = readReachableWorkflowNodeIds(definition.edges, [id]);
-
-    return definition.nodes.some(
-      (node) =>
-        node.id !== id &&
-        node.data.triggerMode === 'OR' &&
-        incomingEdgeCount(node.id) >= 2 &&
-        downstream.has(node.id) &&
-        (node.id === nodeId ||
-          readReachableWorkflowNodeIds(definition.edges, [node.id]).has(
-            nodeId,
-          )),
-    );
-  });
-
-  if (concurrentIds.length > 0) {
-    return concurrentIds.map(
-      (id) =>
-        `前面關卡 ${labelOf(id)} 在平行分支上，到 ${labelOf(nodeId)} 之間有「任一分支到達即觸發」的節點，本關開始時該關可能還沒簽完，無法排除該關的簽核者。`,
-    );
+  if (stageIssues.length > 0) {
+    return stageIssues;
   }
 
   const self = definition.nodes.find((node) => node.id === nodeId);
@@ -1469,7 +1434,8 @@ export function readApproverResolverIssue(
 
 /**
  * Why a user task may finish with nobody having approved it, which rules it
- * out as a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` source:
+ * out as a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` source and as a stage listed in
+ * `excludeNodeActors`:
  *
  * - `entryCondition`: the node can be skipped outright;
  * - `skipNode`: `excludeInitiator.whenEmpty: 'SKIP_NODE'` skips it when
@@ -1480,8 +1446,9 @@ export function readApproverResolverIssue(
  *   it, and the engine does not count an SLA approval as anyone's signature.
  *
  * `[]` means the node always has a real signer once it has run. The designer's
- * stage picker and `readNodeActorSourceIssues` both read this list, so the
- * two cannot disagree on which stages qualify.
+ * stage pickers, `readNodeActorSourceIssues` and
+ * `readExcludeNodeActorsIssues` all read this list, so they cannot disagree on
+ * which stages qualify.
  */
 export type NodeActorSourceSkipReason =
   | 'autoApprove'
@@ -1518,6 +1485,108 @@ const NODE_ACTOR_SOURCE_SKIP_ISSUES: Readonly<
   skipNodeByNodeActors: (label) =>
     `簽核來源的前面關卡 ${label} 在排除前面關卡的簽核者後沒人時會跳過此關，可能沒有人簽核。`,
 };
+
+/**
+ * The wording of {@link readSourceStageIssues}. The judgement is shared; each
+ * caller only supplies its own sentences, so a `NODE_ACTOR` source and an
+ * `excludeNodeActors` stage cannot drift apart on what counts as unsound.
+ */
+interface SourceStageTexts {
+  /** Several labels when the stages are checked together (`NODE_ACTOR`). */
+  readonly coverage: (
+    stageLabels: readonly string[],
+    nodeLabel: string,
+  ) => string;
+  readonly notUpstream: (stageLabel: string, nodeLabel: string) => string;
+  readonly skip: Readonly<
+    Record<NodeActorSourceSkipReason, (stageLabel: string) => string>
+  >;
+}
+
+const NODE_ACTOR_SOURCE_STAGE_TEXTS: SourceStageTexts = {
+  coverage: (stageLabels, nodeLabel) =>
+    `有一條路徑不會經過所選的前面關卡（${stageLabels.join('、')}）就走到 ${nodeLabel}，那一趟沒有人可以當簽核人。`,
+  notUpstream: (stageLabel, nodeLabel) =>
+    `前面關卡 ${stageLabel} 不在 ${nodeLabel} 的上游，走不到這個節點，不能當簽核來源。`,
+  skip: NODE_ACTOR_SOURCE_SKIP_ISSUES,
+};
+
+const EXCLUDE_NODE_ACTORS_STAGE_TEXTS: SourceStageTexts = {
+  coverage: (stageLabels, nodeLabel) =>
+    `有一條路徑不會經過排除對象的前面關卡 ${stageLabels.join('、')} 就走到 ${nodeLabel}，那一趟排除不到本輪的簽核者（退回重送後還會讀到上一輪的簽核者）。請改用分流，把兩關放在同一條路線上。`,
+  notUpstream: (stageLabel, nodeLabel) =>
+    `前面關卡 ${stageLabel} 不在 ${nodeLabel} 的上游，走不到這個節點，無法排除該關的簽核者。`,
+  skip: {
+    autoApprove: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 設有逾時自動核准，可能沒有人實際簽核，這一關就排除不到任何人。請移除逾時自動核准，或改選其他關卡。`,
+    entryCondition: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 設有進入條件，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改用分流，把兩關放在同一條路線上。`,
+    skipNode: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 在排除發起人後沒人時會跳過此關，可能沒有人簽核，這一關就排除不到任何人。請改選其他處理方式。`,
+    skipNodeByNodeActors: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 在排除前面關卡的簽核者後沒人時會跳過此關，可能沒有人簽核，這一關就排除不到任何人。請改選其他處理方式。`,
+  },
+};
+
+/**
+ * The checks every "who signed an earlier stage" reader needs, shared by the
+ * `NODE_ACTOR` source ({@link readNodeActorSourceIssues}) and
+ * `excludeNodeActors` ({@link readExcludeNodeActorsIssues}). In this order,
+ * all of them reported together:
+ *
+ * 1. a stage that may be skipped or pass without a signer
+ *    ({@link readNodeActorSourceSkipReasons});
+ * 2. coverage: for each group in `coverageGroups`, walking from the start
+ *    without entering any stage of the group must not reach `nodeId`. A
+ *    `NODE_ACTOR` source passes its whole list as one group ("one of them
+ *    covers every path"); an exclusion passes one group per stage;
+ * 3. every stage is upstream of `nodeId`.
+ *
+ * The caller has already checked that every id exists and is a `userTask`.
+ */
+function readSourceStageIssues(
+  definition: WorkflowDefinition,
+  nodeId: string,
+  stageIds: readonly string[],
+  coverageGroups: readonly (readonly string[])[],
+  texts: SourceStageTexts,
+): readonly string[] {
+  const labelOf = (id: string): string => {
+    const node = definition.nodes.find((candidate) => candidate.id === id);
+
+    return node?.data.label ? `「${node.data.label}」` : `「${id}」`;
+  };
+  const skippableIssues = stageIds.flatMap((id): readonly string[] => {
+    const node = definition.nodes.find((candidate) => candidate.id === id);
+
+    return node?.type === 'userTask'
+      ? readNodeActorSourceSkipReasons(node).map((reason) =>
+          texts.skip[reason](labelOf(node.id)),
+        )
+      : [];
+  });
+  const startNodeIds = definition.nodes
+    .filter((node) => node.type === 'startEvent')
+    .map((node) => node.id);
+  const coverageIssues = coverageGroups.flatMap(
+    (group): readonly string[] =>
+      readReachableWorkflowNodeIds(
+        definition.edges,
+        startNodeIds,
+        new Set(group),
+      ).has(nodeId)
+        ? [texts.coverage(group.map(labelOf), labelOf(nodeId))]
+        : [],
+  );
+  const notUpstreamIssues = stageIds
+    .filter(
+      (id) =>
+        !readReachableWorkflowNodeIds(definition.edges, [id]).has(nodeId),
+    )
+    .map((id) => texts.notUpstream(labelOf(id), labelOf(nodeId)));
+
+  return [...skippableIssues, ...coverageIssues, ...notUpstreamIssues];
+}
 
 /**
  * The graph checks behind a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` node: the
@@ -1581,37 +1650,13 @@ export function readNodeActorSourceIssues(
     return [`簽核來源的前面關卡 ${labelOf(notUserTaskId)} 不是簽核關卡。`];
   }
 
-  const skippableIssues = sourceNodes.flatMap((node): readonly string[] =>
-    node?.type === 'userTask'
-      ? readNodeActorSourceSkipReasons(node).map((reason) =>
-          NODE_ACTOR_SOURCE_SKIP_ISSUES[reason](labelOf(node.id)),
-        )
-      : [],
+  const stageIssues = readSourceStageIssues(
+    definition,
+    nodeId,
+    sourceNodeIds,
+    [sourceNodeIds],
+    NODE_ACTOR_SOURCE_STAGE_TEXTS,
   );
-  const startNodeIds = definition.nodes
-    .filter((node) => node.type === 'startEvent')
-    .map((node) => node.id);
-  const reachableWithoutSource = readReachableWorkflowNodeIds(
-    definition.edges,
-    startNodeIds,
-    new Set(sourceNodeIds),
-  );
-  const coverageIssues = reachableWithoutSource.has(nodeId)
-    ? [
-        `有一條路徑不會經過所選的前面關卡（${sourceNodeIds
-          .map(labelOf)
-          .join('、')}）就走到 ${labelOf(nodeId)}，那一趟沒有人可以當簽核人。`,
-      ]
-    : [];
-  const notUpstreamIssues = sourceNodeIds
-    .filter(
-      (id) =>
-        !readReachableWorkflowNodeIds(definition.edges, [id]).has(nodeId),
-    )
-    .map(
-      (id) =>
-        `前面關卡 ${labelOf(id)} 不在 ${labelOf(nodeId)} 的上游，走不到這個節點，不能當簽核來源。`,
-    );
   const parallelBranches = readWorkflowParallelBranchSets(definition);
   const parallelIssues = sourceNodeIds.flatMap((id, index) =>
     sourceNodeIds
@@ -1627,12 +1672,7 @@ export function readNodeActorSourceIssues(
       ),
   );
 
-  return [
-    ...skippableIssues,
-    ...coverageIssues,
-    ...notUpstreamIssues,
-    ...parallelIssues,
-  ];
+  return [...stageIssues, ...parallelIssues];
 }
 
 export function hasConfiguredConditionEdges(

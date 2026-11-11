@@ -110,9 +110,14 @@ export type ExcludeInitiatorWhenEmpty =
  * person the task was meant for, and the receiver of a transfer. Each listed
  * node is read on its own and the results are combined.
  *
- * A listed node that did not run (its entry condition was false, or it was
- * skipped by `SKIP_NODE`) or that nobody has approved has no signer, so it
- * excludes nobody: this node then behaves as if the setting were absent.
+ * Every listed node has to be a stage that always runs and always has a
+ * person sign: the publish lint refuses a listed node with an entry condition,
+ * a `SKIP_NODE` fallback or an SLA auto-approval, and one that some path to
+ * this node does not pass (check each listed node on its own, not the list as
+ * a whole). Without that, a return that restarts the instance could leave a
+ * previous round's approver in the exclusion list. To exclude the approver of
+ * a stage that only some cases run, put both stages on the same route with an
+ * exclusive gateway.
  */
 export interface ExcludeNodeActorsConfig {
   /** The earlier user task nodes whose approvers are kept out of this node. */
