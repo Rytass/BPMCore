@@ -141,8 +141,8 @@ GraphQL（暫時模板 `TMP ADR18 P0 驗證`，驗證後已停用）：
 
 1. 結構檢查回傳 `NotifyWebhookStructureIssue` 問題碼，設計器（中文、給使用者）與後端
    lint（JSON path、給開發者）各自格式化，確保兩邊規則不會分岔。
-2. `readNotifyRecipientsIssue` 逐條對齊後端 `lintNotifyRecipients`，不額外檢查
-   `ORG_MANAGER`／`ORG_UNIT_MANAGER`，避免前端擋下後端可發布的模板。
+2. `readNotifyRecipientsIssue` 逐條對齊後端 `lintNotifyRecipients`。`ORG_UNIT_MANAGER` 未選組織
+   兩邊都擋（設計器不再另有一份規則）；`ORG_MANAGER` 不在知會來源內，不檢查。
 3. 引擎只在「空 DIRECT **且** 有 webhook」時略過收件人解析；空 DIRECT 且沒有 webhook
    維持原本丟例外的行為（有測試守住），不放寬既有防線。
 4. `CONSTANT` 值在結構層只檢查是否為 string／有限 number／boolean／null；與參數型別

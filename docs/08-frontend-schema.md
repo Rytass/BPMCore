@@ -462,8 +462,8 @@ interface NotifyWebhookTarget {
 - 「依表單欄位指定」的欄位與簽核節點同一套選單：列出表單所有人員選擇欄位，非必填、可能被條件隱藏或
   隱藏欄位會標警告；欄位空白時引擎會拋「找不到通知對象」並回滾送出，所以發布檢查
   （`lintWorkflowMemberReferences`）只放行必填、不會被藏起來的人員欄位。
-- 「指定組織主管」未選組織時設計器擋儲存（設計器自己的檢查；shared 的
-  `readNotifyRecipientsIssue` 與發布 lint 目前不看這項）。
+- 「指定組織主管」未選組織時，shared 的 `readNotifyRecipientsIssue`、設計器儲存前檢查與後端發布 lint
+  （`lintNotifyRecipients`）都會擋，三處規則相同。
 - 設計器：知會節點面板的「Webhook」區塊從 `workflowWebhookEndpoints` catalog 選端點，
   每個宣告的參數一列，來源可選表單欄位（只列型別相容者）、固定值、案件資訊；已停用或
   已下架的端點會保留並警告。卡片顯示「Webhook N 個」，試跑會列出將送出的 webhook。
