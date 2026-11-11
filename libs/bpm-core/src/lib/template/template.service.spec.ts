@@ -1375,6 +1375,50 @@ describe('TemplateService', () => {
           /workflow\.nodes\.task_2\.approverResolver\.startFrom\.nodeIds: 主管鏈起點的前面關卡 「補填 1」 可能有多位實際簽核人/,
         );
       });
+
+      // task_1 -> task_2 -> task_3: task_2 lists one member but keeps task_1's
+      // approver out; when that member signed task_1, task_2 goes to the
+      // initiator's managers, so the chain on task_3 cannot start from it.
+      const publishExcludedStageStart = (
+        whenEmpty: string,
+      ): Promise<unknown> => {
+        const base = createFieldAccessWorkflow([[], [], []]);
+        const withExclusion = {
+          ...base,
+          nodes: base.nodes.map((node) =>
+            node.id === 'task_2' && node.type === 'userTask'
+              ? {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    ...ONE_LISTED_MEMBER,
+                    excludeNodeActors: { nodeIds: ['task_1'], whenEmpty },
+                  },
+                }
+              : node,
+          ),
+        } as WorkflowDefinition;
+
+        return createTableConditionPublishService({
+          workflowDefinition: withChain(withExclusion, 'task_3', {
+            startFrom: { nodeIds: ['task_2'], type: 'NODE_ACTOR' },
+          }),
+        }).publishApprovalTemplateVersion('template-version-1');
+      };
+
+      it('publishes a multi-seat policy over one listed member whose earlier-stage exclusion fails (control)', async (): Promise<void> => {
+        await expect(publishExcludedStageStart('FAIL')).resolves.toMatchObject({
+          id: 'template-version-1',
+        });
+      });
+
+      it('rejects a multi-seat policy over one listed member whose earlier-stage exclusion hands over to the initiator manager', async (): Promise<void> => {
+        await expect(
+          publishExcludedStageStart('INITIATOR_MANAGER'),
+        ).rejects.toThrow(
+          /workflow\.nodes\.task_3\.approverResolver\.startFrom\.nodeIds: 主管鏈起點的前面關卡 「補填 2」 可能有多位實際簽核人/,
+        );
+      });
     });
   });
 

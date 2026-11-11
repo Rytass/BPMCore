@@ -2249,6 +2249,55 @@ describe('canUserTaskHaveMultipleApprovers', () => {
       ),
     ).toBe(expected);
   });
+
+  // The one listed member may have approved an earlier stage, in which case an
+  // `INITIATOR_MANAGER` stage goes to the initiator's managers instead.
+  it.each<{
+    readonly excludeNodeActors: ExcludeNodeActorsConfig;
+    readonly expected: boolean;
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+  }>([
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'PARALLEL_ALL over one listed member whose earlier-stage exclusion hands over to the initiator manager',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'SEQUENTIAL over one listed member whose earlier-stage exclusion hands over to the initiator manager',
+      policy: { type: 'SEQUENTIAL' },
+    },
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'INITIATOR_MANAGER' },
+      expected: false,
+      name: 'SINGLE over one listed member whose earlier-stage exclusion hands over to the initiator manager',
+      policy: { type: 'SINGLE' },
+    },
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'SKIP_NODE' },
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member whose earlier-stage exclusion skips the stage (control)',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+    {
+      excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'FAIL' },
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member whose earlier-stage exclusion fails (control)',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+  ])('reads $name as $expected', ({ excludeNodeActors, expected, policy }) => {
+    const task = taskWith(ONE_MEMBER, policy);
+
+    expect(
+      canUserTaskHaveMultipleApprovers({
+        ...task,
+        data: { ...task.data, excludeNodeActors },
+      }),
+    ).toBe(expected);
+  });
 });
 
 describe('readSingleApproverSourceIssues', () => {

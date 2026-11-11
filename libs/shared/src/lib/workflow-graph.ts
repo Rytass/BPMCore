@@ -1774,8 +1774,9 @@ export function readNodeActorSourceIssues(
  *   knows;
  * - a `DIRECT` resolver that lists one member can only ever give one person,
  *   whatever the policy ({@link readDesignTimeApproverCount}), unless the
- *   stage also keeps the initiator out with `whenEmpty: 'INITIATOR_MANAGER'`:
- *   when that one member is the initiator the stage goes to the initiator's
+ *   stage keeps the initiator (`excludeInitiator`) or an earlier stage's
+ *   approvers (`excludeNodeActors`) out with `whenEmpty: 'INITIATOR_MANAGER'`:
+ *   when that one member is excluded the stage goes to the initiator's
  *   manager instead, who may be several people, so the policy decides.
  *
  * Deliberately conservative on the unknown side: a policy this build does not
@@ -1794,8 +1795,10 @@ export function canUserTaskHaveMultipleApprovers(node: UserTaskNode): boolean {
 
   // Who the initiator's manager is (and how many share the level) is only known
   // at run time, so a lone listed member is no guarantee of one person here.
+  // Either exclusion can empty the stage and hand it over.
   const mayHandOverToInitiatorManagers =
-    node.data.excludeInitiator?.whenEmpty === 'INITIATOR_MANAGER';
+    node.data.excludeInitiator?.whenEmpty === 'INITIATOR_MANAGER' ||
+    node.data.excludeNodeActors?.whenEmpty === 'INITIATOR_MANAGER';
 
   if (
     !mayHandOverToInitiatorManagers &&
