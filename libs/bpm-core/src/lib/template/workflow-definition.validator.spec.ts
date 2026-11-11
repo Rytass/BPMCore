@@ -1509,6 +1509,19 @@ describe('workflow definition validator: manager chain start settings', (): void
         `${RECIPIENTS}: 知會節點的起始職等不可高於職等門檻。`,
       ]);
     });
+
+    it.each([
+      ['missing', undefined],
+      ['fractional', 2.5],
+      ['a string', '30'],
+    ])(
+      'refuses a chain whose minPositionLevel is %s, instead of climbing to the top',
+      (_label, minPositionLevel): void => {
+        expect(lintRecipients(chain({ minPositionLevel }))).toEqual([
+          `${RECIPIENTS}: 知會節點需要指定有效的職等門檻。`,
+        ]);
+      },
+    );
   });
 });
 
