@@ -443,6 +443,10 @@ Form-schema definitions.
 | `isFormIdentifierKey()` | function | Whether a key is a plain identifier (required for table and column keys) |
 | `readFormFieldSelectionMode()` | function | Normalized control selection mode |
 | `normalizeFormDefinitionSchema()` | function | Additive legacy-schema normalization, recursing into table columns |
+| `FORM_DATA_ISSUE_REASONS` | const | Reasons a submitted form value is refused, for exhaustive handling: `REQUIRED`, `TYPE`, `MIN_LENGTH`, `MAX_LENGTH`, `PATTERN`, `PATTERN_TIMEOUT`, `MIN_ROWS`, `MAX_ROWS`, `UNKNOWN_COLUMN`. Not yet released |
+| `FormDataIssueReason` | type | `(typeof FORM_DATA_ISSUE_REASONS)[number]`. Not yet released |
+| `FormDataIssue` | interface | `{ path, reason, message, limit? }` for one refused value. `path` addresses it: a top-level `fieldKey`, a table row `table[i]` (0-based), or a cell `table[i].col`. `message` is the sentence the host shows. `limit` is set for `MIN_LENGTH`, `MAX_LENGTH`, `MIN_ROWS` and `MAX_ROWS`. Not yet released |
+| `isFormDataIssue(value)` | function | Type guard for a `FormDataIssue`, for values read from a response. Not yet released |
 
 ## `@rytass/bpm-core-shared/status`
 
