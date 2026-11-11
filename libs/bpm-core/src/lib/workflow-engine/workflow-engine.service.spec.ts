@@ -3164,6 +3164,50 @@ describe('WorkflowEngineService', () => {
       ).resolves.toMatchObject({ id: 'instance-1' });
     });
 
+    // The end-user overlay restores the stored value of a key the submit left
+    // out, but only for an approver-filled key. A published template cannot
+    // make a file_upload one (the workflow lint refuses it), so this fixture
+    // builds that combination on purpose: the restored value must count.
+    describe('an end-user resubmit that leaves out the files key', (): void => {
+      const resubmitWithoutFiles = (
+        maxFiles: number,
+      ): Promise<unknown> => {
+        const formSchema = createMaxFilesFormSchema({ maxFiles });
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema,
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          instanceState: ApprovalInstanceStateEnum.RETURNED,
+          processFormData: { files: ['file-a', 'file-b'] },
+          processFormDefinitionSnapshot: { schema: formSchema },
+          processWorkflowSnapshot: createFieldAccessWorkflow({
+            financeFieldAccess: [
+              { display: 'SHOW', fieldKey: 'files', fill: 'OPTIONAL' },
+            ],
+          }),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        return fixture.service.resubmitApprovalInstance({
+          endUserSubmission: true,
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          instanceId: 'instance-1',
+          title: null,
+        });
+      };
+
+      it('accepts the restored files when they fit within maxFiles', async (): Promise<void> => {
+        await expect(resubmitWithoutFiles(2)).resolves.toBeDefined();
+      });
+
+      it('refuses the restored files when they exceed maxFiles', async (): Promise<void> => {
+        await expect(resubmitWithoutFiles(1)).rejects.toThrow(
+          '欄位「附件」最多 1 個檔案',
+        );
+      });
+    });
+
     it('does not cap id-shaped values of a field that is not a file_upload', async (): Promise<void> => {
       const fixture = createFilesFixture();
 
