@@ -334,8 +334,9 @@ AI 工具組（`set_user_task_approver` 的 `approverResolver`）認得這四種
 
 試跑（dry run）對「依職位／組織」這類要到送出時才能決定人選的 resolver，回傳的
 `assigneeMemberId` 是占位字串（`position:<id>`、`orgUnitMember:<id>`、
-`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`（主管鏈用了起點或起始職等時後面會多接 `:<起始職等>:<formMember|nodeActor>:<key>`，
-用 `parseOrgManagerChainPlaceholder` 解析；關卡 id 不可含逗號），以及
+`orgUnitPosition:<orgUnitId>:<positionId>`、`orgUnitManager:<id>`、`orgManagerChain:<level>`（主管鏈用了起點或起始職等時後面會多接：只設起始職等寫成
+`orgManagerChain:<level>:<起始職等>`，有起點則是 `:<起始職等>:<formMember|nodeActor>:<key>`，
+沒有起始職等時 `<起始職等>` 留空；用 `parseOrgManagerChainPlaceholder` 解析；關卡 id 不可含逗號），以及
 四種新來源的 `formMemberManager:<formPath>:<levelsUp>`、`formOrgUnitManager:<formPath>`、
 `nodeActor:<nodeId,nodeId…>`、`nodeActorManager:<nodeId,nodeId…>:<levelsUp>`）；
 designer 的試跑結果會把它們顯示成中文（例如「職位：經理（送出時依當下人員決定）」；
@@ -413,8 +414,9 @@ type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
 `startFrom: { type: 'FORM_MEMBER', formPath }` 指到的欄位須是必填、永遠顯示的單選人員欄位，
 `startFrom: { type: 'NODE_ACTOR', nodeIds }` 指到的關卡須符合 `NODE_ACTOR` 的圖規則，
 而且每個關卡都只能有一位實際簽核人（`canUserTaskHaveMultipleApprovers`：`PARALLEL_ALL`、
-`SEQUENTIAL`、`COUNT` 門檻大於 1 或任何百分比門檻的 `QUORUM` 都不行，除非它只列了一位 `DIRECT` 成員），
-設計器的關卡選項請用同一個函式過濾。
+`SEQUENTIAL`、`COUNT` 門檻大於 1 或任何百分比門檻的 `QUORUM` 都不行，除非它只列了一位 `DIRECT` 成員；但那一關若開了「申請人不可簽核自己的單」
+且沒人可簽時改派申請人主管（`whenEmpty: 'INITIATOR_MANAGER'`），仍照決策方式判斷，因為唯一成員
+剛好是申請人時會改派給可能是多人的主管），設計器的關卡選項請用同一個函式過濾。
 用在 `NOTIFY.recipients` 時 `startFrom` 只能省略或 `INITIATOR`。
 
 ### Service Task
