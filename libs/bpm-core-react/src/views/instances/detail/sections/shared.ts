@@ -631,6 +631,18 @@ function isSequentialTaskCreation(activityLog: ActivityLogRecord): boolean {
 export function readSequentialActivityPayloadMemberIds(
   activityLog: ActivityLogRecord,
 ): readonly string[] {
+  if (activityLog.eventType === 'TASK_REASSIGNED') {
+    // A seat reassigned inside a group node leaves the task's delegation chain
+    // untouched, so the previous holder is only named here.
+    const reassignedPayload = readActivityPayload(activityLog);
+
+    return [
+      readStringField(reassignedPayload, 'fromMemberId'),
+      readStringField(reassignedPayload, 'toMemberId'),
+      readStringField(reassignedPayload, 'actorMemberId'),
+    ].filter(isPresentText);
+  }
+
   if (
     activityLog.eventType !== 'TASK_CANDIDATE_ACTIVATED' &&
     activityLog.eventType !== 'TASK_CREATED'
