@@ -123,15 +123,28 @@ describe('readUnsupportedOrgManagerChainStartType', () => {
   });
 
   it('returns the type name for a start saved by a newer version', () => {
-    expect(readUnsupportedOrgManagerChainStartType({ type: 'FUTURE_START' })).toBe(
-      'FUTURE_START',
-    );
+    expect(
+      readUnsupportedOrgManagerChainStartType({ type: 'FUTURE_START' }),
+    ).toBe('FUTURE_START');
   });
 
   it('does not treat inherited object keys as known types', () => {
     expect(readUnsupportedOrgManagerChainStartType({ type: 'toString' })).toBe(
       'toString',
     );
+  });
+
+  it.each([
+    ['no type', {}],
+    ['an undefined type', { type: undefined }],
+    ['a type that is not a string', { type: 5 }],
+    ['an empty type', { type: '' }],
+  ])('names a start with %s in words, never as undefined', (_label, start) => {
+    expect(
+      readUnsupportedOrgManagerChainStartType(
+        start as unknown as { readonly type: string },
+      ),
+    ).toBe('（缺少型別）');
   });
 });
 
@@ -144,7 +157,9 @@ describe('manager chain start readers', () => {
       }),
     ).toBe(true);
     expect(
-      isOrgManagerChainStartedFromInitiator({ startFrom: { type: 'INITIATOR' } }),
+      isOrgManagerChainStartedFromInitiator({
+        startFrom: { type: 'INITIATOR' },
+      }),
     ).toBe(true);
   });
 
@@ -162,9 +177,9 @@ describe('manager chain start readers', () => {
   });
 
   it('reads the start level, and nothing for an absent or non-numeric one', () => {
-    expect(readOrgManagerChainStartPositionLevel({ startPositionLevel: 10 })).toBe(
-      10,
-    );
+    expect(
+      readOrgManagerChainStartPositionLevel({ startPositionLevel: 10 }),
+    ).toBe(10);
     expect(readOrgManagerChainStartPositionLevel({})).toBeNull();
     expect(
       readOrgManagerChainStartPositionLevel({
@@ -222,6 +237,12 @@ describe('manager chain dry-run placeholder', () => {
       'orgManagerChain:30:20:nodeActor:a,b',
     ],
     [
+      // A draft the publish lint refuses, but the dry run still shows it.
+      'a fractional start level',
+      { minPositionLevel: 30, startPositionLevel: 1.5 },
+      'orgManagerChain:30:1.5',
+    ],
+    [
       'an INITIATOR start with a start level',
       {
         minPositionLevel: 30,
@@ -267,6 +288,11 @@ describe('manager chain dry-run placeholder', () => {
         startFrom: { formPath: 'a:b', type: 'FORM_MEMBER' },
         startPositionLevel: 20,
       },
+    ],
+    [
+      // Written by a draft with a fractional level: it reads back as written.
+      'orgManagerChain:30:1.5',
+      { minPositionLevel: 30, startFrom: null, startPositionLevel: 1.5 },
     ],
   ])('reads %s back', (placeholder, parts) => {
     expect(parseOrgManagerChainPlaceholder(placeholder)).toEqual(parts);

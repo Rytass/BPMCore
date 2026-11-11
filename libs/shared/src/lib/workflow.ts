@@ -329,19 +329,30 @@ const KNOWN_ORG_MANAGER_CHAIN_START_TYPES: Readonly<
   NODE_ACTOR: true,
 };
 
+/** What a start with no type is called in a message instead of its type. */
+const MISSING_ORG_MANAGER_CHAIN_START_TYPE_LABEL = '（缺少型別）';
+
 /**
  * The start's type when this build does not know it (a definition saved by a
  * newer version), or `null` when it does. Takes a bare `type` so a newer
  * definition can be checked without the compiler having narrowed it away. The
  * engine refuses such a start at run time instead of climbing from the
- * initiator, which would route the case to the wrong people.
+ * initiator, which would route the case to the wrong people. A start whose
+ * type is missing or not a string reads as unsupported too, named
+ * `（缺少型別）`.
  */
 export function readUnsupportedOrgManagerChainStartType(start: {
   readonly type: string;
 }): string | null {
-  return hasOwnKey(KNOWN_ORG_MANAGER_CHAIN_START_TYPES, start.type)
-    ? null
-    : start.type;
+  const type: unknown = start.type;
+
+  // A start with no usable type (raw JSON that nothing has linted) is still
+  // unsupported; name it in words rather than printing `undefined`.
+  if (typeof type !== 'string' || type === '') {
+    return MISSING_ORG_MANAGER_CHAIN_START_TYPE_LABEL;
+  }
+
+  return hasOwnKey(KNOWN_ORG_MANAGER_CHAIN_START_TYPES, type) ? null : type;
 }
 
 type OrgManagerChainResolver = Extract<
@@ -425,18 +436,29 @@ export interface OrgManagerChainPlaceholder {
   readonly startPositionLevel: number | null;
 }
 
-const PLACEHOLDER_INTEGER_PATTERN = /^-?\d+$/;
+// A level is written with `String(level)`, so a fractional one (a draft the
+// publish lint would refuse) must read back as written, not as "not a
+// placeholder": the dry run would otherwise show the raw text for it.
+const PLACEHOLDER_NUMBER_PATTERN = /^-?\d+(?:\.\d+)?$/;
 
 /**
  * The parts of a chain placeholder written by
  * {@link formatOrgManagerChainPlaceholder}, or `null` for any other text.
+ *
+ * The `nodeActor` key is the node ids joined by `,`, so a node id that itself
+ * contains a comma cannot be read back (it comes back as two ids). The
+ * designer and the engine only produce ids without commas; the format does
+ * not escape them.
  */
 export function parseOrgManagerChainPlaceholder(
   placeholder: string,
 ): OrgManagerChainPlaceholder | null {
   const [kind, min, level, from, ...keyParts] = placeholder.split(':');
 
-  if (kind !== 'orgManagerChain' || !PLACEHOLDER_INTEGER_PATTERN.test(min ?? '')) {
+  if (
+    kind !== 'orgManagerChain' ||
+    !PLACEHOLDER_NUMBER_PATTERN.test(min ?? '')
+  ) {
     return null;
   }
 
@@ -444,7 +466,7 @@ export function parseOrgManagerChainPlaceholder(
   const startPositionLevel =
     level === undefined || level === ''
       ? null
-      : PLACEHOLDER_INTEGER_PATTERN.test(level)
+      : PLACEHOLDER_NUMBER_PATTERN.test(level)
         ? Number(level)
         : undefined;
 
