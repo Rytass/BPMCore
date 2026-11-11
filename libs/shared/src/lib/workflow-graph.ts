@@ -1593,6 +1593,14 @@ export function readNotifyRecipientsIssue(
     return '知會節點需要指定組織與職位。';
   }
 
+  // Hand-written or AI-written JSON may carry no `orgUnitId` at all.
+  if (
+    recipients.type === 'ORG_UNIT_MANAGER' &&
+    (typeof recipients.orgUnitId !== 'string' || !recipients.orgUnitId.trim())
+  ) {
+    return '知會節點需要指定組織。';
+  }
+
   if (recipients.type === 'DYNAMIC_FORM' && !recipients.formPath.trim()) {
     return '知會節點需要指定知會對象的表單欄位。';
   }
