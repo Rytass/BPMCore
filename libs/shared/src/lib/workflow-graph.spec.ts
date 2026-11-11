@@ -1504,6 +1504,31 @@ describe('readNotifyRecipientsIssue — new approver sources', () => {
   });
 });
 
+describe('readNotifyRecipientsIssue — 指定組織主管 needs an organization', () => {
+  it('refuses 指定組織主管 with an empty organization', () => {
+    expect(
+      readNotifyRecipientsIssue({ orgUnitId: '  ', type: 'ORG_UNIT_MANAGER' }),
+    ).toBe('知會節點需要指定組織。');
+  });
+
+  it('refuses 指定組織主管 saved without any orgUnitId instead of throwing', () => {
+    expect(
+      readNotifyRecipientsIssue({
+        type: 'ORG_UNIT_MANAGER',
+      } as unknown as ApproverResolver),
+    ).toBe('知會節點需要指定組織。');
+  });
+
+  it('accepts 指定組織主管 once an organization is chosen', () => {
+    expect(
+      readNotifyRecipientsIssue({
+        orgUnitId: 'org_hq',
+        type: 'ORG_UNIT_MANAGER',
+      }),
+    ).toBeNull();
+  });
+});
+
 describe('org_unit field conditions', () => {
   const ORG_FIELD = field('org_unit');
 

@@ -1,8 +1,11 @@
+import { DEFAULT_BPM_ORGANIZATION_TIME_ZONE } from '@rytass/bpm-core-shared';
+
 /**
  * Zone in which organization effective dates are read when the host does not
- * set `organizationTimeZone`: the product's business time zone.
+ * set `organizationTimeZone`: the product's business time zone. Defined in
+ * `@rytass/bpm-core-shared` so the React designer reads the same default.
  */
-export const DEFAULT_BPM_ORGANIZATION_TIME_ZONE = 'Asia/Taipei';
+export { DEFAULT_BPM_ORGANIZATION_TIME_ZONE };
 
 /**
  * Root option for how BPM decides what "today" is when it compares against the

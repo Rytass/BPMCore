@@ -11,6 +11,7 @@ import {
   DEFAULT_BPM_LANGUAGE,
   type BPMLanguage,
 } from './language-provider';
+import { BPMOrganizationTimeZoneProvider } from './organization-time-zone-provider';
 import { NotificationDrawer } from '../components/notification-drawer';
 import { NotificationDrawerProvider } from './notification-drawer-provider';
 import { NotificationUnreadProvider } from './notification-unread-provider';
@@ -26,6 +27,14 @@ interface ProvidersProps {
    */
   readonly language?: BPMLanguage;
   /**
+   * IANA zone in which BPM views read "today" against organization effective
+   * dates. Pass the same value given to `BPMRootModule` as
+   * `organizationTimeZone`; leave it unset when the API does not set one.
+   * Defaults to `DEFAULT_BPM_ORGANIZATION_TIME_ZONE` (`'Asia/Taipei'`); an
+   * unknown zone falls back to it with a console warning.
+   */
+  readonly organizationTimeZone?: string;
+  /**
    * Public paths that should not trigger redirect to `/login` when there
    * is no session. Forwarded to `<AuthProvider>`. Defaults to `['/login']`.
    */
@@ -39,6 +48,7 @@ interface ProvidersProps {
  *
  * - Mezzanine UI calendar locale (moment-based, `ZH_TW` by default)
  * - `<BPMLanguageProvider>` (message language, `'zh-TW'` by default)
+ * - `<BPMOrganizationTimeZoneProvider>` (organization "today" zone)
  * - `<AuthProvider>` (BPM session via REST `/auth/*`)
  * - `<NotificationUnreadProvider>` (polls unread count)
  * - `<NotificationDrawerProvider>` (controls drawer open/close state)
@@ -54,20 +64,23 @@ export function Providers({
   children,
   locale = CalendarLocale.ZH_TW,
   language = DEFAULT_BPM_LANGUAGE,
+  organizationTimeZone,
   publicPaths,
   loginPath,
 }: ProvidersProps): ReactElement {
   return (
     <CalendarConfigProviderMoment locale={locale}>
       <BPMLanguageProvider language={language}>
-        <AuthProvider publicPaths={publicPaths} loginPath={loginPath}>
-          <NotificationUnreadProvider>
-            <NotificationDrawerProvider>
-              {children}
-              <NotificationDrawer />
-            </NotificationDrawerProvider>
-          </NotificationUnreadProvider>
-        </AuthProvider>
+        <BPMOrganizationTimeZoneProvider timeZone={organizationTimeZone}>
+          <AuthProvider publicPaths={publicPaths} loginPath={loginPath}>
+            <NotificationUnreadProvider>
+              <NotificationDrawerProvider>
+                {children}
+                <NotificationDrawer />
+              </NotificationDrawerProvider>
+            </NotificationUnreadProvider>
+          </AuthProvider>
+        </BPMOrganizationTimeZoneProvider>
       </BPMLanguageProvider>
     </CalendarConfigProviderMoment>
   );

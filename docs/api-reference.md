@@ -69,6 +69,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | `SET_FORM_FIELD` member and organization-unit shapes: a service task writing a top-level `member` or `org_unit` field is held to the same shape the submit check applies (a non-empty member id, or a list of them on a `multiple` field; a non-empty unit id), so an array written to a single-member field can no longer reach a `DYNAMIC_FORM` resolver or a manager chain that starts from the field and refuse inside a later decision. A refused value throws `400` with `formDataErrors` (`reason: 'TYPE'`, `path` the field key), as the text-rule refusal of the same node now also does. No export changes | Not yet released |
 | Approval comment requirement: optional `UserTaskNodeData.requireApprovalComment`, validated by `lintWorkflowDefinition` (`workflow.nodes.<id>.requireApprovalComment must be a boolean`), the `setUserTaskRequireApprovalComment` command and the `set_user_task_require_approval_comment` tool, a 核准時意見必填 switch on the designer's user task panel, the approve dialog on the instance page asking for the comment before it sends, and the `TASK_ASSIGNED` / `TASK_TRANSFERRED` payload key `requireApprovalComment: true` (only when on) that turns the notification drawer's 同意 into 開啟案件. When `true`, a person's `APPROVED` decision without a non-blank comment is refused with `BadRequestException` 「此節點要求同意時填寫意見，請輸入意見後再同意。」. Read from the instance's workflow snapshot, so a template that opts in later does not block a running case; the SLA `AUTO_APPROVE` timeout is never held to it. Omitted (or `false`) keeps the previous behaviour | Not yet released |
 | Initiator `customFields` resolver (PR #145): `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER` / the `initiatorCustomFieldsResolver` runtime option / the `initiatorCustomFieldsResolverProvider` wiring option fill `customFields` of the initiator snapshot the engine builds (`BPMInitiatorCustomFieldsResolver`, `BPMInitiatorCustomFieldsInput`, `BPMInitiatorCustomFieldsPurpose`). A submission waits for it 10 s at most and fails with a fixed Chinese 500 on a timeout, an error that is not an `HttpException` or a bad value, logging the cause; no case is created. `launchableApprovalTemplates` calls it once per request and judges initiator policies against its answer, falling back to `customFields: {}` (fail closed per template) when it fails. `listLaunchableApprovalTemplates` takes an optional `authContext` | Not yet released |
+| Designer reads "today" in the host's organization zone (F43): `organizationTimeZone?: string` on `Providers` / `BPMNextProviders`, `BPMOrganizationTimeZoneProvider` / `useBPMOrganizationTimeZone()`, and `DEFAULT_BPM_ORGANIZATION_TIME_ZONE` moved to `@rytass/bpm-core-shared` (bpm-core re-exports it). The template designer's position pickers, the org-unit position inactive warning and the dry-run initiator snapshot now judge effective dates in that zone instead of a hard-coded `Asia/Taipei` | Not yet released |
 
 ---
 
@@ -252,6 +253,7 @@ Re-exports the seven subpath modules listed below, plus the identity and organiz
 | `MemberMetadataCacheEntry` | interface | Cached metadata + TTL |
 | `OrgUnitType` | type | `'COMPANY' \| 'DIVISION' \| 'DEPARTMENT' \| 'TEAM'` (uppercase, the GraphQL wire format) |
 | `ManagerResolutionScopeType` | type | `'MEMBER' \| 'ORG_UNIT' \| 'POSITION'` |
+| `DEFAULT_BPM_ORGANIZATION_TIME_ZONE` | const | `'Asia/Taipei'` — the zone BPM reads "today" in against organization effective dates when the host sets no `organizationTimeZone`; shared by the engine and the React designer. Not yet released |
 | `OrgUnit` | interface | Org-unit node |
 | `Position` | interface | Position |
 | `Membership` | interface | member × orgUnit × position relation |
@@ -548,7 +550,7 @@ Pure, framework-agnostic structural transforms over a `WorkflowDefinition` (no R
 | `NOTIFY_WEBHOOK_TARGET_LIMIT` / `NOTIFY_WEBHOOK_CONTEXT_PATHS` / `NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX` | const | Per-node webhook cap (10), the allowed `CONTEXT` binding paths, and the endpoint version ceiling (int32) |
 | `NotifyWebhookTargetIdFactory` / `NotifyWebhookStructureIssue` / `NotifyWebhookStructureIssueCode` | type/interface | Injectable target-id generator; registry-independent webhook shape issue as a code (formatted separately by the designer and the backend lint), located by `targetIndex` / `bindingIndex` / `parameter`, plus `property` for `UNKNOWN_PROPERTY` (a key outside the contract, relative to the target or binding). Phase 23 P4／P5 integration, released in v0.20.0: `BINDING_EXPRESSION_REQUIRED` (an `EXPRESSION` source without a non-blank `expression`) |
 | `defaultNotifyWebhookTargetId` / `createNotifyWebhookTarget` / `readNotifyWebhookTargets` | function | NOTIFY webhook target factory and reader |
-| `isNotifyRecipientsEmpty` / `readNotifyRecipientsIssue` | function | Empty `DIRECT` recipients (allowed only with webhooks) vs a misconfigured recipient resolver. `readNotifyRecipientsIssue` also refuses the four form / prior-node sources (`isNotifyRecipientResolverType`) even when complete |
+| `isNotifyRecipientsEmpty` / `readNotifyRecipientsIssue` | function | Empty `DIRECT` recipients (allowed only with webhooks) vs a misconfigured recipient resolver. `readNotifyRecipientsIssue` also refuses the four form / prior-node sources (`isNotifyRecipientResolverType`) even when complete, and an `ORG_UNIT_MANAGER` with no organization; the backend publish lint refuses the same |
 | `readNodeActorSourceSkipReasons(node)` / `NodeActorSourceSkipReason` | function/type | Why a user task may finish with nobody having approved it, which rules it out as a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` source and as an `excludeNodeActors` stage: `'entryCondition'` (a non-blank `entryCondition`), `'skipNode'` (`excludeInitiator.whenEmpty: 'SKIP_NODE'`), `'skipNodeByNodeActors'` (`excludeNodeActors.whenEmpty: 'SKIP_NODE'`), `'autoApprove'` (`sla.onTimeout: 'AUTO_APPROVE'`; the engine does not count an SLA approval as a signature). `[]` = always has a real signer. The designer's 關卡 picker and `readNodeActorSourceIssues` both read it |
 | `readNodeActorSourceIssues(definition, nodeId, sourceNodeIds)` | function | Graph checks behind a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` node, as Chinese issue lines (`[]` = sound): the list is non-empty, free of repeats and of the node itself; every id is an existing `userTask`; no source can finish without a real signer (`readNodeActorSourceSkipReasons` is non-empty: an `entryCondition`, `excludeInitiator.whenEmpty: 'SKIP_NODE'` or `sla.onTimeout: 'AUTO_APPROVE'`); every path from the start reaches `nodeId` through a source (walking the graph as if every gateway were exclusive); no two sources sit on different branches of one `parallelGateway`; every source is upstream of `nodeId` (a path leads from it to the node) |
 | `readNotifyServiceTaskIssue` | function | zh-TW issue for one NOTIFY node (recipients + webhooks); used by `readWorkflowDefinitionIssue` and the template designer's pre-save check |
@@ -942,7 +944,7 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Enums | `OrgUnitTypeEnum`, `ManagerResolutionScopeTypeEnum` |
 | DTOs | `CreateOrgUnitInput`, `UpdateOrgUnitInput`, `CommitOrgUnitTreeDraftInput`, `CommitOrgUnitTreeDraftMoveInput`, `CreatePositionInput`, `UpdatePositionInput`, `CreateMembershipInput`, `UpdateMembershipInput`, `CreateManagerResolutionInput`, `UpdateManagerResolutionInput` |
 | Service | `OrganizationService`, `DeleteOrgUnitOptions` |
-| Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`, `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
+| Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE` (re-exported from `@rytass/bpm-core-shared` since the next release; same name and value), `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
 | Module | `OrganizationModule` |
 | GraphQL | `OrganizationDirectoryQueries`, `OrganizationPickerQueries`, `OrganizationQueries`, `OrganizationMutations` |
 
@@ -1035,12 +1037,12 @@ the engine's moves from UTC to `Asia/Taipei`.
 > upgrading. Instances already running keep the tasks they have; only
 > resolutions made after the upgrade read the new date.
 
-Known limitation: the template designer's browser-side dry-run snapshot
-(`readTodayDateOnlyString` in `TemplateDesignerView`) builds its simulated
-initiator from the browser's UTC date, because the client has no access to the
-host's `organizationTimeZone`. Between local midnight and the UTC offset that
-preview can disagree with the engine's dry run and with real runs for a
-membership effective from today.
+The template designer reads "today" in the zone passed to the React providers
+as `organizationTimeZone` (`<BPMNextProviders organizationTimeZone="…">` or
+`<Providers>`), defaulting to the same `Asia/Taipei`. A host that sets
+`organizationTimeZone` on `BPMRootModule` passes the same value there, or the
+designer's position pickers and dry-run preview can disagree with the engine
+for a membership effective from today (not yet released).
 
 ## `@rytass/bpm-core-nestjs-module/form`
 
@@ -2077,11 +2079,13 @@ React UI library. Four export families: root barrel (foundation + host integrati
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `BPMLanguageProvider` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay. `language?: BPMLanguage` (default `'zh-TW'`, separate from the calendar `locale`; since `v0.17.3`) |
+| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `BPMLanguageProvider` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay. `language?: BPMLanguage` (default `'zh-TW'`, separate from the calendar `locale`; since `v0.17.3`). `organizationTimeZone?: string` (Not yet released): the IANA zone given to `BPMRootModule` as `organizationTimeZone`, in which BPM views read "today" against membership effective dates; defaults to `DEFAULT_BPM_ORGANIZATION_TIME_ZONE` (`'Asia/Taipei'`), and an unknown zone falls back to it with one console warning |
 | `BPMLanguage` | type | `'en' \| 'zh-TW'` — language BPM views write their messages in. |
 | `BPMLanguageProvider` | Component | `{ language, children }`; hosts pass the user's choice as state to switch it. |
 | `useBPMLanguage()` | hook | Active `BPMLanguage`; `'zh-TW'` when no provider. |
 | `BPM_LANGUAGES` / `DEFAULT_BPM_LANGUAGE` | const | Supported languages / `'zh-TW'`. |
+| `BPMOrganizationTimeZoneProvider` | Component | Not yet released: `{ timeZone?, children }`. Resolves the zone as the engine does (trimmed; blank or missing → `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`), except that a zone `Intl` rejects falls back to the default with one `console.warn` per value instead of throwing. Mounted by `Providers` from its `organizationTimeZone` prop. |
+| `useBPMOrganizationTimeZone()` | hook | Not yet released: the resolved organization zone; `'Asia/Taipei'` when no provider. The template designer reads "today" with it. |
 | `AuthProvider` | Component | Wraps current-member context, handles login/logout |
 | `AuthProviderProps` | interface | `publicPaths`, `loginPath`, etc. |
 | `useAuth()` | hook | Current member + login/logout methods (internal-leaning surface) |
@@ -2132,7 +2136,7 @@ They reach hosts through the views that use them (`views/instances/detail`,
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary. Forwards `language?: BPMLanguage` (since `v0.17.3`) |
+| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary. Forwards `language?: BPMLanguage` (since `v0.17.3`) and `organizationTimeZone?: string` (Not yet released) |
 
 ## `@rytass/bpm-core-react/next/workflow-chat-route`
 

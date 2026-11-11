@@ -742,6 +742,13 @@ function lintNotifyRecipients(
     ];
   }
 
+  if (
+    recipients.type === 'ORG_UNIT_MANAGER' &&
+    (typeof recipients.orgUnitId !== 'string' || !recipients.orgUnitId.trim())
+  ) {
+    return [`workflow.nodes.${nodeId}.action.recipients.orgUnitId is required`];
+  }
+
   // The sources that need a form pick or earlier signers have nothing to read
   // on a NOTIFY node (and an unknown type has no resolver at all).
   if (!isNotifyRecipientResolverType(recipients.type)) {
