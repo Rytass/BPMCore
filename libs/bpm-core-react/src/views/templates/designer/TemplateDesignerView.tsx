@@ -142,8 +142,10 @@ import {
 import { BPMFormField } from '../../../components/bpm-form-field';
 import {
   NODE_ACTOR_STAGE_HINT,
+  ORG_MANAGER_CHAIN_STAGE_HINT,
   readNodeActorGraphIssues,
   readNodeActorStageChoice,
+  readOrgManagerChainStageChoice,
 } from './node-actor-resolver-options';
 import { readMinPositionLevelOptions } from './position-level-options';
 import {
@@ -181,6 +183,7 @@ import {
   MemberSelectOption,
   NodeNameRecord,
   ORG_UNIT_SOURCE_OPTIONS,
+  START_POSITION_LEVEL_HINT,
   buildApproverResolver,
   readApproverManagerRule,
   readApproverResolverEditorState,
@@ -194,11 +197,21 @@ import {
   readManagerLevelOption,
   readManagerLevelOptionById,
   readMemberSelectOption,
+  readOrgManagerChainStartChoice,
+  readOrgManagerChainStartFormPath,
+  readOrgManagerChainStartLevelChoice,
+  readOrgManagerChainStartLevelPick,
+  readOrgManagerChainStartLevelProblem,
+  readOrgManagerChainStartMode,
+  readOrgManagerChainStartNodeIds,
+  readOrgManagerChainStartPick,
   readOrgUnitDisplayName,
   readPositionDisplayName,
   readSelectedOrgUnitOption,
   readSelectedPositionOption,
   updateApproverResolverFallback,
+  withOrgManagerChainStartFormPath,
+  withOrgManagerChainStartNodeIds,
   withOrgUnitSource,
   withPreferClosestOrgUnit,
 } from './approver-resolver-model';
@@ -2987,6 +3000,37 @@ export function TemplateDesignerView({
       resolver.type === 'ORG_MANAGER_CHAIN'
         ? readMinPositionLevelOptions(positions, resolver.minPositionLevel)
         : [];
+    // The two settings that make a manager chain start somewhere other than
+    // at the initiator, or sign only from some position level up.
+    const chainResolver =
+      resolver.type === 'ORG_MANAGER_CHAIN' ? resolver : null;
+    const chainStartMode = chainResolver
+      ? readOrgManagerChainStartMode(chainResolver)
+      : null;
+    const chainStartChoice = chainResolver
+      ? readOrgManagerChainStartChoice(chainResolver)
+      : null;
+    const chainFormChoice =
+      chainResolver && chainStartMode === 'FORM_MEMBER'
+        ? readFormMemberManagerFieldChoice(
+            webhookFormSchema,
+            readOrgManagerChainStartFormPath(chainResolver) ?? '',
+          )
+        : null;
+    const chainStageChoice =
+      chainResolver && chainStartMode === 'NODE_ACTOR'
+        ? readOrgManagerChainStageChoice(
+            workflowDefinition,
+            node.id,
+            readOrgManagerChainStartNodeIds(chainResolver) ?? [],
+          )
+        : null;
+    const chainStartLevelChoice = chainResolver
+      ? readOrgManagerChainStartLevelChoice(chainResolver, positions)
+      : null;
+    const chainStartLevelProblem = chainResolver
+      ? readOrgManagerChainStartLevelProblem(chainResolver)
+      : null;
     const fallbackMember =
       fallback.type === 'DIRECT' && fallback.memberId
         ? readMemberSelectOption(memberOptions, fallback.memberId)
@@ -3218,29 +3262,142 @@ export function TemplateDesignerView({
           </BPMFormField>
         ) : null}
         {resolver.type === 'ORG_MANAGER_CHAIN' ? (
-          <BPMFormField
-            hintText="從發起人的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。"
-            label="簽到職等"
-            name="minPositionLevel"
-            required
-          >
-            <Select
-              clearable={false}
-              onChange={(option): void =>
-                updateUserTaskResolver({
-                  ...resolver,
-                  minPositionLevel: Number(
-                    option?.id ?? resolver.minPositionLevel,
-                  ),
-                })
+          <>
+            <BPMFormField
+              hintText={
+                chainStartMode === 'INITIATOR'
+                  ? '從發起人的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。'
+                  : '從起點的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。'
               }
-              options={[...minPositionLevelOptions]}
-              value={readSelectOption(
-                minPositionLevelOptions,
-                String(resolver.minPositionLevel),
-              )}
-            />
-          </BPMFormField>
+              label="簽到職等"
+              name="minPositionLevel"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void =>
+                  updateUserTaskResolver({
+                    ...resolver,
+                    minPositionLevel: Number(
+                      option?.id ?? resolver.minPositionLevel,
+                    ),
+                  })
+                }
+                options={[...minPositionLevelOptions]}
+                value={readSelectOption(
+                  minPositionLevelOptions,
+                  String(resolver.minPositionLevel),
+                )}
+              />
+            </BPMFormField>
+            {chainStartChoice ? (
+              <BPMFormField
+                hintText={chainStartChoice.hint}
+                label="從誰的主管開始"
+                name="orgManagerChainStart"
+                required
+              >
+                <Select
+                  clearable={false}
+                  onChange={(option): void => {
+                    const next = readOrgManagerChainStartPick(
+                      resolver,
+                      option?.id ?? null,
+                    );
+
+                    if (next) {
+                      updateUserTaskResolver(next);
+                    }
+                  }}
+                  options={[...chainStartChoice.options]}
+                  value={chainStartChoice.selected}
+                />
+              </BPMFormField>
+            ) : null}
+            {chainFormChoice ? (
+              <BPMFormField
+                hintText={
+                  chainFormChoice.problem ??
+                  '只能選單選的人員欄位；欄位要必填、不被條件隱藏，否則送出時可能找不到起點。'
+                }
+                label="表單欄位"
+                name="orgManagerChainStartFormPath"
+                required
+              >
+                <Select
+                  clearable={false}
+                  onChange={(option): void =>
+                    updateUserTaskResolver(
+                      withOrgManagerChainStartFormPath(
+                        resolver,
+                        option?.id ?? '',
+                      ),
+                    )
+                  }
+                  options={[...chainFormChoice.options]}
+                  placeholder="選擇人員選擇欄位"
+                  value={chainFormChoice.selected ?? undefined}
+                />
+              </BPMFormField>
+            ) : null}
+            {chainStageChoice ? (
+              <BPMFormField
+                hintText={
+                  chainStageChoice.problems.length > 0
+                    ? chainStageChoice.problems.join('；')
+                    : ORG_MANAGER_CHAIN_STAGE_HINT
+                }
+                label="關卡"
+                name="orgManagerChainStartNodeIds"
+                required
+              >
+                <Select
+                  clearable
+                  mode="multiple"
+                  onChange={(options): void =>
+                    updateUserTaskResolver(
+                      withOrgManagerChainStartNodeIds(
+                        resolver,
+                        options.map((option) => option.id),
+                      ),
+                    )
+                  }
+                  options={[...chainStageChoice.options]}
+                  overflowStrategy="wrap"
+                  placeholder="選擇前面的簽核關卡"
+                  value={[...chainStageChoice.selected]}
+                />
+              </BPMFormField>
+            ) : null}
+            {chainStartLevelChoice ? (
+              <BPMFormField
+                hintText={
+                  chainStartLevelProblem ??
+                  (chainStartLevelChoice.invalid
+                    ? '原本儲存的起始職等無效，請重新選擇；發布前必須修正。'
+                    : START_POSITION_LEVEL_HINT)
+                }
+                label="從職等幾開始簽"
+                name="startPositionLevel"
+              >
+                <Select
+                  clearable={false}
+                  onChange={(option): void => {
+                    const next = readOrgManagerChainStartLevelPick(
+                      resolver,
+                      option?.id ?? null,
+                    );
+
+                    if (next) {
+                      updateUserTaskResolver(next);
+                    }
+                  }}
+                  options={[...chainStartLevelChoice.options]}
+                  value={chainStartLevelChoice.selected}
+                />
+              </BPMFormField>
+            ) : null}
+          </>
         ) : null}
         {editorState.mode === 'ORG_UNIT_MANAGER' ? (
           <>
