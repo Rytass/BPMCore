@@ -1,6 +1,6 @@
 # 26 — 簽核實例欄位篩選開發 Phase
 
-- **狀態**：P0–P3 IMPLEMENTED（2026-11-11，本機 develop 端對端操作通過，待獨立 verifier）；P4 PLANNED
+- **狀態**：P0–P3 VERIFIED（2026-11-11，獨立 verifier 以真實 GraphQL 與設計器操作驗證 E1–E17 全數通過，見 §E2E 驗收矩陣下的驗證紀錄）；P4 IMPLEMENTING
 - **規劃日期**：2026-11-10；依 ADR 25 的裁決（2026-11-11）改寫
 - **權威決策**：[25 — ADR：簽核實例依表單欄位篩選與排序](./25-instance-field-filter-adr.md)（Accepted）
 - **完成定義**：P0–P4 全部 VERIFIED，且請款範本的驗收情境（§驗收情境）在 wrapper host 實際操作通過；`docs/api-reference.md` 同步更新。
@@ -12,11 +12,11 @@
 
 | Phase | 交付 | 相依 | 狀態 |
 | --- | --- | --- | --- |
-| P0 | 現況測試：送出型別檢查與各型別的實際儲存格式；api-reference 版本行更正 | — | IMPLEMENTED |
-| P1 | `filterable` 宣告、lint、啟用檢查（歷史型別與舊資料）、四路徑寫入型別檢查 | P0 | IMPLEMENTED |
-| P2 | 查詢：GIN migration、條件編譯器（內部介面）、權限擴充點、sort、service 與 GraphQL | P1 | IMPLEMENTED |
-| P3 | Client SDK、設計器勾選與錯誤提示、列表篩選面板、api-reference 同步 | P2 | IMPLEMENTED |
-| P4 | 1 萬筆效能實測、wrapper host 驗收 | P3 | PLANNED |
+| P0 | 現況測試：送出型別檢查與各型別的實際儲存格式；api-reference 版本行更正 | — | VERIFIED |
+| P1 | `filterable` 宣告、lint、啟用檢查（歷史型別與舊資料）、四路徑寫入型別檢查 | P0 | VERIFIED |
+| P2 | 查詢：GIN migration、條件編譯器（內部介面）、權限擴充點、sort、service 與 GraphQL | P1 | VERIFIED |
+| P3 | Client SDK、設計器勾選與錯誤提示、列表篩選面板、api-reference 同步 | P2 | VERIFIED |
+| P4 | 1 萬筆效能實測、wrapper host 驗收 | P3 | IMPLEMENTING |
 
 ```
  P0 ──▶ P1 ──▶ P2 ──▶ P3 ──▶ P4 ──▶ 驗收（wrapper host）
@@ -148,7 +148,7 @@
 | E12 | count、list、pageInfo 對同條件 | P2 | 管理員 | 總數一致 |
 | E13 | 未指定 templateId 但有 fieldFilters | P2 | 任一 | BadRequest |
 | E14 | 篩選未宣告 filterable 的欄位 | P2 | 任一 | 拒絕，訊息無存在性資訊 |
-| E15 | 歷史版本型別不同時勾選 | P1、P3 | 範本設計者 | 草稿儲存即報錯，指出衝突版本 |
+| E15 | 歷史版本型別不同時勾選 | P1、P3 | 範本設計者 | 勾選當下在勾選框旁報錯並指出衝突版本；草稿可儲存，發布被拒（ADR 25 §5.4） |
 | E16 | 舊資料有髒值時勾選 | P1、P3 | 範本設計者 | 報錯，列出筆數與實例 id，建議改用新 key |
 | E17 | 可篩選欄位送入錯誤型別（W1–W4） | P1 | 申請人、簽核人、流程 | 拒絕寫入 |
 | S1 | vendor EQUALS + amountTwd RANGE，applyDate DESC | P4 | 管理員 | p95 < 300 ms |
@@ -156,6 +156,8 @@
 | S3 | companyCode + requestType，submittedAt DESC | P4 | CC 檢視者 | p95 < 300 ms |
 | S4 | vendor CONTAINS（名稱），updatedAt DESC | P4 | 簽核人 | p95 < 300 ms |
 | S5 | S1 的最後一頁 | P4 | 管理員 | 記錄延遲，不設門檻 |
+
+**驗證紀錄（2026-11-11）**：未參與實作的 verifier 在本機 develop（`pnpm demo:reset` 後的示範範本，24 筆）以各角色登入，對 E1–E14 逐項拿 seed 計算的預期結果比對 GraphQL 回應；E15、E16 在設計器勾選當下看到報錯（E15 指出衝突版本與型別、E16 列筆數與實例 id 且不含實際值），API 端發布被拒；E17 的 W1–W4 皆拒絕錯誤型別並有正向對照。E1 在 24 筆下 planner 不一定選 GIN，索引使用以 P4 的 1 萬筆 `EXPLAIN` 為準。
 
 ## 驗收情境（請款範本）
 
