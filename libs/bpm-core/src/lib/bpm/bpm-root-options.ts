@@ -114,10 +114,10 @@ export interface BPMRootRuntimeOptions
    * submit, by conditions and by expression approvers. A snapshot passed in by
    * a host calling the service is never touched.
    *
-   * One exception: the launchable template list does not call it and judges an
-   * initiator policy against `{}`, so a policy that reads
-   * `initiator.customFields` fails that whole list in either dialect. Keep it
-   * out of `initiatorPolicyCel` for now.
+   * The launchable template list calls it too, once per request, and judges
+   * the initiator policies against its answer; when it fails there, the list
+   * is judged against `{}` instead of failing (a submission does fail). So its
+   * answer must depend on the initiator only.
    *
    * This is the form that reaches every engine copy; prefer it to
    * `initiatorCustomFieldsResolverProvider`. When omitted, `customFields` is

@@ -88,7 +88,7 @@ deployment opts into, not a list of required arguments:
 - Login/session/JWT handling.
 - `BPMAuthContext` creation.
 - A member resolver, as the `memberResolver` runtime value or a `BPM_MEMBER_RESOLVER` provider. Without one BPM resolves each member to its own id.
-- Optionally, an initiator `customFields` resolver (`initiatorCustomFieldsResolver`, or the `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER` token) when conditions or expression approvers read `initiator.customFields`. Without one, `customFields` of a case started from a BPM page is `{}`.
+- Optionally, an initiator `customFields` resolver (`initiatorCustomFieldsResolver`, or the `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER` token) when conditions, initiator policies or expression approvers read `initiator.customFields`. Without one, `customFields` of a case started from a BPM page is `{}`.
 - Versioned form option DataSource registry/provider through
   `BPM_FORM_DATA_SOURCE_REGISTRY`; the host owns provider authorization and source data.
 - Attachment storage, public signed URL prefix, and signing secrets.

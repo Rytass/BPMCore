@@ -753,25 +753,33 @@ BPMRootModule.forRootAsync({
 ```
 
 A template can then say `initiator.customFields.station == 'TPE'` in an edge
-condition. Keep it out of `initiatorPolicyCel` for now: see the bullet on the launchable-template list below.
+condition or in its initiator policy.
 
-- It runs once, when the case is submitted, with the member, the template and
-  published version, the validated form data, the default snapshot and the
-  `BPMAuthContext`. A snapshot passed by a caller is stored as it is and the
-  resolver is not called.
+- It runs once when the case is submitted (`purpose: 'SUBMISSION'`), with the
+  member, the template and published version, the validated form data, the
+  default snapshot and the `BPMAuthContext`. A snapshot passed by a caller is
+  stored as it is and the resolver is not called.
+- It also runs once per `launchableApprovalTemplates` request
+  (`purpose: 'LAUNCHABLE_TEMPLATES'`, with `null` for the template, the version
+  and the form data), and every template's initiator policy is judged against
+  its answer. So the answer must depend on the initiator only, and be the same
+  for both purposes: a template the list shows has to be one the member can
+  then submit.
 - It decides `customFields` only. `memberId`, `orgUnitIds`, `positionId`,
   `positionIds` and `primaryOrgUnitId` always come from BPM, whatever it returns.
-- It must return a plain, JSON-serializable object. Anything else, or a thrown
-  error, fails the submission and creates no case; BPM does not fall back to `{}`.
+- It must return a plain, JSON-serializable object within 10 seconds. Anything
+  else, a thrown error or running out of time fails the submission with a fixed
+  Chinese 500 (the cause is logged, never shown) and creates no case; BPM does
+  not fall back to `{}`. Throw an `HttpException` to show the member a message
+  of your own.
+- The launchable-template list does fall back: when the resolver fails there,
+  the list is judged against `customFields: {}` and a warning is logged. A
+  policy that reads `initiator.customFields` then hits a missing key, and only
+  that template is left out; the rest of the list is answered as usual.
 - The snapshot is fixed at submission. Resubmitting a returned case does not call
-  it again. The dry run and the launchable-template list do not call it either.
-  The list judges an initiator policy against `customFields: {}`, and reading an
-  absent key is an error in either dialect (`cel-legacy`, the default, as well as
-  `cel-v2`) that the list does not catch, so a policy that reads
-  `initiator.customFields` makes `launchableApprovalTemplates` fail. The
-  designer's trial run sends its own sample snapshot, whose `customFields` is
-  `{}`, so a condition that reads it can evaluate differently there than in a
-  real submission.
+  it again, and the dry run does not call it. The designer's trial run sends its
+  own sample snapshot, whose `customFields` is `{}`, so a condition that reads it
+  can evaluate differently there than in a real submission.
 - Return a value for every key a template reads: a key whose value is `undefined`
   is dropped, and a condition that reads it then fails with
   `EXPRESSION_MISSING_KEY`, unless the template guards it with
@@ -780,7 +788,9 @@ condition. Keep it out of `initiatorPolicyCel` for now: see the bullet on the la
 - Register it as the `initiatorCustomFieldsResolver` runtime value or bind the
   token in a `@Global()` host module. `initiatorCustomFieldsResolverProvider`
   configures only one of the two engine instances Nest builds (the same caveat as
-  `workflowServiceTaskDispatcherProvider`; see `docs/api-reference.md`).
+  `workflowServiceTaskDispatcherProvider`; see `docs/api-reference.md`): the
+  form option DataSources' copy, which checks that a template is launchable,
+  would then judge policies against `customFields: {}`.
 
 ## Organization Data Ownership
 
