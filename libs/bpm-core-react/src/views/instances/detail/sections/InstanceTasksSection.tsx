@@ -343,6 +343,7 @@ export const InstanceTasksSection = forwardRef<
   const approveCommentRequired =
     currentTaskNode?.type === 'userTask' &&
     currentTaskNode.data.requireApprovalComment === true;
+  const approveCommentMissing = approveCommentRequired && !trimmedApproveComment;
 
   const canAddSignerCurrentTask =
     currentTaskNode?.type === 'userTask' &&
@@ -618,7 +619,7 @@ export const InstanceTasksSection = forwardRef<
       return;
     }
 
-    if (approveCommentRequired && !trimmedApproveComment) {
+    if (approveCommentMissing) {
       return;
     }
 
@@ -944,7 +945,7 @@ export const InstanceTasksSection = forwardRef<
       <Modal
         cancelText="取消"
         confirmButtonProps={{
-          disabled: approveCommentRequired && !trimmedApproveComment,
+          disabled: approveCommentMissing,
         }}
         confirmText="送出同意"
         loading={deciding}

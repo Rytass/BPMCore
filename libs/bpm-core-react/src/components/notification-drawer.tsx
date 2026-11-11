@@ -60,7 +60,6 @@ const TIME_GROUP_LABEL: Readonly<Record<TimeGroup, string>> = {
 
 const PAGE_SIZE = 50;
 
-/** Identifiers for the per-notification `...` dropdown menu entries. */
 /** Identifier for the filter-bar dropdown entry toggling the archived view. */
 const TOGGLE_ARCHIVED_OPTION_ID = 'toggleArchived';
 

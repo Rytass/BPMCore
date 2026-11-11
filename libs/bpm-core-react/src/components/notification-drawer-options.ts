@@ -2,12 +2,7 @@ import type { DropdownOption } from '@mezzanine-ui/core/dropdown/dropdown';
 import type { NotificationRecord } from '@rytass/bpm-core-client/workflow';
 
 export type NotificationAction =
-  | 'approve'
-  | 'archive'
-  | 'reject'
-  | 'unarchive'
-  | 'view'
-  | 'read';
+  'approve' | 'archive' | 'reject' | 'unarchive' | 'view' | 'read';
 
 /**
  * Build the `...` dropdown options for one notification. Approve / reject are
@@ -26,12 +21,13 @@ export type NotificationAction =
 export function buildNotificationOptions(
   record: NotificationRecord,
 ): readonly DropdownOption[] {
-  const canReject = readNotificationAllowReject(record) !== false;
+  const payload = readNotificationPayload(record);
+  const canReject = readNotificationAllowReject(record, payload) !== false;
   const opensToFill =
     record.actionable &&
     Boolean(record.instanceId) &&
-    (readNotificationHasFillableFields(record) ||
-      readNotificationRequireApprovalComment(record));
+    (readPayloadFlag(payload, 'hasFillableFields') ||
+      readPayloadFlag(payload, 'requireApprovalComment'));
 
   return [
     ...(record.actionable
@@ -54,54 +50,46 @@ export function buildNotificationOptions(
   ];
 }
 
+/**
+ * The notification's `payloadJson`, parsed once. `null` when it is not a JSON
+ * object; every reader below takes this one result.
+ */
+function readNotificationPayload(
+  record: NotificationRecord,
+): Readonly<Record<string, unknown>> | null {
+  try {
+    const payload: unknown = JSON.parse(record.payloadJson);
+
+    return isRecord(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
 function readNotificationAllowReject(
   record: NotificationRecord,
+  payload: Readonly<Record<string, unknown>> | null,
 ): boolean | null {
-  try {
-    const payload: unknown = JSON.parse(record.payloadJson);
-
-    if (isRecord(payload) && typeof payload.allowReject === 'boolean') {
-      return payload.allowReject;
-    }
-
-    return record.allowReject;
-  } catch {
-    return record.allowReject;
+  if (payload && typeof payload.allowReject === 'boolean') {
+    return payload.allowReject;
   }
+
+  return record.allowReject;
 }
 
 /**
- * `TASK_ASSIGNED` / `TASK_TRANSFERRED` payloads carry `hasFillableFields`;
- * older notifications do not, which reads as `false`.
- */
-function readNotificationHasFillableFields(
-  record: NotificationRecord,
-): boolean {
-  try {
-    const payload: unknown = JSON.parse(record.payloadJson);
-
-    return isRecord(payload) && payload.hasFillableFields === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * `TASK_ASSIGNED` / `TASK_TRANSFERRED` payloads carry
+ * `true` only when the payload sets the flag to `true`. A missing key, a
+ * `false`, or an unparsable payload all read as `false`.
+ *
+ * `TASK_ASSIGNED` / `TASK_TRANSFERRED` payloads carry `hasFillableFields`, and
  * `requireApprovalComment: true` only when the node asks for a comment on
- * approval; a payload without the key, and every notification created before
- * the key existed, reads as `false`.
+ * approval. Notifications created before those keys existed read as `false`.
  */
-function readNotificationRequireApprovalComment(
-  record: NotificationRecord,
+function readPayloadFlag(
+  payload: Readonly<Record<string, unknown>> | null,
+  key: string,
 ): boolean {
-  try {
-    const payload: unknown = JSON.parse(record.payloadJson);
-
-    return isRecord(payload) && payload.requireApprovalComment === true;
-  } catch {
-    return false;
-  }
+  return payload !== null && payload[key] === true;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
