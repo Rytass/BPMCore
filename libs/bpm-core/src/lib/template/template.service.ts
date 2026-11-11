@@ -788,19 +788,70 @@ export class TemplateService {
       );
     }
 
-    const formSchema = await this.validatePublishableVersion(version, manager);
+    // Early refusals only: they run outside the lock and are repeated below.
+    await this.validatePublishableVersion(version, manager);
 
-    const run = (txManager: EntityManager): Promise<PublishedVersionResult> =>
-      this.publishApprovalTemplateVersionWithManager(
+    // ADR 25 §5.4 and §15: the template row is locked before the enable check
+    // and before the draft is read again, so a concurrent form-data write
+    // (which takes FOR SHARE on the same row) cannot slip between the check
+    // and the commit, and the draft is judged as it is under the lock.
+    const run = async (
+      txManager: EntityManager,
+    ): Promise<PublishedVersionResult> => {
+      const lockedTemplate = await this.lockTemplateRow(
         txManager,
-        version,
+        version.templateId,
+        'pessimistic_write',
+      );
+
+      if (!lockedTemplate) {
+        throw new NotFoundException(
+          `Approval template ${version.templateId} was not found`,
+        );
+      }
+
+      const lockedVersion = await this.getTemplateVersionOrThrow(
+        versionId,
+        txManager,
+      );
+
+      if (lockedVersion.status !== ApprovalTemplateVersionStatusEnum.DRAFT) {
+        throw new ConflictException(
+          'Only draft approval template versions can be published',
+        );
+      }
+
+      const formSchema = await this.validatePublishableVersion(
+        lockedVersion,
+        txManager,
+      );
+
+      return this.publishApprovalTemplateVersionWithManager(
+        txManager,
+        lockedVersion,
         publishedByMemberId,
         formSchema,
       );
+    };
 
     return manager
       ? run(manager)
       : this.templateRepository.manager.transaction(run);
+  }
+
+  /**
+   * Reads one template row, optionally locked. Locks are only taken inside a
+   * transaction; the caller passes the transaction's manager.
+   */
+  private async lockTemplateRow(
+    manager: EntityManager,
+    templateId: string,
+    mode: 'pessimistic_read' | 'pessimistic_write',
+  ): Promise<ApprovalTemplateEntity | null> {
+    return manager.getRepository(ApprovalTemplateEntity).findOne({
+      lock: { mode },
+      where: { deletedAt: IsNull(), id: templateId },
+    });
   }
 
   private async publishApprovalTemplateVersionWithManager(
@@ -813,9 +864,14 @@ export class TemplateService {
     const versionRepository = manager.getRepository(
       ApprovalTemplateVersionEntity,
     );
-    const template = await templateRepository.findOne({
-      where: { deletedAt: IsNull(), id: version.templateId },
-    });
+    // Already locked by the caller (`publishVersion`); the lock is taken again
+    // here so this method is safe on its own, and the lock is re-entrant
+    // within one transaction.
+    const template = await this.lockTemplateRow(
+      manager,
+      version.templateId,
+      'pessimistic_write',
+    );
 
     if (!template) {
       throw new NotFoundException(
@@ -906,9 +962,13 @@ export class TemplateService {
         const versionRepository = manager.getRepository(
           ApprovalTemplateVersionEntity,
         );
-        const template = await templateRepository.findOne({
-          where: { deletedAt: IsNull(), id: target.templateId },
-        });
+        // ADR 25 §5.4 and §15: lock the template row before the enable check,
+        // the same lock a publish takes (see `publishVersion`).
+        const template = await this.lockTemplateRow(
+          manager,
+          target.templateId,
+          'pessimistic_write',
+        );
 
         if (!template) {
           throw new NotFoundException(

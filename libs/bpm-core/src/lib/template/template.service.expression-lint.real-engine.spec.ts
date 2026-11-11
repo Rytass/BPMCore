@@ -185,7 +185,11 @@ const createService = ({
         return { ...passThrough, findOne: () => Promise.resolve(formVersion) };
       }
 
-      return passThrough;
+      // A publish re-reads the draft under the template lock (ADR 25 §15).
+      return {
+        ...passThrough,
+        findOne: () => Promise.resolve(version),
+      };
     },
   } as unknown as EntityManager;
 

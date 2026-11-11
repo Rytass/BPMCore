@@ -845,9 +845,6 @@ export class WorkflowEngineService {
     validateSubmittedFormData(formDefinitionVersion.schema, formData, {
       deferredFieldKeys,
     });
-    // The version an instance starts on is the template's current one, so
-    // its own schema already holds the filterable fields in force.
-    assertFilterableFormDataValues(formDefinitionVersion.schema, formData);
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
         authContext: authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
@@ -903,6 +900,27 @@ export class WorkflowEngineService {
 
     return this.runEngineTransaction(
       async (manager): Promise<ApprovalInstanceEntity> => {
+        // ADR 25 §6 and §15: the filterable-field check runs inside this
+        // transaction, under a FOR SHARE lock on the template row, so a publish
+        // that enables a field cannot commit between the check and the insert.
+        // The check reads the template's current version, which the lock pins;
+        // the instance binds to the version read before the transaction, so a
+        // publish in between is refused rather than binding a stale version.
+        const lockedTemplate = await manager
+          .getRepository(ApprovalTemplateEntity)
+          .findOne({
+            lock: { mode: 'pessimistic_read' },
+            where: { id: template.id },
+          });
+
+        if (lockedTemplate?.currentVersionId !== templateVersion.id) {
+          throw new ConflictException(
+            'Approval template was published while this submission was in progress; refresh and retry',
+          );
+        }
+
+        assertFilterableFormDataValues(formDefinitionVersion.schema, formData);
+
         const instanceRepository = manager.getRepository(
           ApprovalInstanceEntity,
         );
@@ -3802,10 +3820,17 @@ export class WorkflowEngineService {
     templateId: string,
     manager?: EntityManager,
   ): Promise<FormDefinitionSchema | null> {
-    const templates = manager
-      ? manager.getRepository(ApprovalTemplateEntity)
-      : this.approvalTemplateRepository;
-    const template = await templates.findOne({ where: { id: templateId } });
+    // Inside a write transaction the template row is taken FOR SHARE (ADR 25
+    // §15): a publish, compose or rollback needs FOR UPDATE on the same row, so
+    // the current version read here cannot change before the write commits.
+    const template = manager
+      ? await manager.getRepository(ApprovalTemplateEntity).findOne({
+          lock: { mode: 'pessimistic_read' },
+          where: { id: templateId },
+        })
+      : await this.approvalTemplateRepository.findOne({
+          where: { id: templateId },
+        });
 
     if (!template?.currentVersionId) {
       return null;

@@ -3135,6 +3135,18 @@ function createTableConditionPublishService({
             ),
           }
         : {
+            // Answers the form version lookup too: the form version is the
+            // published one, the template version the draft.
+            findOne: jest.fn(
+              ({
+                where,
+              }: {
+                readonly where: { readonly id: string };
+              }): Promise<ObjectLiteral> =>
+                Promise.resolve(
+                  where.id === formVersion.id ? formVersion : draftVersion,
+                ),
+            ),
             merge: jest.fn(
               (
                 entity: ApprovalTemplateVersionEntity,
@@ -3328,6 +3340,19 @@ function createWebhookPublishService(
             ),
           }
         : {
+            // A publish re-reads the draft under the template lock (ADR 25 §15).
+            // Answers the form version lookup too: the form version is the
+            // published one, the template version the draft.
+            findOne: jest.fn(
+              ({
+                where,
+              }: {
+                readonly where: { readonly id: string };
+              }): Promise<ObjectLiteral> =>
+                Promise.resolve(
+                  where.id === formVersion.id ? formVersion : draftVersion,
+                ),
+            ),
             merge: jest.fn(
               (
                 entity: ApprovalTemplateVersionEntity,
@@ -3859,6 +3884,104 @@ describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
     );
 
     expect(result.published).toBe(true);
+  });
+
+  /**
+   * Records, in order, every template-row read and every instance read the
+   * enable check makes through the same manager. The order is what ADR 25
+   * §15 asks for: the row lock comes before the check, and both sit in one
+   * transaction. The in-memory manager hands the transaction the same object,
+   * so the check's reads are recorded on the manager a publish locks through.
+   */
+  function recordLockAndCheckOrder(manager: EntityManager): string[] {
+    const events: string[] = [];
+    const getRepository = manager.getRepository.bind(manager);
+    const query = manager.query.bind(manager);
+
+    Object.assign(manager, {
+      getRepository: (target: new () => ObjectLiteral): ObjectLiteral => {
+        const repository = getRepository(target);
+
+        if (target !== ApprovalTemplateEntity) {
+          return repository;
+        }
+
+        const findOne = repository['findOne'] as (
+          options: { readonly lock?: { readonly mode: string } },
+        ) => Promise<unknown>;
+
+        return {
+          ...repository,
+          findOne: (options: { readonly lock?: { readonly mode: string } }) => {
+            events.push(`template:${options.lock?.mode ?? 'none'}`);
+
+            return findOne(options);
+          },
+        };
+      },
+      query: (sql: string, params: readonly unknown[]): Promise<unknown> => {
+        if (sql.includes('"versionNumber", fv.schema')) {
+          events.push('check:history');
+        }
+
+        if (sql.includes('jsonb_object_agg')) {
+          events.push('check:instances');
+        }
+
+        return query(sql, params);
+      },
+    });
+
+    return events;
+  }
+
+  it('takes FOR UPDATE on the template row before the enable check, in the publish transaction', async (): Promise<void> => {
+    const { manager } = createFilterableManager([], []);
+    const events = recordLockAndCheckOrder(manager);
+    const service = createStoreBackedService(manager);
+
+    await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_MONEY_FILTERABLE_SCHEMA, NOTE_UI_SCHEMA, {
+        publish: true,
+      }),
+      'member-admin',
+    );
+
+    const lockAt = events.indexOf('template:pessimistic_write');
+    const checkAt = events.indexOf('check:history');
+
+    expect(lockAt).toBeGreaterThanOrEqual(0);
+    expect(checkAt).toBeGreaterThan(lockAt);
+  });
+
+  it('takes FOR UPDATE on the template row before the enable check, in the rollback transaction', async (): Promise<void> => {
+    const { manager } = createFilterableManager([], []);
+    const service = createStoreBackedService(manager);
+    const v1 = await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_MONEY_FILTERABLE_SCHEMA, NOTE_UI_SCHEMA, {
+        publish: true,
+      }),
+      'member-admin',
+    );
+    const templateId = v1.template.id;
+
+    await service.composeApprovalTemplateWithForm(
+      composeFilterable(NOTE_MONEY_FILTERABLE_SCHEMA, NOTE_UI_SCHEMA, {
+        publish: true,
+        templateId,
+      }),
+      'member-admin',
+    );
+
+    const events = recordLockAndCheckOrder(manager);
+
+    await service.rollbackApprovalTemplateVersion(v1.templateVersion.id);
+
+    const lockAt = events.indexOf('template:pessimistic_write');
+    const checkAt = events.indexOf('check:history');
+
+    expect(lockAt).toBeGreaterThanOrEqual(0);
+    expect(checkAt).toBeGreaterThan(lockAt);
   });
 
   it('refuses a rollback to a filterable version whose stored values now conflict', async (): Promise<void> => {

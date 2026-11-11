@@ -1647,6 +1647,57 @@ describe('WorkflowEngineService', () => {
       expect(fixture.savedInstance).toBeNull();
     });
 
+    it('W2 decideTask takes the instance lock before FOR SHARE on the template, and checks inside the decision transaction', async (): Promise<void> => {
+      const baseSchema = createFinanceTableFormSchema();
+      const formSchema: FormDefinitionSchema = {
+        ...baseSchema,
+        fields: [
+          ...baseSchema.fields,
+          {
+            fieldKey: 'reviewScore',
+            filterable: true,
+            label: '評分',
+            required: false,
+            type: 'number',
+          },
+        ],
+      };
+      const fixture = createDecideFixture({
+        formData: { amount: 10 },
+        formSchema,
+        workflow: createFieldAccessWorkflow({
+          financeFieldAccess: [
+            { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+            { display: 'SHOW', fieldKey: 'reviewScore', fill: 'OPTIONAL' },
+          ],
+        }),
+      });
+
+      await expectRejection(
+        decide(fixture, {
+          formDataJson:
+            '{"reviewScore":"ten","financeItems":[{"seq":1,"taxAmount":5}]}',
+        }),
+        BadRequestException,
+        '可篩選欄位的值型別不正確：formData.reviewScore must be number',
+      );
+
+      const advisoryOrder = fixture.managerQuery.mock.invocationCallOrder[
+        fixture.managerQuery.mock.calls.findIndex(([sql]) =>
+          String(sql).includes('pg_advisory_xact_lock'),
+        )
+      ];
+      const templateLockOrder = fixture.templateFindOne.mock.invocationCallOrder[
+        fixture.templateFindOne.mock.calls.findIndex(([options]) =>
+          JSON.stringify(options).includes('pessimistic_read'),
+        )
+      ];
+
+      expect(advisoryOrder).toBeDefined();
+      expect(templateLockOrder).toBeDefined();
+      expect(advisoryOrder).toBeLessThan(templateLockOrder as number);
+    });
+
     it('stores filled values when the filling node approves', async (): Promise<void> => {
       const fixture = createDecideFixture();
 
@@ -3429,10 +3480,23 @@ describe('WorkflowEngineService', () => {
         update: (): Promise<void> => Promise.resolve(),
       };
       const manager = {
-        getRepository: (target: unknown): ObjectLiteral =>
-          target === ApprovalTemplateEntity
-            ? { ...passThrough, findOne: () => Promise.resolve(template) }
-            : passThrough,
+        // The publish re-reads the template, its draft and its form version
+        // inside the transaction (ADR 25 §15), so each repository answers.
+        getRepository: (target: unknown): ObjectLiteral => ({
+          ...passThrough,
+          findOne: ({
+            where,
+          }: {
+            readonly where: { readonly id: string };
+          }): Promise<ObjectLiteral> =>
+            Promise.resolve(
+              target === ApprovalTemplateEntity
+                ? template
+                : where.id === formVersion.id
+                  ? formVersion
+                  : version,
+            ),
+        }),
       } as unknown as EntityManager;
       const service = new TemplateService(
         {
@@ -4893,6 +4957,101 @@ describe('WorkflowEngineService', () => {
         }),
       }),
     );
+  });
+
+  describe('filterable field checks inside the write transactions (ADR 25 §6, §15)', () => {
+    const amountFilterableSchema = (): FormDefinitionSchema => {
+      const levelSchema = createApprovalLevelFormSchema({});
+
+      return {
+        ...levelSchema,
+        fields: levelSchema.fields.map((field) =>
+          field.fieldKey === 'amount' ? { ...field, filterable: true } : field,
+        ),
+      };
+    };
+    const sharedLock = { lock: { mode: 'pessimistic_read' } };
+
+    it('W1 submit: refuses a wrong-typed filterable value inside the write transaction, under a FOR SHARE lock on the template', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: amountFilterableSchema(),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.submitApprovalInstance({
+          formDataJson: '{"amount":"很多"}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: '{"memberId":"member-001","roles":[]}',
+          templateId: 'template-1',
+          title: null,
+        }),
+      ).rejects.toThrow(/formData\.amount must be number/u);
+
+      expect(fixture.templateFindOne).toHaveBeenCalledWith(
+        expect.objectContaining(sharedLock),
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('W3 resubmit: refuses a wrong-typed filterable value under a FOR SHARE lock on the template', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: amountFilterableSchema(),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processFormData: { amount: 1000 },
+        processFormDefinitionSnapshot: { schema: amountFilterableSchema() },
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.resubmitApprovalInstance({
+          formDataJson: '{"amount":"很多"}',
+          initiatorMemberId: 'member-001',
+          instanceId: 'instance-1',
+          title: null,
+        }),
+      ).rejects.toThrow(/formData\.amount must be number/u);
+
+      expect(fixture.templateFindOne).toHaveBeenCalledWith(
+        expect.objectContaining(sharedLock),
+      );
+    });
+
+    it('W4 SET_FORM_FIELD: takes the instance lock first, then FOR SHARE on the template, before it writes', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: amountFilterableSchema(),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: { amount: 1200 },
+        processFormDefinitionSnapshot: { schema: amountFilterableSchema() },
+        processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+          fieldPath: 'form.amount',
+          value: '1500',
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      const advisoryOrder = fixture.managerQuery.mock.invocationCallOrder[
+        fixture.managerQuery.mock.calls.findIndex(([sql]) =>
+          String(sql).includes('pg_advisory_xact_lock'),
+        )
+      ];
+      const templateLockOrder = fixture.templateFindOne.mock.invocationCallOrder[
+        fixture.templateFindOne.mock.calls.findIndex(([options]) =>
+          JSON.stringify(options).includes('pessimistic_read'),
+        )
+      ];
+
+      expect(advisoryOrder).toBeDefined();
+      expect(templateLockOrder).toBeDefined();
+      expect(advisoryOrder).toBeLessThan(templateLockOrder as number);
+    });
   });
 
   it('refuses a set-form-field value of the wrong type for a filterable field', async (): Promise<void> => {
