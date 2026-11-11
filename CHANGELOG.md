@@ -1,3 +1,77 @@
+## 0.21.1 (2026-11-11)
+
+### 🚀 Features
+
+- **notification:** flag task notifications whose node requires an approval comment ([feb04f23](https://github.com/Rytass/BPMCore/commit/feb04f23))
+- **react:** ask for the approval comment in the designer and on the approve dialog ([f80aaf04](https://github.com/Rytass/BPMCore/commit/f80aaf04))
+- **react:** let the designer pick position, organization and form-field notify recipients ([4ff6fc95](https://github.com/Rytass/BPMCore/commit/4ff6fc95))
+- **react:** open the case from the notification drawer when approval needs a comment ([1b5ece8f](https://github.com/Rytass/BPMCore/commit/1b5ece8f))
+- **react:** edit excludeNodeActors in the designer ([e6e575d8](https://github.com/Rytass/BPMCore/commit/e6e575d8))
+- **react:** offer only the stages that pass the exclusion check on their own ([46298be7](https://github.com/Rytass/BPMCore/commit/46298be7))
+- **react:** model a manager chain start and start level in the designer ([746dfe4e](https://github.com/Rytass/BPMCore/commit/746dfe4e))
+- **react:** offer only single-signer stages as a manager chain start ([5581999c](https://github.com/Rytass/BPMCore/commit/5581999c))
+- **react:** say a manager chain start in the dry-run assignee label ([b7a0a5a2](https://github.com/Rytass/BPMCore/commit/b7a0a5a2))
+- **react:** set a manager chain start and start level in the designer ([d220ee6f](https://github.com/Rytass/BPMCore/commit/d220ee6f))
+- **react:** show who a reassigned task belonged to in the instance timeline ([4611a05a](https://github.com/Rytass/BPMCore/commit/4611a05a))
+- **react:** read the designer's today in the host organization time zone ([9a31ff90](https://github.com/Rytass/BPMCore/commit/9a31ff90))
+- **shared:** add setUserTaskRequireApprovalComment command and AI tool ([efe41c94](https://github.com/Rytass/BPMCore/commit/efe41c94))
+- **shared:** add excludeNodeActors to user task nodes ([0d6c5c42](https://github.com/Rytass/BPMCore/commit/0d6c5c42))
+- **shared:** let a manager chain start from a form pick or an earlier stage ([d181c1e8](https://github.com/Rytass/BPMCore/commit/d181c1e8))
+- **shared:** tell which stages can start a manager chain with exactly one person ([6afc0c2d](https://github.com/Rytass/BPMCore/commit/6afc0c2d))
+- **shared:** add the default organization time zone constant ([3dac42de](https://github.com/Rytass/BPMCore/commit/3dac42de))
+- **template:** lint excludeNodeActors at save and publish ([1c5964cf](https://github.com/Rytass/BPMCore/commit/1c5964cf))
+- **template:** lint the start settings of a manager chain at publish ([e2eb1f84](https://github.com/Rytass/BPMCore/commit/e2eb1f84))
+- **template:** refuse at publish a chain start from a stage several people sign ([c5af7069](https://github.com/Rytass/BPMCore/commit/c5af7069))
+- **workflow-engine:** require a comment when a person approves at a node ([84474780](https://github.com/Rytass/BPMCore/commit/84474780))
+- **workflow-engine:** keep earlier-stage approvers out of a node ([151adb0a](https://github.com/Rytass/BPMCore/commit/151adb0a))
+- **workflow-engine:** start a manager chain from a form pick or an earlier stage ([2218246b](https://github.com/Rytass/BPMCore/commit/2218246b))
+- **workflow-engine:** let the host fill customFields of the initiator snapshot ([83894387](https://github.com/Rytass/BPMCore/commit/83894387))
+- **workflow-engine:** refuse a submit or resubmit holding more files than maxFiles ([abf75d2f](https://github.com/Rytass/BPMCore/commit/abf75d2f))
+- **workflow-engine:** judge the launchable list with the initiator customFields resolver ([92faedec](https://github.com/Rytass/BPMCore/commit/92faedec))
+
+### 🩹 Fixes
+
+- **bpm-core:** lint a notify ORG_UNIT_MANAGER recipient without an organization ([35852288](https://github.com/Rytass/BPMCore/commit/35852288))
+- **bpm-core:** localize comment-required errors and read the approval flag from the node ([06b21915](https://github.com/Rytass/BPMCore/commit/06b21915))
+- **bpm-core:** build one workflow engine so every caller sees the host resolver ([3e172843](https://github.com/Rytass/BPMCore/commit/3e172843))
+- **bpm-core-react:** show the maxFiles message for a refused file count ([f3b32243](https://github.com/Rytass/BPMCore/commit/f3b32243))
+- **react:** harden the notify recipient panel after review ([17fab8db](https://github.com/Rytass/BPMCore/commit/17fab8db))
+- **react:** tighten manager chain start hints in the designer ([20161034](https://github.com/Rytass/BPMCore/commit/20161034))
+- **react:** show only effective position holders in the notify pickers ([0c7e43ac](https://github.com/Rytass/BPMCore/commit/0c7e43ac))
+- **react:** offer only a stored start level in the manager chain menu ([bd06d68c](https://github.com/Rytass/BPMCore/commit/bd06d68c))
+- **react:** word a group seat move correctly and keep blank names visible ([1844f077](https://github.com/Rytass/BPMCore/commit/1844f077))
+- **react:** parse notification payload once and guard blank approval comments ([844839de](https://github.com/Rytass/BPMCore/commit/844839de))
+- **react:** read designer today in the organization time zone ([80772666](https://github.com/Rytass/BPMCore/commit/80772666))
+- **react:** warn on an inactive stored position in org-unit position pickers ([f1a711e1](https://github.com/Rytass/BPMCore/commit/f1a711e1))
+- **react:** fall back to the id for a blank member name in every label ([770ef163](https://github.com/Rytass/BPMCore/commit/770ef163))
+- **react:** say ad-hoc approvers are not excluded in the excludeNodeActors hint ([815a89c4](https://github.com/Rytass/BPMCore/commit/815a89c4))
+- **react:** load reassigned seat holders' names for the timeline ([90e9dd47](https://github.com/Rytass/BPMCore/commit/90e9dd47))
+- **shared:** hold every excludeNodeActors stage to the NODE_ACTOR source rules ([d16f216a](https://github.com/Rytass/BPMCore/commit/d16f216a))
+- **shared:** describe the stage rule in the excludeNodeActors tool and read a broken nodeIds safely ([c7a67f79](https://github.com/Rytass/BPMCore/commit/c7a67f79))
+- **shared:** describe what a skipped exclusion stage reads ([6c62b03f](https://github.com/Rytass/BPMCore/commit/6c62b03f))
+- **shared:** say parallel-branch stages are unsupported in excludeNodeActors hints ([ea6f5efa](https://github.com/Rytass/BPMCore/commit/ea6f5efa))
+- **shared:** name a start without a type in words and read a fractional start level back ([02b86146](https://github.com/Rytass/BPMCore/commit/02b86146))
+- **shared:** keep the chain start when the toolset rewrites an approver ([71e3e1e7](https://github.com/Rytass/BPMCore/commit/71e3e1e7))
+- **shared:** keep a chain start and start level the toolset cannot read so validation reports them ([2ed228a9](https://github.com/Rytass/BPMCore/commit/2ed228a9))
+- **shared:** let the policy decide when a lone listed member may hand over to the initiator manager ([418b192b](https://github.com/Rytass/BPMCore/commit/418b192b))
+- **shared:** keep any start level the toolset is handed so validation reports it ([ca7e762f](https://github.com/Rytass/BPMCore/commit/ca7e762f))
+- **shared:** quote the start-level schema line so the INITIATOR example compiles ([f0e64cf9](https://github.com/Rytass/BPMCore/commit/f0e64cf9))
+- **shared:** require an organization for a notify ORG_UNIT_MANAGER recipient ([1d348b84](https://github.com/Rytass/BPMCore/commit/1d348b84))
+- **shared:** keep manager chain level and stage ids as written ([1c741259](https://github.com/Rytass/BPMCore/commit/1c741259))
+- **shared:** refuse a manager chain notify recipient without a whole-number level ([cdca8b1e](https://github.com/Rytass/BPMCore/commit/cdca8b1e))
+- **shared:** count excludeNodeActors handing over to the initiator's managers as multiple approvers ([6c5e7de6](https://github.com/Rytass/BPMCore/commit/6c5e7de6))
+- **workflow-engine:** make the customFields routing test reach the gateway and reject toJSON non-objects ([79cb5197](https://github.com/Rytass/BPMCore/commit/79cb5197))
+- **workflow-engine:** hold a set-form-field write to member and unit value shapes ([c9d0523c](https://github.com/Rytass/BPMCore/commit/c9d0523c))
+- **workflow-engine:** leave out one launchable template whose policy throws ([c2d62427](https://github.com/Rytass/BPMCore/commit/c2d62427))
+- **workflow-engine:** cover delegation for excludeNodeActors targets and delegators ([cd14ad00](https://github.com/Rytass/BPMCore/commit/cd14ad00))
+- **workflow-engine:** count a repeated file_upload id once, as the binding does ([d75adb5c](https://github.com/Rytass/BPMCore/commit/d75adb5c))
+- **workflow-engine:** time out the initiator customFields resolver and keep its errors server-side ([45ff109d](https://github.com/Rytass/BPMCore/commit/45ff109d))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.21.0 (2026-11-11)
 
 ### 🚀 Features

@@ -1,3 +1,43 @@
+## 0.21.1 (2026-11-11)
+
+### 🚀 Features
+
+- **workflow-engine:** judge the launchable list with the initiator customFields resolver ([92faedec](https://github.com/Rytass/BPMCore/commit/92faedec))
+- **react:** read the designer's today in the host organization time zone ([9a31ff90](https://github.com/Rytass/BPMCore/commit/9a31ff90))
+- **shared:** add the default organization time zone constant ([3dac42de](https://github.com/Rytass/BPMCore/commit/3dac42de))
+- **workflow-engine:** refuse a submit or resubmit holding more files than maxFiles ([abf75d2f](https://github.com/Rytass/BPMCore/commit/abf75d2f))
+- **template:** refuse at publish a chain start from a stage several people sign ([c5af7069](https://github.com/Rytass/BPMCore/commit/c5af7069))
+- **workflow-engine:** let the host fill customFields of the initiator snapshot ([83894387](https://github.com/Rytass/BPMCore/commit/83894387))
+- **workflow-engine:** start a manager chain from a form pick or an earlier stage ([2218246b](https://github.com/Rytass/BPMCore/commit/2218246b))
+- **template:** lint the start settings of a manager chain at publish ([e2eb1f84](https://github.com/Rytass/BPMCore/commit/e2eb1f84))
+- **workflow-engine:** keep earlier-stage approvers out of a node ([151adb0a](https://github.com/Rytass/BPMCore/commit/151adb0a))
+- **template:** lint excludeNodeActors at save and publish ([1c5964cf](https://github.com/Rytass/BPMCore/commit/1c5964cf))
+- **notification:** flag task notifications whose node requires an approval comment ([feb04f23](https://github.com/Rytass/BPMCore/commit/feb04f23))
+- **react:** ask for the approval comment in the designer and on the approve dialog ([f80aaf04](https://github.com/Rytass/BPMCore/commit/f80aaf04))
+- **workflow-engine:** require a comment when a person approves at a node ([84474780](https://github.com/Rytass/BPMCore/commit/84474780))
+
+### 🩹 Fixes
+
+- **shared:** count excludeNodeActors handing over to the initiator's managers as multiple approvers ([6c5e7de6](https://github.com/Rytass/BPMCore/commit/6c5e7de6))
+- **bpm-core:** build one workflow engine so every caller sees the host resolver ([3e172843](https://github.com/Rytass/BPMCore/commit/3e172843))
+- **workflow-engine:** time out the initiator customFields resolver and keep its errors server-side ([45ff109d](https://github.com/Rytass/BPMCore/commit/45ff109d))
+- **shared:** refuse a manager chain notify recipient without a whole-number level ([cdca8b1e](https://github.com/Rytass/BPMCore/commit/cdca8b1e))
+- **bpm-core:** localize comment-required errors and read the approval flag from the node ([06b21915](https://github.com/Rytass/BPMCore/commit/06b21915))
+- **workflow-engine:** count a repeated file_upload id once, as the binding does ([d75adb5c](https://github.com/Rytass/BPMCore/commit/d75adb5c))
+- **workflow-engine:** cover delegation for excludeNodeActors targets and delegators ([cd14ad00](https://github.com/Rytass/BPMCore/commit/cd14ad00))
+- **shared:** keep manager chain level and stage ids as written ([1c741259](https://github.com/Rytass/BPMCore/commit/1c741259))
+- **bpm-core:** lint a notify ORG_UNIT_MANAGER recipient without an organization ([35852288](https://github.com/Rytass/BPMCore/commit/35852288))
+- **workflow-engine:** leave out one launchable template whose policy throws ([c2d62427](https://github.com/Rytass/BPMCore/commit/c2d62427))
+- **workflow-engine:** hold a set-form-field write to member and unit value shapes ([c9d0523c](https://github.com/Rytass/BPMCore/commit/c9d0523c))
+- **shared:** let the policy decide when a lone listed member may hand over to the initiator manager ([418b192b](https://github.com/Rytass/BPMCore/commit/418b192b))
+- **workflow-engine:** make the customFields routing test reach the gateway and reject toJSON non-objects ([79cb5197](https://github.com/Rytass/BPMCore/commit/79cb5197))
+- **react:** harden the notify recipient panel after review ([17fab8db](https://github.com/Rytass/BPMCore/commit/17fab8db))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.21.0 (2026-11-11)
 
 ### 🚀 Features

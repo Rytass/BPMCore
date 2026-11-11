@@ -1,3 +1,29 @@
+## 0.21.1 (2026-11-11)
+
+### 🚀 Features
+
+- **workflow-engine:** judge the launchable list with the initiator customFields resolver ([92faedec](https://github.com/Rytass/BPMCore/commit/92faedec))
+- **react:** read the designer's today in the host organization time zone ([9a31ff90](https://github.com/Rytass/BPMCore/commit/9a31ff90))
+- **shared:** add the default organization time zone constant ([3dac42de](https://github.com/Rytass/BPMCore/commit/3dac42de))
+- **workflow-engine:** keep earlier-stage approvers out of a node ([151adb0a](https://github.com/Rytass/BPMCore/commit/151adb0a))
+- **react:** ask for the approval comment in the designer and on the approve dialog ([f80aaf04](https://github.com/Rytass/BPMCore/commit/f80aaf04))
+
+### 🩹 Fixes
+
+- **shared:** count excludeNodeActors handing over to the initiator's managers as multiple approvers ([6c5e7de6](https://github.com/Rytass/BPMCore/commit/6c5e7de6))
+- **bpm-core:** build one workflow engine so every caller sees the host resolver ([3e172843](https://github.com/Rytass/BPMCore/commit/3e172843))
+- **workflow-engine:** time out the initiator customFields resolver and keep its errors server-side ([45ff109d](https://github.com/Rytass/BPMCore/commit/45ff109d))
+- **shared:** refuse a manager chain notify recipient without a whole-number level ([cdca8b1e](https://github.com/Rytass/BPMCore/commit/cdca8b1e))
+- **workflow-engine:** count a repeated file_upload id once, as the binding does ([d75adb5c](https://github.com/Rytass/BPMCore/commit/d75adb5c))
+- **shared:** keep manager chain level and stage ids as written ([1c741259](https://github.com/Rytass/BPMCore/commit/1c741259))
+- **workflow-engine:** hold a set-form-field write to member and unit value shapes ([c9d0523c](https://github.com/Rytass/BPMCore/commit/c9d0523c))
+- **react:** harden the notify recipient panel after review ([17fab8db](https://github.com/Rytass/BPMCore/commit/17fab8db))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.21.0 (2026-11-11)
 
 ### 🚀 Features
