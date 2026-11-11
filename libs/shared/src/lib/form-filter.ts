@@ -331,7 +331,7 @@ export function checkFilterableFieldValue(
 
   switch (readFilterableValueKind(field.type)) {
     case 'text':
-      return typeof value === 'string' ? VALID : invalid('text');
+      return typeof value === 'string' ? VALID : invalid('文字');
     case 'number':
       if (value === '') {
         return EMPTY;
@@ -339,13 +339,13 @@ export function checkFilterableFieldValue(
 
       return typeof value === 'number' && Number.isFinite(value)
         ? VALID
-        : invalid('number');
+        : invalid('數字');
     case 'date':
       if (value === '') {
         return EMPTY;
       }
 
-      return isCanonicalDate(value) ? VALID : invalid('date (YYYY-MM-DD)');
+      return isCanonicalDate(value) ? VALID : invalid('日期（YYYY-MM-DD）');
     case 'datetime':
       if (value === '') {
         return EMPTY;
@@ -353,18 +353,18 @@ export function checkFilterableFieldValue(
 
       return isCanonicalDateTime(value)
         ? VALID
-        : invalid('datetime (ISO 8601 UTC, e.g. 2026-11-03T08:30:00.000Z)');
+        : invalid('日期時間（ISO 8601 UTC，例如 2026-11-03T08:30:00.000Z）');
     case 'boolean':
       if (value === '') {
         return EMPTY;
       }
 
-      return typeof value === 'boolean' ? VALID : invalid('boolean');
+      return typeof value === 'boolean' ? VALID : invalid('布林值（true 或 false）');
     case 'option':
     case 'member':
       return checkStringOrStringArray(value);
     case 'org_unit':
-      return typeof value === 'string' ? VALID : invalid('org unit id (text)');
+      return typeof value === 'string' ? VALID : invalid('組織單位 ID（文字）');
     default:
       return VALID;
   }
@@ -379,7 +379,7 @@ function checkStringOrStringArray(value: unknown): FilterableValueCheck {
     return value.length === 0 ? EMPTY : VALID;
   }
 
-  return invalid('text or a list of text');
+  return invalid('文字或文字清單');
 }
 
 export function isCanonicalDate(value: unknown): value is string {
@@ -446,13 +446,13 @@ export function readFilterableValueProblems(
 
     if (!Array.isArray(rows)) {
       return [
-        { expected: 'a list of table rows', path: item.path, rowIndex: null, value: rows },
+        { expected: '表格列的清單', path: item.path, rowIndex: null, value: rows },
       ];
     }
 
     return rows.flatMap((row, rowIndex): readonly FilterableValueProblem[] => {
       if (typeof row !== 'object' || row === null || Array.isArray(row)) {
-        return [{ expected: 'a table row', path: item.path, rowIndex, value: row }];
+        return [{ expected: '表格列', path: item.path, rowIndex, value: row }];
       }
 
       const value = ownValue(row as Readonly<Record<string, unknown>>, item.key);

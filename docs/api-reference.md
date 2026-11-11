@@ -355,9 +355,9 @@ Approval-instance list filtering and sorting by form field, in `libs/shared/src/
 | `findFilterableFieldPath(schema, path)` | function | The `FilterableFieldPath` for one path, or `null` |
 | `isFilterableFieldSortable(path)` | function | Top-level and not `textarea`; table columns are never sortable |
 | `readFormFieldTypesByPath(schema)` | function | Type of every field and column by path, filterable or not; used for the history-type check |
-| `FilterableValueCheck` / `checkFilterableFieldValue(field, value)` | type / function | `empty`, `valid` or `invalid` (with `expected`) for one stored value. Missing and `null` are empty; `""` is empty for number, money, date, datetime and boolean; option and member fields accept a string or a string array |
+| `FilterableValueCheck` / `checkFilterableFieldValue(field, value)` | type / function | `empty`, `valid` or `invalid` (with `expected`, a Chinese phrase such as `數字`, `日期（YYYY-MM-DD）` or `表格列的清單` that completes 「必須是…」) for one stored value. Missing and `null` are empty; `""` is empty for number, money, date, datetime and boolean; option and member fields accept a string or a string array |
 | `isCanonicalDate(value)` / `isCanonicalDateTime(value)` | function | `YYYY-MM-DD` (a real calendar date) / `YYYY-MM-DDTHH:mm:ss.sssZ` (the `Date#toISOString()` shape) |
-| `FilterableValueProblem` / `readFilterableValueProblems(paths, formData)` | interface / function | Every value in `formData` that does not fit a path, with the table row index when it is in a table |
+| `FilterableValueProblem` / `readFilterableValueProblems(paths, formData)` | interface / function | Every value in `formData` that does not fit a path, with the table row index when it is in a table; `expected` is the Chinese phrase described above |
 | `FilterableFieldIssue` | type | A reason a field cannot be enabled: `{ kind: 'TYPE_CHANGED', conflicts }` (an older version with instances stored another type) or `{ kind: 'INVALID_VALUES', invalidInstanceCount, samples }` |
 | `FILTERABLE_FIELD_ISSUE_SAMPLE_LIMIT` | const | 5: samples kept per issue (instance id, row index and expected type; never the stored value) |
 | `readFilterableFieldIssues({ schema, history, instances })` | function | The enable check as a pure function: the issues for the schema about to take effect, given older versions and the template's instances |

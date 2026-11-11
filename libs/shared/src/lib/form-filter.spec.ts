@@ -83,8 +83,8 @@ describe('readFilterableValueProblems', () => {
     });
 
     expect(problems).toEqual([
-      { expected: 'number', path: 'amount', rowIndex: null, value: 'abc' },
-      { expected: 'number', path: 'items.qty', rowIndex: 1, value: 'many' },
+      { expected: '數字', path: 'amount', rowIndex: null, value: 'abc' },
+      { expected: '數字', path: 'items.qty', rowIndex: 1, value: 'many' },
     ]);
   });
 });
