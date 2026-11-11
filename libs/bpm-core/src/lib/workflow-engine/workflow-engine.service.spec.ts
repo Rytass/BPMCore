@@ -9060,7 +9060,10 @@ describe('WorkflowEngineService', () => {
   });
 
   describe('ORG_MANAGER_CHAIN start settings (startFrom, startPositionLevel)', (): void => {
-    type ChainResolver = Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>;
+    type ChainResolver = Extract<
+      ApproverResolver,
+      { type: 'ORG_MANAGER_CHAIN' }
+    >;
     type OrgData = ReturnType<typeof createManagerChainOrg>;
 
     const at = (minute: number): Date =>
@@ -9226,7 +9229,7 @@ describe('WorkflowEngineService', () => {
         ).resolves.toEqual(['member-x1']);
       });
 
-      it('keeps the chain source type, so the grade rules of the node still apply', async (): Promise<void> => {
+      it('keeps the chain source type on the candidates the start produced, so the grade rules of the node still apply', async (): Promise<void> => {
         const fixture = chainFixture({
           formData: { picked: 'member-emp' },
           org: EMP_CHAIN,
@@ -9235,7 +9238,10 @@ describe('WorkflowEngineService', () => {
 
         await fixture.service.processInstance('instance-1');
 
+        // member-m1 is only a candidate when the chain started at member-emp
+        // (it is member-x1 from the initiator), so this also pins the start.
         expect(fixture.savedTaskCandidates[0]).toMatchObject({
+          memberId: 'member-m1',
           sourceType: 'ORG_MANAGER_CHAIN',
         });
       });
@@ -9610,6 +9616,23 @@ describe('WorkflowEngineService', () => {
     });
 
     describe('a start from a newer engine', (): void => {
+      it.each<{ readonly name: string; readonly startFrom: unknown }>([
+        { name: 'no type', startFrom: {} },
+        { name: 'a type that is not a string', startFrom: { type: 5 } },
+      ])(
+        'names a start with $name in words, not as undefined',
+        async ({ startFrom }): Promise<void> => {
+          await expect(
+            assigneesOf({
+              org: EMP_CHAIN,
+              resolver: { startFrom } as unknown as Partial<ChainResolver>,
+            }),
+          ).rejects.toThrow(
+            '簽核節點「財務簽核」 無法建立待簽任務：此引擎版本不支援主管鏈起點「（缺少型別）」。請升級 BPMCore 後再發佈或執行此流程。',
+          );
+        },
+      );
+
       it('is refused by name instead of climbing from the initiator', async (): Promise<void> => {
         await expect(
           assigneesOf({
@@ -9764,6 +9787,24 @@ describe('WorkflowEngineService', () => {
           );
         },
       );
+
+      it('stops the branch on a start without a type, naming it in words', (): void => {
+        const result = dryRun({
+          minPositionLevel: 3,
+          startFrom: {},
+          type: 'ORG_MANAGER_CHAIN',
+        } as unknown as ApproverResolver);
+
+        expect(result.steps).toEqual([
+          expect.objectContaining({ nodeId: 'start', status: 'PASSED' }),
+          expect.objectContaining({
+            message:
+              '簽核節點「財務簽核」此引擎版本不支援主管鏈起點「（缺少型別）」，請升級 BPMCore 後再試',
+            nodeId: 'task_finance',
+            status: 'STOPPED',
+          }),
+        ]);
+      });
 
       it('stops the branch on a start from a newer engine', (): void => {
         const result = dryRun({
@@ -11062,6 +11103,26 @@ describe('WorkflowEngineService', () => {
 
         it('rejects a transfer to a lower grade with the grade message', async (): Promise<void> => {
           const fixture = createTransferFixture();
+
+          await expect(transferTo(fixture, 'agent-low')).rejects.toThrow(
+            ForbiddenException,
+          );
+          await expect(transferTo(fixture, 'agent-low')).rejects.toThrow(
+            GRADE_MESSAGE,
+          );
+        });
+
+        it('still rejects a transfer to a lower grade when the chain has a start', async (): Promise<void> => {
+          // The grade is measured against the member being replaced, so where
+          // the chain started from does not change the answer.
+          const fixture = createTransferFixture({
+            resolver: {
+              minPositionLevel: 2,
+              startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+              startPositionLevel: 1,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+          });
 
           await expect(transferTo(fixture, 'agent-low')).rejects.toThrow(
             ForbiddenException,

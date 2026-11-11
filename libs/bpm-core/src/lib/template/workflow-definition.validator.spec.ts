@@ -1336,7 +1336,9 @@ describe('workflow definition validator: manager chain start settings', (): void
       type: 'ORG_MANAGER_CHAIN',
       ...overrides,
     }) as ApproverResolver;
-  const lintChain = (overrides: Record<string, unknown> = {}): readonly string[] =>
+  const lintChain = (
+    overrides: Record<string, unknown> = {},
+  ): readonly string[] =>
     lintWorkflowDefinition(
       createUserTaskWorkflow({
         approverResolver: chain(overrides),
@@ -1354,7 +1356,10 @@ describe('workflow definition validator: manager chain start settings', (): void
       ...base,
       nodes: base.nodes.map((node) =>
         node.type === 'userTask' && node.id === 'task_manager'
-          ? { ...node, data: { ...node.data, decisionPolicy: { type: 'SEQUENTIAL' } } }
+          ? {
+              ...node,
+              data: { ...node.data, decisionPolicy: { type: 'SEQUENTIAL' } },
+            }
           : node,
       ),
     } as WorkflowDefinition).errors;
@@ -1396,9 +1401,9 @@ describe('workflow definition validator: manager chain start settings', (): void
   );
 
   it('refuses a form start without a field', (): void => {
-    expect(lintChain({ startFrom: { formPath: ' ', type: 'FORM_MEMBER' } })).toEqual(
-      [`${PATH}: 簽核節點需要指定主管鏈起點的表單欄位。`],
-    );
+    expect(
+      lintChain({ startFrom: { formPath: ' ', type: 'FORM_MEMBER' } }),
+    ).toEqual([`${PATH}: 簽核節點需要指定主管鏈起點的表單欄位。`]);
   });
 
   it('refuses a start type this build does not know', (): void => {
@@ -1442,9 +1447,9 @@ describe('workflow definition validator: manager chain start settings', (): void
   );
 
   it('keeps reporting a bad required level before the start settings (control)', (): void => {
-    expect(lintChain({ minPositionLevel: 2.5, startPositionLevel: 99 })).toEqual([
-      `${PATH}.minPositionLevel is invalid`,
-    ]);
+    expect(
+      lintChain({ minPositionLevel: 2.5, startPositionLevel: 99 }),
+    ).toEqual([`${PATH}.minPositionLevel is invalid`]);
   });
 
   describe('as a notify recipient', (): void => {
