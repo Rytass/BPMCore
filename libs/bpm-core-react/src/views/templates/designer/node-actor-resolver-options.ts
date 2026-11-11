@@ -131,7 +131,7 @@ export function readNodeActorGraphIssues(
 
 /** The hint under the 不可與前面關卡同一人 picker while it has no problem to report. */
 export const EXCLUDE_NODE_ACTORS_STAGE_HINT =
-  '此關的簽核人不會是你選的前面關卡實際簽核的人（含其代理人），也不能被轉簽或加簽到此關；可複選，每個關卡都會排除。只能選每條路徑都會經過、而且一定有人實際簽核的關卡（沒有進入條件、沒設跳過此關、沒設逾時自動核准）；條件式的關卡請改用分流，把兩關放在同一條路線上。';
+  '此關的簽核人不會是你選的前面關卡實際簽核的人（含其代理人），也不能被轉簽或加簽到此關；可複選，每個關卡都會排除。只能選每條路徑都會經過、而且一定有人實際簽核的關卡（沒有進入條件、沒設跳過此關、沒設逾時自動核准）；條件式的關卡、平行分支上的關卡都不支援，條件式的請改用分流把兩關放在同一條路線上，平行分支上的請改成先後串接。';
 
 /** Shown when no earlier stage can be picked. */
 export const NO_EXCLUDABLE_STAGE_HINT =
