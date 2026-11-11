@@ -1500,6 +1500,167 @@ describe('readNotifyRecipientsIssue — new approver sources', () => {
   });
 });
 
+describe('ORG_MANAGER_CHAIN start settings', () => {
+  const CHAIN = {
+    minPositionLevel: 30,
+    type: 'ORG_MANAGER_CHAIN',
+  } as const;
+
+  it('accepts a chain that sets neither start setting (control)', () => {
+    expect(readApproverResolverIssue(CHAIN)).toBeNull();
+    expect(readNotifyRecipientsIssue(CHAIN)).toBeNull();
+  });
+
+  it('accepts every start the designer can write', () => {
+    [
+      { type: 'INITIATOR' },
+      { formPath: 'picked', type: 'FORM_MEMBER' },
+      { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+    ].forEach((startFrom) => {
+      expect(
+        readApproverResolverIssue({
+          ...CHAIN,
+          startFrom,
+          startPositionLevel: 20,
+        } as ApproverResolver),
+      ).toBeNull();
+    });
+  });
+
+  it('accepts a start level equal to the required level', () => {
+    expect(
+      readApproverResolverIssue({ ...CHAIN, startPositionLevel: 30 }),
+    ).toBeNull();
+  });
+
+  it('refuses a start level above the required level', () => {
+    expect(
+      readApproverResolverIssue({ ...CHAIN, startPositionLevel: 31 }),
+    ).toBe('簽核節點的起始職等不可高於職等門檻。');
+  });
+
+  it.each([2.5, Number.NaN, '20'])(
+    'refuses a start level that is not a whole number (%s)',
+    (startPositionLevel) => {
+      expect(
+        readApproverResolverIssue({
+          ...CHAIN,
+          startPositionLevel: startPositionLevel as number,
+        }),
+      ).toBe('簽核節點需要指定有效的起始職等。');
+    },
+  );
+
+  it('reads a null start level and a null start as absent', () => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        startFrom: null as unknown as undefined,
+        startPositionLevel: null as unknown as undefined,
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['a form start without a field', { formPath: ' ', type: 'FORM_MEMBER' }],
+    ['a form start with no formPath key', { type: 'FORM_MEMBER' }],
+  ])('refuses %s', (_label, startFrom) => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        startFrom,
+      } as unknown as ApproverResolver),
+    ).toBe('簽核節點需要指定主管鏈起點的表單欄位。');
+  });
+
+  it.each([
+    ['a stage start without a stage', { nodeIds: [], type: 'NODE_ACTOR' }],
+    ['a stage start with no nodeIds key', { type: 'NODE_ACTOR' }],
+  ])('refuses %s', (_label, startFrom) => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        startFrom,
+      } as unknown as ApproverResolver),
+    ).toBe('簽核節點需要指定主管鏈起點的前面簽核關卡。');
+  });
+
+  it.each([
+    ['a type this build does not know', { type: 'FUTURE_START' }],
+    ['a start that is not an object', 'INITIATOR'],
+    ['a start without a type', {}],
+  ])('refuses %s', (_label, startFrom) => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        startFrom,
+      } as unknown as ApproverResolver),
+    ).toBe('簽核節點的主管鏈起點不在這個版本支援的範圍內，請改選其他起點。');
+  });
+
+  it('keeps reporting a bad required level before the start settings (control)', () => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        minPositionLevel: 2.5,
+        startPositionLevel: 99,
+      }),
+    ).toBe('簽核節點需要指定有效的職等門檻。');
+  });
+
+  it('keeps reporting a blank fallback when the start settings are fine (control)', () => {
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        fallback: { memberId: ' ', type: 'DIRECT' },
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+      }),
+    ).toBe('簽核節點需要指定改派固定人。');
+  });
+
+  describe('as a notify recipient', () => {
+    it('accepts a start level and an INITIATOR start', () => {
+      expect(
+        readNotifyRecipientsIssue({ ...CHAIN, startPositionLevel: 20 }),
+      ).toBeNull();
+      expect(
+        readNotifyRecipientsIssue({
+          ...CHAIN,
+          startFrom: { type: 'INITIATOR' },
+        }),
+      ).toBeNull();
+    });
+
+    it.each([
+      { formPath: 'picked', type: 'FORM_MEMBER' },
+      { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+    ] as const)('refuses a %s start', (startFrom) => {
+      expect(readNotifyRecipientsIssue({ ...CHAIN, startFrom })).toBe(
+        '知會節點的主管鏈只能從發起人開始。',
+      );
+    });
+
+    it('refuses a start level above the required level', () => {
+      expect(
+        readNotifyRecipientsIssue({ ...CHAIN, startPositionLevel: 31 }),
+      ).toBe('知會節點的起始職等不可高於職等門檻。');
+    });
+
+    it('reaches the node-level lint through readNotifyServiceTaskIssue', () => {
+      expect(
+        readNotifyServiceTaskIssue(
+          definitionWithNotify(
+            notifyAction({
+              ...CHAIN,
+              startFrom: { nodeIds: ['a'], type: 'NODE_ACTOR' },
+            }),
+          ).nodes.find((node) => node.id === 'notify') as WorkflowNode,
+        ),
+      ).toBe('知會節點的主管鏈只能從發起人開始。');
+    });
+  });
+});
+
 describe('org_unit field conditions', () => {
   const ORG_FIELD = field('org_unit');
 

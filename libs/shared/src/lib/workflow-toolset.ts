@@ -9,6 +9,7 @@ import {
   ApproverResolverFallback,
   DecisionPolicy,
   ExcludeInitiatorConfig,
+  OrgManagerChainStart,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaCalendarMode,
@@ -21,6 +22,7 @@ import {
   WorkflowNodeTriggerMode,
   isFallbackCapableApproverResolverType,
   isNotifyRecipientResolverType,
+  readOrgManagerChainStartPositionLevel,
 } from './workflow';
 import {
   CONDITION_OPERATOR_OPTIONS,
@@ -116,7 +118,9 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     '簽核人員解析策略，以 type 區分。DIRECT: { type, memberIds[] }；POSITION: { type, positionId }；' +
     'ORG_UNIT_MEMBER: { type, orgUnitId, includeDescendants? }；ORG_UNIT_POSITION: { type, orgUnitId, positionId, includeDescendants? }；' +
     'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
-    'ORG_MANAGER_CHAIN: { type, minPositionLevel, fallback? }（沿發起人的主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
+    'ORG_MANAGER_CHAIN: { type, minPositionLevel, startFrom?, startPositionLevel?, fallback? }（沿主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽。' +
+    "startFrom 決定鏈從誰的主管開始爬，省略＝從發起人：{ type: 'INITIATOR' }、{ type: 'FORM_MEMBER', formPath }（表單上「人員選擇」單選欄位選的人）、{ type: 'NODE_ACTOR', nodeIds[] }（前面指定關卡實際簽核的那一位）；起點本人不在鏈上，從他的直屬主管開始；知會節點只能從發起人開始。" +
+    'startPositionLevel 為起始職等，職等低於它的主管穿過不簽、第一位達到的主管才開始簽，省略＝第一位有職等的主管就開始簽，不可高於 minPositionLevel。改寫簽核人時 startFrom／startPositionLevel 不會沿用舊的，需要時請一併傳入）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
     "fallback（無主管時的改派）可為 { type: 'NONE' }（預設，停止流程）、{ type: 'DIRECT', memberId, allowInitiatorSelfApproval? }（改派固定會員）、或 { type: 'POSITION', positionId, allowInitiatorSelfApproval? }（改派給該職位目前的有效成員，多人時全部成為簽核人）；" +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }；' +
     'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
@@ -632,10 +636,30 @@ function readFieldAccessSummary(node: UserTaskNode): string {
     : '';
 }
 
+// Reported only when the chain sets a start, so the assistant can read back
+// what it wrote; a chain without one keeps today's summary.
+function readOrgManagerChainSummary(resolver: ApproverResolver): string {
+  if (resolver.type !== 'ORG_MANAGER_CHAIN') {
+    return '';
+  }
+
+  const startLevel = readOrgManagerChainStartPositionLevel(resolver);
+  const startFrom = resolver.startFrom;
+  const from =
+    startFrom?.type === 'FORM_MEMBER'
+      ? `；主管鏈起點=表單欄位 ${startFrom.formPath}`
+      : startFrom?.type === 'NODE_ACTOR'
+        ? `；主管鏈起點=關卡 ${startFrom.nodeIds.join(',')} 的簽核者`
+        : '';
+
+  return `${from}${startLevel === null ? '' : `；起始職等=${startLevel}`}`;
+}
+
 function readNodeSummary(node: WorkflowNode): string {
   if (node.type === 'userTask') {
     return (
       `簽核人=${node.data.approverResolver.type}` +
+      readOrgManagerChainSummary(node.data.approverResolver) +
       `；決策=${readDecisionPolicySummary(node.data.decisionPolicy)}` +
       `；觸發=${node.data.triggerMode ?? 'AND'}` +
       // Only reported when set, so the assistant can read back what
@@ -1452,6 +1476,8 @@ function parseApproverResolver(value: unknown): ApproverResolver {
     case 'ORG_MANAGER_CHAIN': {
       const minPositionLevel = value['minPositionLevel'];
       const fallback = parseApproverResolverFallback(value['fallback']);
+      const startFrom = parseOrgManagerChainStart(value['startFrom']);
+      const startPositionLevel = value['startPositionLevel'];
 
       return typeof minPositionLevel === 'number' &&
         Number.isInteger(minPositionLevel)
@@ -1459,6 +1485,11 @@ function parseApproverResolver(value: unknown): ApproverResolver {
             minPositionLevel,
             type: 'ORG_MANAGER_CHAIN',
             ...(fallback ? { fallback } : {}),
+            ...(startFrom ? { startFrom } : {}),
+            ...(typeof startPositionLevel === 'number' &&
+            Number.isInteger(startPositionLevel)
+              ? { startPositionLevel }
+              : {}),
           }
         : DEFAULT_MANAGER_RESOLVER;
     }
@@ -1530,6 +1561,35 @@ function parseApproverResolver(value: unknown): ApproverResolver {
     }
     default:
       return DEFAULT_MANAGER_RESOLVER;
+  }
+}
+
+/**
+ * The `startFrom` of an `ORG_MANAGER_CHAIN`, **never throwing**. An incomplete
+ * `FORM_MEMBER` / `NODE_ACTOR` keeps its type with an empty `formPath` /
+ * `nodeIds`, so `validate_workflow` and the publish lint report the gap rather
+ * than the chain quietly starting at the initiator. Anything else (absent, not
+ * an object, an unknown type) is read as absent.
+ */
+function parseOrgManagerChainStart(
+  value: unknown,
+): OrgManagerChainStart | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  switch (value['type']) {
+    case 'INITIATOR':
+      return { type: 'INITIATOR' };
+    case 'FORM_MEMBER':
+      return {
+        formPath: readNonEmptyString(value['formPath']) ?? '',
+        type: 'FORM_MEMBER',
+      };
+    case 'NODE_ACTOR':
+      return { nodeIds: readStringArray(value['nodeIds']), type: 'NODE_ACTOR' };
+    default:
+      return null;
   }
 }
 

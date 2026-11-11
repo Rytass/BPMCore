@@ -1574,3 +1574,342 @@ describe('set_service_action — NOTIFY recipients', () => {
     ).toEqual({ formPath: 'form.people', type: 'DYNAMIC_FORM' });
   });
 });
+
+describe('set_user_task_approver — manager chain start settings', () => {
+  async function stateWithUserTask(): Promise<{
+    readonly nodeId: string;
+    readonly state: WorkflowDesignerState;
+  }> {
+    const result = await executeWorkflowTool(
+      initialState(),
+      'add_node',
+      { nodeType: 'userTask' },
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error('Expected a mutation result');
+    }
+
+    const node = result.result.state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (!node) {
+      throw new Error('Expected a user task node');
+    }
+
+    return { nodeId: node.id, state: result.result.state };
+  }
+
+  async function chainAfter(
+    chain: Readonly<Record<string, unknown>>,
+  ): Promise<{
+    readonly resolver: unknown;
+    readonly summary: string | undefined;
+  }> {
+    const { nodeId, state } = await stateWithUserTask();
+    const result = await executeWorkflowTool(
+      state,
+      'set_user_task_approver',
+      { approverResolver: { type: 'ORG_MANAGER_CHAIN', ...chain }, nodeId },
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind !== 'mutation') {
+      throw new Error('Expected a mutation result');
+    }
+
+    const node = result.result.state.definition.nodes.find(
+      (candidate) => candidate.id === nodeId,
+    );
+
+    return {
+      resolver: node?.type === 'userTask' ? node.data.approverResolver : null,
+      summary: result.snapshot.nodes.find((item) => item.id === nodeId)
+        ?.summary,
+    };
+  }
+
+  it('keeps a form start and a start level on the resolver', async () => {
+    const { resolver } = await chainAfter({
+      minPositionLevel: 30,
+      startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+      startPositionLevel: 20,
+    });
+
+    expect(resolver).toEqual({
+      minPositionLevel: 30,
+      startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+      startPositionLevel: 20,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('keeps a stage start with its stage ids', async () => {
+    const { resolver } = await chainAfter({
+      minPositionLevel: 30,
+      startFrom: { nodeIds: ['task_a', 'task_b'], type: 'NODE_ACTOR' },
+    });
+
+    expect(resolver).toEqual({
+      minPositionLevel: 30,
+      startFrom: { nodeIds: ['task_a', 'task_b'], type: 'NODE_ACTOR' },
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('keeps an explicit INITIATOR start as written', async () => {
+    const { resolver } = await chainAfter({
+      minPositionLevel: 30,
+      startFrom: { type: 'INITIATOR' },
+    });
+
+    expect(resolver).toEqual({
+      minPositionLevel: 30,
+      startFrom: { type: 'INITIATOR' },
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('writes neither key when the call sets neither (control)', async () => {
+    const { resolver } = await chainAfter({ minPositionLevel: 30 });
+
+    expect(resolver).toEqual({
+      minPositionLevel: 30,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it.each([
+    ['an unknown type', { type: 'FUTURE_START' }],
+    ['a non-object', 'FORM_MEMBER'],
+  ])('reads %s as no start', async (_label, startFrom) => {
+    const { resolver } = await chainAfter({ minPositionLevel: 30, startFrom });
+
+    expect(resolver).toEqual({
+      minPositionLevel: 30,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it.each([2.5, '20', null, Number.NaN])(
+    'drops a start level that is not a whole number (%s)',
+    async (startPositionLevel) => {
+      const { resolver } = await chainAfter({
+        minPositionLevel: 30,
+        startPositionLevel,
+      });
+
+      expect(resolver).toEqual({
+        minPositionLevel: 30,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    },
+  );
+
+  it('keeps an incomplete start incomplete so validation reports it instead of starting at the initiator', async () => {
+    const form = await chainAfter({
+      minPositionLevel: 30,
+      startFrom: { type: 'FORM_MEMBER' },
+    });
+    const stage = await chainAfter({
+      minPositionLevel: 30,
+      startFrom: { type: 'NODE_ACTOR' },
+    });
+
+    expect(form.resolver).toEqual({
+      minPositionLevel: 30,
+      startFrom: { formPath: '', type: 'FORM_MEMBER' },
+      type: 'ORG_MANAGER_CHAIN',
+    });
+    expect(readApproverResolverIssue(form.resolver as ApproverResolver)).toBe(
+      '簽核節點需要指定主管鏈起點的表單欄位。',
+    );
+    expect(stage.resolver).toEqual({
+      minPositionLevel: 30,
+      startFrom: { nodeIds: [], type: 'NODE_ACTOR' },
+      type: 'ORG_MANAGER_CHAIN',
+    });
+    expect(readApproverResolverIssue(stage.resolver as ApproverResolver)).toBe(
+      '簽核節點需要指定主管鏈起點的前面簽核關卡。',
+    );
+  });
+
+  it('validate_workflow flags a start level above the required level', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withChain = await executeWorkflowTool(
+      state,
+      'set_user_task_approver',
+      {
+        approverResolver: {
+          minPositionLevel: 20,
+          startPositionLevel: 30,
+          type: 'ORG_MANAGER_CHAIN',
+        },
+        nodeId,
+      },
+      deterministicIds,
+    );
+
+    expect(withChain.ok && withChain.kind === 'mutation').toBe(true);
+
+    if (!withChain.ok || withChain.kind !== 'mutation') {
+      return;
+    }
+
+    const validation = await executeWorkflowTool(
+      withChain.result.state,
+      'validate_workflow',
+      {},
+    );
+
+    expect(validation.ok && validation.kind === 'query').toBe(true);
+
+    if (validation.ok && validation.kind === 'query') {
+      expect(validation.data).toEqual({
+        issue: '簽核節點的起始職等不可高於職等門檻。',
+      });
+    }
+  });
+
+  it('reads the start back in the node summary, and adds nothing without one', async () => {
+    const plain = await chainAfter({ minPositionLevel: 30 });
+    const form = await chainAfter({
+      minPositionLevel: 30,
+      startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+      startPositionLevel: 20,
+    });
+    const stage = await chainAfter({
+      minPositionLevel: 30,
+      startFrom: { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+    });
+
+    expect(plain.summary).toContain('簽核人=ORG_MANAGER_CHAIN；決策=');
+    expect(form.summary).toContain(
+      '簽核人=ORG_MANAGER_CHAIN；主管鏈起點=表單欄位 picked；起始職等=20；決策=',
+    );
+    expect(stage.summary).toContain(
+      '簽核人=ORG_MANAGER_CHAIN；主管鏈起點=關卡 task_a 的簽核者；決策=',
+    );
+  });
+
+  it('does not carry the old start over when a rewrite leaves the keys out', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const withStart = await executeWorkflowTool(
+      state,
+      'set_user_task_approver',
+      {
+        approverResolver: {
+          minPositionLevel: 30,
+          startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+          startPositionLevel: 20,
+          type: 'ORG_MANAGER_CHAIN',
+        },
+        nodeId,
+      },
+      deterministicIds,
+    );
+
+    if (!withStart.ok || withStart.kind !== 'mutation') {
+      throw new Error('Expected a mutation result');
+    }
+
+    const rewritten = await executeWorkflowTool(
+      withStart.result.state,
+      'set_user_task_approver',
+      {
+        approverResolver: { minPositionLevel: 30, type: 'ORG_MANAGER_CHAIN' },
+        nodeId,
+      },
+      deterministicIds,
+    );
+
+    if (!rewritten.ok || rewritten.kind !== 'mutation') {
+      throw new Error('Expected a mutation result');
+    }
+
+    const node = rewritten.result.state.definition.nodes.find(
+      (candidate) => candidate.id === nodeId,
+    );
+
+    expect(node?.type === 'userTask' && node.data.approverResolver).toEqual({
+      minPositionLevel: 30,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  describe('as a notify recipient', () => {
+    async function recipientsAfter(recipients: unknown): Promise<unknown> {
+      const state = initialState();
+      const withNotify: WorkflowDesignerState = {
+        ...state,
+        definition: {
+          ...state.definition,
+          nodes: [
+            ...state.definition.nodes,
+            {
+              data: {
+                action: {
+                  channels: ['IN_APP'],
+                  recipients: { memberIds: ['m1'], type: 'DIRECT' },
+                  type: 'NOTIFY',
+                },
+                label: '通知',
+                triggerMode: 'AND',
+              },
+              id: 'notify',
+              position: { x: 300, y: 320 },
+              type: 'serviceTask',
+            },
+          ],
+        },
+      };
+      const result = await executeWorkflowTool(
+        withNotify,
+        'set_service_action',
+        { action: { recipients, type: 'NOTIFY' }, nodeId: 'notify' },
+      );
+      const node =
+        result.ok && result.kind === 'mutation'
+          ? result.result.state.definition.nodes.find(
+              (item) => item.id === 'notify',
+            )
+          : undefined;
+
+      return node?.type === 'serviceTask' && node.data.action.type === 'NOTIFY'
+        ? node.data.action.recipients
+        : undefined;
+    }
+
+    it('keeps a start level, and an INITIATOR start, on a chain recipient', async () => {
+      expect(
+        await recipientsAfter({
+          minPositionLevel: 30,
+          startFrom: { type: 'INITIATOR' },
+          startPositionLevel: 20,
+          type: 'ORG_MANAGER_CHAIN',
+        }),
+      ).toEqual({
+        minPositionLevel: 30,
+        startFrom: { type: 'INITIATOR' },
+        startPositionLevel: 20,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    });
+
+    it('keeps a stage start as written so the lint can refuse it instead of it starting at the initiator', async () => {
+      expect(
+        await recipientsAfter({
+          minPositionLevel: 30,
+          startFrom: { nodeIds: ['a'], type: 'NODE_ACTOR' },
+          type: 'ORG_MANAGER_CHAIN',
+        }),
+      ).toEqual({
+        minPositionLevel: 30,
+        startFrom: { nodeIds: ['a'], type: 'NODE_ACTOR' },
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    });
+  });
+});

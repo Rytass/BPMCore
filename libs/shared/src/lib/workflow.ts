@@ -127,6 +127,20 @@ export type ApproverResolver =
   | {
       readonly fallback?: ApproverResolverFallback;
       readonly minPositionLevel: number;
+      /**
+       * Whose manager the chain starts climbing from. Omitted (or
+       * `INITIATOR`) keeps today's behaviour: the chain starts at the
+       * initiator. Older engines ignore this key and start at the initiator.
+       */
+      readonly startFrom?: OrgManagerChainStart;
+      /**
+       * Managers below this position level are walked past without joining the
+       * chain; the first manager at or above it starts the chain. Omitted
+       * keeps today's behaviour: the first manager who has a position level
+       * starts the chain. Must not exceed `minPositionLevel`. Older engines
+       * ignore this key.
+       */
+      readonly startPositionLevel?: number;
       readonly type: 'ORG_MANAGER_CHAIN';
     }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
@@ -288,6 +302,183 @@ export function isNotifyRecipientResolverType(type: string): boolean {
 /** Whether a resolver of this type may carry a "no manager" fallback. */
 export function isFallbackCapableApproverResolverType(type: string): boolean {
   return hasOwnKey(FALLBACK_CAPABLE_RESOLVER_TYPES, type);
+}
+
+/**
+ * Whose manager an `ORG_MANAGER_CHAIN` starts climbing from. The start person
+ * is never on the chain themselves: the chain begins at their direct manager,
+ * as it does for the initiator.
+ *
+ * - `INITIATOR`: the person who submitted the instance (the default).
+ * - `FORM_MEMBER`: the one person picked on the form field `formPath`.
+ * - `NODE_ACTOR`: the one person who actually approved the earlier node(s)
+ *   `nodeIds` (read the way `NODE_ACTOR` reads them).
+ */
+export type OrgManagerChainStart =
+  | { readonly type: 'INITIATOR' }
+  | { readonly formPath: string; readonly type: 'FORM_MEMBER' }
+  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' };
+
+// Keyed by the union so that adding a start type fails to compile until it is
+// listed here: the engine, the publish lint and the designer read this table.
+const KNOWN_ORG_MANAGER_CHAIN_START_TYPES: Readonly<
+  Record<OrgManagerChainStart['type'], true>
+> = {
+  FORM_MEMBER: true,
+  INITIATOR: true,
+  NODE_ACTOR: true,
+};
+
+/**
+ * The start's type when this build does not know it (a definition saved by a
+ * newer version), or `null` when it does. Takes a bare `type` so a newer
+ * definition can be checked without the compiler having narrowed it away. The
+ * engine refuses such a start at run time instead of climbing from the
+ * initiator, which would route the case to the wrong people.
+ */
+export function readUnsupportedOrgManagerChainStartType(start: {
+  readonly type: string;
+}): string | null {
+  return hasOwnKey(KNOWN_ORG_MANAGER_CHAIN_START_TYPES, start.type)
+    ? null
+    : start.type;
+}
+
+type OrgManagerChainResolver = Extract<
+  ApproverResolver,
+  { readonly type: 'ORG_MANAGER_CHAIN' }
+>;
+
+/**
+ * `true` when the chain starts at the initiator: `startFrom` is absent (an
+ * explicit `null` counts as absent) or says `INITIATOR`.
+ */
+export function isOrgManagerChainStartedFromInitiator(
+  resolver: Pick<OrgManagerChainResolver, 'startFrom'>,
+): boolean {
+  const startFrom: unknown = resolver.startFrom;
+
+  return (
+    startFrom === undefined ||
+    startFrom === null ||
+    (typeof startFrom === 'object' &&
+      (startFrom as { readonly type?: unknown }).type === 'INITIATOR')
+  );
+}
+
+/**
+ * The position level below which managers are walked past, or `null` when the
+ * chain has no start level (absent or `null`; anything that is not a finite
+ * number is read as absent too, the publish lint refuses it).
+ */
+export function readOrgManagerChainStartPositionLevel(
+  resolver: Pick<OrgManagerChainResolver, 'startPositionLevel'>,
+): number | null {
+  const level: unknown = resolver.startPositionLevel;
+
+  return typeof level === 'number' && Number.isFinite(level) ? level : null;
+}
+
+/**
+ * The chain's dry-run placeholder. The dry run cannot look the organisation
+ * up, so it names what the runtime would resolve. Grammar, with `<from>` one
+ * of `formMember` / `nodeActor` and `<key>` the form path or the node ids
+ * joined by `,` (it may itself hold a colon, so it is always the last part):
+ *
+ *     orgManagerChain:<min>                      neither setting: as before
+ *     orgManagerChain:<min>:<startLevel>         only startPositionLevel
+ *     orgManagerChain:<min>:<startLevel>:<from>:<key>
+ *                                                `<startLevel>` is empty when
+ *                                                the chain has none
+ *
+ * Starting at the initiator is the same as not saying so, so an `INITIATOR`
+ * start adds nothing.
+ */
+export function formatOrgManagerChainPlaceholder(
+  resolver: Pick<
+    OrgManagerChainResolver,
+    'minPositionLevel' | 'startFrom' | 'startPositionLevel'
+  >,
+): string {
+  const base = `orgManagerChain:${resolver.minPositionLevel}`;
+  const startLevel = readOrgManagerChainStartPositionLevel(resolver);
+  const level = startLevel === null ? '' : String(startLevel);
+  const startFrom = resolver.startFrom;
+
+  if (startFrom?.type === 'FORM_MEMBER') {
+    return `${base}:${level}:formMember:${startFrom.formPath}`;
+  }
+
+  if (startFrom?.type === 'NODE_ACTOR') {
+    return `${base}:${level}:nodeActor:${startFrom.nodeIds.join(',')}`;
+  }
+
+  return startLevel === null ? base : `${base}:${level}`;
+}
+
+export interface OrgManagerChainPlaceholder {
+  readonly minPositionLevel: number;
+  readonly startFrom:
+    | { readonly formPath: string; readonly type: 'FORM_MEMBER' }
+    | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' }
+    | null;
+  readonly startPositionLevel: number | null;
+}
+
+const PLACEHOLDER_INTEGER_PATTERN = /^-?\d+$/;
+
+/**
+ * The parts of a chain placeholder written by
+ * {@link formatOrgManagerChainPlaceholder}, or `null` for any other text.
+ */
+export function parseOrgManagerChainPlaceholder(
+  placeholder: string,
+): OrgManagerChainPlaceholder | null {
+  const [kind, min, level, from, ...keyParts] = placeholder.split(':');
+
+  if (kind !== 'orgManagerChain' || !PLACEHOLDER_INTEGER_PATTERN.test(min ?? '')) {
+    return null;
+  }
+
+  const minPositionLevel = Number(min);
+  const startPositionLevel =
+    level === undefined || level === ''
+      ? null
+      : PLACEHOLDER_INTEGER_PATTERN.test(level)
+        ? Number(level)
+        : undefined;
+
+  if (startPositionLevel === undefined) {
+    return null;
+  }
+
+  if (from === undefined) {
+    return level === ''
+      ? null
+      : { minPositionLevel, startFrom: null, startPositionLevel };
+  }
+
+  const key = keyParts.join(':');
+
+  if (level === undefined || key === '') {
+    return null;
+  }
+
+  if (from === 'formMember') {
+    return {
+      minPositionLevel,
+      startFrom: { formPath: key, type: 'FORM_MEMBER' },
+      startPositionLevel,
+    };
+  }
+
+  return from === 'nodeActor'
+    ? {
+        minPositionLevel,
+        startFrom: { nodeIds: key.split(','), type: 'NODE_ACTOR' },
+        startPositionLevel,
+      }
+    : null;
 }
 
 export type DecisionPolicy =

@@ -29,7 +29,10 @@ import {
   WorkflowNodeTriggerMode,
   isFallbackCapableApproverResolverType,
   isNotifyRecipientResolverType,
+  isOrgManagerChainStartedFromInitiator,
+  readOrgManagerChainStartPositionLevel,
   readUnsupportedApproverResolverType,
+  readUnsupportedOrgManagerChainStartType,
 } from './workflow';
 import {
   isOnOwnParallelBranch,
@@ -1189,6 +1192,77 @@ export function isOrgManagerChainDecisionPolicyInvalid(
   );
 }
 
+/**
+ * The designer-facing issue with the two optional settings of an
+ * `ORG_MANAGER_CHAIN` (`startFrom`, `startPositionLevel`), or `null` when both
+ * are absent or well-formed. `subject` names the node kind in the sentence;
+ * a notify node's chain may only start at the initiator (it has no earlier
+ * stage and no form pick to start from). Reads defensively: on the backend the
+ * definition is parsed JSON that no DTO has validated. The form field and the
+ * earlier stages the start names are checked elsewhere, against the form
+ * schema and the graph.
+ */
+export function readOrgManagerChainIssue(
+  resolver: Extract<ApproverResolver, { readonly type: 'ORG_MANAGER_CHAIN' }>,
+  subject: '簽核節點' | '知會節點',
+): string | null {
+  const startFrom: unknown = resolver.startFrom;
+
+  if (startFrom !== undefined && startFrom !== null) {
+    const start = startFrom as {
+      readonly formPath?: unknown;
+      readonly nodeIds?: unknown;
+      readonly type?: unknown;
+    };
+
+    if (
+      typeof start !== 'object' ||
+      typeof start.type !== 'string' ||
+      readUnsupportedOrgManagerChainStartType({ type: start.type }) !== null
+    ) {
+      return `${subject}的主管鏈起點不在這個版本支援的範圍內，請改選其他起點。`;
+    }
+
+    if (
+      start.type === 'FORM_MEMBER' &&
+      (typeof start.formPath !== 'string' || !start.formPath.trim())
+    ) {
+      return `${subject}需要指定主管鏈起點的表單欄位。`;
+    }
+
+    if (
+      start.type === 'NODE_ACTOR' &&
+      (!Array.isArray(start.nodeIds) || start.nodeIds.length === 0)
+    ) {
+      return `${subject}需要指定主管鏈起點的前面簽核關卡。`;
+    }
+  }
+
+  if (
+    subject === '知會節點' &&
+    !isOrgManagerChainStartedFromInitiator(resolver)
+  ) {
+    return '知會節點的主管鏈只能從發起人開始。';
+  }
+
+  const rawStartLevel: unknown = resolver.startPositionLevel;
+
+  if (rawStartLevel === undefined || rawStartLevel === null) {
+    return null;
+  }
+
+  const startLevel = readOrgManagerChainStartPositionLevel(resolver);
+
+  if (startLevel === null || !Number.isInteger(startLevel)) {
+    return `${subject}需要指定有效的起始職等。`;
+  }
+
+  return Number.isInteger(resolver.minPositionLevel) &&
+    startLevel > resolver.minPositionLevel
+    ? `${subject}的起始職等不可高於職等門檻。`
+    : null;
+}
+
 export function readApproverResolverIssue(
   resolver: ApproverResolver,
 ): string | null {
@@ -1224,6 +1298,14 @@ export function readApproverResolverIssue(
     !Number.isInteger(resolver.minPositionLevel)
   ) {
     return '簽核節點需要指定有效的職等門檻。';
+  }
+
+  if (resolver.type === 'ORG_MANAGER_CHAIN') {
+    const chainIssue = readOrgManagerChainIssue(resolver, '簽核節點');
+
+    if (chainIssue !== null) {
+      return chainIssue;
+    }
   }
 
   if (
@@ -1599,6 +1681,10 @@ export function readNotifyRecipientsIssue(
 
   if (recipients.type === 'EXPRESSION' && !recipients.expression.trim()) {
     return '知會節點需要指定知會對象的運算式。';
+  }
+
+  if (recipients.type === 'ORG_MANAGER_CHAIN') {
+    return readOrgManagerChainIssue(recipients, '知會節點');
   }
 
   return null;
