@@ -149,10 +149,14 @@ import { readMinPositionLevelOptions } from './position-level-options';
 import {
   isMembershipActiveOn,
   readActivePositionIds,
+  readOrgPositionPickerState,
   readOrgScopedPositions,
   readOrgUnitScopeIds,
   readTodayDateOnlyString,
 } from './position-scope';
+
+const ORG_POSITION_INACTIVE_HINT =
+  '這個組織範圍內目前沒有擁有此職位的有效會員，請改選其他職位。';
 import {
   OrgUnitRecord,
   MembershipRecord,
@@ -2761,6 +2765,12 @@ export function TemplateDesignerView({
             positions,
           })
         : [];
+    const initiatorPositionPicker = readOrgPositionPickerState({
+      orgUnitId: initiatorPolicyDraft.orgUnitId ?? '',
+      positionId: initiatorPolicyDraft.positionId ?? '',
+      positions,
+      scopedPositions: initiatorScopedPositions,
+    });
 
     return (
       <>
@@ -2852,7 +2862,16 @@ export function TemplateDesignerView({
           </BPMFormField>
         ) : null}
         {initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION' ? (
-          <BPMFormField label="職位" name="initiatorPositionId" required>
+          <BPMFormField
+            hintText={
+              initiatorPositionPicker.isInactive
+                ? ORG_POSITION_INACTIVE_HINT
+                : undefined
+            }
+            label="職位"
+            name="initiatorPositionId"
+            required
+          >
             <PositionPicker
               disabled={!initiatorPolicyDraft.orgUnitId?.trim()}
               name="initiatorPositionId"
@@ -2867,7 +2886,7 @@ export function TemplateDesignerView({
                   ? '選擇職位'
                   : '請先選擇組織'
               }
-              positions={initiatorScopedPositions}
+              positions={initiatorPositionPicker.options}
               value={selectedInitiatorPosition}
             />
           </BPMFormField>
@@ -2955,6 +2974,14 @@ export function TemplateDesignerView({
             positions,
           })
         : [];
+    const orgPositionPicker = readOrgPositionPickerState({
+      orgUnitId:
+        resolver.type === 'ORG_UNIT_POSITION' ? resolver.orgUnitId : '',
+      positionId:
+        resolver.type === 'ORG_UNIT_POSITION' ? resolver.positionId : '',
+      positions,
+      scopedPositions: orgScopedPositions,
+    });
     const dynamicFormChoice =
       editorState.mode === 'DYNAMIC_FORM'
         ? editorState.levelsUp === null
@@ -3641,7 +3668,11 @@ export function TemplateDesignerView({
         ) : null}
         {resolver.type === 'ORG_UNIT_POSITION' ? (
           <BPMFormField
-            hintText="只納入指定組織範圍內擁有此職位的有效會員。"
+            hintText={
+              orgPositionPicker.isInactive
+                ? ORG_POSITION_INACTIVE_HINT
+                : '只納入指定組織範圍內擁有此職位的有效會員。'
+            }
             label="職位"
             name="orgUnitPositionId"
             required
@@ -3660,7 +3691,7 @@ export function TemplateDesignerView({
               placeholder={
                 resolver.orgUnitId.trim() ? '選擇職位' : '請先選擇組織'
               }
-              positions={orgScopedPositions}
+              positions={orgPositionPicker.options}
               value={selectedPosition}
             />
           </BPMFormField>
@@ -4123,6 +4154,14 @@ export function TemplateDesignerView({
             positions,
           })
         : [];
+    const recipientOrgPositionPicker = readOrgPositionPickerState({
+      orgUnitId:
+        recipients.type === 'ORG_UNIT_POSITION' ? recipients.orgUnitId : '',
+      positionId:
+        recipients.type === 'ORG_UNIT_POSITION' ? recipients.positionId : '',
+      positions,
+      scopedPositions: recipientOrgScopedPositions,
+    });
     const recipientFormChoice =
       recipients.type === 'DYNAMIC_FORM'
         ? readDynamicFormFieldChoice(webhookFormSchema, recipients.formPath)
@@ -4383,7 +4422,11 @@ export function TemplateDesignerView({
         ) : null}
         {recipients.type === 'ORG_UNIT_POSITION' ? (
           <BPMFormField
-            hintText="只通知指定組織範圍內擁有此職位的有效會員。"
+            hintText={
+              recipientOrgPositionPicker.isInactive
+                ? ORG_POSITION_INACTIVE_HINT
+                : '只通知指定組織範圍內擁有此職位的有效會員。'
+            }
             label="職位"
             name="notifyOrgUnitPositionId"
             required
@@ -4399,7 +4442,7 @@ export function TemplateDesignerView({
               placeholder={
                 recipients.orgUnitId.trim() ? '選擇職位' : '請先選擇組織'
               }
-              positions={recipientOrgScopedPositions}
+              positions={recipientOrgPositionPicker.options}
               value={selectedRecipientPosition}
             />
           </BPMFormField>
