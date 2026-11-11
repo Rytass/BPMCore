@@ -1,4 +1,7 @@
-import { FormFieldDefinition } from '@rytass/bpm-core-shared/form';
+import {
+  FormDefinitionSchema,
+  FormFieldDefinition,
+} from '@rytass/bpm-core-shared/form';
 import {
   decideTask,
   listApprovalHistoryTasks,
@@ -55,7 +58,10 @@ function installFetchMock<TData>(payload: TData): {
   };
 }
 
-type Responder = (query: string, variables: Readonly<Record<string, unknown>>) => unknown;
+type Responder = (
+  query: string,
+  variables: Readonly<Record<string, unknown>>,
+) => unknown;
 
 function mockRequests(respond: Responder): CapturedRequest[] {
   const requests: CapturedRequest[] = [];
@@ -178,7 +184,10 @@ describe('@rytass/bpm-core-client/workflow', () => {
           page: 1,
           pageSize: 10,
           searchText: null,
-          sort: [{ direction: 'ASC', field: 'amount' }, { field: 'submittedAt' }],
+          sort: [
+            { direction: 'ASC', field: 'amount' },
+            { field: 'submittedAt' },
+          ],
           state: null,
           templateId: 'tpl-1',
           view: 'ALL',
@@ -195,7 +204,9 @@ describe('@rytass/bpm-core-client/workflow', () => {
           expect(request?.query).toContain(
             '$fieldFilters: [ApprovalInstanceFieldFilterInput!]',
           );
-          expect(request?.query).toContain('$sort: [ApprovalInstanceSortInput!]');
+          expect(request?.query).toContain(
+            '$sort: [ApprovalInstanceSortInput!]',
+          );
           expect(request?.query).toContain('fieldFilters: $fieldFilters');
           expect(request?.query).toContain('sort: $sort');
           expect(request?.variables).toMatchObject({
@@ -271,9 +282,7 @@ describe('@rytass/bpm-core-client/workflow', () => {
           templateId: null,
         });
 
-        expect(requests[0]?.query).toContain(
-          'filterableFieldIssues(',
-        );
+        expect(requests[0]?.query).toContain('filterableFieldIssues(');
         expect(requests[0]?.variables).toEqual({
           formDefinitionId: 'form-1',
           schemaJson: '{"fields":[]}',
@@ -358,7 +367,9 @@ describe('@rytass/bpm-core-client/workflow', () => {
       instanceId: 'instance-1',
       title: null,
     };
-    const result = { resubmitApprovalInstance: { id: 'instance-1', state: 'RUNNING' } };
+    const result = {
+      resubmitApprovalInstance: { id: 'instance-1', state: 'RUNNING' },
+    };
 
     it('sends the comment the applicant wrote', async (): Promise<void> => {
       const harness = installFetchMock(result);
@@ -385,7 +396,10 @@ describe('@rytass/bpm-core-client/workflow', () => {
     it('trims the comment before sending it', async (): Promise<void> => {
       const harness = installFetchMock(result);
       try {
-        await resubmitApprovalInstance({ ...base, comment: '  已補上報價單  ' });
+        await resubmitApprovalInstance({
+          ...base,
+          comment: '  已補上報價單  ',
+        });
 
         const input = harness.capture().variables?.['input'] as Record<
           string,
@@ -404,29 +418,26 @@ describe('@rytass/bpm-core-client/workflow', () => {
       ['no comment is given', undefined],
       ['the comment is null', null],
       ['the comment is blank', '   '],
-    ])(
-      'omits comment when %s',
-      async (_label, comment): Promise<void> => {
-        const harness = installFetchMock(result);
-        try {
-          await resubmitApprovalInstance({ ...base, comment });
+    ])('omits comment when %s', async (_label, comment): Promise<void> => {
+      const harness = installFetchMock(result);
+      try {
+        await resubmitApprovalInstance({ ...base, comment });
 
-          const input = harness.capture().variables?.['input'] as Record<
-            string,
-            unknown
-          >;
+        const input = harness.capture().variables?.['input'] as Record<
+          string,
+          unknown
+        >;
 
-          expect(Object.keys(input).sort()).toEqual([
-            'formDataJson',
-            'initiatorMemberId',
-            'instanceId',
-            'title',
-          ]);
-        } finally {
-          harness.restore();
-        }
-      },
-    );
+        expect(Object.keys(input).sort()).toEqual([
+          'formDataJson',
+          'initiatorMemberId',
+          'instanceId',
+          'title',
+        ]);
+      } finally {
+        harness.restore();
+      }
+    });
   });
 
   describe('decideTask fill', () => {
@@ -981,6 +992,55 @@ describe('@rytass/bpm-core-client/workflow', () => {
           },
         }),
       ).toBe('fallback');
+    });
+
+    it('names a data-source value from the option snapshot, and keeps the value without one', (): void => {
+      const schema: FormDefinitionSchema = {
+        fields: [
+          {
+            dataSource: { bindings: [], key: 'demo.vendors', version: 1 },
+            fieldKey: 'vendor',
+            label: '廠商',
+            required: true,
+            type: 'autocomplete',
+          },
+        ],
+        schemaVersion: 1,
+      };
+      const snapshot = {
+        bindingHash: 'hash',
+        dataSourceKey: 'demo.vendors',
+        dataSourceVersion: 1,
+        options: [{ label: '甲供應商', value: 'V-001' }],
+        validatedAt: '2026-11-11T00:00:00.000Z',
+      };
+
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { vendor: 'V-001' },
+          optionSnapshots: { vendor: snapshot },
+          schema,
+          uiSchema: null,
+        }),
+      ).toBe('廠商：甲供應商');
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { vendor: 'V-009' },
+          optionSnapshots: { vendor: snapshot },
+          schema,
+          uiSchema: null,
+        }),
+      ).toBe('廠商：V-009');
+      expect(
+        readFormDataCaseTitle({
+          fallbackTitle: 'fallback',
+          formData: { vendor: 'V-001' },
+          schema,
+          uiSchema: null,
+        }),
+      ).toBe('廠商：V-001');
     });
   });
 

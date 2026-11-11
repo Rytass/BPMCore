@@ -14,6 +14,8 @@ import {
   type FormDefinitionSchema,
   type FormFieldDefinition,
   type FormFieldValue,
+  type FormDataIssue,
+  type FormDataIssueReason,
   type TableColumnDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { readFormTableRows } from '@rytass/bpm-core-client/form';
@@ -208,90 +210,259 @@ export function isFillConflictMessage(message: string): boolean {
   return message.includes('form data changed; refresh and retry');
 }
 
-const FORM_DATA_PATH_PATTERN =
-  /^formData\.([A-Za-z_][A-Za-z0-9_]*(?:\[\d+\]\.[A-Za-z_][A-Za-z0-9_]*)?) (.+)$/;
-const MISSING_FIELDS_PREFIX = 'Form data is missing required fields: ';
+// The server names a field by its label: `欄位「標籤」`, a table row as
+// `「表格」第 N 列` (1-based), and a cell as `「表格」第 N 列的「欄位」`.
+// Each part of a message is separated by `；`. This is the fallback for a
+// response that carries no `formDataIssues`: labels are not unique, so the
+// issues, which address each value by its path, are the primary route.
+const TOP_LEVEL_REF_PATTERN = /^欄位「(.+?)」(.+)$/;
+const TABLE_REF_PATTERN = /^「(.+?)」第 (\d+) 列(?:的「(.+?)」)?(.+)$/;
+const MISSING_FIELDS_PREFIX = '缺少必填欄位：';
 
-/**
- * The field or table column a server error path such as `note` or
- * `items[0].name` points at, so its own settings can word the error.
- */
-function readFillPathField(
-  path: string,
-  fields: readonly FormFieldDefinition[],
-): FormFieldDefinition | TableColumnDefinition | undefined {
-  const [fieldKey, columnKey] = path.split(/\[\d+\]\./);
-  const field = fields.find((candidate) => candidate.fieldKey === fieldKey);
-
-  return columnKey === undefined
-    ? field
-    : field && isTableFieldDefinition(field)
-      ? field.columns.find((column) => column.fieldKey === columnKey)
-      : undefined;
+/** The field, or table column, a server error names, with its renderer key. */
+interface FillErrorTarget {
+  readonly key: string;
+  readonly settings: FormFieldDefinition | TableColumnDefinition | undefined;
+  readonly topLevel: boolean;
 }
 
-function readFillPathErrorText(
-  path: string,
-  reason: string,
-  fields: readonly FormFieldDefinition[],
+/** The sentence a refused value shows, by its reason. */
+function readFillIssueText(
+  reason: FormDataIssueReason,
+  limit: number | undefined,
+  target: FillErrorTarget,
 ): string {
-  const atLeast = /^must include at least (\d+) row\(s\)$/.exec(reason);
-  const atMost = /^must include at most (\d+) row\(s\)$/.exec(reason);
-  const shortest = /^must be at least (\d+) characters$/.exec(reason);
-  const longest = /^must be at most (\d+) characters$/.exec(reason);
+  const name = target.settings?.label || target.settings?.fieldKey || '';
 
-  if (reason === 'is required') {
-    return '此欄為必填。';
+  switch (reason) {
+    case 'REQUIRED':
+      return target.topLevel && name !== ''
+        ? `${name}為必填欄位。`
+        : '此欄為必填。';
+    case 'MIN_LENGTH':
+      return `至少需要 ${limit ?? 0} 個字。`;
+    case 'MAX_LENGTH':
+      return `最多 ${limit ?? 0} 個字。`;
+    case 'MIN_ROWS':
+      return `至少需要 ${limit ?? 0} 列。`;
+    case 'MAX_ROWS':
+      return `最多 ${limit ?? 0} 列。`;
+    case 'PATTERN': {
+      const message =
+        target.settings &&
+        (target.settings.type === 'text' || target.settings.type === 'textarea')
+          ? target.settings.patternErrorMessage?.trim()
+          : undefined;
+
+      return message || '格式不正確。';
+    }
+    // The server ran out of time on the format check; the value may be fine.
+    case 'PATTERN_TIMEOUT':
+      return '格式檢查逾時，請縮短內容後再試，或請表單設計者簡化格式。';
+    default:
+      return '此欄內容不正確。';
+  }
+}
+
+/** The reason a message sentence stands for, for the message fallback. */
+function readFillReasonFromSentence(sentence: string): {
+  readonly limit?: number;
+  readonly reason: FormDataIssueReason;
+} {
+  const atLeastRows = /^至少需要 (\d+) 列$/.exec(sentence);
+  const atMostRows = /^最多 (\d+) 列$/.exec(sentence);
+  const shortest = /^至少需要 (\d+) 個字$/.exec(sentence);
+  const longest = /^最多 (\d+) 個字$/.exec(sentence);
+
+  if (sentence === '為必填') {
+    return { reason: 'REQUIRED' };
   }
 
-  if (atLeast) {
-    return `至少需要 ${atLeast[1]} 列。`;
+  if (atLeastRows) {
+    return { limit: Number(atLeastRows[1]), reason: 'MIN_ROWS' };
   }
 
-  if (atMost) {
-    return `最多 ${atMost[1]} 列。`;
+  if (atMostRows) {
+    return { limit: Number(atMostRows[1]), reason: 'MAX_ROWS' };
   }
 
   if (shortest) {
-    return `至少需要 ${shortest[1]} 個字。`;
+    return { limit: Number(shortest[1]), reason: 'MIN_LENGTH' };
   }
 
   if (longest) {
-    return `最多 ${longest[1]} 個字。`;
+    return { limit: Number(longest[1]), reason: 'MAX_LENGTH' };
   }
 
-  if (reason === 'does not match the required format') {
-    const field = readFillPathField(path, fields);
-    const message =
-      field && (field.type === 'text' || field.type === 'textarea')
-        ? field.patternErrorMessage?.trim()
-        : undefined;
-
-    return message || '格式不正確。';
+  if (sentence === '格式不正確') {
+    return { reason: 'PATTERN' };
   }
 
-  // The server ran out of time on the format check; the value may be fine.
-  if (reason === 'could not be checked against the required format in time') {
-    return '格式檢查逾時，請縮短內容後再試，或請表單設計者簡化格式。';
+  if (sentence === '無法在時限內完成格式檢查') {
+    return { reason: 'PATTERN_TIMEOUT' };
   }
 
-  return path.includes('[') ? '此欄內容不正確。' : '此欄位內容不正確。';
+  return { reason: 'TYPE' };
 }
 
 /**
- * Turns the server's fill validation message (docs/08 §8.5, error table 2)
+ * The renderer key of the value an issue path addresses, among the fields
+ * `fields` lets the approver fill. `items` is a table, `items[1]` a row,
+ * `items[1].qty` a cell. `null` when the path names nothing fillable.
+ */
+function readFillIssueTarget(
+  path: string,
+  fields: readonly FormFieldDefinition[],
+): FillErrorTarget | null {
+  const field = fields.find(
+    (candidate) =>
+      path === candidate.fieldKey ||
+      (isTableFieldDefinition(candidate) &&
+        path.startsWith(`${candidate.fieldKey}[`)),
+  );
+
+  if (!field) {
+    return null;
+  }
+
+  if (path === field.fieldKey) {
+    return { key: path, settings: field, topLevel: true };
+  }
+
+  if (!isTableFieldDefinition(field)) {
+    return null;
+  }
+
+  const rowPath = /^\[(\d+)\](?:\.(.+))?$/u.exec(
+    path.slice(field.fieldKey.length),
+  );
+
+  if (!rowPath) {
+    return null;
+  }
+
+  const rowKey = `${field.fieldKey}[${rowPath[1]}]`;
+  const columnKey = rowPath[2];
+
+  if (columnKey === undefined) {
+    return { key: rowKey, settings: undefined, topLevel: false };
+  }
+
+  const column = field.columns.find(
+    (candidate) => candidate.fieldKey === columnKey,
+  );
+
+  return column
+    ? { key: `${rowKey}.${column.fieldKey}`, settings: column, topLevel: false }
+    : null;
+}
+
+function readFillErrorsFromIssues(
+  issues: readonly FormDataIssue[],
+  fields: readonly FormFieldDefinition[],
+): Readonly<Record<string, string>> | null {
+  const entries = issues.map((issue): readonly [string, string] | null => {
+    const target = readFillIssueTarget(issue.path, fields);
+
+    return target === null
+      ? null
+      : [target.key, readFillIssueText(issue.reason, issue.limit, target)];
+  });
+
+  if (entries.length === 0 || entries.some((entry) => entry === null)) {
+    return null;
+  }
+
+  return Object.fromEntries(
+    entries.filter(
+      (entry): entry is readonly [string, string] => entry !== null,
+    ),
+  );
+}
+
+function readFillErrorTarget(
+  part: string,
+  fields: readonly FormFieldDefinition[],
+): { readonly target: FillErrorTarget; readonly reason: string } | null {
+  const topLevel = TOP_LEVEL_REF_PATTERN.exec(part);
+
+  if (topLevel) {
+    const field = fields.find(
+      (candidate) => (candidate.label || candidate.fieldKey) === topLevel[1],
+    );
+
+    return field
+      ? {
+          reason: topLevel[2],
+          target: { key: field.fieldKey, settings: field, topLevel: true },
+        }
+      : null;
+  }
+
+  const tableRef = TABLE_REF_PATTERN.exec(part);
+
+  if (!tableRef) {
+    return null;
+  }
+
+  const table = fields.find(
+    (candidate) =>
+      isTableFieldDefinition(candidate) &&
+      (candidate.label || candidate.fieldKey) === tableRef[1],
+  );
+
+  if (!table || !isTableFieldDefinition(table)) {
+    return null;
+  }
+
+  const rowKey = `${table.fieldKey}[${Number(tableRef[2]) - 1}]`;
+  const columnLabel = tableRef[3];
+
+  if (columnLabel === undefined) {
+    return {
+      reason: tableRef[4],
+      target: { key: rowKey, settings: undefined, topLevel: false },
+    };
+  }
+
+  const column = table.columns.find(
+    (candidate) => (candidate.label || candidate.fieldKey) === columnLabel,
+  );
+
+  return column
+    ? {
+        reason: tableRef[4],
+        target: {
+          key: `${rowKey}.${column.fieldKey}`,
+          settings: column,
+          topLevel: false,
+        },
+      }
+    : null;
+}
+
+/**
+ * Turns the server's fill validation refusal (docs/08 §8.5, error table 2)
  * into field errors keyed the way `FormRenderer` addresses them, so a check
- * the page missed still lands on the field. `null` when any part does not
- * parse — the caller then shows the message as it is.
+ * the page missed still lands on the field. `formDataIssues` is the refusal's
+ * structured list and wins when it is present: each issue names its value by
+ * path, so two fields sharing a label stay apart. Without it, the Chinese
+ * `message` is parsed. `null` when any part does not resolve to a fillable
+ * field — the caller then shows the message as it is.
  */
 export function readFillServerErrors(
   message: string,
   schema: FormDefinitionSchema,
   node: UserTaskNode,
+  formDataIssues: readonly FormDataIssue[] = [],
 ): Readonly<Record<string, string>> | null {
   const fillableFields = schema.fields.filter((field) =>
     readNodeFillableFieldKeys(node).has(field.fieldKey),
   );
+
+  if (formDataIssues.length > 0) {
+    return readFillErrorsFromIssues(formDataIssues, fillableFields);
+  }
 
   if (message.startsWith(MISSING_FIELDS_PREFIX)) {
     // Labels may hold commas, so match each fillable field's label (or key)
@@ -311,18 +482,24 @@ export function readFillServerErrors(
       : null;
   }
 
-  const parts = message.split('; ').map((part) => FORM_DATA_PATH_PATTERN.exec(part));
+  const parts = message
+    .split('；')
+    .map((part) => readFillErrorTarget(part, fillableFields));
 
   if (parts.length === 0 || parts.some((part) => part === null)) {
     return null;
   }
 
   return Object.fromEntries(
-    parts.flatMap((part) =>
-      part === null
-        ? []
-        : [[part[1], readFillPathErrorText(part[1], part[2], fillableFields)]],
-    ),
+    parts.flatMap((part) => {
+      if (part === null) {
+        return [];
+      }
+
+      const { limit, reason } = readFillReasonFromSentence(part.reason);
+
+      return [[part.target.key, readFillIssueText(reason, limit, part.target)]];
+    }),
   );
 }
 

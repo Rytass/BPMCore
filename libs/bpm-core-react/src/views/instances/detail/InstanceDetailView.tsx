@@ -44,6 +44,7 @@ import {
   UserIcon,
 } from '@mezzanine-ui/icons';
 import {
+  FormDataIssue,
   FormDefinitionSchema,
   FormFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
@@ -659,7 +660,10 @@ export function InstanceDetailView({
     tasksSectionRef.current?.handleApprove();
   }
 
-  function handleFillApproveError(message: string): boolean {
+  function handleFillApproveError(
+    message: string,
+    formDataIssues: readonly FormDataIssue[] = [],
+  ): boolean {
     if (!fillNode || !schemaSnapshot) {
       return false;
     }
@@ -674,6 +678,7 @@ export function InstanceDetailView({
       message,
       schemaSnapshot,
       fillNode,
+      formDataIssues,
     );
 
     if (!serverErrors) {

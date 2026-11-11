@@ -1,9 +1,11 @@
 import { isUUID } from 'class-validator';
 import {
+  FormDataIssue,
   FormFieldDefinition,
   isFormOrgUnitValue,
   isOrgUnitFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
+import { createFormDataIssue, readFieldIssueLocation } from './form-data-issue';
 
 /**
  * Whether `value` is a unit id the engine can use: a non-blank string that is
@@ -34,7 +36,7 @@ export function isSubmittableOrgUnitValue(value: unknown): boolean {
 export function readSubmittedOrgUnitValueErrors(
   fields: readonly FormFieldDefinition[],
   formData: Readonly<Record<string, unknown>>,
-): readonly string[] {
+): readonly FormDataIssue[] {
   return fields.filter(isOrgUnitFieldDefinition).flatMap((field) => {
     const value = Object.prototype.hasOwnProperty.call(formData, field.fieldKey)
       ? formData[field.fieldKey]
@@ -46,6 +48,12 @@ export function readSubmittedOrgUnitValueErrors(
 
     return isSubmittableOrgUnitValue(value)
       ? []
-      : [`formData.${field.fieldKey} must be an organization unit id`];
+      : [
+          createFormDataIssue(
+            readFieldIssueLocation(field),
+            'TYPE',
+            '必須是組織單位 ID',
+          ),
+        ];
   });
 }
