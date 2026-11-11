@@ -35,6 +35,7 @@ import {
 } from '@rytass/bpm-core-shared/workflow';
 import {
   readNodeActorSourceIssues,
+  readSingleApproverSourceIssues,
   WORKFLOW_EXPRESSION_LABELS,
   WORKFLOW_LINT_MESSAGES,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -1606,7 +1607,9 @@ function lintWorkflowTableReferences(
  * approver resolver reads one member id there. A path that names no
  * member field of the bound form version resolves to nothing at runtime, which
  * throws while the task is created and can strand the case — so it is caught
- * here instead. The same throw happens when the field is merely empty, and on a
+ * here instead. The same throw happens when the field is merely empty (a
+ * manager chain with a `FORM_MEMBER` start is the exception: an empty field
+ * sends it to its fallback, and it throws only when it has none), and on a
  * node past the first one it lands inside the previous approver's decision,
  * which then can never commit. So the field must also be one the submit
  * validation guarantees a value for: required, with no `visibleWhen` that can
@@ -1761,16 +1764,26 @@ function lintWorkflowNodeActorSources(
     const resolver = node.type === 'userTask' ? node.data.approverResolver : null;
 
     // A manager chain that starts from an earlier stage reads that stage's
-    // signer the way NODE_ACTOR does, so it meets the same graph rules.
+    // signer the way NODE_ACTOR does, so it meets the same graph rules. It
+    // also needs that signer to be one person: when the last of several
+    // signers approves, the engine's "which one?" Conflict would land in that
+    // approval's own transaction and it could never commit. NODE_ACTOR and
+    // NODE_ACTOR_MANAGER take every signer and are not held to this.
     if (
       resolver?.type === 'ORG_MANAGER_CHAIN' &&
       resolver.startFrom?.type === 'NODE_ACTOR'
     ) {
-      return readNodeActorSourceIssues(
-        definition,
-        node.id,
-        resolver.startFrom.nodeIds,
-      ).map(
+      return [
+        ...readNodeActorSourceIssues(
+          definition,
+          node.id,
+          resolver.startFrom.nodeIds,
+        ),
+        ...readSingleApproverSourceIssues(
+          definition,
+          resolver.startFrom.nodeIds,
+        ),
+      ].map(
         (issue) =>
           `workflow.nodes.${node.id}.approverResolver.startFrom.nodeIds: ${issue}`,
       );

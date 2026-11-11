@@ -1057,6 +1057,22 @@ describe('TemplateService', () => {
       },
     );
 
+    it.each([
+      { nodeIds: ['task_1'], type: 'NODE_ACTOR' },
+      { levelsUp: 1, nodeIds: ['task_1'], type: 'NODE_ACTOR_MANAGER' },
+    ] as const)(
+      'still publishes %j when the earlier node has several signers (only a manager chain start needs one)',
+      async (resolver): Promise<void> => {
+        await expect(
+          publish(
+            withSecondNode(resolver as ApproverResolver, {
+              decisionPolicy: { type: 'PARALLEL_ALL' },
+            }),
+          ),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      },
+    );
+
     it('rejects a source that is not upstream of the node', async (): Promise<void> => {
       // task_2 listing itself downstream: task_1 reading task_2 is not upstream.
       const base = withSecondNode({ nodeIds: ['task_1'], type: 'NODE_ACTOR' });
@@ -1090,7 +1106,12 @@ describe('TemplateService', () => {
           required: true,
           type: 'member',
         },
-        { fieldKey: 'optionalBoss', label: '選填', required: false, type: 'member' },
+        {
+          fieldKey: 'optionalBoss',
+          label: '選填',
+          required: false,
+          type: 'member',
+        },
         {
           fieldKey: 'shownBoss',
           label: '條件顯示',
@@ -1144,7 +1165,8 @@ describe('TemplateService', () => {
           { startFrom: { formPath, type: 'FORM_MEMBER' } },
         ),
       }).publishApprovalTemplateVersion('template-version-1');
-    const path = 'workflow.nodes.task_manager.approverResolver.startFrom.formPath';
+    const path =
+      'workflow.nodes.task_manager.approverResolver.startFrom.formPath';
 
     it('publishes a chain that sets neither setting (control: today\'s templates)', async (): Promise<void> => {
       await expect(
@@ -1234,6 +1256,42 @@ describe('TemplateService', () => {
           publishStageStart('task_1', ['task_2']),
         ).rejects.toThrow(/不在 .* 的上游/);
       });
+
+      // The engine cannot pick one person out of several signers, and says so
+      // inside the last signer's own approval, which then never commits.
+      it.each([
+        { name: 'PARALLEL_ALL', policy: { type: 'PARALLEL_ALL' } },
+        { name: 'SEQUENTIAL', policy: { type: 'SEQUENTIAL' } },
+        {
+          name: 'a COUNT quorum of 2',
+          policy: { threshold: 2, thresholdType: 'COUNT', type: 'QUORUM' },
+        },
+      ])(
+        'rejects an earlier node that $name can leave with several signers, naming it',
+        async ({ policy }): Promise<void> => {
+          await expect(
+            publishStageStart('task_2', ['task_1'], { decisionPolicy: policy }),
+          ).rejects.toThrow(
+            /workflow\.nodes\.task_2\.approverResolver\.startFrom\.nodeIds: 主管鏈起點的前面關卡 「補填 1」 可能有多位實際簽核人/,
+          );
+        },
+      );
+
+      it.each([
+        { name: 'SINGLE', policy: { type: 'SINGLE' } },
+        { name: 'PARALLEL_ANY', policy: { type: 'PARALLEL_ANY' } },
+        {
+          name: 'a COUNT quorum of 1',
+          policy: { threshold: 1, thresholdType: 'COUNT', type: 'QUORUM' },
+        },
+      ])(
+        'publishes when the earlier node is $name, so one person signs (control)',
+        async ({ policy }): Promise<void> => {
+          await expect(
+            publishStageStart('task_2', ['task_1'], { decisionPolicy: policy }),
+          ).resolves.toMatchObject({ id: 'template-version-1' });
+        },
+      );
     });
   });
 
