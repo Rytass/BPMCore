@@ -13,6 +13,14 @@ export type OrgUnitType = 'COMPANY' | 'DIVISION' | 'DEPARTMENT' | 'TEAM';
 
 export type ManagerResolutionScopeType = 'MEMBER' | 'ORG_UNIT' | 'POSITION';
 
+/**
+ * IANA time zone in which BPM reads "today" against the date-only
+ * `effectiveFrom` / `effectiveTo` of memberships and manager resolutions when
+ * the host sets no `organizationTimeZone`: the product's business time zone.
+ * The engine (`BPMRootModule`) and the React designer share this default.
+ */
+export const DEFAULT_BPM_ORGANIZATION_TIME_ZONE = 'Asia/Taipei';
+
 export interface OrgUnit {
   readonly id: string;
   readonly parentId: string | null;

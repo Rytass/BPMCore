@@ -249,6 +249,7 @@ Re-exports the seven subpath modules listed below, plus the identity and organiz
 | `MemberMetadataCacheEntry` | interface | Cached metadata + TTL |
 | `OrgUnitType` | type | `'COMPANY' \| 'DIVISION' \| 'DEPARTMENT' \| 'TEAM'` (uppercase, the GraphQL wire format) |
 | `ManagerResolutionScopeType` | type | `'MEMBER' \| 'ORG_UNIT' \| 'POSITION'` |
+| `DEFAULT_BPM_ORGANIZATION_TIME_ZONE` | const | `'Asia/Taipei'` — the zone BPM reads "today" in against organization effective dates when the host sets no `organizationTimeZone`; shared by the engine and the React designer. Not yet released |
 | `OrgUnit` | interface | Org-unit node |
 | `Position` | interface | Position |
 | `Membership` | interface | member × orgUnit × position relation |
