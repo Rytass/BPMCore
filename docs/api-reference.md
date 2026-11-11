@@ -867,8 +867,8 @@ NestJS module, entities, services, migrations. Embedded via `BPMRootModule`.
 | Name | Kind | Purpose |
 |---|---|---|
 | `BPMRootModule` | NestJS Module | Embed everything in one import |
-| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `expressionFunctionsProvider`, `formDataSourceRegistryProvider`, `workflowServiceTaskDispatcherProvider`, `workflowWebhookRegistryProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
-| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), `organizationTimeZone` (IANA zone in which organization effective dates are read; default `Asia/Taipei`, see the organization section), `expressionFunctions` (host expression functions, combined with `expressionFunctionsProvider`; see the expression functions section), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
+| `BPMRootModuleOptions` / `BPMRootModuleAsyncOptions` | interface | Host wiring. **Every field is optional** — `forRoot()` and `forRootAsync()` boot with no arguments. Wiring-time only (never from `useFactory`, because Nest reads them while building routes, the schema, and handler metadata): `memberResolverProvider`, `attachmentStorageProvider`, `businessCalendarProvider`, `expressionFunctionsProvider`, `formDataSourceRegistryProvider`, `initiatorCustomFieldsResolverProvider`, `workflowServiceTaskDispatcherProvider`, `workflowWebhookRegistryProvider`, `resolverMetadataFactory`, `attachmentRoutePrefix`, `identityRegisterResolvers`, `imports`, `inject`. Everything else lives on `BPMRootRuntimeOptions` and can come from `useFactory`. |
+| `BPMRootRuntimeOptions` | interface | Everything settable at runtime: the flattened notification/attachment/signature/identity options, `authContextFactory`, the flattened workflow-webhook options (`workflowWebhookTargetSources`, `workflowWebhookAllowedUrlPatterns`, `workflowWebhookEnforceAllowlistForRegistry`, `workflowWebhookSecretEncryptionKey`, and the `workflowWebhookDelivery*` scheduler/retry/timeout settings), `organizationTimeZone` (IANA zone in which organization effective dates are read; default `Asia/Taipei`, see the organization section), `expressionFunctions` (host expression functions, combined with `expressionFunctionsProvider`; see the expression functions section), and ready instances `memberResolver`, `attachmentStorage`, `businessCalendar`, `formDataSourceRegistry`, `initiatorCustomFieldsResolver`, `workflowServiceTaskDispatcher`, `workflowWebhookRegistry`. This is exactly what a `forRootAsync` `useFactory` returns, and it is embedded in `BPMRootModuleOptions` too, so a setting moves between `forRoot` and `forRootAsync` without reshaping. Prefer an instance over its `*Provider` twin whenever the value needs a secret. |
 | `BPMRootModuleAsyncFactoryOptions` | type (deprecated) | Alias of `BPMRootRuntimeOptions` |
 | `BPM_ROOT_OPTIONS` | injection token | The resolved `BPMRootRuntimeOptions`. BPM resolves the host `useFactory` **once** and publishes it here; every BPM sub-module reads this one token. Previously each sub-module called the host factory itself (five times per boot), so an instance-constructing factory handed a different instance to each consumer. |
 | `BPMRootOptionsModule` / `BPMRootOptionsModuleAsyncOptions` | Module / interface | Global module publishing `BPM_ROOT_OPTIONS`; wired for you by `BPMRootModule` |
@@ -1282,7 +1282,8 @@ Workflow execution engine — the heaviest module.
 | Decision options | `DecideTaskOptions` (engine-internal knobs kept out of the GraphQL schema: `transferReason`, and `automatic?: 'SLA_AUTO_APPROVE'`, which the SLA scan sets on a timeout auto-approval so the `TASK_DECIDED` activity payload carries `automatic` and a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` node does not count it as someone's approval; a person's decision leaves the key out), `ExpireApprovalInstanceCommand` (`instanceId`, optional `comment`, `nodeId`, `taskId`; the input of `WorkflowEngineService.expireApprovalInstance`, which SLA `TERMINATE_INSTANCE` calls), `ReassignTaskOptions` (`actorMemberId`, `fromMemberId`, `toMemberId`, `reason`, `dryRun`; the options of `WorkflowEngineService.reassignTask` / `reassignMemberTasks`), the engine's plain return shapes `TaskReassignmentResult` (interface, same name as the GraphQL object), `MemberOpenTaskRecord` and `InactiveMemberOpenTasksRecord` (the rows of `listInactiveMembersWithOpenTasks`), `MANUAL_TRANSFER_DELEGATION_REASON`, `ADMIN_REASSIGN_DELEGATION_REASON` (`'ADMIN_REASSIGN'`, the delegation-chain reason of an administrator reassignment; its step carries `actorMemberId` and `comment`, both optional on `DelegationStep`) |
 | Business key | `MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH` (200 characters, counted as code points) |
 | List options | `ListApprovalInstancesOptions` (ADR 25, not yet released; the options of `listApprovalInstances` and `readApprovalInstancePageInfo`): `fieldFilters?` (`ApprovalInstanceFieldFilter[]` from `@rytass/bpm-core-shared`), `page?`, `pageSize?`, `searchText?`, `sort?` (`ApprovalInstanceSort[]`), `state?` (`ApprovalInstanceStateEnum[]`), `templateId?`, `view?` (`ApprovalInstanceListViewEnum`). `countApprovalInstances` takes `Omit<ListApprovalInstancesOptions, 'page' | 'pageSize' | 'sort'>`, so a count cannot be given a page or a sort |
-| Tokens | `BPM_WORKFLOW_ENGINE_SERVICE` (typed by the `BPMWorkflowEngineService` interface: `cancelApprovalInstance`, `decideTask`, `expireApprovalInstance`), `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` |
+| Tokens | `BPM_WORKFLOW_ENGINE_SERVICE` (typed by the `BPMWorkflowEngineService` interface: `cancelApprovalInstance`, `decideTask`, `expireApprovalInstance`), `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER`, `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER` |
+| Initiator snapshot | `BPMInitiatorCustomFieldsResolver` (`resolveCustomFields(input)`), `BPMInitiatorCustomFieldsInput` (`authContext`, `defaultSnapshot`, `formData`, `memberId`, `templateId`, `templateVersionId`) |
 | Service tasks | `BPMWorkflowServiceTaskDispatcher`, `BPMWorkflowWebhookDispatchInput`, `BPMWorkflowWebhookDispatchResult`, `DefaultWorkflowServiceTaskDispatcher` (`fetch`-based, 30 s timeout) |
 | Enums | `ApprovalInstanceStateEnum`, `ApprovalInstanceListViewEnum`, `ApprovalInstanceFieldFilterOperatorEnum` (GraphQL `ApprovalInstanceFieldFilterOperator`), `ApprovalInstanceSortDirectionEnum` (GraphQL `ApprovalInstanceSortDirection`), `WorkflowTokenStatusEnum`, `TaskStatusEnum`, `TaskAssignmentTypeEnum`, `TaskCandidateStatusEnum`, `TaskDecisionActionEnum`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum`, `MemberTaskRoleEnum`, `TaskReassignmentOutcomeEnum`, `TaskReassignmentErrorCodeEnum`. `ActivityLogEventTypeEnum` gains `INSTANCE_EXPIRED` (an SLA `TERMINATE_INSTANCE` ended the instance; no actor, the overdue task's `nodeId` / `taskId`) and `TASK_REASSIGNED`, written once per administrator reassignment with `actorMemberId`, `fromMemberId`, `toMemberId`, `reason`, `assigneeChanged`, `candidateStatus` and `sequence` in its payload |
 | Module | `WorkflowEngineModule`, `WorkflowEngineModuleOptions` |
@@ -1303,6 +1304,82 @@ module gets its own instance. `workflowServiceTaskDispatcherProvider` therefore
 configures only the copy it is registered on; the `workflowServiceTaskDispatcher`
 runtime value reaches both, because the service resolves it from the global
 `BPM_ROOT_OPTIONS`.
+
+### Initiator `customFields` resolver
+
+The initiator snapshot (`ApprovalInstanceEntity.initiatorMetadataSnapshot`) is what initiator
+policies, edge and entry conditions and expression approvers read as `initiator.*`.
+When a case is submitted without a snapshot the engine builds one from its own
+data: `memberId`, `orgUnitIds`, `positionId`, `positionIds`, `primaryOrgUnitId`,
+and `customFields: {}`. The GraphQL `submitApprovalInstance` mutation never takes
+a snapshot from the client, so every submission from a BPM page gets that
+default, and a host had no way to put anything in `customFields` (a station, a
+grade, a manager list it computed itself) short of calling the service directly.
+
+Register `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER` (the `initiatorCustomFieldsResolver`
+runtime option, or the `initiatorCustomFieldsResolverProvider` wiring option) to
+fill it:
+
+| Situation | `customFields` of the stored snapshot |
+|---|---|
+| No resolver registered | `{}`, exactly as before |
+| Caller passed `initiatorMetadataSnapshotJson` (a host calling the service) | The caller's snapshot, stored as it is; the resolver is **not** called |
+| Engine-built snapshot (no snapshot passed, including every GraphQL submission) | What `resolveCustomFields` returned |
+| Resolver throws | The submission fails with that error; no case is created |
+| Resolver returns anything but a plain, JSON-serializable object (`null`, an array, a string, a `Date`, a circular object) | The submission fails with `InternalServerErrorException` (`Initiator customFields resolver must return a plain object` or `... a JSON-serializable object`); no case is created; the engine never falls back to `{}` |
+
+Rules:
+
+- The resolver decides `customFields` and nothing else. `memberId`, `orgUnitIds`,
+  `positionId`, `positionIds` and `primaryOrgUnitId` always come from the engine;
+  it receives copies of the default snapshot and the form data, so editing them
+  changes nothing.
+- It runs once, at submission, after the form data is validated and before the
+  initiator policy is evaluated, so `initiatorPolicyCel` reads what it returned.
+  It runs outside the engine transaction.
+- The snapshot is fixed at that moment. Resubmitting a returned case does not call
+  the resolver again and does not change the stored snapshot.
+- Not called: `dryRunApprovalWorkflow` (the designer sends its own sample snapshot,
+  and a draft has no template version to pass) and `listLaunchableApprovalTemplates`
+  (it has no form data, and would put a host lookup behind every list request).
+  The list evaluates an initiator policy against the engine's snapshot with
+  `customFields: {}`, so a policy that reads `initiator.customFields` is judged
+  differently there than at submission.
+- Like the dispatcher above, `initiatorCustomFieldsResolverProvider` configures only
+  the engine copy it is registered on. The `initiatorCustomFieldsResolver` runtime
+  value, or a binding of the token in a `@Global()` host module, reaches both
+  copies, so prefer one of those.
+
+A minimal resolver that adds the initiator's station:
+
+```ts
+import {
+  BPMInitiatorCustomFieldsInput,
+  BPMInitiatorCustomFieldsResolver,
+} from '@rytass/bpm-core-nestjs-module';
+
+class StationCustomFieldsResolver implements BPMInitiatorCustomFieldsResolver {
+  constructor(private readonly hr: HrDirectory) {}
+
+  async resolveCustomFields({
+    memberId,
+  }: BPMInitiatorCustomFieldsInput): Promise<Readonly<Record<string, unknown>>> {
+    const employee = await this.hr.findByMemberId(memberId);
+
+    return { grade: employee.grade, station: employee.station };
+  }
+}
+
+// BPMRootModule.forRootAsync({ useFactory: (hr: HrDirectory) => ({
+//   initiatorCustomFieldsResolver: new StationCustomFieldsResolver(hr),
+// }), inject: [HrDirectory] })
+```
+
+A template can then say `initiator.customFields.station == 'TPE'` in an initiator
+policy or an edge condition. A host that computes the approvers itself can return
+them in `customFields` (say `approverIds`) and name them with an `EXPRESSION`
+approver, `initiator.customFields.approverIds`: an expression approver is evaluated
+against the stored snapshot like any other expression.
 
 GraphQL surface added by the ad-hoc feature: mutations `requestAdhocCountersign`, `requestAdhocPreApproval`, `configureAdhocStageNotification`, `configureAdhocCompletionNotification`, `cancelAdhocDirective`; query `adhocDirectives(instanceId)`. Countersign / pre-approval are gated by the node's `allowAddSigner` flag and only affect the single instance (never the template).
 

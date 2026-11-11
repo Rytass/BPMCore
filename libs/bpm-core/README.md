@@ -74,6 +74,10 @@ Your host application must provide:
   the `BPM_MEMBER_RESOLVER` provider it registers). It is optional: without one,
   BPM uses `DefaultBPMMemberResolver`, which shows raw member ids as names and
   empty emails. That keeps a new host booting; it is not an identity system.
+- Optionally, an initiator `customFields` resolver (`initiatorCustomFieldsResolver`,
+  or the `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER` token) when conditions or
+  expression approvers read `initiator.customFields`: without one, a case
+  started from a BPM page has `customFields: {}`. See "Initiator `customFields`".
 - Attachment storage configuration when local storage is not acceptable.
 - A dedicated worker or host dispatcher when email/webhook/SLA work should not
   run inside API replicas.
@@ -708,6 +712,64 @@ export interface BPMMemberResolver {
 }
 ```
 
+## Initiator `customFields`
+
+Initiator policies, edge and entry conditions and `EXPRESSION` approvers read
+the initiator snapshot as `initiator.*`. A case submitted through the GraphQL
+`submitApprovalInstance` mutation gets a snapshot BPM builds itself (member id,
+org units and positions from the organization tables), and its `customFields`
+is `{}`: the mutation never takes a snapshot from the client. A host that calls
+`WorkflowEngineService.submitApprovalInstance` can pass a complete snapshot
+instead, but a case started from a BPM page cannot.
+
+Register a resolver to fill `customFields` for those cases. It is optional;
+without one nothing changes.
+
+```ts
+import {
+  BPMInitiatorCustomFieldsInput,
+  BPMInitiatorCustomFieldsResolver,
+} from '@rytass/bpm-core-nestjs-module';
+
+class StationCustomFieldsResolver implements BPMInitiatorCustomFieldsResolver {
+  constructor(private readonly hr: HrDirectory) {}
+
+  async resolveCustomFields({
+    memberId,
+  }: BPMInitiatorCustomFieldsInput): Promise<Readonly<Record<string, unknown>>> {
+    const employee = await this.hr.findByMemberId(memberId);
+
+    return { grade: employee.grade, station: employee.station };
+  }
+}
+
+BPMRootModule.forRootAsync({
+  inject: [HrDirectory],
+  useFactory: (hr: HrDirectory) => ({
+    initiatorCustomFieldsResolver: new StationCustomFieldsResolver(hr),
+  }),
+});
+```
+
+A template can then say `initiator.customFields.station == 'TPE'` in its
+initiator policy or an edge condition.
+
+- It runs once, when the case is submitted, with the member, the template and
+  published version, the validated form data, the default snapshot and the
+  `BPMAuthContext`. A snapshot passed by a caller is stored as it is and the
+  resolver is not called.
+- It decides `customFields` only. `memberId`, `orgUnitIds`, `positionId`,
+  `positionIds` and `primaryOrgUnitId` always come from BPM, whatever it returns.
+- It must return a plain, JSON-serializable object. Anything else, or a thrown
+  error, fails the submission and creates no case; BPM does not fall back to `{}`.
+- The snapshot is fixed at submission. Resubmitting a returned case does not call
+  it again. The dry run and the launchable-template list do not call it either:
+  the list judges an initiator policy against `customFields: {}`.
+- Register it as the `initiatorCustomFieldsResolver` runtime value or bind the
+  token in a `@Global()` host module. `initiatorCustomFieldsResolverProvider`
+  configures only one of the two engine instances Nest builds (the same caveat as
+  `workflowServiceTaskDispatcherProvider`; see `docs/api-reference.md`).
+
 ## Organization Data Ownership
 
 > **Upgrading past 0.14.0 — which day is "today".** The workflow engine now
@@ -1006,6 +1068,7 @@ when the value needs a secret, because the factory runs after secrets are
 loaded. The twins are: `attachmentStorageProvider` / `attachmentStorage`,
 `businessCalendarProvider` / `businessCalendar`,
 `formDataSourceRegistryProvider` / `formDataSourceRegistry`,
+`initiatorCustomFieldsResolverProvider` / `initiatorCustomFieldsResolver`,
 `memberResolverProvider` / `memberResolver`,
 `workflowServiceTaskDispatcherProvider` / `workflowServiceTaskDispatcher`, and
 `workflowWebhookRegistryProvider` / `workflowWebhookRegistry`.
@@ -1018,6 +1081,7 @@ factory runs.
 | `authContextFactory`                             | `undefined`                             | Reads `BPMAuthContext` from NestJS `ExecutionContext`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `memberResolverProvider`                         | `undefined`                             | Optional. Provider for `BPM_MEMBER_RESOLVER`; without it `DefaultBPMMemberResolver` is used. Runtime twin: `memberResolver`.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `resolverMetadataFactory`                        | `undefined`                             | Stamps the host's own route metadata onto every BPM GraphQL handler. Required when the host installs a global metadata-driven guard — see "Coexisting with a host global guard".                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `initiatorCustomFieldsResolverProvider`          | `undefined`                             | Optional. Provider for `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER`: fills `customFields` of the initiator snapshot BPM builds when a case is submitted without one. Runtime twin: `initiatorCustomFieldsResolver` (prefer it: it reaches both engine copies). See "Initiator `customFields`". |
 | `attachmentStorageProvider`                      | local `.storage/attachments`            | Host-provided `@rytass/storages` adapter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `workflowServiceTaskDispatcherProvider`          | built-in `fetch` dispatcher             | Host provider for executable workflow `WEBHOOK` service tasks.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `workflowWebhookRegistryProvider`                | Empty catalog                           | Host catalog of NOTIFY webhook endpoints (`BPMWorkflowWebhookRegistry`). Runtime twin: `workflowWebhookRegistry`. See "NOTIFY webhooks".                                                                                                                                                                                                                                                                                                                                                                                                                                           |

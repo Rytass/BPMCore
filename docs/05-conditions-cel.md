@@ -61,6 +61,10 @@
 - `env` 只有 `now`（ISO 8601 字串）。
 - `initiator` 是發起當下的 member snapshot，並展開 `memberId`；`initiator.roles`、`initiator.org.code` 等取決於宿主提供的內容。
   `subject` 只在發起權限提供，內容與 `initiator` 相同。發起權限在案件建立前評估，沒有 `form`、`formData`、`instance`。
+  `initiator.customFields` 預設是 `{}`；宿主要放東西（例如申請人的站別、職等，或先算好的主管名單）有兩條路：
+  自己呼叫 `submitApprovalInstance` 時帶完整快照，或註冊 `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER`，讓從 BPM 頁（GraphQL）開的單也有。
+  後者的快照在送單那一刻定下，重送不重算；發起權限（`initiatorPolicyCel`）讀的是同一份，所以也讀得到。
+  列表上的「可發起範本」與試跑不呼叫它（見 `docs/api-reference.md` 的 workflow-engine 段）。
 - `form` 與 `formData` 相同，是案件的表單資料。
 - `instance`：`id`、`state`、`templateId`、`templateVersionId`、`title`；委派條件另有 `nodeId`（被委派任務所在的節點）。
 - `principal`：`{ memberId }`，即被代理的人。委派條件沒有 `subject`、`task`、`template`，要用模板請寫 `instance.templateId`。
