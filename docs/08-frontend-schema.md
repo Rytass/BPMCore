@@ -90,6 +90,8 @@ interface UserTaskNodeData extends BaseNodeData {
   /** @deprecated 從未生效；草稿仍帶這個鍵時無法發布（見 §8.6）。 */
   readonly fieldPermissions?: readonly FieldPermission[];
   readonly notification?: NotificationOverride;
+  /** 核准時必須填寫意見；省略或 false 維持原行為（見 07 §5.1）。 */
+  readonly requireApprovalComment?: boolean;
   readonly returnBehavior: ReturnBehavior;
   readonly sla?: SlaConfig;
 }
@@ -125,6 +127,8 @@ Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
 - 簽核者來源與 resolver 詳細設定。
 - resolver fallback。
 - `returnBehavior.resubmitStrategy`、`returnBehavior.requireComment`。
+- `requireApprovalComment`（核准時意見必填；`setUserTaskRequireApprovalComment` command，
+  AI 工具 `set_user_task_require_approval_comment`；簽核畫面在送出同意前就要求意見）。
 - `sla`（期限、單位、`calendar` 計算方式、`onTimeout`、`escalateLevelsUp`、
   `warningAt`）。
 - 多 incoming edge 時的 `triggerMode`。
