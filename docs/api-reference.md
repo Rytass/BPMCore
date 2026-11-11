@@ -929,7 +929,7 @@ Auth contract layer — lib does not own auth; host plugs in.
 | Enums | `OrgUnitTypeEnum`, `ManagerResolutionScopeTypeEnum` |
 | DTOs | `CreateOrgUnitInput`, `UpdateOrgUnitInput`, `CommitOrgUnitTreeDraftInput`, `CommitOrgUnitTreeDraftMoveInput`, `CreatePositionInput`, `UpdatePositionInput`, `CreateMembershipInput`, `UpdateMembershipInput`, `CreateManagerResolutionInput`, `UpdateManagerResolutionInput` |
 | Service | `OrganizationService`, `DeleteOrgUnitOptions` |
-| Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`, `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
+| Time zone | `BPMRootOrganizationOptions` (the `organizationTimeZone` root option), `DEFAULT_BPM_ORGANIZATION_TIME_ZONE` (re-exported from `@rytass/bpm-core-shared` since the next release; same name and value), `resolveBPMOrganizationTimeZone(value)` (validates and applies the default; throws on an unknown zone), `formatDateOnlyInTimeZone(date, timeZone)` (the `YYYY-MM-DD` date an instant falls on in a zone) |
 | Module | `OrganizationModule` |
 | GraphQL | `OrganizationDirectoryQueries`, `OrganizationPickerQueries`, `OrganizationQueries`, `OrganizationMutations` |
 
