@@ -753,11 +753,12 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
   （不是「列表合起來蓋住每條路徑」就算過）：
   - 不可能被跳過或沒人實簽：沒有進入條件、`excludeInitiator.whenEmpty` 不是 `SKIP_NODE`、
     `excludeNodeActors.whenEmpty` 不是 `SKIP_NODE`、沒有逾時自動核准（`sla.onTimeout: 'AUTO_APPROVE'`）；
-  - 從 start 不經過這一個來源關就走得到本節點 ⇒ 擋（涵蓋所有分流與「任一分支到達即觸發」的合流）；
+  - 從 start 不經過這一個來源關就走得到本節點 ⇒ 擋（涵蓋所有分流與「任一分支到達即觸發」的合流；涵蓋判斷把平行閘道當成互斥閘道看）；
   - 在本節點的上游（有路徑走到本節點）。
 
-  `whenEmpty` 必須是三個值之一；本節點有可由簽核人補填的欄位時不能選 `SKIP_NODE`。**不套用** `NODE_ACTOR`
-  「兩個來源不能在平行分支的不同路線上」那條：兩關都會跑完才合流，兩關的簽核者都排除是對的。
+  `whenEmpty` 必須是三個值之一；本節點有可由簽核人補填的欄位時不能選 `SKIP_NODE`。**不另外套用** `NODE_ACTOR`
+  「兩個來源不能在平行分支的不同路線上」那一條；但平行分支上的來源關目前仍會被上面的涵蓋規則擋下
+  （涵蓋判斷把平行閘道當成互斥閘道看，與 `NODE_ACTOR` 是同一個限制），要改成先後串接。
   與 `NODE_ACTOR` 的差別只有措辭（訊息講「排除」）與逐一檢查；判斷邏輯是同一份程式（`readNodeActorSourceSkipReasons`
   與共用的來源檢查）。
 - **Dry run**：前面關卡誰簽，在試跑時不知道，所以不模擬這個排除，也不會因它停止；只有同時開的

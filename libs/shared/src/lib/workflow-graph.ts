@@ -1247,9 +1247,11 @@ export function readExcludeNodeActorsShapeIssue(
  * who never signed an earlier stage in this round. Requiring a listed node to
  * be run, and signed by a person, every time rules that out.
  *
- * Unlike a `NODE_ACTOR` source, two listed nodes may sit on different branches
- * of one parallel split: both run before the join and both are excluded, so
- * the "two sources on different branches" rule does not apply.
+ * The `NODE_ACTOR` rule "two sources on different branches of one parallel
+ * split" is not applied a second time. A listed node that sits on a parallel
+ * branch is still refused by the coverage rule above, though: coverage reads a
+ * parallel gateway like an exclusive one, the same limit `NODE_ACTOR` has, so
+ * such stages have to be chained one after another instead.
  */
 export function readExcludeNodeActorsIssues(
   definition: WorkflowDefinition,
