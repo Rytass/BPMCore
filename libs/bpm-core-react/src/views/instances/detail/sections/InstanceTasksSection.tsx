@@ -290,6 +290,7 @@ export const InstanceTasksSection = forwardRef<
   const [adhocWebhookUrl, setAdhocWebhookUrl] = useState('');
 
   const trimmedRejectReason = rejectReason.trim();
+  const trimmedApproveComment = approveComment.trim();
   const trimmedReturnComment = returnComment.trim();
   const trimmedTransferComment = transferComment.trim();
 
@@ -336,6 +337,12 @@ export const InstanceTasksSection = forwardRef<
   const returnCommentRequired =
     currentTaskNode?.type === 'userTask' &&
     currentTaskNode.data.returnBehavior.requireComment === true;
+
+  // Same as above for a person's approval. An ad-hoc task runs on the main
+  // node, so its signer is held to the same setting.
+  const approveCommentRequired =
+    currentTaskNode?.type === 'userTask' &&
+    currentTaskNode.data.requireApprovalComment === true;
 
   const canAddSignerCurrentTask =
     currentTaskNode?.type === 'userTask' &&
@@ -611,9 +618,13 @@ export const InstanceTasksSection = forwardRef<
       return;
     }
 
+    if (approveCommentRequired && !trimmedApproveComment) {
+      return;
+    }
+
     const succeeded = await handleDecision({
       action: 'APPROVED',
-      comment: approveComment.trim() || null,
+      comment: trimmedApproveComment || null,
     });
 
     if (!succeeded) {
@@ -929,9 +940,12 @@ export const InstanceTasksSection = forwardRef<
         </>
       ) : null}
 
-      {/* Approve modal — comment is optional, so the confirm button stays enabled */}
+      {/* Approve modal — the comment is optional unless the node requires one */}
       <Modal
         cancelText="取消"
+        confirmButtonProps={{
+          disabled: approveCommentRequired && !trimmedApproveComment,
+        }}
         confirmText="送出同意"
         loading={deciding}
         modalType="standard"
@@ -942,7 +956,11 @@ export const InstanceTasksSection = forwardRef<
         showModalFooter
         showModalHeader
         size="regular"
-        supportingText="可以留下同意的說明，內容會記錄在簽核歷程；不填也可以直接送出。"
+        supportingText={
+          approveCommentRequired
+            ? '此關卡設定核准時必須填寫意見，內容會記錄在簽核歷程。'
+            : '可以留下同意的說明，內容會記錄在簽核歷程；不填也可以直接送出。'
+        }
         title="簽核意見"
       >
         {error ? (
@@ -961,13 +979,26 @@ export const InstanceTasksSection = forwardRef<
           </div>
         ) : null}
         <div style={REJECT_REASON_FORM_STYLE}>
-          <BPMFormField label="簽核意見" name="approveComment">
+          <BPMFormField
+            hintText={
+              approveCommentRequired
+                ? '此關卡設定核准時必須填寫意見。'
+                : undefined
+            }
+            label="簽核意見"
+            name="approveComment"
+            required={approveCommentRequired}
+          >
             <Textarea
               autoFocus
               onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
                 setApproveComment(event.target.value)
               }
-              placeholder="選填，例如補充核准的條件或提醒事項"
+              placeholder={
+                approveCommentRequired
+                  ? '請說明同意的原因或條件'
+                  : '選填，例如補充核准的條件或提醒事項'
+              }
               ref={applyFullWidthTextareaHost}
               resize="vertical"
               rows={4}
