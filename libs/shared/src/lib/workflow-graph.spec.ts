@@ -3,6 +3,7 @@ import {
   NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX,
   NOTIFY_WEBHOOK_TARGET_LIMIT,
   createNotifyWebhookTarget,
+  canUserTaskHaveMultipleApprovers,
   createWorkflowNode,
   isDecisionPolicyUnsatisfiable,
   isOrgManagerChainDecisionPolicyInvalid,
@@ -15,6 +16,7 @@ import {
   readFallbackWorkflowDefinition,
   readNodeActorSourceIssues,
   readNotifyRecipientsIssue,
+  readSingleApproverSourceIssues,
   readNotifyServiceTaskIssue,
   readNotifyWebhookCatalogIssueMessage,
   readNotifyWebhookStructureIssues,
@@ -30,6 +32,7 @@ import {
   ExcludeInitiatorConfig,
   NotifyWebhookTarget,
   ServiceAction,
+  UserTaskNode,
   WorkflowDefinition,
   WorkflowEdge,
   WorkflowNode,
@@ -1634,7 +1637,7 @@ describe('ORG_MANAGER_CHAIN start settings', () => {
     it.each([
       { formPath: 'picked', type: 'FORM_MEMBER' },
       { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
-    ] as const)('refuses a %s start', (startFrom) => {
+    ] as const)('refuses a $type start', (startFrom) => {
       expect(readNotifyRecipientsIssue({ ...CHAIN, startFrom })).toBe(
         '知會節點的主管鏈只能從發起人開始。',
       );
@@ -2058,5 +2061,201 @@ describe('readNodeActorSourceIssues', () => {
 
       expect(readNodeActorSourceIssues(afterJoin, 'me', ['a', 'b'])).toEqual([]);
     });
+  });
+});
+
+describe('canUserTaskHaveMultipleApprovers', () => {
+  const ONE_MEMBER: ApproverResolver = { memberIds: ['m1'], type: 'DIRECT' };
+  const CHAIN: ApproverResolver = {
+    minPositionLevel: 30,
+    type: 'ORG_MANAGER_CHAIN',
+  };
+
+  function taskWith(
+    resolver: ApproverResolver,
+    policy: DecisionPolicy,
+  ): UserTaskNode {
+    return definitionWithUserTask(resolver, policy).nodes.find(
+      (node) => node.id === 'task',
+    ) as UserTaskNode;
+  }
+
+  it.each<{
+    readonly expected: boolean;
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+    readonly resolver: ApproverResolver;
+  }>([
+    {
+      expected: false,
+      name: 'SINGLE over three members',
+      policy: { type: 'SINGLE' },
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: false,
+      name: 'PARALLEL_ANY over three members',
+      policy: { type: 'PARALLEL_ANY' },
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'PARALLEL_ALL over three members',
+      policy: { type: 'PARALLEL_ALL' },
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'SEQUENTIAL over three members',
+      policy: { type: 'SEQUENTIAL' },
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'PARALLEL_ALL over a resolver only the org chart can count',
+      policy: { type: 'PARALLEL_ALL' },
+      resolver: ONE_MANAGER,
+    },
+    {
+      expected: true,
+      name: 'SEQUENTIAL over a manager chain',
+      policy: { type: 'SEQUENTIAL' },
+      resolver: CHAIN,
+    },
+    {
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member',
+      policy: { type: 'PARALLEL_ALL' },
+      resolver: ONE_MEMBER,
+    },
+    {
+      expected: false,
+      name: 'SEQUENTIAL over one listed member',
+      policy: { type: 'SEQUENTIAL' },
+      resolver: ONE_MEMBER,
+    },
+    {
+      expected: false,
+      name: 'a COUNT quorum of 1',
+      policy: quorum(1),
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: false,
+      name: 'a COUNT quorum below 1, which the engine reads as 1',
+      policy: quorum(0),
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'a COUNT quorum of 2',
+      policy: quorum(2),
+      resolver: THREE_MEMBERS,
+    },
+    {
+      expected: true,
+      name: 'a PERCENTAGE quorum, whose head count is not known',
+      policy: quorum(50, 'PERCENTAGE'),
+      resolver: ONE_MANAGER,
+    },
+    {
+      expected: false,
+      name: 'a policy this build does not know',
+      policy: { type: 'FUTURE_POLICY' } as unknown as DecisionPolicy,
+      resolver: THREE_MEMBERS,
+    },
+  ])('reads $name as $expected', ({ expected, policy, resolver }) => {
+    expect(canUserTaskHaveMultipleApprovers(taskWith(resolver, policy))).toBe(
+      expected,
+    );
+  });
+});
+
+describe('readSingleApproverSourceIssues', () => {
+  function withSource(
+    policy: DecisionPolicy,
+    resolver: ApproverResolver = THREE_MEMBERS,
+  ): WorkflowDefinition {
+    const base = definitionWithUserTask(resolver, policy);
+
+    return {
+      ...base,
+      edges: [
+        ...base.edges,
+        {
+          data: {},
+          id: 'edge_task_me',
+          source: 'task',
+          target: 'me',
+          type: 'smoothstep',
+        },
+      ],
+    };
+  }
+
+  const ISSUE =
+    '主管鏈起點的前面關卡 「部門會簽」 可能有多位實際簽核人，無法決定從誰的主管開始。請改選只會有一位簽核人的關卡。';
+
+  it.each<{
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+  }>([
+    { name: 'PARALLEL_ALL', policy: { type: 'PARALLEL_ALL' } },
+    { name: 'SEQUENTIAL', policy: { type: 'SEQUENTIAL' } },
+    { name: 'a COUNT quorum of 2', policy: quorum(2) },
+  ])('refuses a $name source stage, naming it', ({ policy }) => {
+    expect(
+      readSingleApproverSourceIssues(withSource(policy), ['task']),
+    ).toEqual([ISSUE]);
+  });
+
+  it.each<{
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+  }>([
+    { name: 'SINGLE', policy: { type: 'SINGLE' } },
+    { name: 'PARALLEL_ANY', policy: { type: 'PARALLEL_ANY' } },
+    { name: 'a COUNT quorum of 1', policy: quorum(1) },
+  ])('accepts a $name source stage (control)', ({ policy }) => {
+    expect(
+      readSingleApproverSourceIssues(withSource(policy), ['task']),
+    ).toEqual([]);
+  });
+
+  it('accepts a multi-seat policy over a single listed member', () => {
+    const oneMember: ApproverResolver = { memberIds: ['m1'], type: 'DIRECT' };
+
+    expect(
+      readSingleApproverSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }, oneMember),
+        ['task'],
+      ),
+    ).toEqual([]);
+  });
+
+  it('reports only the stage with several signers among those listed', () => {
+    const base = withSource({ type: 'SEQUENTIAL' });
+
+    expect(
+      readSingleApproverSourceIssues(base, ['task', 'start', 'ghost']),
+    ).toEqual([ISSUE]);
+  });
+
+  it('leaves a missing or non-user-task stage to readNodeActorSourceIssues', () => {
+    const base = withSource({ type: 'SEQUENTIAL' });
+
+    expect(
+      readSingleApproverSourceIssues(base, ['ghost', 'start']),
+    ).toEqual([]);
+  });
+
+  it('does not change what readNodeActorSourceIssues says about the same stage (NODE_ACTOR / NODE_ACTOR_MANAGER keep taking it)', () => {
+    expect(
+      readNodeActorSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }),
+        'me',
+        ['task'],
+      ),
+    ).toEqual([]);
   });
 });

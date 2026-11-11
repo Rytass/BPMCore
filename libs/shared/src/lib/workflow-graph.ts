@@ -1521,6 +1521,82 @@ export function readNodeActorSourceIssues(
   ];
 }
 
+/**
+ * `true` when a user task can end with more than one person having approved
+ * it, judged from its definition alone. The engine reads "who signed this
+ * stage" as the people with an approval in its newest batch, so a source that
+ * several people approve gives a start that is not one person.
+ *
+ * - `SINGLE` and `PARALLEL_ANY` end on the first approval: one person;
+ * - `PARALLEL_ALL` and `SEQUENTIAL` wait for every seat: several;
+ * - `QUORUM` ends once the threshold is met: several when a `COUNT` threshold
+ *   is above 1 (the engine reads anything below 1 as 1), and always for a
+ *   `PERCENTAGE` threshold, whose head count only the org chart at run time
+ *   knows;
+ * - a `DIRECT` resolver that lists one member can only ever give one person,
+ *   whatever the policy ({@link readDesignTimeApproverCount}).
+ *
+ * Deliberately conservative on the unknown side: a policy this build does not
+ * recognise reads as one person, because the structural lint reports it.
+ * The designer's stage picker for a manager chain's `NODE_ACTOR` start reads
+ * this too, so it and {@link readSingleApproverSourceIssues} agree.
+ */
+export function canUserTaskHaveMultipleApprovers(node: UserTaskNode): boolean {
+  // `approverResolver` and `decisionPolicy` can be missing on raw JSON that has
+  // not been linted yet.
+  const resolver = node.data.approverResolver as ApproverResolver | undefined;
+  const policy = node.data.decisionPolicy as DecisionPolicy | undefined;
+  const designTimeCount = resolver
+    ? readDesignTimeApproverCount(resolver)
+    : null;
+
+  if (designTimeCount !== null && designTimeCount <= 1) {
+    return false;
+  }
+
+  if (policy?.type === 'PARALLEL_ALL' || policy?.type === 'SEQUENTIAL') {
+    return true;
+  }
+
+  return (
+    policy?.type === 'QUORUM' &&
+    (policy.thresholdType === 'PERCENTAGE' || policy.threshold > 1)
+  );
+}
+
+/**
+ * The publish-time issues with the stages a manager chain's `NODE_ACTOR`
+ * start names, beyond what {@link readNodeActorSourceIssues} checks: every
+ * stage must end with one person's approval. A stage several people approve
+ * would make the start ambiguous, and the engine can only say so when the last
+ * of them approves, inside that decision's own transaction, which then never
+ * commits. Returns Chinese issue lines; `[]` means every named stage is a
+ * single-signer stage.
+ *
+ * `NODE_ACTOR_MANAGER` takes the managers of everyone who signed and so has no
+ * such limit; this check is deliberately not part of
+ * {@link readNodeActorSourceIssues}. A stage that does not exist or is not a
+ * user task is reported there, not here.
+ */
+export function readSingleApproverSourceIssues(
+  definition: WorkflowDefinition,
+  sourceNodeIds: readonly string[],
+): readonly string[] {
+  return sourceNodeIds.flatMap((id): readonly string[] => {
+    const node = definition.nodes.find((candidate) => candidate.id === id);
+
+    if (node?.type !== 'userTask' || !canUserTaskHaveMultipleApprovers(node)) {
+      return [];
+    }
+
+    const label = node.data.label ? `「${node.data.label}」` : `「${id}」`;
+
+    return [
+      `主管鏈起點的前面關卡 ${label} 可能有多位實際簽核人，無法決定從誰的主管開始。請改選只會有一位簽核人的關卡。`,
+    ];
+  });
+}
+
 export function hasConfiguredConditionEdges(
   definition: WorkflowDefinition,
 ): boolean {
