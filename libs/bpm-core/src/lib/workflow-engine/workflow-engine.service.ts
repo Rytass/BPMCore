@@ -892,12 +892,14 @@ export class WorkflowEngineService {
           input.initiatorMetadataSnapshotJson,
           'initiatorMetadataSnapshotJson',
         )
-      : await this.buildSubmittedInitiatorMetadataSnapshot({
+      : await this.buildInitiatorMetadataSnapshot({
           authContext: submitAuthContext,
-          formData,
           memberId: input.initiatorMemberId,
-          templateId: template.id,
-          templateVersionId: templateVersion.id,
+          submission: {
+            formData,
+            templateId: template.id,
+            templateVersionId: templateVersion.id,
+          },
         });
 
     if (
@@ -4229,8 +4231,14 @@ export class WorkflowEngineService {
     });
   }
 
+  /**
+   * The active templates `memberId` may start now. `authContext` is handed to
+   * the host's initiator `customFields` resolver; a host calling this without
+   * one gets a bare context for the member, as a submission does.
+   */
   async listLaunchableApprovalTemplates(
     memberId: string,
+    authContext?: BPMAuthContext,
   ): Promise<readonly ApprovalTemplateEntity[]> {
     const templates = await this.approvalTemplateRepository.find({
       order: { updatedAt: 'DESC' },
@@ -4258,15 +4266,19 @@ export class WorkflowEngineService {
         ],
       ),
     );
-    // The engine's own snapshot, without the host's `customFields` resolver:
-    // it needs a form to work from and this list has none, and calling it for
-    // every template would put a host lookup behind every list request. An
-    // initiator policy that reads `initiator.customFields` is therefore judged
-    // here against `{}`, while a submission judges it against what the
-    // resolver returns. Reading an absent key throws in either dialect, and the
-    // filter below does not catch it.
-    const initiatorMetadataSnapshot =
-      await this.readDefaultInitiatorMetadataSnapshot(memberId);
+    // Built like a submission's, so a policy that reads
+    // `initiator.customFields` is judged here against what the host's resolver
+    // returns for this member. The resolver depends on the initiator only, so
+    // it is called once for the whole list, not once per template. When it
+    // fails, the list is judged against `customFields: {}` instead of failing
+    // (see `buildInitiatorMetadataSnapshot`).
+    const initiatorMetadataSnapshot = await this.buildInitiatorMetadataSnapshot(
+      {
+        authContext: authContext ?? createWorkflowAuthContext(memberId),
+        memberId,
+        submission: null,
+      },
+    );
 
     return templates.filter((template) => {
       const currentVersion = template.currentVersionId
@@ -4294,9 +4306,10 @@ export class WorkflowEngineService {
 
       // Each template is its own operation, so one slow template cannot use
       // up the allowance of the rest of the list. A policy that throws (for
-      // example a missing `initiator.customFields.*` key, which this list
-      // judges against `{}`) is also only that template's problem: it is left
-      // out, and the error code is logged, never the values.
+      // example a missing `initiator.customFields.*` key, because the resolver
+      // did not return it, or failed and the list fell back to `{}`) is also
+      // only that template's problem: it is left out, and the error code is
+      // logged, never the values.
       try {
         return runExpressionOperation(() =>
           this.conditionService.evaluateBoolean(
@@ -4658,31 +4671,47 @@ export class WorkflowEngineService {
   }
 
   /**
-   * The snapshot a submission stores when its caller did not pass one: what the
-   * engine knows of the initiator, with `customFields` filled by the host's
-   * resolver when there is one. Without a resolver this is exactly the default
-   * snapshot (`customFields` is `{}`).
+   * The initiator snapshot the engine builds itself: what it knows of the
+   * initiator, with `customFields` filled by the host's resolver when there is
+   * one. Without a resolver this is exactly the default snapshot
+   * (`customFields` is `{}`). A submission (`submission` set) stores it and
+   * judges the initiator policy with it; the launchable template list
+   * (`submission: null`) only judges the policies with it, so both see the same
+   * `customFields` for the same member.
    *
    * Only `customFields` comes from the host. The other keys are the engine's
    * and are written back after the resolver returns, so nothing it does can
    * change who the initiator is. The resolver gets copies of the snapshot and
    * of the form data for the same reason; `authContext` is the caller's own
    * object, as every other host hook receives it.
-   * It runs here, before the engine transaction, so a failure leaves no case
-   * behind and a slow lookup holds no lock.
+   *
+   * The two callers treat a resolver failure (an error, a bad value, the
+   * timeout) differently, on purpose:
+   *
+   * - A submission fails, and no case is created. Its snapshot is stored and
+   *   routes the case from then on, so carrying on with `{}` would start a
+   *   case on data the host never gave. It runs before the engine
+   *   transaction, so a failure leaves nothing behind and a slow lookup holds
+   *   no lock.
+   * - The list carries on with `customFields: {}` and logs a warning: one
+   *   failing lookup must not take the whole list away. That fails closed: a
+   *   policy that reads `initiator.customFields` then throws on the missing key
+   *   and the list's per-template catch leaves that template out, while a
+   *   template whose policy does not read it is listed as usual. Submitting is
+   *   still judged against the resolver's real answer.
    */
-  private async buildSubmittedInitiatorMetadataSnapshot({
+  private async buildInitiatorMetadataSnapshot({
     authContext,
-    formData,
     memberId,
-    templateId,
-    templateVersionId,
+    submission,
   }: {
     readonly authContext: BPMAuthContext;
-    readonly formData: Readonly<Record<string, unknown>>;
     readonly memberId: string;
-    readonly templateId: string;
-    readonly templateVersionId: string;
+    readonly submission: {
+      readonly formData: Readonly<Record<string, unknown>>;
+      readonly templateId: string;
+      readonly templateVersionId: string;
+    } | null;
   }): Promise<Readonly<Record<string, unknown>>> {
     const defaultSnapshot =
       await this.readDefaultInitiatorMetadataSnapshot(memberId);
@@ -4691,20 +4720,43 @@ export class WorkflowEngineService {
       return defaultSnapshot;
     }
 
-    return {
-      ...defaultSnapshot,
-      customFields: await this.resolveInitiatorCustomFields(
-        this.initiatorCustomFieldsResolver,
-        {
-          authContext,
-          defaultSnapshot: cloneJsonObject(defaultSnapshot),
-          formData: cloneJsonObject(formData),
-          memberId,
-          templateId,
-          templateVersionId,
-        },
-      ),
+    const input: BPMInitiatorCustomFieldsInput = {
+      authContext,
+      defaultSnapshot: cloneJsonObject(defaultSnapshot),
+      formData: submission ? cloneJsonObject(submission.formData) : null,
+      memberId,
+      purpose: submission ? 'SUBMISSION' : 'LAUNCHABLE_TEMPLATES',
+      templateId: submission?.templateId ?? null,
+      templateVersionId: submission?.templateVersionId ?? null,
     };
+
+    if (submission) {
+      return {
+        ...defaultSnapshot,
+        customFields: await this.resolveInitiatorCustomFields(
+          this.initiatorCustomFieldsResolver,
+          input,
+        ),
+      };
+    }
+
+    try {
+      return {
+        ...defaultSnapshot,
+        customFields: await this.resolveInitiatorCustomFields(
+          this.initiatorCustomFieldsResolver,
+          input,
+        ),
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Launchable templates judged with customFields {}: the initiator customFields resolver failed (${
+          error instanceof HttpException ? error.getStatus() : 'UNEXPECTED'
+        })`,
+      );
+
+      return defaultSnapshot;
+    }
   }
 
   /**
@@ -4727,7 +4779,10 @@ export class WorkflowEngineService {
     resolver: BPMInitiatorCustomFieldsResolver,
     input: BPMInitiatorCustomFieldsInput,
   ): Promise<Readonly<Record<string, unknown>>> {
-    const subject = `template=${input.templateId} version=${input.templateVersionId}`;
+    const subject =
+      input.purpose === 'SUBMISSION'
+        ? `template=${input.templateId} version=${input.templateVersionId}`
+        : 'launchable templates';
     const outcome = await settleWithin(
       new Promise<unknown>((resolve: (value: unknown) => void): void => {
         resolve(resolver.resolveCustomFields(input));

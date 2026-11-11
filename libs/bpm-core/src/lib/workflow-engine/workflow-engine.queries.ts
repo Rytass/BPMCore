@@ -270,9 +270,11 @@ export class WorkflowEngineQueries {
   @Query(() => [ApprovalTemplateEntity])
   async launchableApprovalTemplates(
     @BPMCurrentMemberId() currentMemberId: string,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
   ): Promise<readonly ApprovalTemplateEntity[]> {
     return this.workflowEngineService.listLaunchableApprovalTemplates(
       currentMemberId,
+      currentAuthContext,
     );
   }
 

@@ -643,6 +643,7 @@ describe('WorkflowEngineService', () => {
         defaultSnapshot: { customFields: {}, ...ENGINE_SNAPSHOT },
         formData: { amount: 1000 },
         memberId: 'member-001',
+        purpose: 'SUBMISSION',
         templateId: 'template-1',
         templateVersionId: 'template-version-1',
       });
@@ -1075,7 +1076,7 @@ describe('WorkflowEngineService', () => {
       );
     });
 
-    it('does not call the resolver for a dry run or the launchable template list', async (): Promise<void> => {
+    it('does not call the resolver for a dry run', async (): Promise<void> => {
       const { resolver, resolveCustomFields } = createResolver({
         station: 'TPE',
       });
@@ -1089,12 +1090,274 @@ describe('WorkflowEngineService', () => {
         initiatorMetadataSnapshotJson: null,
         workflowDefinitionJson: JSON.stringify(createStartEndWorkflow()),
       });
-      const launchable =
-        await fixture.service.listLaunchableApprovalTemplates('member-001');
 
       expect(dryRun.valid).toBe(true);
-      expect(launchable.map((template) => template.id)).toEqual(['template-1']);
       expect(resolveCustomFields).not.toHaveBeenCalled();
+    });
+
+    describe('launchable template list', (): void => {
+      const listIds = async (
+        fixture: ServiceFixture,
+        authContext?: BPMAuthContext,
+      ): Promise<readonly string[]> =>
+        (
+          await fixture.service.listLaunchableApprovalTemplates(
+            'member-001',
+            authContext,
+          )
+        ).map((template) => template.id);
+      // A policy in cel-v2, whose real engine throws `EXPRESSION_MISSING_KEY`
+      // for an absent key (only `cel-js`, the default dialect, is shimmed).
+      const CEL_V2_WORKFLOW = {
+        ...createStartEndWorkflow(),
+        expressionDialect: 'cel-v2',
+      } as WorkflowDefinition;
+
+      it.each([
+        ['TPE', ['template-1']],
+        ['KHH', []],
+      ])(
+        'judges a policy that reads customFields.station by the %s the resolver returns',
+        async (station: string, expected: readonly string[]): Promise<void> => {
+          const fixture = createFixture({
+            initiatorCustomFieldsResolver: createResolver({ station }).resolver,
+            templateInitiatorPolicyCel: STATION_POLICY,
+          });
+
+          await expect(listIds(fixture)).resolves.toEqual(expected);
+        },
+      );
+
+      it('lists a cel-v2 template whose policy reads customFields when the resolver supplies the key', async (): Promise<void> => {
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: createResolver({ station: 'TPE' })
+            .resolver,
+          templateInitiatorPolicyCel: STATION_POLICY,
+          templateWorkflowDefinition: CEL_V2_WORKFLOW,
+        });
+
+        await expect(listIds(fixture)).resolves.toEqual(['template-1']);
+      });
+
+      it('calls the resolver once for the whole list, for the member alone', async (): Promise<void> => {
+        const { resolver, resolveCustomFields } = createResolver({
+          station: 'TPE',
+        });
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+          templateInitiatorPolicyCel: STATION_POLICY,
+        });
+        const authContext: BPMAuthContext = {
+          memberId: 'member-001',
+          metadata: { site: 'TPE' },
+          permissions: [],
+          roles: [],
+        };
+
+        fixture.templateFind.mockResolvedValue(
+          ['template-1', 'template-2', 'template-3'].map(
+            (id: string): ApprovalTemplateEntity =>
+              Object.assign(createTemplate('template-version-1', true), {
+                id,
+              }),
+          ),
+        );
+
+        await expect(listIds(fixture, authContext)).resolves.toEqual([
+          'template-1',
+          'template-2',
+          'template-3',
+        ]);
+        expect(resolveCustomFields).toHaveBeenCalledTimes(1);
+        expect(resolveCustomFields).toHaveBeenCalledWith({
+          authContext,
+          defaultSnapshot: { customFields: {}, ...ENGINE_SNAPSHOT },
+          formData: null,
+          memberId: 'member-001',
+          purpose: 'LAUNCHABLE_TEMPLATES',
+          templateId: null,
+          templateVersionId: null,
+        });
+      });
+
+      it('gives the resolver a bare auth context when the caller passes none', async (): Promise<void> => {
+        const { resolver, resolveCustomFields } = createResolver({});
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+        });
+
+        await listIds(fixture);
+
+        expect(resolveCustomFields.mock.calls[0]?.[0].authContext).toEqual({
+          memberId: 'member-001',
+          metadata: {},
+          permissions: [],
+          roles: [],
+        });
+      });
+
+      it('does not call the resolver when no template is published', async (): Promise<void> => {
+        const { resolver, resolveCustomFields } = createResolver({});
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+        });
+
+        fixture.templateFind.mockResolvedValue([]);
+
+        await expect(listIds(fixture)).resolves.toEqual([]);
+        expect(resolveCustomFields).not.toHaveBeenCalled();
+      });
+
+      describe('when the resolver fails', (): void => {
+        afterEach((): void => {
+          jest.useRealTimers();
+        });
+
+        const failures: readonly [
+          string,
+          (
+            mock: ReturnType<typeof createResolver>['resolveCustomFields'],
+          ) => void,
+        ][] = [
+          [
+            'throws',
+            (mock): void => {
+              mock.mockRejectedValue(new Error('host lookup is down'));
+            },
+          ],
+          [
+            'returns a value that is not an object',
+            (mock): void => {
+              mock.mockResolvedValue(
+                'TPE' as unknown as Readonly<Record<string, unknown>>,
+              );
+            },
+          ],
+          [
+            'throws an HttpException',
+            (mock): void => {
+              mock.mockRejectedValue(new ForbiddenException('not allowed'));
+            },
+          ],
+        ];
+
+        it.each(failures)(
+          'answers the list and leaves out a cel-v2 template that reads customFields when it %s',
+          async (
+            _label: string,
+            fail: (
+              mock: ReturnType<typeof createResolver>['resolveCustomFields'],
+            ) => void,
+          ): Promise<void> => {
+            jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+            const warn = jest
+              .spyOn(Logger.prototype, 'warn')
+              .mockReturnValue(undefined);
+            const { resolver, resolveCustomFields } = createResolver({});
+
+            fail(resolveCustomFields);
+            const fixture = createFixture({
+              initiatorCustomFieldsResolver: resolver,
+              templateInitiatorPolicyCel: STATION_POLICY,
+              templateWorkflowDefinition: CEL_V2_WORKFLOW,
+            });
+
+            await expect(listIds(fixture)).resolves.toEqual([]);
+            expect(resolveCustomFields).toHaveBeenCalledTimes(1);
+            expect(warn).toHaveBeenCalledWith(
+              expect.stringContaining('judged with customFields {}'),
+            );
+            expect(warn).toHaveBeenCalledWith(
+              expect.stringContaining('EXPRESSION_MISSING_KEY'),
+            );
+            expect(warn).not.toHaveBeenCalledWith(
+              expect.stringContaining('member-001'),
+            );
+          },
+        );
+
+        it('still lists a template whose policy does not read customFields', async (): Promise<void> => {
+          jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+          jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+          const { resolver, resolveCustomFields } = createResolver({});
+
+          resolveCustomFields.mockRejectedValue(
+            new Error('host lookup is down'),
+          );
+          const fixture = createFixture({
+            initiatorCustomFieldsResolver: resolver,
+            templateInitiatorPolicyCel: 'initiator.memberId == "member-001"',
+            templateWorkflowDefinition: CEL_V2_WORKFLOW,
+          });
+
+          await expect(listIds(fixture)).resolves.toEqual(['template-1']);
+        });
+
+        it('answers the list once the resolver has taken longer than 10 s', async (): Promise<void> => {
+          jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+          const warn = jest
+            .spyOn(Logger.prototype, 'warn')
+            .mockReturnValue(undefined);
+          jest.useFakeTimers({
+            doNotFake: [
+              'Date',
+              'cancelAnimationFrame',
+              'cancelIdleCallback',
+              'clearImmediate',
+              'clearInterval',
+              'hrtime',
+              'nextTick',
+              'performance',
+              'queueMicrotask',
+              'requestAnimationFrame',
+              'requestIdleCallback',
+              'setImmediate',
+              'setInterval',
+            ],
+          });
+          const signal: { notify: () => void } = {
+            notify: (): void => undefined,
+          };
+          const called = new Promise<void>((resolve: () => void): void => {
+            signal.notify = resolve;
+          });
+          const fixture = createFixture({
+            initiatorCustomFieldsResolver: {
+              resolveCustomFields: (): Promise<
+                Readonly<Record<string, unknown>>
+              > => {
+                signal.notify();
+
+                return new Promise(
+                  (
+                    resolve: (value: Readonly<Record<string, unknown>>) => void,
+                  ): void => {
+                    setTimeout((): void => {
+                      resolve({ station: 'TPE' });
+                    }, 15_000);
+                  },
+                );
+              },
+            },
+            templateInitiatorPolicyCel: STATION_POLICY,
+            templateWorkflowDefinition: CEL_V2_WORKFLOW,
+          });
+          const listed = listIds(fixture);
+
+          await called;
+          await jest.advanceTimersByTimeAsync(10_000);
+          const settled = await Promise.race([
+            listed,
+            Promise.resolve('still waiting'),
+          ]);
+
+          expect(settled).toEqual([]);
+          expect(warn).toHaveBeenCalledWith(
+            expect.stringContaining('judged with customFields {}'),
+          );
+          await jest.advanceTimersByTimeAsync(5_000);
+        });
+      });
     });
   });
 

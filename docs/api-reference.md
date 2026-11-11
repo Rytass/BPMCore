@@ -65,6 +65,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Designer conditions on an unfilled form field no longer fail the submission (guard, `readConditionExpression`): an optional field that was never touched has no key in `formData`, and `cel-js` 0.8.2 throws `Identifier "x" not found` for it. The condition the designer compiles for a field with an identifier key (`form.x`) is now `has()`-guarded and right-nested (`has(form.x) && (form.x != null && ...)`, because `cel-js` short-circuits `&&` reliably only when nested and never short-circuits `||`), so an absent or `null` value reads as unfilled: filled / equals / ordering are `false`, is-empty / not-equals are `true`. **Behaviour change:** an ordering comparison (greater / less, with or without equals) now also treats a cleared `""` as unfilled, so a date `"" < "2026-01-01"` that used to be `true` is now `false`, and a number `"" > 5` that used to throw is now `false`. This applies to conditions compiled from now on; a definition already published keeps its stored CEL, so its in-flight cases keep the old `true` until the template is saved and republished (see the next row). Multiple-selection fields (checkbox, multiple select / autocomplete) with an identifier key also read a `""` value as unfilled for is-filled / is-empty, as member fields already did. A key that is not an identifier (`form["a-b"]`) cannot be wrapped in `has()` and keeps its unguarded output. A hand-written CEL is unchanged and still fails on a missing key (docs/05 §5.1.1). No export changes | Not yet released |
 | Edges saved before the guard fall back to their structured fields when their CEL fails: `WorkflowEngineService` (actual runs and the designer dry run) evaluates an edge's stored CEL as before, and only when that throws `EXPRESSION_MISSING_KEY` or `EXPRESSION_TYPE_ERROR` (`Identifier "agent" not found` for an untouched optional field, `null > 5`, `"" > 5`) **and** the edge's own field is unfilled does an edge that carries `conditionFieldKey` and `conditionOperator` answer from those fields — for a missing key only when the key named is that field (a CEL that also reads another key fails as written when that key is missing), and for a type error, which names no key, with a `warn` log (`code=EDGE_STRUCTURED_FALLBACK edge=… field=… reason=EXPRESSION_TYPE_ERROR`, no values) instead of failing the submit or decision; a list value still goes straight to them, as before. A stored CEL that evaluates keeps its result, so no route that worked changes (a date `"" < "2026-01-01"` stays `true`). A missing key or type error while the edge's field is filled (a CEL edited by hand while the structured fields stayed, `form.amount > "abc"`) is rethrown, a budget overrun or a function failure is never absorbed, and an edge with no structured fields (hand-written CEL) still fails as written. `evaluateWorkflowEdgeCondition` reads an unfilled value (absent, `null`, `""`, whitespace only or an empty list) as not matching: equals and the four ordering comparisons are `false`, not-equals and is-empty are `true`, is-filled is `false`; it reads only the form data's own keys, so a field key named like an inherited member (`constructor`) is unfilled, not a function. The own-key read and the unfilled test live in `workflow-engine/workflow-form-value.ts`, which `index.ts` does not re-export. No export changes | Not yet released |
 | Missing-key names stay out of messages after a computed index: `ExpressionRuntimeError.keyName` is now `null` whenever the expression indexes with an identifier (`form.rates[form.currency]`, `form.m[k]`). The engine may report the value read through the index as the missing key, and that value can equal a name the author wrote (`rates`), which the previous "written in the expression" check let through. An index holding only literals (`form["a-b"]`, `["a", "b"]`, `[0]`) still keeps the name. No export changes | Not yet released |
+| Initiator `customFields` resolver (PR #145): `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER` / the `initiatorCustomFieldsResolver` runtime option / the `initiatorCustomFieldsResolverProvider` wiring option fill `customFields` of the initiator snapshot the engine builds (`BPMInitiatorCustomFieldsResolver`, `BPMInitiatorCustomFieldsInput`, `BPMInitiatorCustomFieldsPurpose`). A submission waits for it 10 s at most and fails with a fixed Chinese 500 on a timeout, an error that is not an `HttpException` or a bad value, logging the cause; no case is created. `launchableApprovalTemplates` calls it once per request and judges initiator policies against its answer, falling back to `customFields: {}` (fail closed per template) when it fails. `listLaunchableApprovalTemplates` takes an optional `authContext` | Not yet released |
 | Approval-instance field filters and sort (ADR 25): `fieldFilters` and `sort` on `approvalInstances` / `approvalInstancePageInfo` / `approvalInstanceCount`, the `filterableFieldIssues` query, `filterable` on field definitions, write-time type checks on submit / resubmit / decide-fill / `SET_FORM_FIELD`, publish and rollback checks (409), migration `ApprovalInstanceFormDataGin0000000031000`, and the client and designer wiring | Not yet released |
 
 ---
@@ -1283,7 +1284,7 @@ Workflow execution engine — the heaviest module.
 | Business key | `MAX_APPROVAL_INSTANCE_BUSINESS_KEY_LENGTH` (200 characters, counted as code points) |
 | List options | `ListApprovalInstancesOptions` (ADR 25, not yet released; the options of `listApprovalInstances` and `readApprovalInstancePageInfo`): `fieldFilters?` (`ApprovalInstanceFieldFilter[]` from `@rytass/bpm-core-shared`), `page?`, `pageSize?`, `searchText?`, `sort?` (`ApprovalInstanceSort[]`), `state?` (`ApprovalInstanceStateEnum[]`), `templateId?`, `view?` (`ApprovalInstanceListViewEnum`). `countApprovalInstances` takes `Omit<ListApprovalInstancesOptions, 'page' | 'pageSize' | 'sort'>`, so a count cannot be given a page or a sort |
 | Tokens | `BPM_WORKFLOW_ENGINE_SERVICE` (typed by the `BPMWorkflowEngineService` interface: `cancelApprovalInstance`, `decideTask`, `expireApprovalInstance`), `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER`, `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER` |
-| Initiator snapshot | `BPMInitiatorCustomFieldsResolver` (`resolveCustomFields(input)`), `BPMInitiatorCustomFieldsInput` (`authContext`, `defaultSnapshot`, `formData`, `memberId`, `templateId`, `templateVersionId`) |
+| Initiator snapshot | `BPMInitiatorCustomFieldsResolver` (`resolveCustomFields(input)`), `BPMInitiatorCustomFieldsInput` (`authContext`, `defaultSnapshot`, `formData`, `memberId`, `purpose`, `templateId`, `templateVersionId`; `formData` / `templateId` / `templateVersionId` are `null` for the launchable list), `BPMInitiatorCustomFieldsPurpose` (`'SUBMISSION' \| 'LAUNCHABLE_TEMPLATES'`). `WorkflowEngineService.listLaunchableApprovalTemplates(memberId, authContext?)` passes `authContext` on to the resolver (a bare one for the member when omitted). Not yet released |
 | Service tasks | `BPMWorkflowServiceTaskDispatcher`, `BPMWorkflowWebhookDispatchInput`, `BPMWorkflowWebhookDispatchResult`, `DefaultWorkflowServiceTaskDispatcher` (`fetch`-based, 30 s timeout) |
 | Enums | `ApprovalInstanceStateEnum`, `ApprovalInstanceListViewEnum`, `ApprovalInstanceFieldFilterOperatorEnum` (GraphQL `ApprovalInstanceFieldFilterOperator`), `ApprovalInstanceSortDirectionEnum` (GraphQL `ApprovalInstanceSortDirection`), `WorkflowTokenStatusEnum`, `TaskStatusEnum`, `TaskAssignmentTypeEnum`, `TaskCandidateStatusEnum`, `TaskDecisionActionEnum`, `AdhocDirectiveTypeEnum`, `AdhocDirectiveStatusEnum`, `AdhocTargetKindEnum`, `AdhocPreApprovalRejectBehaviorEnum`, `MemberTaskRoleEnum`, `TaskReassignmentOutcomeEnum`, `TaskReassignmentErrorCodeEnum`. `ActivityLogEventTypeEnum` gains `INSTANCE_EXPIRED` (an SLA `TERMINATE_INSTANCE` ended the instance; no actor, the overdue task's `nodeId` / `taskId`) and `TASK_REASSIGNED`, written once per administrator reassignment with `actorMemberId`, `fromMemberId`, `toMemberId`, `reason`, `assigneeChanged`, `candidateStatus` and `sequence` in its payload |
 | Module | `WorkflowEngineModule`, `WorkflowEngineModuleOptions` |
@@ -1324,7 +1325,7 @@ fill it:
 |---|---|
 | No resolver registered | `{}`, exactly as before |
 | Caller passed `initiatorMetadataSnapshotJson` (a host calling the service) | The caller's snapshot, stored as it is; the resolver is **not** called |
-| Engine-built snapshot (no snapshot passed, including every GraphQL submission) | What `resolveCustomFields` returned |
+| Engine-built snapshot (no snapshot passed, including every GraphQL submission) | What `resolveCustomFields` returned (`purpose: 'SUBMISSION'`) |
 | Resolver throws an `HttpException` | The submission fails with that exception as it is; no case is created |
 | Resolver throws anything else | The submission fails with `InternalServerErrorException` (`無法取得發起人的自訂欄位，這次申請沒有送出；請稍後再試或聯絡系統管理者`); the original error is logged, never sent to the client; no case is created |
 | Resolver takes longer than 10 s | The submission fails with `InternalServerErrorException` (`無法取得發起人的自訂欄位（逾時），這次申請沒有送出；請稍後再試或聯絡系統管理者`); no case is created. The timer is cleared when the resolver answers in time; what it settles with after the timeout is logged as a warning and dropped |
@@ -1338,22 +1339,28 @@ Rules:
   `positionId`, `positionIds` and `primaryOrgUnitId` always come from the engine;
   it receives copies of the default snapshot and the form data, so editing them
   changes nothing.
-- It runs once, at submission, after the form data is validated and before the
+- A submission calls it once, after the form data is validated and before the
   initiator policy is evaluated, so `initiatorPolicyCel` reads what it returned.
   It runs outside the engine transaction.
 - The snapshot is fixed at that moment. Resubmitting a returned case does not call
   the resolver again and does not change the stored snapshot.
+- `listLaunchableApprovalTemplates` (the `launchableApprovalTemplates` query, and
+  the form data source's runtime check of a template) calls it too, **once per
+  request** with `purpose: 'LAUNCHABLE_TEMPLATES'` and `null` for `formData`,
+  `templateId` and `templateVersionId`, and judges every template's initiator
+  policy against what it returned. So the answer must depend on the initiator
+  only: a template the list shows has to be one the member can then submit.
+  Return the same `customFields` for both purposes.
+- The list degrades where a submission fails. When the resolver throws (an
+  `HttpException` included), returns a bad value or takes longer than 10 s, the
+  list is still answered: it is judged against `customFields: {}` and a warning
+  is logged. That fails closed — a policy that reads `initiator.customFields`
+  then hits a missing key (`EXPRESSION_MISSING_KEY` in either dialect) and only
+  that template is left out, by the list's per-template catch — while a template
+  whose policy does not read it is listed as usual. A submission never falls back
+  this way.
 - Not called: `dryRunApprovalWorkflow` (the designer sends its own sample snapshot,
-  and a draft has no template version to pass) and `listLaunchableApprovalTemplates`
-  (it has no form data, and would put a host lookup behind every list request).
-  The list evaluates an initiator policy against the engine's snapshot with
-  `customFields: {}`, so a policy that reads `initiator.customFields` is judged
-  differently there than at submission. Reading a key that is absent is an
-  error in either dialect, `cel-legacy` (the default) as well as `cel-v2`
-  (`EXPRESSION_MISSING_KEY`), and the list does not catch an evaluation error,
-  so such a policy fails `launchableApprovalTemplates` itself. Until that is
-  settled, keep `initiator.customFields` out of `initiatorPolicyCel` and use it
-  in conditions and approver expressions.
+  and a draft has no template version to pass).
 - The designer's trial run (`dryRunApprovalWorkflow`) uses the sample snapshot the
   designer sends, whose `customFields` is `{}`. A condition that reads
   `initiator.customFields` therefore evaluates differently in a trial run than
@@ -1399,7 +1406,7 @@ class StationCustomFieldsResolver implements BPMInitiatorCustomFieldsResolver {
 ```
 
 A template can then say `initiator.customFields.station == 'TPE'` in an edge
-condition (see the list caveat above before using it in an initiator policy).
+condition or in its initiator policy.
 A host that computes the approvers itself can return
 them in `customFields` (say `approverIds`) and name them with an `EXPRESSION`
 approver, `initiator.customFields.approverIds`: an expression approver is evaluated

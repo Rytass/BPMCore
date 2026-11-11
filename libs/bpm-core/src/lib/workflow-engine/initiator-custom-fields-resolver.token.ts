@@ -2,6 +2,13 @@ import { InjectionToken } from '@nestjs/common';
 import { BPMAuthContext } from '../bpm-auth';
 
 /**
+ * Why the engine is asking for `customFields`: a case being submitted, or the
+ * list of templates a member may start (`launchableApprovalTemplates`).
+ */
+export type BPMInitiatorCustomFieldsPurpose =
+  'SUBMISSION' | 'LAUNCHABLE_TEMPLATES';
+
+/**
  * What the engine tells the host while it builds an initiator snapshot.
  *
  * `defaultSnapshot` and `formData` are copies: changing them changes nothing
@@ -23,16 +30,23 @@ export interface BPMInitiatorCustomFieldsInput {
    * The form data being submitted, which is the same data the case is created
    * with. When the submission comes from an end user (the GraphQL mutation),
    * the fields an approver fills in have already been dropped from it.
+   * `null` for `LAUNCHABLE_TEMPLATES`, which has no form.
    */
-  readonly formData: Readonly<Record<string, unknown>>;
+  readonly formData: Readonly<Record<string, unknown>> | null;
 
   /** The initiator the snapshot is for. */
   readonly memberId: string;
 
-  readonly templateId: string;
+  readonly purpose: BPMInitiatorCustomFieldsPurpose;
 
-  /** The published version the case starts on. */
-  readonly templateVersionId: string;
+  /** The template being submitted; `null` for `LAUNCHABLE_TEMPLATES`. */
+  readonly templateId: string | null;
+
+  /**
+   * The published version the case starts on; `null` for
+   * `LAUNCHABLE_TEMPLATES`.
+   */
+  readonly templateVersionId: string | null;
 }
 
 /**
@@ -40,35 +54,42 @@ export interface BPMInitiatorCustomFieldsInput {
  * `initiator.customFields.*` and `subject.customFields.*` an expression, an
  * initiator policy or an expression approver can read).
  *
- * The engine calls it only when it builds the snapshot itself: when a case is
- * submitted through the GraphQL `submitApprovalInstance` mutation, which never
- * accepts a snapshot from the client, or when a host calls
- * `WorkflowEngineService.submitApprovalInstance` without
- * `initiatorMetadataSnapshotJson`. A snapshot the caller passes in is stored as
- * it is and this is not called.
+ * The engine calls it when it builds the snapshot itself:
+ *
+ * - `SUBMISSION`: a case is submitted through the GraphQL
+ *   `submitApprovalInstance` mutation, which never accepts a snapshot from the
+ *   client, or a host calls `WorkflowEngineService.submitApprovalInstance`
+ *   without `initiatorMetadataSnapshotJson`. A snapshot the caller passes in is
+ *   stored as it is and this is not called.
+ * - `LAUNCHABLE_TEMPLATES`: once per request for the list of templates a
+ *   member may start, so an initiator policy that reads
+ *   `initiator.customFields` is judged there as it will be at submission.
+ *   There is no template and no form: `templateId`, `templateVersionId` and
+ *   `formData` are `null`.
+ *
+ * The answer must depend on the initiator only, never on the template or the
+ * form: the list asks once for every template, and a template it lists has to
+ * be one the member can then submit. Return the same `customFields` for both
+ * purposes.
  *
  * It decides `customFields` and nothing else: `memberId`, `orgUnitIds`,
  * `positionId`, `positionIds` and `primaryOrgUnitId` always come from the
  * engine, whatever is returned here.
  *
  * The snapshot is fixed at the moment the case is submitted. Resubmitting a
- * returned case does not call this again, and the dry run and the launchable
- * template list do not call it either.
- *
- * One limit follows from that: the launchable template list judges an
- * initiator policy against `{}` for `customFields`. Reading an absent key
- * throws in either dialect, so a policy that reads `initiator.customFields`
- * fails that whole list. Keep `initiator.customFields` out of
- * `initiatorPolicyCel` for now and use it in edge conditions and expression
- * approvers.
+ * returned case does not call this again, and the dry run does not call it
+ * either.
  */
 export interface BPMInitiatorCustomFieldsResolver {
   /**
-   * Resolves the `customFields` object for one submission.
+   * Resolves the `customFields` object for one initiator.
    *
    * Must return a plain, JSON-serializable object (`{}` for none). A return
    * value of any other shape, or a thrown error, fails the submission and no
-   * case is created; the engine never falls back to `{}`.
+   * case is created; a submission never falls back to `{}`. The launchable
+   * template list does fall back: it judges the policies against `{}`, so a
+   * template whose policy reads `initiator.customFields` is left out of it
+   * until the resolver answers again.
    *
    * Return a value for every key a template reads: a key whose value is
    * `undefined` is dropped, and a condition that reads it then throws unless
@@ -78,8 +99,9 @@ export interface BPMInitiatorCustomFieldsResolver {
    *
    * Runs before the case is created and outside the engine transaction, so a
    * slow lookup does not hold a case lock. The engine waits for it 10 seconds
-   * at most: past that the submission fails and no case is created, and what
-   * the resolver settles with later is logged and dropped.
+   * at most: past that the submission fails and no case is created (the list
+   * falls back as above), and what the resolver settles with later is logged
+   * and dropped.
    *
    * What the member sees on a failure is the engine's own message, never the
    * resolver's: a thrown error, running out of time and a value of the wrong
