@@ -1,3 +1,5 @@
+import { parseOrgManagerChainPlaceholder } from '@rytass/bpm-core-shared/workflow';
+
 type NamedRecord = Readonly<{ id: string; name: string }>;
 
 const MANAGER_LEVEL_NAMES: Readonly<Record<number, string>> = {
@@ -72,6 +74,28 @@ export function readDryRunAssigneeLabel(
     return `表單欄位「${formFieldName(ids[0])}」選的人（送出時依填寫內容決定）`;
   }
 
+  // `parseOrgManagerChainPlaceholder` reads what the engine's
+  // `formatOrgManagerChainPlaceholder` wrote: the level, plus the start and the
+  // start level when the chain has them.
+  const chain = parseOrgManagerChainPlaceholder(assignee);
+
+  if (chain) {
+    const from =
+      chain.startFrom?.type === 'FORM_MEMBER'
+        ? `從表單欄位「${formFieldName(chain.startFrom.formPath)}」的主管起算，`
+        : chain.startFrom?.type === 'NODE_ACTOR'
+          ? `從前面關卡「${nodeNames(chain.startFrom.nodeIds.join(','))}」簽核者的主管起算，`
+          : '';
+    const startLevel =
+      chain.startPositionLevel === null
+        ? ''
+        : `（從職等 ${chain.startPositionLevel} 開始）`;
+
+    return `主管鏈：${from}簽到職等 ${chain.minPositionLevel}${startLevel}（送出時依組織決定實際主管）`;
+  }
+
+  // A malformed chain placeholder that still has a single part keeps the
+  // wording it always had.
   if (kind === 'orgManagerChain' && ids.length === 1 && ids[0]) {
     return `主管鏈：簽到職等 ${ids[0]}（送出時依組織決定實際主管）`;
   }
