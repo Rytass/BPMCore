@@ -742,6 +742,9 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 
 通知：`TASK_ASSIGNED`／`TASK_TRANSFERRED` 的 payload 帶 `hasFillableFields`（非加簽任務、節點有可補填
 欄位時為 `true`），讓 host 在推播時改成「開啟案件」而不是一鍵同意。舊通知沒有這個鍵，請當作 `false`。
+同一份 payload 在節點開了 `requireApprovalComment` 時另帶 `requireApprovalComment: true`（沒開時不帶這個鍵，
+不寫 `false`），內建通知抽屜讀到時把「同意」改成「開啟案件」，到案件頁寫意見。舊通知沒有這個鍵，抽屜仍會顯示
+「同意」，這時只靠引擎拒絕（抽屜的同意視窗會顯示錯誤訊息）。
 
 #### 錯誤表一：`decideTask` 新增的拒絕
 
