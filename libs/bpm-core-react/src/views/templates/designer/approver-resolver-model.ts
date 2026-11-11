@@ -1,8 +1,12 @@
 import {
   ApproverResolver,
   ApproverResolverFallback,
+  OrgManagerChainStart,
   isFallbackCapableApproverResolverType,
+  isOrgManagerChainStartedFromInitiator,
+  readOrgManagerChainStartPositionLevel,
   readUnsupportedApproverResolverType,
+  readUnsupportedOrgManagerChainStartType,
 } from '@rytass/bpm-core-shared/workflow';
 import { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import {
@@ -15,9 +19,13 @@ import {
   readOrgUnitOption,
   readPositionOption,
 } from '../../../components/admin-picker-options';
-import { readDefaultMinPositionLevel } from './position-level-options';
+import {
+  readDefaultMinPositionLevel,
+  readMinPositionLevelOptions,
+} from './position-level-options';
 import {
   readDynamicFormSummary,
+  readFormFieldDisplayName,
   readFormMemberManagerSummary,
   readFormOrgUnitManagerSummary,
 } from './dynamic-form-resolver-options';
@@ -315,7 +323,7 @@ export function readApproverResolverSummary(
   }
 
   if (resolver.type === 'ORG_MANAGER_CHAIN') {
-    return `主管鏈：簽到職等 ${resolver.minPositionLevel}`;
+    return readOrgManagerChainSummary(resolver, formSchema, nodes);
   }
 
   if (resolver.type === 'ORG_UNIT_MANAGER') {
@@ -908,4 +916,395 @@ export function withPreferClosestOrgUnit(
   }
 
   return { ...resolver, preferClosestOrgUnit };
+}
+
+// ---------------------------------------------------------------------------
+// 主管鏈: where the chain starts and from which position level it signs.
+// ---------------------------------------------------------------------------
+
+type OrgManagerChainResolver = Extract<
+  ApproverResolver,
+  { readonly type: 'ORG_MANAGER_CHAIN' }
+>;
+
+export type OrgManagerChainStartMode = OrgManagerChainStart['type'];
+
+export type OrgManagerChainStartOption = Readonly<{
+  id: string;
+  name: string;
+}>;
+
+/** The choices of 從誰的主管開始. Today's behaviour is the first one. */
+export const ORG_MANAGER_CHAIN_START_OPTIONS: readonly Readonly<{
+  id: OrgManagerChainStartMode;
+  name: string;
+}>[] = [
+  { id: 'INITIATOR', name: '發起人' },
+  { id: 'FORM_MEMBER', name: '表單欄位的人' },
+  { id: 'NODE_ACTOR', name: '前面關卡的簽核者' },
+];
+
+/** The id of the read-only entry an unknown start is shown as. */
+export const UNSUPPORTED_ORG_MANAGER_CHAIN_START_OPTION_ID = 'UNSUPPORTED';
+
+const UNSUPPORTED_ORG_MANAGER_CHAIN_START_HINT =
+  '此引擎版本不支援這種主管鏈起點；這裡選擇其他起點會覆寫原設定';
+
+/** The 從職等幾開始簽 choice that leaves the setting out. */
+export const NO_START_POSITION_LEVEL_OPTION_ID = 'NONE';
+
+const NO_START_POSITION_LEVEL_OPTION: OrgManagerChainStartOption = {
+  id: NO_START_POSITION_LEVEL_OPTION_ID,
+  name: '不指定（從鏈上第一位有職等的主管開始簽）',
+};
+
+const INVALID_START_POSITION_LEVEL_OPTION_ID = 'invalid';
+
+export const START_POSITION_LEVEL_HINT =
+  '職等低於這裡的主管只會被略過、不簽核；留白則從鏈上第一位有職等的主管開始簽。不可高於「簽到職等」。';
+
+export const START_POSITION_LEVEL_ABOVE_MIN_HINT =
+  '起始職等不可高於簽到職等，發布前必須修正。';
+
+const ORG_MANAGER_CHAIN_START_HINTS: Readonly<
+  Record<OrgManagerChainStartMode, string>
+> = {
+  FORM_MEMBER: '依申請人送出表單時在該欄位選的人員，從他的主管開始往上簽。',
+  INITIATOR: '從發起人的直屬主管開始往上簽。',
+  NODE_ACTOR: '從所選前面關卡實際簽核的那一位開始，往上找他的主管。',
+};
+
+// The `type` of a start as saved, or `''` for anything that is not a start
+// object (raw JSON nothing has linted): `readUnsupportedOrgManagerChainStartType`
+// names that `（缺少型別）`.
+function readStoredStartType(startFrom: unknown): string {
+  const type =
+    typeof startFrom === 'object' && startFrom !== null
+      ? (startFrom as { readonly type?: unknown }).type
+      : undefined;
+
+  return typeof type === 'string' ? type : '';
+}
+
+/**
+ * Where the chain starts, or `null` for a start this build does not know (a
+ * definition saved by a newer BPMCore): shown read-only, never rewritten.
+ * No `startFrom` is the initiator.
+ */
+export function readOrgManagerChainStartMode(
+  resolver: OrgManagerChainResolver,
+): OrgManagerChainStartMode | null {
+  if (isOrgManagerChainStartedFromInitiator(resolver)) {
+    return 'INITIATOR';
+  }
+
+  return readUnsupportedOrgManagerChainStartType({
+    type: readStoredStartType(resolver.startFrom),
+  }) === null
+    ? (resolver.startFrom?.type ?? 'INITIATOR')
+    : null;
+}
+
+export type OrgManagerChainStartChoice = Readonly<{
+  /** Hint under the select: what the chosen start means. */
+  hint: string;
+  options: readonly OrgManagerChainStartOption[];
+  selected: OrgManagerChainStartOption;
+}>;
+
+/**
+ * The 從誰的主管開始 select. A start this build does not know is the current
+ * value as an extra read-only entry; picking it writes nothing
+ * ({@link readOrgManagerChainStartPick}).
+ */
+export function readOrgManagerChainStartChoice(
+  resolver: OrgManagerChainResolver,
+): OrgManagerChainStartChoice {
+  const mode = readOrgManagerChainStartMode(resolver);
+
+  if (mode === null) {
+    const selected = {
+      id: UNSUPPORTED_ORG_MANAGER_CHAIN_START_OPTION_ID,
+      name: readUnsupportedOrgManagerChainStartLabel(resolver),
+    };
+
+    return {
+      hint: UNSUPPORTED_ORG_MANAGER_CHAIN_START_HINT,
+      options: [...ORG_MANAGER_CHAIN_START_OPTIONS, selected],
+      selected,
+    };
+  }
+
+  return {
+    hint: ORG_MANAGER_CHAIN_START_HINTS[mode],
+    options: ORG_MANAGER_CHAIN_START_OPTIONS,
+    selected:
+      ORG_MANAGER_CHAIN_START_OPTIONS.find((option) => option.id === mode) ??
+      ORG_MANAGER_CHAIN_START_OPTIONS[0],
+  };
+}
+
+function readUnsupportedOrgManagerChainStartLabel(
+  resolver: OrgManagerChainResolver,
+): string {
+  const type =
+    readUnsupportedOrgManagerChainStartType({
+      type: readStoredStartType(resolver.startFrom),
+    }) ?? '';
+
+  // The shared name of a start with no type already carries its own brackets.
+  return type.startsWith('（')
+    ? `不支援的起點${type}`
+    : `不支援的起點（${type}）`;
+}
+
+// A copy of the resolver without one key, so that no `undefined` key is written
+// and whatever else the definition carries is kept as it is.
+function omitOrgManagerChainKey(
+  resolver: OrgManagerChainResolver,
+  omitted: 'startFrom' | 'startPositionLevel',
+): OrgManagerChainResolver {
+  return Object.fromEntries(
+    Object.entries(resolver).filter(([key]) => key !== omitted),
+  ) as OrgManagerChainResolver;
+}
+
+/**
+ * The resolver after 從誰的主管開始 is set to `mode`: the initiator drops the
+ * `startFrom` key (the same as never having set it), a form field or earlier
+ * stages starts empty for the author to fill. The start level and the rest of
+ * the resolver are kept.
+ */
+export function withOrgManagerChainStart(
+  resolver: OrgManagerChainResolver,
+  mode: OrgManagerChainStartMode,
+): OrgManagerChainResolver {
+  const base = omitOrgManagerChainKey(resolver, 'startFrom');
+
+  if (mode === 'FORM_MEMBER') {
+    return { ...base, startFrom: { formPath: '', type: 'FORM_MEMBER' } };
+  }
+
+  if (mode === 'NODE_ACTOR') {
+    return { ...base, startFrom: { nodeIds: [], type: 'NODE_ACTOR' } };
+  }
+
+  return base;
+}
+
+/**
+ * The resolver a 從誰的主管開始 pick produces, or `null` when the pick must
+ * change nothing: no option, the read-only unsupported entry, or the start the
+ * resolver already has (re-picking it used to clear the field or stages
+ * already chosen).
+ */
+export function readOrgManagerChainStartPick(
+  resolver: ApproverResolver,
+  optionId: string | null,
+): OrgManagerChainResolver | null {
+  const picked = ORG_MANAGER_CHAIN_START_OPTIONS.find(
+    (option) => option.id === optionId,
+  );
+
+  if (
+    resolver.type !== 'ORG_MANAGER_CHAIN' ||
+    !picked ||
+    picked.id === readOrgManagerChainStartMode(resolver)
+  ) {
+    return null;
+  }
+
+  return withOrgManagerChainStart(resolver, picked.id);
+}
+
+/** The form field a `FORM_MEMBER` start names, else `null`. */
+export function readOrgManagerChainStartFormPath(
+  resolver: OrgManagerChainResolver,
+): string | null {
+  return resolver.startFrom?.type === 'FORM_MEMBER'
+    ? resolver.startFrom.formPath
+    : null;
+}
+
+/** The stages a `NODE_ACTOR` start names, else `null`. */
+export function readOrgManagerChainStartNodeIds(
+  resolver: OrgManagerChainResolver,
+): readonly string[] | null {
+  return resolver.startFrom?.type === 'NODE_ACTOR'
+    ? resolver.startFrom.nodeIds
+    : null;
+}
+
+/**
+ * The resolver with the field of a `FORM_MEMBER` start set. Any other start
+ * comes back as the same object: there is no field to write.
+ */
+export function withOrgManagerChainStartFormPath(
+  resolver: OrgManagerChainResolver,
+  formPath: string,
+): OrgManagerChainResolver {
+  return resolver.startFrom?.type === 'FORM_MEMBER'
+    ? { ...resolver, startFrom: { formPath, type: 'FORM_MEMBER' } }
+    : resolver;
+}
+
+/**
+ * The resolver with the stages of a `NODE_ACTOR` start set. Any other start
+ * comes back as the same object.
+ */
+export function withOrgManagerChainStartNodeIds(
+  resolver: OrgManagerChainResolver,
+  nodeIds: readonly string[],
+): OrgManagerChainResolver {
+  return resolver.startFrom?.type === 'NODE_ACTOR'
+    ? { ...resolver, startFrom: { nodeIds, type: 'NODE_ACTOR' } }
+    : resolver;
+}
+
+export type OrgManagerChainStartLevelChoice = Readonly<{
+  /** The stored level cannot be read (not a number): shown, not offered. */
+  invalid: boolean;
+  options: readonly OrgManagerChainStartOption[];
+  selected: OrgManagerChainStartOption;
+}>;
+
+/**
+ * The 從職等幾開始簽 select: 不指定 plus the position levels at or below
+ * 簽到職等 (a start above it cannot be published, so it is not offered). A
+ * stored level the directory has no position for, or one above 簽到職等, stays
+ * in the list so the select can show it; a stored value that is not a number
+ * is shown as invalid rather than as 不指定.
+ */
+export function readOrgManagerChainStartLevelChoice(
+  resolver: OrgManagerChainResolver,
+  positions: readonly PositionRecord[],
+): OrgManagerChainStartLevelChoice {
+  const level = readOrgManagerChainStartPositionLevel(resolver);
+  const stored: unknown = resolver.startPositionLevel;
+  const levelOptions = readMinPositionLevelOptions(
+    positions,
+    level ?? resolver.minPositionLevel,
+  )
+    .filter(
+      (option) =>
+        option.value <= resolver.minPositionLevel || option.value === level,
+    )
+    .map(({ id, name }) => ({ id, name }));
+  const options = [NO_START_POSITION_LEVEL_OPTION, ...levelOptions];
+
+  if (level !== null) {
+    return {
+      invalid: false,
+      options,
+      selected:
+        levelOptions.find((option) => option.id === String(level)) ??
+        NO_START_POSITION_LEVEL_OPTION,
+    };
+  }
+
+  if (stored === undefined || stored === null) {
+    return {
+      invalid: false,
+      options,
+      selected: NO_START_POSITION_LEVEL_OPTION,
+    };
+  }
+
+  const invalid = {
+    id: INVALID_START_POSITION_LEVEL_OPTION_ID,
+    name: '起始職等無效',
+  };
+
+  return { invalid: true, options: [...options, invalid], selected: invalid };
+}
+
+/**
+ * The resolver a 從職等幾開始簽 pick produces, or `null` when the pick must
+ * change nothing: no option, the invalid entry, or the level already stored.
+ * 不指定 drops the `startPositionLevel` key (never writes `undefined`).
+ */
+export function readOrgManagerChainStartLevelPick(
+  resolver: ApproverResolver,
+  optionId: string | null,
+): OrgManagerChainResolver | null {
+  if (resolver.type !== 'ORG_MANAGER_CHAIN' || optionId === null) {
+    return null;
+  }
+
+  const current = readOrgManagerChainStartPositionLevel(resolver);
+
+  if (optionId === NO_START_POSITION_LEVEL_OPTION_ID) {
+    return current === null && resolver.startPositionLevel === undefined
+      ? null
+      : omitOrgManagerChainKey(resolver, 'startPositionLevel');
+  }
+
+  const level = Number(optionId);
+
+  return Number.isFinite(level) && level !== current
+    ? { ...resolver, startPositionLevel: level }
+    : null;
+}
+
+/**
+ * Why the chosen 簽到職等 and 從職等幾開始簽 cannot be published together, or
+ * `null`. The same rule as the publish check (`readOrgManagerChainIssue`),
+ * said under the select as the author picks.
+ */
+export function readOrgManagerChainStartLevelProblem(
+  resolver: OrgManagerChainResolver,
+): string | null {
+  const level = readOrgManagerChainStartPositionLevel(resolver);
+
+  return level !== null && level > resolver.minPositionLevel
+    ? START_POSITION_LEVEL_ABOVE_MIN_HINT
+    : null;
+}
+
+function readOrgManagerChainStartSummary(
+  resolver: OrgManagerChainResolver,
+  formSchema: FormDefinitionSchema | null,
+  nodes: readonly NodeNameRecord[] | undefined,
+): string | null {
+  const mode = readOrgManagerChainStartMode(resolver);
+
+  if (mode === null) {
+    return readUnsupportedOrgManagerChainStartLabel(resolver);
+  }
+
+  if (mode === 'FORM_MEMBER') {
+    const formPath = readOrgManagerChainStartFormPath(resolver) ?? '';
+
+    return formPath.trim()
+      ? `從表單欄位「${readFormFieldDisplayName(formSchema, formPath)}」的主管起算`
+      : '從表單欄位（未指定）的主管起算';
+  }
+
+  if (mode === 'NODE_ACTOR') {
+    const nodeIds = readOrgManagerChainStartNodeIds(resolver) ?? [];
+
+    return nodeIds.length > 0
+      ? `從前面關卡「${readStageSummary(nodeIds, nodes)}」簽核者的主管起算`
+      : '從前面關卡（未指定）簽核者的主管起算';
+  }
+
+  return null;
+}
+
+/**
+ * 主管鏈：簽到職等 N, with the start and the start level only when they are
+ * set: 主管鏈：從表單欄位「X」的主管起算，簽到職等 N（從職等 M 開始）.
+ * A chain with neither setting reads as it always did.
+ */
+function readOrgManagerChainSummary(
+  resolver: OrgManagerChainResolver,
+  formSchema: FormDefinitionSchema | null,
+  nodes: readonly NodeNameRecord[] | undefined,
+): string {
+  const start = readOrgManagerChainStartSummary(resolver, formSchema, nodes);
+  const startLevel = readOrgManagerChainStartPositionLevel(resolver);
+
+  return `主管鏈：${start ? `${start}，` : ''}簽到職等 ${resolver.minPositionLevel}${
+    startLevel === null ? '' : `（從職等 ${startLevel} 開始）`
+  }`;
 }
