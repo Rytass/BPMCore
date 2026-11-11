@@ -988,19 +988,26 @@ describe('set_user_task_decision_policy', () => {
     ['fractional', 2.5],
     ['a string', '5'],
   ])(
-    'falls back to the manager default when ORG_MANAGER_CHAIN minPositionLevel is %s',
+    'keeps an ORG_MANAGER_CHAIN whose minPositionLevel is %s, start included, so validation reports it',
     async (_label, minPositionLevel) => {
       const { nodeId, state } = await stateWithUserTask();
       const afterApprover = await runTool(state, 'set_user_task_approver', {
-        approverResolver: { minPositionLevel, type: 'ORG_MANAGER_CHAIN' },
+        approverResolver: {
+          minPositionLevel,
+          startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+          type: 'ORG_MANAGER_CHAIN',
+        },
         nodeId,
       });
+      const stored = readApproverResolver(afterApprover);
 
-      expect(readApproverResolver(afterApprover)).toEqual({
-        baseFromInitiator: true,
-        levelsUp: 1,
-        type: 'ORG_MANAGER',
+      expect(stored).toMatchObject({
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+        type: 'ORG_MANAGER_CHAIN',
       });
+      expect(readApproverResolverIssue(stored as ApproverResolver)).toBe(
+        '簽核節點需要指定有效的職等門檻。',
+      );
     },
   );
 
@@ -1438,6 +1445,35 @@ describe('set_user_task_approver — form / prior-node sources', () => {
     },
   );
 
+  it.each([
+    [
+      'NODE_ACTOR with a non-string entry',
+      { nodeIds: ['a', 5], type: 'NODE_ACTOR' },
+    ],
+    [
+      'NODE_ACTOR with an empty entry',
+      { nodeIds: ['a', ''], type: 'NODE_ACTOR' },
+    ],
+    [
+      'NODE_ACTOR_MANAGER with an empty entry',
+      { levelsUp: 1, nodeIds: ['a', ''], type: 'NODE_ACTOR_MANAGER' },
+    ],
+  ])(
+    'keeps the stage list of %s as written so the publish lint can name the entry',
+    async (_label, resolver) => {
+      const { nodeId, state } = await stateWithUserTask();
+      const next = await runTool(state, 'set_user_task_approver', {
+        approverResolver: resolver,
+        nodeId,
+      });
+
+      expect(readApproverResolver(next)).toMatchObject({
+        nodeIds: resolver.nodeIds,
+        type: resolver.type,
+      });
+    },
+  );
+
   it('validate_workflow reports an incomplete new source instead of passing it', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const next = await runTool(state, 'set_user_task_approver', {
@@ -1726,6 +1762,19 @@ describe('set_user_task_approver — manager chain start settings', () => {
       );
     },
   );
+
+  it('keeps a stage start whose stage list has an empty entry as written', async () => {
+    const { resolver } = await chainAfter({
+      minPositionLevel: 30,
+      startFrom: { nodeIds: ['task_a', ''], type: 'NODE_ACTOR' },
+    });
+
+    expect(resolver).toEqual({
+      minPositionLevel: 30,
+      startFrom: { nodeIds: ['task_a', ''], type: 'NODE_ACTOR' },
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
 
   it('reads a null start as no start (control)', async () => {
     const { resolver } = await chainAfter({

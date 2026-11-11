@@ -1523,21 +1523,22 @@ function parseApproverResolver(value: unknown): ApproverResolver {
       const startFrom = parseOrgManagerChainStart(value['startFrom']);
       const startPositionLevel = value['startPositionLevel'];
 
-      return typeof minPositionLevel === 'number' &&
-        Number.isInteger(minPositionLevel)
-        ? {
-            minPositionLevel,
-            type: 'ORG_MANAGER_CHAIN',
-            ...(fallback ? { fallback } : {}),
-            ...(startFrom === null ? {} : { startFrom }),
-            // Anything but an absent or `null` level is kept as written (a
-            // `'20'` as much as a `2.5`), so `readOrgManagerChainIssue`
-            // reports it instead of the start level quietly going away.
-            ...(startPositionLevel === undefined || startPositionLevel === null
-              ? {}
-              : { startPositionLevel: startPositionLevel as number }),
-          }
-        : DEFAULT_MANAGER_RESOLVER;
+      // A level that is missing, fractional or not a number is kept as written,
+      // like `startFrom` and `startPositionLevel`, so the publish lint reports
+      // it. Falling back to the direct manager here would send the approval to
+      // someone else and drop the start with it.
+      return {
+        minPositionLevel: minPositionLevel as number,
+        type: 'ORG_MANAGER_CHAIN',
+        ...(fallback ? { fallback } : {}),
+        ...(startFrom === null ? {} : { startFrom }),
+        // Anything but an absent or `null` level is kept as written (a
+        // `'20'` as much as a `2.5`), so `readOrgManagerChainIssue`
+        // reports it instead of the start level quietly going away.
+        ...(startPositionLevel === undefined || startPositionLevel === null
+          ? {}
+          : { startPositionLevel: startPositionLevel as number }),
+      };
     }
     case 'ORG_UNIT_MANAGER': {
       const orgUnitId = readNonEmptyString(value['orgUnitId']);
@@ -1579,13 +1580,16 @@ function parseApproverResolver(value: unknown): ApproverResolver {
       };
     }
     case 'NODE_ACTOR':
-      return { nodeIds: readStringArray(value['nodeIds']), type: 'NODE_ACTOR' };
+      return {
+        nodeIds: readNodeIdsAsWritten(value['nodeIds']),
+        type: 'NODE_ACTOR',
+      };
     case 'NODE_ACTOR_MANAGER': {
       const fallback = parseApproverResolverFallback(value['fallback']);
 
       return {
         levelsUp: readPositiveInteger(value['levelsUp'], 1),
-        nodeIds: readStringArray(value['nodeIds']),
+        nodeIds: readNodeIdsAsWritten(value['nodeIds']),
         preferClosestOrgUnit: value['preferClosestOrgUnit'] === true,
         type: 'NODE_ACTOR_MANAGER',
         ...(fallback ? { fallback } : {}),
@@ -1640,7 +1644,10 @@ function parseOrgManagerChainStart(
         type: 'FORM_MEMBER',
       };
     case 'NODE_ACTOR':
-      return { nodeIds: readStringArray(value['nodeIds']), type: 'NODE_ACTOR' };
+      return {
+        nodeIds: readNodeIdsAsWritten(value['nodeIds']),
+        type: 'NODE_ACTOR',
+      };
     default:
       // The lint names it as unsupported; see `readOrgManagerChainIssue`.
       return value as unknown as OrgManagerChainStart;
@@ -1802,6 +1809,16 @@ function parseServiceAction(value: unknown): ServiceAction {
     type: 'NOTIFY',
     ...readOptionalString(value, 'template', 'template'),
   };
+}
+
+/**
+ * A stage list exactly as the model wrote it. An entry that is not a non-empty
+ * string is kept rather than filtered out: a shorter list can pass every check
+ * while the stage the model named has quietly gone. The publish lint reports
+ * the entry.
+ */
+function readNodeIdsAsWritten(value: unknown): readonly string[] {
+  return Array.isArray(value) ? (value as readonly string[]) : [];
 }
 
 function readStringArray(value: unknown): readonly string[] {
