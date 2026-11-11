@@ -1257,6 +1257,15 @@ describe('TemplateService', () => {
         ).rejects.toThrow(/不在 .* 的上游/);
       });
 
+      it('reports an empty stage start once, not once per lint', async (): Promise<void> => {
+        const message = await publishStageStart('task_2', []).then(
+          () => null,
+          (error: Error): string => error.message,
+        );
+
+        expect(message?.split('; ')).toHaveLength(1);
+      });
+
       // The engine cannot pick one person out of several signers, and says so
       // inside the last signer's own approval, which then never commits.
       it.each([
