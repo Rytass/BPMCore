@@ -7,6 +7,7 @@ import { readNodeActorSourceIssues } from '@rytass/bpm-core-shared/workflow-grap
 import {
   NODE_ACTOR_STAGE_HINT,
   NO_UPSTREAM_USER_TASK_HINT,
+  ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT,
   ORG_MANAGER_CHAIN_STAGE_HINT,
   readNodeActorGraphIssues,
   readNodeActorStageChoice,
@@ -502,7 +503,7 @@ describe('manager chain NODE_ACTOR start', () => {
       );
     });
 
-    it('says so when only multi-signer stages are upstream', () => {
+    it('says the stages are multi-signer, not that there are none, when only multi-signer stages are upstream', () => {
       const definition = graph(
         [
           plainNode('start', 'startEvent'),
@@ -515,9 +516,40 @@ describe('manager chain NODE_ACTOR start', () => {
 
       expect(readOrgManagerChainStageChoice(definition, 'me', [])).toEqual({
         options: [],
-        problems: [NO_UPSTREAM_USER_TASK_HINT],
+        problems: [ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT],
         selected: [],
       });
+      expect(ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT).not.toBe(
+        NO_UPSTREAM_USER_TASK_HINT,
+      );
+      // 依前面關卡的簽核者 takes everyone, so the same stage is offered to it
+      // and it has nothing to say.
+      expect(readNodeActorStageChoice(definition, 'me', [])).toEqual({
+        options: [{ id: 'par', name: '關卡 par' }],
+        problems: [],
+        selected: [],
+      });
+    });
+
+    it('keeps the no-upstream-stage hint when nothing at all is upstream, for the chain and for 依前面關卡的簽核者', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          taskNode('me'),
+          plainNode('end', 'endEvent'),
+        ],
+        [link('start', 'me'), link('me', 'end')],
+      );
+      const expected = {
+        options: [],
+        problems: [NO_UPSTREAM_USER_TASK_HINT],
+        selected: [],
+      };
+
+      expect(readOrgManagerChainStageChoice(definition, 'me', [])).toEqual(
+        expected,
+      );
+      expect(readNodeActorStageChoice(definition, 'me', [])).toEqual(expected);
     });
 
     it('has a hint that says the stage must have one signer', () => {

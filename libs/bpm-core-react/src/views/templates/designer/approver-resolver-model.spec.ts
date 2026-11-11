@@ -25,6 +25,7 @@ import {
   readApproverSubjectChoice,
   readApproverSubjectOption,
   readApproverSubjectPick,
+  readOrgManagerChainFallbackHint,
   readOrgManagerChainStartChoice,
   readOrgManagerChainStartFormPath,
   readOrgManagerChainStartLevelChoice,
@@ -36,6 +37,7 @@ import {
   readOrgManagerChainStartPick,
   readStoredManagerLevelOption,
   withApproverSubject,
+  withOrgManagerChainMinPositionLevel,
   withOrgManagerChainStart,
   withOrgManagerChainStartFormPath,
   withOrgManagerChainStartNodeIds,
@@ -1610,6 +1612,39 @@ describe('readOrgManagerChainStartLevelChoice / readOrgManagerChainStartLevelPic
     expect(readOrgManagerChainStartLevelPick(CHAIN, 'invalid')).toBeNull();
   });
 
+  it('shows a stored level that is not a whole number the same as one that is not a number', () => {
+    const notANumber = readOrgManagerChainStartLevelChoice(
+      { ...CHAIN, startPositionLevel: '20' as unknown as number },
+      POSITIONS,
+    );
+    const fraction = readOrgManagerChainStartLevelChoice(
+      { ...CHAIN, startPositionLevel: 2.5 },
+      POSITIONS,
+    );
+
+    expect(fraction).toEqual(notANumber);
+    expect(fraction.invalid).toBe(true);
+    expect(fraction.selected).toEqual({ id: 'invalid', name: '起始職等無效' });
+    expect(fraction.options.map((option) => option.id)).not.toContain('2.5');
+  });
+
+  it('leaves the 簽到職等 comparison to a whole-number level only, so a fraction shows the invalid hint', () => {
+    expect(
+      readOrgManagerChainStartLevelProblem({
+        ...CHAIN,
+        minPositionLevel: 2,
+        startPositionLevel: 2.5,
+      }),
+    ).toBeNull();
+    expect(
+      readApproverResolverIssue({
+        ...CHAIN,
+        minPositionLevel: 2,
+        startPositionLevel: 2.5,
+      }),
+    ).toBe('簽核節點需要指定有效的起始職等。');
+  });
+
   it('writes the picked level and keeps the rest of the resolver', () => {
     expect(
       readOrgManagerChainStartLevelPick(CHAIN_FROM_FORM, '5'),
@@ -1767,6 +1802,68 @@ describe('readApproverResolverSummary (manager chain start settings)', () => {
   it('names an unsupported start rather than reading it as the initiator', () => {
     expect(summarizeChain(CHAIN_FUTURE_START)).toBe(
       '主管鏈：不支援的起點（FORM_MEMBER_MANAGER），簽到職等 5',
+    );
+  });
+});
+
+describe('withOrgManagerChainMinPositionLevel', () => {
+  it('sets 簽到職等 and keeps the start, the start level and the fallback', () => {
+    expect(
+      withOrgManagerChainMinPositionLevel(CHAIN_FROM_FORM, 4),
+    ).toStrictEqual({ ...CHAIN_FROM_FORM, minPositionLevel: 4 });
+    expect(
+      withOrgManagerChainMinPositionLevel(CHAIN_FROM_STAGE, 3),
+    ).toStrictEqual({ ...CHAIN_FROM_STAGE, minPositionLevel: 3 });
+  });
+
+  it('adds no start keys to a chain that has none', () => {
+    const next = withOrgManagerChainMinPositionLevel(CHAIN, 3);
+
+    expect(next).toStrictEqual({
+      minPositionLevel: 3,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+    expect('startFrom' in next).toBe(false);
+    expect('startPositionLevel' in next).toBe(false);
+  });
+});
+
+describe('readOrgManagerChainFallbackHint', () => {
+  const ORIGINAL =
+    '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關。';
+
+  it('is the text it always was when neither the start nor the start level is set', () => {
+    expect(readOrgManagerChainFallbackHint(CHAIN)).toBe(ORIGINAL);
+    expect(readOrgManagerChainFallbackHint(CHAIN_INITIATOR)).toBe(ORIGINAL);
+    expect(readOrgManagerChainFallbackHint(CHAIN_FUTURE_START)).toBe(ORIGINAL);
+  });
+
+  it('adds a missing start for a form-field start', () => {
+    expect(
+      readOrgManagerChainFallbackHint({
+        ...CHAIN,
+        startFrom: { formPath: 'owner', type: 'FORM_MEMBER' },
+      }),
+    ).toBe(
+      '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關；找不到起點（表單欄位沒選人）時，則改派給該會員。',
+    );
+  });
+
+  it('adds a missing start for an earlier-stage start', () => {
+    expect(readOrgManagerChainFallbackHint(CHAIN_FROM_STAGE)).toBe(
+      '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關；找不到起點（前面關卡沒有同意紀錄）時，則改派給該會員。',
+    );
+  });
+
+  it('adds nobody reaching the start level for a start level only', () => {
+    expect(readOrgManagerChainFallbackHint(CHAIN_LEVEL_ONLY)).toBe(
+      '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關；鏈上沒有人達到起始職等時，則改派給該會員。',
+    );
+  });
+
+  it('adds both cases when the start and the start level are set', () => {
+    expect(readOrgManagerChainFallbackHint(CHAIN_FROM_FORM)).toBe(
+      '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關；找不到起點（表單欄位沒選人），或鏈上沒有人達到起始職等時，則改派給該會員。',
     );
   });
 });

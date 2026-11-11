@@ -41,6 +41,13 @@ export const NODE_ACTOR_STAGE_HINT =
 export const ORG_MANAGER_CHAIN_STAGE_HINT =
   '起點是你選的前面關卡實際簽核的那一位，從他的主管開始往上簽；只能選每次只會有一位簽核人的關卡。可複選，整組要涵蓋每條路徑，取最近實際走到的那一關的簽核者。';
 
+/**
+ * The 關卡 picker's hint when every stage upstream of a manager chain may end
+ * with several signers, so none can be the start.
+ */
+export const ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT =
+  '前面的簽核關卡都可能有多位簽核人，所以不能當主管鏈的起點；請改用只有一位簽核人的關卡，或改選其他起點。';
+
 const UNUSABLE_STAGE_SUFFIX = '（無法使用）';
 const MISSING_STAGE_SUFFIX = '（已不存在）';
 
@@ -94,13 +101,27 @@ export function readOrgManagerChainStageChoice(
   nodeId: string,
   selectedIds: readonly string[],
 ): NodeActorStageChoice {
-  return readStageChoice(
+  const choice = readStageChoice(
     definition,
     nodeId,
     selectedIds,
     (node) => !canUserTaskHaveMultipleApprovers(node),
     (ids) => readSingleApproverSourceIssues(definition, ids),
   );
+
+  // Empty only because of the single-signer filter: saying "add an approval
+  // node" would be wrong, there are some, just none that can start a chain.
+  const onlyMultiApproverStages =
+    choice.options.length === 0 &&
+    selectedIds.length === 0 &&
+    readNodeActorStageChoice(definition, nodeId, []).options.length > 0;
+
+  return onlyMultiApproverStages
+    ? {
+        ...choice,
+        problems: [ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT],
+      }
+    : choice;
 }
 
 function readStageChoice(

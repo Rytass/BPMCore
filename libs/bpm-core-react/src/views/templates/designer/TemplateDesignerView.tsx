@@ -197,6 +197,7 @@ import {
   readManagerLevelOption,
   readManagerLevelOptionById,
   readMemberSelectOption,
+  readOrgManagerChainFallbackHint,
   readOrgManagerChainStartChoice,
   readOrgManagerChainStartFormPath,
   readOrgManagerChainStartLevelChoice,
@@ -210,6 +211,7 @@ import {
   readSelectedOrgUnitOption,
   readSelectedPositionOption,
   updateApproverResolverFallback,
+  withOrgManagerChainMinPositionLevel,
   withOrgManagerChainStartFormPath,
   withOrgManagerChainStartNodeIds,
   withOrgUnitSource,
@@ -3276,12 +3278,12 @@ export function TemplateDesignerView({
               <Select
                 clearable={false}
                 onChange={(option): void =>
-                  updateUserTaskResolver({
-                    ...resolver,
-                    minPositionLevel: Number(
-                      option?.id ?? resolver.minPositionLevel,
+                  updateUserTaskResolver(
+                    withOrgManagerChainMinPositionLevel(
+                      resolver,
+                      Number(option?.id ?? resolver.minPositionLevel),
                     ),
-                  })
+                  )
                 }
                 options={[...minPositionLevelOptions]}
                 value={readSelectOption(
@@ -3571,7 +3573,7 @@ export function TemplateDesignerView({
                 unsupportedFallbackType !== null
                   ? '此改派設定來自較新版本的 BPMCore，本版本無法執行也無法編輯；請升級後再編輯。這裡選擇其他模式會覆寫原設定。'
                   : resolver.type === 'ORG_MANAGER_CHAIN'
-                    ? '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關。'
+                    ? readOrgManagerChainFallbackHint(resolver)
                     : '預設會停止流程並提示；若設定固定人，找不到主管時會改派給該會員。'
               }
               label="無主管時"

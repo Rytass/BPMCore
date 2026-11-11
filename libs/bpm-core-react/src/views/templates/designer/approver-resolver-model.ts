@@ -1161,8 +1161,31 @@ export function withOrgManagerChainStartNodeIds(
     : resolver;
 }
 
+// The stored start level when it is a whole number, `null` otherwise. The
+// publish check (`readOrgManagerChainIssue`) refuses a level that is not an
+// integer (2.5) the same as one that is not a number, so the designer reads
+// both as one problem.
+function readValidOrgManagerChainStartLevel(
+  resolver: OrgManagerChainResolver,
+): number | null {
+  const level = readOrgManagerChainStartPositionLevel(resolver);
+
+  return level !== null && Number.isInteger(level) ? level : null;
+}
+
+/**
+ * The resolver after 簽到職等 is set to `minPositionLevel`: `startFrom`,
+ * `startPositionLevel` and `fallback` stay as they were.
+ */
+export function withOrgManagerChainMinPositionLevel(
+  resolver: OrgManagerChainResolver,
+  minPositionLevel: number,
+): OrgManagerChainResolver {
+  return { ...resolver, minPositionLevel };
+}
+
 export type OrgManagerChainStartLevelChoice = Readonly<{
-  /** The stored level cannot be read (not a number): shown, not offered. */
+  /** The stored level is not a whole number: shown, not offered. */
   invalid: boolean;
   options: readonly OrgManagerChainStartOption[];
   selected: OrgManagerChainStartOption;
@@ -1179,7 +1202,7 @@ export function readOrgManagerChainStartLevelChoice(
   resolver: OrgManagerChainResolver,
   positions: readonly PositionRecord[],
 ): OrgManagerChainStartLevelChoice {
-  const level = readOrgManagerChainStartPositionLevel(resolver);
+  const level = readValidOrgManagerChainStartLevel(resolver);
   const stored: unknown = resolver.startPositionLevel;
   const levelOptions = readMinPositionLevelOptions(
     positions,
@@ -1254,7 +1277,7 @@ export function readOrgManagerChainStartLevelPick(
 export function readOrgManagerChainStartLevelProblem(
   resolver: OrgManagerChainResolver,
 ): string | null {
-  const level = readOrgManagerChainStartPositionLevel(resolver);
+  const level = readValidOrgManagerChainStartLevel(resolver);
 
   return level !== null && level > resolver.minPositionLevel
     ? START_POSITION_LEVEL_ABOVE_MIN_HINT
@@ -1289,6 +1312,34 @@ function readOrgManagerChainStartSummary(
   }
 
   return null;
+}
+
+// The 無主管時 hint a manager chain has always shown.
+const ORG_MANAGER_CHAIN_FALLBACK_HINT =
+  '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關。';
+
+/**
+ * The hint under 無主管時 for a manager chain. With neither the start nor the
+ * start level set it is the text it always was. Otherwise it adds the two ways
+ * the engine ends up at the fallback with nobody on the chain: no start person
+ * (`resolveOrgManagerChainStart` returns no member) and no manager at or above
+ * the start level (the chain stays empty and `resolveFallbackAssignees` runs).
+ */
+export function readOrgManagerChainFallbackHint(
+  resolver: OrgManagerChainResolver,
+): string {
+  const mode = readOrgManagerChainStartMode(resolver);
+  const emptyChainCases = [
+    ...(mode === 'FORM_MEMBER' ? ['找不到起點（表單欄位沒選人）'] : []),
+    ...(mode === 'NODE_ACTOR' ? ['找不到起點（前面關卡沒有同意紀錄）'] : []),
+    ...(readOrgManagerChainStartPositionLevel(resolver) !== null
+      ? ['鏈上沒有人達到起始職等']
+      : []),
+  ];
+
+  return emptyChainCases.length > 0
+    ? `${ORG_MANAGER_CHAIN_FALLBACK_HINT.slice(0, -1)}；${emptyChainCases.join('，或')}時，則改派給該會員。`
+    : ORG_MANAGER_CHAIN_FALLBACK_HINT;
 }
 
 /**
