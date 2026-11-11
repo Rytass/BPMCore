@@ -123,6 +123,18 @@ describe('initiator customFields resolver resolution', (): void => {
     });
   });
 
+  it('uses the runtime instance from forRoot for every copy', async (): Promise<void> => {
+    const runtimeResolver = createResolver();
+    const resolvers = await readResolvers(
+      BPMRootModule.forRoot({ initiatorCustomFieldsResolver: runtimeResolver }),
+    );
+
+    expect(resolvers).not.toHaveLength(0);
+    resolvers.forEach((resolver): void => {
+      expect(resolver).toBe(runtimeResolver);
+    });
+  });
+
   it('keeps a host binding from its own global module for every copy', async (): Promise<void> => {
     const resolvers = await readResolvers(BPMRootModule.forRoot(), [
       HostGlobalResolverModule,
