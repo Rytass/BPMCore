@@ -733,16 +733,27 @@ describe('WorkflowEngineService', () => {
       expect(refused.savedInstance).toBeNull();
     });
 
-    // Under jest `cel-js` is a shim that reads an absent key as `undefined`,
-    // so this policy is simply false. The real engines throw
-    // `EXPRESSION_MISSING_KEY` for the same read in either dialect, so a case
-    // does not start there either, but with that error instead of this one.
+    // This unit suite maps `cel-js` to a JavaScript shim (jest.config.cts), so
+    // the shim's answer is not asserted here. The shim reads an absent key as
+    // `undefined` and the policy comes out false (ConflictException); the real
+    // engines throw `EXPRESSION_MISSING_KEY` for the same read
+    // (ExpressionRuntimeError). Either way no case is saved, which is the only
+    // behaviour this test pins.
     it('does not start a case whose policy reads customFields when no resolver is registered', async (): Promise<void> => {
       const fixture = createFixture({
         templateInitiatorPolicyCel: STATION_POLICY,
       });
 
-      await expect(submit(fixture)).rejects.toThrow(NOT_ALLOWED);
+      const error: unknown = await submit(fixture).then(
+        () => null,
+        (rejected: unknown): unknown => rejected,
+      );
+
+      expect(
+        error instanceof ConflictException ||
+          error instanceof ExpressionRuntimeError,
+      ).toBe(true);
+      expect(error).not.toBeNull();
       expect(fixture.savedInstance).toBeNull();
     });
 
