@@ -1534,7 +1534,10 @@ export function readNodeActorSourceIssues(
  *   `PERCENTAGE` threshold, whose head count only the org chart at run time
  *   knows;
  * - a `DIRECT` resolver that lists one member can only ever give one person,
- *   whatever the policy ({@link readDesignTimeApproverCount}).
+ *   whatever the policy ({@link readDesignTimeApproverCount}), unless the
+ *   stage also keeps the initiator out with `whenEmpty: 'INITIATOR_MANAGER'`:
+ *   when that one member is the initiator the stage goes to the initiator's
+ *   manager instead, who may be several people, so the policy decides.
  *
  * Deliberately conservative on the unknown side: a policy this build does not
  * recognise reads as one person, because the structural lint reports it.
@@ -1550,7 +1553,16 @@ export function canUserTaskHaveMultipleApprovers(node: UserTaskNode): boolean {
     ? readDesignTimeApproverCount(resolver)
     : null;
 
-  if (designTimeCount !== null && designTimeCount <= 1) {
+  // Who the initiator's manager is (and how many share the level) is only known
+  // at run time, so a lone listed member is no guarantee of one person here.
+  const mayHandOverToInitiatorManagers =
+    node.data.excludeInitiator?.whenEmpty === 'INITIATOR_MANAGER';
+
+  if (
+    !mayHandOverToInitiatorManagers &&
+    designTimeCount !== null &&
+    designTimeCount <= 1
+  ) {
     return false;
   }
 

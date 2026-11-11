@@ -2074,10 +2074,13 @@ describe('canUserTaskHaveMultipleApprovers', () => {
   function taskWith(
     resolver: ApproverResolver,
     policy: DecisionPolicy,
+    excludeInitiator?: ExcludeInitiatorConfig,
   ): UserTaskNode {
-    return definitionWithUserTask(resolver, policy).nodes.find(
-      (node) => node.id === 'task',
-    ) as UserTaskNode;
+    return definitionWithUserTask(
+      resolver,
+      policy,
+      excludeInitiator,
+    ).nodes.find((node) => node.id === 'task') as UserTaskNode;
   }
 
   it.each<{
@@ -2169,25 +2172,111 @@ describe('canUserTaskHaveMultipleApprovers', () => {
       expected,
     );
   });
+
+  // The one listed member may be the initiator, in which case an
+  // `INITIATOR_MANAGER` stage goes to the initiator's managers instead.
+  it.each<{
+    readonly excludeInitiator: ExcludeInitiatorConfig;
+    readonly expected: boolean;
+    readonly name: string;
+    readonly policy: DecisionPolicy;
+  }>([
+    {
+      excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'PARALLEL_ALL over one listed member that hands over to the initiator manager',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+    {
+      excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'SEQUENTIAL over one listed member that hands over to the initiator manager',
+      policy: { type: 'SEQUENTIAL' },
+    },
+    {
+      excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      expected: true,
+      name: 'a COUNT quorum of 2 over one listed member that hands over to the initiator manager',
+      policy: quorum(2),
+    },
+    {
+      excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+      expected: false,
+      name: 'SINGLE over one listed member that hands over to the initiator manager',
+      policy: { type: 'SINGLE' },
+    },
+    {
+      excludeInitiator: { whenEmpty: 'SKIP_NODE' },
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member that skips the stage (control)',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+    {
+      excludeInitiator: { whenEmpty: 'FAIL' },
+      expected: false,
+      name: 'PARALLEL_ALL over one listed member that fails (control)',
+      policy: { type: 'PARALLEL_ALL' },
+    },
+  ])('reads $name as $expected', ({ excludeInitiator, expected, policy }) => {
+    expect(
+      canUserTaskHaveMultipleApprovers(
+        taskWith(ONE_MEMBER, policy, excludeInitiator),
+      ),
+    ).toBe(expected);
+  });
 });
 
 describe('readSingleApproverSourceIssues', () => {
+  // `task` is the source stage; `me` is a later stage that reads "who signed
+  // `task`" and sits between `task` and the end, so `task` is a sound
+  // `NODE_ACTOR` source for it.
   function withSource(
     policy: DecisionPolicy,
     resolver: ApproverResolver = THREE_MEMBERS,
+    excludeInitiator?: ExcludeInitiatorConfig,
   ): WorkflowDefinition {
-    const base = definitionWithUserTask(resolver, policy);
+    const base = definitionWithUserTask(resolver, policy, excludeInitiator);
 
     return {
       ...base,
       edges: [
-        ...base.edges,
+        {
+          data: {},
+          id: 'edge_start_task',
+          source: 'start',
+          target: 'task',
+          type: 'smoothstep',
+        },
         {
           data: {},
           id: 'edge_task_me',
           source: 'task',
           target: 'me',
           type: 'smoothstep',
+        },
+        {
+          data: {},
+          id: 'edge_me_end',
+          source: 'me',
+          target: 'end',
+          type: 'smoothstep',
+        },
+      ],
+      nodes: [
+        ...base.nodes,
+        {
+          data: {
+            allowAddSigner: false,
+            allowReject: true,
+            allowTransfer: true,
+            approverResolver: { nodeIds: ['task'], type: 'NODE_ACTOR' },
+            decisionPolicy: { type: 'SINGLE' },
+            label: '來源的主管',
+            returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+          },
+          id: 'me',
+          position: { x: 600, y: 160 },
+          type: 'userTask',
         },
       ],
     };
@@ -2233,6 +2322,32 @@ describe('readSingleApproverSourceIssues', () => {
     ).toEqual([]);
   });
 
+  it('refuses a single listed member that hands over to the initiator manager under a multi-seat policy', () => {
+    const oneMember: ApproverResolver = { memberIds: ['m1'], type: 'DIRECT' };
+
+    expect(
+      readSingleApproverSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }, oneMember, {
+          whenEmpty: 'INITIATOR_MANAGER',
+        }),
+        ['task'],
+      ),
+    ).toEqual([ISSUE]);
+  });
+
+  it('accepts a single listed member that fails when no one else is left (control)', () => {
+    const oneMember: ApproverResolver = { memberIds: ['m1'], type: 'DIRECT' };
+
+    expect(
+      readSingleApproverSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }, oneMember, {
+          whenEmpty: 'FAIL',
+        }),
+        ['task'],
+      ),
+    ).toEqual([]);
+  });
+
   it('reports only the stage with several signers among those listed', () => {
     const base = withSource({ type: 'SEQUENTIAL' });
 
@@ -2257,5 +2372,13 @@ describe('readSingleApproverSourceIssues', () => {
         ['task'],
       ),
     ).toEqual([]);
+    // The fixture is a real graph: the same call the other way round is not.
+    expect(
+      readNodeActorSourceIssues(
+        withSource({ type: 'PARALLEL_ALL' }),
+        'task',
+        ['me'],
+      ),
+    ).not.toEqual([]);
   });
 });

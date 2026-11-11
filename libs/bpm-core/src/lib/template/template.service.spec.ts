@@ -1292,6 +1292,30 @@ describe('TemplateService', () => {
           ).resolves.toMatchObject({ id: 'template-version-1' });
         },
       );
+
+      // A lone listed member can only ever be one person, unless that member
+      // is the initiator and the stage then goes to the initiator's managers.
+      const ONE_LISTED_MEMBER = {
+        approverResolver: { memberIds: ['m1'], type: 'DIRECT' },
+        decisionPolicy: { type: 'PARALLEL_ALL' },
+      };
+
+      it('publishes a multi-seat policy over one listed member, so one person signs (control)', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_2', ['task_1'], ONE_LISTED_MEMBER),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      });
+
+      it('rejects a multi-seat policy over one listed member that hands over to the initiator manager', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_2', ['task_1'], {
+            ...ONE_LISTED_MEMBER,
+            excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+          }),
+        ).rejects.toThrow(
+          /workflow\.nodes\.task_2\.approverResolver\.startFrom\.nodeIds: 主管鏈起點的前面關卡 「補填 1」 可能有多位實際簽核人/,
+        );
+      });
     });
   });
 
