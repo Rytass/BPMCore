@@ -8367,7 +8367,7 @@ export class WorkflowEngineService {
         { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
       );
 
-      assertServiceTaskTextValue(
+      assertServiceTaskFieldValue(
         instance.formDefinitionSnapshot,
         action.fieldPath,
         value,
@@ -9173,16 +9173,20 @@ function readFilterableProblemLocation(
 }
 
 /**
- * Holds a `SET_FORM_FIELD` write to the length and format rules the form
- * applies to a filler, so a service task cannot store text the field would
- * have refused. Breaking them throws, which rolls back the submit or decision
+ * Holds a `SET_FORM_FIELD` write to the rules the form applies to a filler —
+ * text length and format, and the shape of a member or organization-unit value
+ * — so a service task cannot store what the field would have refused. A member
+ * value matters past the write: a `DYNAMIC_FORM` resolver or a manager chain
+ * starting from the field reads it later, and an array on a single-member
+ * field would make that node refuse inside a later decision, which then
+ * cannot commit. Breaking them throws, which rolls back the submit or decision
  * that reached the node: the value is never half-written, and the node's value
  * has to be corrected. Only a top-level field can carry those rules — the
  * writer ignores an indexed path, and a nested record path names no field —
  * and an unreadable snapshot is left alone, as in
  * `readDataSourceFieldKeyAtPath`.
  */
-function assertServiceTaskTextValue(
+function assertServiceTaskFieldValue(
   snapshot: Readonly<Record<string, unknown>>,
   fieldPath: string,
   value: unknown,
@@ -9198,19 +9202,25 @@ function assertServiceTaskTextValue(
   const field = schema.fields.find(
     (candidate) => candidate.fieldKey === segments[0],
   );
+  const written = { [segments[0]]: value };
   const errors = field
-    ? readSubmittedTextValueErrors(field, value, {
-        testPattern: createTimedTextFieldPatternTest(),
-      })
+    ? [
+        ...readSubmittedTextValueErrors(field, value, {
+          testPattern: createTimedTextFieldPatternTest(),
+        }),
+        ...readSubmittedMemberValueErrors([field], written),
+        ...readSubmittedOrgUnitValueErrors([field], written),
+      ]
     : [];
 
   if (!field || errors.length === 0) {
     return;
   }
 
-  throw new BadRequestException(
+  throw createFormDataBadRequest(
     `系統節點「${nodeLabel}」要寫入的值不符合欄位規則（${readFormDataIssueMessage(errors)}），` +
       `這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值`,
+    errors,
   );
 }
 
