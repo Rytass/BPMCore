@@ -753,7 +753,7 @@ BPMRootModule.forRootAsync({
 ```
 
 A template can then say `initiator.customFields.station == 'TPE'` in an edge
-condition. Keep it out of `initiatorPolicyCel` for now: see the last bullet.
+condition. Keep it out of `initiatorPolicyCel` for now: see the bullet on the launchable-template list below.
 
 - It runs once, when the case is submitted, with the member, the template and
   published version, the validated form data, the default snapshot and the
