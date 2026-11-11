@@ -284,6 +284,19 @@ Designer 目前提供「指定會員」、「依表單欄位指定」（`DYNAMIC
 後端 publish validation 會檢查 resolver 必要欄位是否存在，但不會查詢 member /
 position / org id 是否真實存在。
 
+主管鏈（`ORG_MANAGER_CHAIN`）在「簽到職等」之外多兩個設定（`startFrom`／`startPositionLevel`，未發佈）：
+「從誰的主管開始」（發起人／表單欄位的人／前面關卡的簽核者）與「從職等幾開始簽」（可留白）。
+選「表單欄位的人」時欄位選單只列單選的人員欄位（與 `FORM_MEMBER_MANAGER` 同一組，必填、可見的警告也相同）；
+選「前面關卡的簽核者」時關卡選單與 `NODE_ACTOR` 同一組，再濾掉 `canUserTaskHaveMultipleApprovers`
+為真的關卡（`PARALLEL_ALL` 這類可能有多位簽核人的關卡不會出現在這裡，但照樣出現在 `NODE_ACTOR` 的選單）；
+已存的關卡若刪掉了或不再合格，會保留並標示「（已不存在）」／「（無法使用）」，由發布檢查擋下。
+「從職等幾開始簽」只列不高於「簽到職等」的職等；已存的值高於它或不是數字時保留顯示並提示，就緒檢查擋下。
+只在「切換簽核來源」時才會清掉這兩個設定，切換「從誰的主管開始」只重設起點，不動起始職等與 `fallback`；
+本版不認得的起點以唯讀的「不支援的起點（…）」顯示，不會被重寫。節點摘要與試跑的處理者文字
+（`parseOrgManagerChainPlaceholder`）會寫出起點與起始職等，例如「主管鏈：從表單欄位「負責人」的主管起算，
+簽到職等 30（從職等 20 開始）」。知會節點的收件人在設計器裡本來就不開放主管鏈的設定面板
+（只顯示摘要），所以不會出現「從誰的主管開始」。
+
 四種新來源（`FORM_MEMBER_MANAGER`、`FORM_ORG_UNIT_MANAGER`、`NODE_ACTOR`、`NODE_ACTOR_MANAGER`，未發佈）
 的就緒檢查（`readApproverResolverIssue`）：`formPath` 不可空白、`nodeIds` 不可為空、
 `FORM_MEMBER_MANAGER`／`NODE_ACTOR_MANAGER` 的 `levelsUp` 須為 ≥ 1 的整數，三個主管型的
