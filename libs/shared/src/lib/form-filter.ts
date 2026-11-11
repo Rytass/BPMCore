@@ -407,7 +407,11 @@ export function isCanonicalDateTime(value: unknown): value is string {
   return Number.isFinite(time) && new Date(time).toISOString() === value;
 }
 
-/** A value inside a filterable path that does not fit its field. */
+/**
+ * A value inside a filterable path that does not fit its field. `path` is the
+ * top-level fieldKey, `<tableKey>.<columnKey>` for a bad cell, or the bare
+ * `tableKey` when the table itself (or one of its rows) is malformed.
+ */
 export interface FilterableValueProblem {
   readonly path: string;
   /** Index of the table row, or `null` for a top-level field. */
@@ -438,21 +442,28 @@ export function readFilterableValueProblems(
         : [];
     }
 
-    const rows = ownValue(data, item.tableKey);
+    const tableKey = item.tableKey;
+    // A malformed table or row is one problem however many of its columns are
+    // filterable, so only the table's first filterable column reports it.
+    const reportsTable =
+      paths.find((candidate) => candidate.tableKey === tableKey) === item;
+    const rows = ownValue(data, tableKey);
 
     if (rows === undefined || rows === null) {
       return [];
     }
 
     if (!Array.isArray(rows)) {
-      return [
-        { expected: '表格列的清單', path: item.path, rowIndex: null, value: rows },
-      ];
+      return reportsTable
+        ? [{ expected: '表格列的清單', path: tableKey, rowIndex: null, value: rows }]
+        : [];
     }
 
     return rows.flatMap((row, rowIndex): readonly FilterableValueProblem[] => {
       if (typeof row !== 'object' || row === null || Array.isArray(row)) {
-        return [{ expected: '表格列', path: item.path, rowIndex, value: row }];
+        return reportsTable
+          ? [{ expected: '物件', path: tableKey, rowIndex, value: row }]
+          : [];
       }
 
       const value = ownValue(row as Readonly<Record<string, unknown>>, item.key);

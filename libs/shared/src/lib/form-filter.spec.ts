@@ -87,6 +87,17 @@ describe('readFilterableValueProblems', () => {
       { expected: '數字', path: 'items.qty', rowIndex: 1, value: 'many' },
     ]);
   });
+
+  it('names the table, not a column, when the table or a row is malformed', () => {
+    const paths = readFilterableFieldPaths(schema);
+
+    expect(readFilterableValueProblems(paths, { items: 'x' })).toEqual([
+      { expected: '表格列的清單', path: 'items', rowIndex: null, value: 'x' },
+    ]);
+    expect(readFilterableValueProblems(paths, { items: ['bad'] })).toEqual([
+      { expected: '物件', path: 'items', rowIndex: 0, value: 'bad' },
+    ]);
+  });
 });
 
 describe('readFilterableFieldIssues', () => {
