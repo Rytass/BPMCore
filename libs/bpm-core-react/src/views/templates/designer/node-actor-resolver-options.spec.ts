@@ -7,8 +7,10 @@ import { readNodeActorSourceIssues } from '@rytass/bpm-core-shared/workflow-grap
 import {
   NODE_ACTOR_STAGE_HINT,
   NO_UPSTREAM_USER_TASK_HINT,
+  ORG_MANAGER_CHAIN_STAGE_HINT,
   readNodeActorGraphIssues,
   readNodeActorStageChoice,
+  readOrgManagerChainStageChoice,
 } from './node-actor-resolver-options';
 
 function taskNode(
@@ -374,5 +376,229 @@ describe('NODE_ACTOR_STAGE_HINT', () => {
     expect(NODE_ACTOR_STAGE_HINT).toContain('不是全部');
     // Control: the original coverage sentence is still there.
     expect(NODE_ACTOR_STAGE_HINT).toContain('整組要涵蓋每條路徑');
+  });
+});
+
+describe('manager chain NODE_ACTOR start', () => {
+  // `par` is signed by two people at once; `a` and `b` by one each.
+  const parallel = taskNode('par', {
+    approverResolver: { memberIds: ['m1', 'm2'], type: 'DIRECT' },
+    decisionPolicy: { type: 'PARALLEL_ALL' },
+  });
+  const LINE_WITH_PARALLEL = graph(
+    [
+      plainNode('start', 'startEvent'),
+      taskNode('a'),
+      parallel,
+      taskNode('b'),
+      taskNode('me'),
+      plainNode('end', 'endEvent'),
+    ],
+    [
+      link('start', 'a'),
+      link('a', 'par'),
+      link('par', 'b'),
+      link('b', 'me'),
+      link('me', 'end'),
+    ],
+  );
+  const chainNode = (
+    id: string,
+    nodeIds: readonly string[],
+    extra: Readonly<Record<string, unknown>> = {},
+  ): WorkflowNode =>
+    taskNode(id, {
+      approverResolver: {
+        minPositionLevel: 3,
+        startFrom: { nodeIds, type: 'NODE_ACTOR' },
+        type: 'ORG_MANAGER_CHAIN',
+        ...extra,
+      },
+    });
+  const lineWith = (me: WorkflowNode): WorkflowDefinition =>
+    graph(
+      [
+        plainNode('start', 'startEvent'),
+        taskNode('a'),
+        parallel,
+        me,
+        plainNode('end', 'endEvent'),
+      ],
+      [
+        link('start', 'a'),
+        link('a', 'par'),
+        link('par', me.id),
+        link(me.id, 'end'),
+      ],
+    );
+
+  describe('readOrgManagerChainStageChoice', () => {
+    it('leaves out a stage several people may sign, which 依前面關卡的簽核者 still offers', () => {
+      expect(
+        readOrgManagerChainStageChoice(LINE_WITH_PARALLEL, 'me', []).options,
+      ).toEqual([
+        { id: 'a', name: '關卡 a' },
+        { id: 'b', name: '關卡 b' },
+      ]);
+      expect(
+        readNodeActorStageChoice(LINE_WITH_PARALLEL, 'me', []).options.map(
+          (option) => option.id,
+        ),
+      ).toEqual(['a', 'par', 'b']);
+    });
+
+    it('also leaves out what 依前面關卡的簽核者 leaves out (entry condition, 跳過此關, 逾時自動核准)', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          taskNode('plain'),
+          taskNode('conditional', { entryCondition: 'form.x == 1' }),
+          taskNode('me'),
+          plainNode('end', 'endEvent'),
+        ],
+        [
+          link('start', 'plain'),
+          link('plain', 'conditional'),
+          link('conditional', 'me'),
+          link('me', 'end'),
+        ],
+      );
+
+      expect(
+        readOrgManagerChainStageChoice(definition, 'me', []).options.map(
+          (option) => option.id,
+        ),
+      ).toEqual(['plain']);
+    });
+
+    it('keeps a selected multi-signer stage visible, marked, with the single-signer problem', () => {
+      const choice = readOrgManagerChainStageChoice(LINE_WITH_PARALLEL, 'me', [
+        'par',
+      ]);
+
+      expect(choice.selected).toEqual([
+        { id: 'par', name: '關卡 par（無法使用）' },
+      ]);
+      expect(choice.problems.join('')).toContain('可能有多位實際簽核人');
+    });
+
+    it('reports no problem for a single-signer stage', () => {
+      expect(
+        readOrgManagerChainStageChoice(LINE_WITH_PARALLEL, 'me', ['b'])
+          .problems,
+      ).toEqual([]);
+    });
+
+    it('keeps a deleted stage visible by id, with the graph problem only', () => {
+      const choice = readOrgManagerChainStageChoice(LINE_WITH_PARALLEL, 'me', [
+        'removed',
+      ]);
+
+      expect(choice.selected).toEqual([
+        { id: 'removed', name: 'removed（已不存在）' },
+      ]);
+      expect(choice.problems).toEqual(
+        readNodeActorSourceIssues(LINE_WITH_PARALLEL, 'me', ['removed']),
+      );
+    });
+
+    it('says so when only multi-signer stages are upstream', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          parallel,
+          taskNode('me'),
+          plainNode('end', 'endEvent'),
+        ],
+        [link('start', 'par'), link('par', 'me'), link('me', 'end')],
+      );
+
+      expect(readOrgManagerChainStageChoice(definition, 'me', [])).toEqual({
+        options: [],
+        problems: [NO_UPSTREAM_USER_TASK_HINT],
+        selected: [],
+      });
+    });
+
+    it('has a hint that says the stage must have one signer', () => {
+      expect(ORG_MANAGER_CHAIN_STAGE_HINT).toContain('只會有一位簽核人');
+    });
+  });
+
+  describe('readNodeActorGraphIssues for a manager chain', () => {
+    it('is empty for a chain started from a single-signer stage', () => {
+      expect(
+        readNodeActorGraphIssues(lineWith(chainNode('me', ['a']))),
+      ).toEqual([]);
+    });
+
+    it('names the node and the multi-signer stage', () => {
+      const issues = readNodeActorGraphIssues(
+        lineWith(chainNode('me', ['par'])),
+      );
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toContain('簽核節點「關卡 me」：');
+      expect(issues[0]).toContain('「關卡 par」');
+      expect(issues[0]).toContain('可能有多位實際簽核人');
+    });
+
+    it('reports a deleted stage with the graph problem', () => {
+      expect(
+        readNodeActorGraphIssues(lineWith(chainNode('me', ['removed']))),
+      ).toEqual(['簽核節點「關卡 me」：簽核來源的前面關卡「removed」不存在。']);
+    });
+
+    it('ignores a chain with no start, an initiator start or a form-field start', () => {
+      const withResolver = (
+        approverResolver: Readonly<Record<string, unknown>>,
+      ): readonly string[] =>
+        readNodeActorGraphIssues(
+          lineWith(taskNode('me', { approverResolver })),
+        );
+
+      expect(
+        withResolver({ minPositionLevel: 3, type: 'ORG_MANAGER_CHAIN' }),
+      ).toEqual([]);
+      expect(
+        withResolver({
+          minPositionLevel: 3,
+          startFrom: { type: 'INITIATOR' },
+          type: 'ORG_MANAGER_CHAIN',
+        }),
+      ).toEqual([]);
+      expect(
+        withResolver({
+          minPositionLevel: 3,
+          startFrom: { formPath: 'owner', type: 'FORM_MEMBER' },
+          type: 'ORG_MANAGER_CHAIN',
+        }),
+      ).toEqual([]);
+    });
+
+    it('does not apply the single-signer rule to NODE_ACTOR or NODE_ACTOR_MANAGER', () => {
+      expect(
+        readNodeActorGraphIssues(
+          lineWith(
+            taskNode('me', {
+              approverResolver: { nodeIds: ['par'], type: 'NODE_ACTOR' },
+            }),
+          ),
+        ),
+      ).toEqual([]);
+      expect(
+        readNodeActorGraphIssues(
+          lineWith(
+            taskNode('me', {
+              approverResolver: {
+                levelsUp: 1,
+                nodeIds: ['par'],
+                type: 'NODE_ACTOR_MANAGER',
+              },
+            }),
+          ),
+        ),
+      ).toEqual([]);
+    });
   });
 });
