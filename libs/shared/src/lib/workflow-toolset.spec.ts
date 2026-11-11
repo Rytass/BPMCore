@@ -306,6 +306,69 @@ describe('SLA and return-comment tools', () => {
     );
   });
 
+  it('exposes the approval comment tool as a mutation', () => {
+    expect(
+      WORKFLOW_TOOLSET.find(
+        (tool) => tool.name === 'set_user_task_require_approval_comment',
+      )?.kind,
+    ).toBe('mutation');
+  });
+
+  it('turns on the approval comment requirement and leaves the return one alone', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const before = readUserTaskData(state);
+    const next = await runTool(
+      state,
+      'set_user_task_require_approval_comment',
+      { nodeId, requireApprovalComment: true },
+    );
+
+    expect(readUserTaskData(next)).toEqual({
+      ...before,
+      requireApprovalComment: true,
+    });
+  });
+
+  it('removes the approval comment requirement when it is turned off', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const on = await runTool(
+      state,
+      'set_user_task_require_approval_comment',
+      { nodeId, requireApprovalComment: true },
+    );
+    const off = await runTool(
+      on,
+      'set_user_task_require_approval_comment',
+      { nodeId, requireApprovalComment: false },
+    );
+
+    expect(readUserTaskData(off)).not.toHaveProperty('requireApprovalComment');
+  });
+
+  it('reads the approval comment requirement back in the node summary only when it is on', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const on = await runTool(
+      state,
+      'set_user_task_require_approval_comment',
+      { nodeId, requireApprovalComment: true },
+    );
+    const summaryOf = (target: WorkflowDesignerState): string =>
+      readWorkflowSnapshot(target).nodes.find((node) => node.id === nodeId)
+        ?.summary ?? '';
+
+    expect(summaryOf(on)).toContain('核准必填意見');
+    expect(summaryOf(state)).not.toContain('核准必填意見');
+  });
+
   it('composes a business-day SLA from a value and unit', async () => {
     const state = await stateWithUserTask();
     const nodeId = String(
@@ -2185,5 +2248,188 @@ describe('set_user_task_approver — manager chain start settings', () => {
         type: 'ORG_MANAGER_CHAIN',
       });
     });
+  });
+});
+
+describe('set_user_task_exclude_node_actors', () => {
+  async function stateWithUserTask(): Promise<
+    Readonly<{ nodeId: string; state: WorkflowDesignerState }>
+  > {
+    const added = await executeWorkflowTool(
+      initialState(),
+      'add_node',
+      { nodeType: 'userTask' },
+      deterministicIds,
+    );
+
+    if (!added.ok || added.kind === 'query') {
+      throw new Error('Expected a mutation result');
+    }
+
+    const nodeId = added.result.state.definition.nodes.find(
+      (node) => node.type === 'userTask',
+    )?.id;
+
+    if (!nodeId) {
+      throw new Error('Expected a user task node');
+    }
+
+    return { nodeId, state: added.result.state };
+  }
+
+  async function run(
+    state: WorkflowDesignerState,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<WorkflowDesignerState> {
+    const result = await executeWorkflowTool(
+      state,
+      'set_user_task_exclude_node_actors',
+      input,
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error(
+        result.ok ? 'Expected a mutation result' : `Tool failed: ${result.error}`,
+      );
+    }
+
+    return result.result.state;
+  }
+
+  function readExcludeNodeActors(state: WorkflowDesignerState): unknown {
+    const node = state.definition.nodes.find(
+      (candidate) => candidate.type === 'userTask',
+    );
+
+    if (node?.type !== 'userTask') {
+      throw new Error('Expected a user task node');
+    }
+
+    return 'excludeNodeActors' in node.data
+      ? node.data.excludeNodeActors
+      : 'ABSENT';
+  }
+
+  it('is exposed as a mutation tool', () => {
+    expect(
+      WORKFLOW_TOOLSET.find(
+        (tool) => tool.name === 'set_user_task_exclude_node_actors',
+      )?.kind,
+    ).toBe('mutation');
+  });
+
+  it('stores the chosen stages and fallback', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, {
+      enabled: true,
+      nodeId,
+      nodeIds: ['task_a', 'task_b'],
+      whenEmpty: 'SKIP_NODE',
+    });
+
+    expect(readExcludeNodeActors(next)).toEqual({
+      nodeIds: ['task_a', 'task_b'],
+      whenEmpty: 'SKIP_NODE',
+    });
+  });
+
+  it('defaults to stopping the flow when whenEmpty is omitted or unknown', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+
+    expect(
+      readExcludeNodeActors(
+        await run(state, { enabled: true, nodeId, nodeIds: ['task_a'] }),
+      ),
+    ).toEqual({ nodeIds: ['task_a'], whenEmpty: 'FAIL' });
+    expect(
+      readExcludeNodeActors(
+        await run(state, {
+          enabled: true,
+          nodeId,
+          nodeIds: ['task_a'],
+          whenEmpty: 'IGNORE',
+        }),
+      ),
+    ).toEqual({ nodeIds: ['task_a'], whenEmpty: 'FAIL' });
+  });
+
+  it('drops anything in nodeIds that is not a non-empty string, without throwing', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, {
+      enabled: true,
+      nodeId,
+      nodeIds: ['task_a', 3, '', null],
+    });
+
+    expect(readExcludeNodeActors(next)).toEqual({
+      nodeIds: ['task_a'],
+      whenEmpty: 'FAIL',
+    });
+  });
+
+  it('keeps an empty stage list so the readiness check can refuse it', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, { enabled: true, nodeId });
+
+    expect(readExcludeNodeActors(next)).toEqual({
+      nodeIds: [],
+      whenEmpty: 'FAIL',
+    });
+  });
+
+  it('removes the setting when disabled', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const enabled = await run(state, {
+      enabled: true,
+      nodeId,
+      nodeIds: ['task_a'],
+    });
+    const disabled = await run(enabled, { enabled: false, nodeId });
+
+    expect(readExcludeNodeActors(disabled)).toBe('ABSENT');
+  });
+
+  it('is described in the node snapshot the assistant reads back', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const next = await run(state, {
+      enabled: true,
+      nodeId,
+      nodeIds: ['task_a'],
+      whenEmpty: 'FAIL',
+    });
+    const summary = readWorkflowSnapshot(next).nodes.find(
+      (node) => node.id === nodeId,
+    )?.summary;
+
+    expect(summary).toContain('不可與前面關卡同一人=task_a（FAIL）');
+  });
+
+  it('still reads a snapshot whose raw nodeIds is not a list', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    // Raw JSON that was never linted: nodeIds is a string, not an array.
+    const broken = {
+      ...state,
+      definition: {
+        ...state.definition,
+        nodes: state.definition.nodes.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  excludeNodeActors: { nodeIds: 'task_a', whenEmpty: 'FAIL' },
+                },
+              }
+            : node,
+        ),
+      },
+    } as unknown as WorkflowDesignerState;
+
+    expect(() => readWorkflowSnapshot(broken)).not.toThrow();
+    expect(
+      readWorkflowSnapshot(broken).nodes.find((node) => node.id === nodeId)
+        ?.summary,
+    ).toContain('不可與前面關卡同一人=（FAIL）');
   });
 });

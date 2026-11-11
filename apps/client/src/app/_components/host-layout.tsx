@@ -12,6 +12,7 @@ import {
   NavigationUserMenu,
 } from '@mezzanine-ui/react';
 import {
+  FilterIcon,
   FolderIcon,
   HomeIcon,
   LinkIcon,
@@ -66,6 +67,8 @@ function createNavigationGroups(routes: BPMRoutes): readonly NavigationGroup[] {
       items: [
         { href: routes.search(), icon: SearchIcon, label: '搜尋' },
         { href: routes.delegations(), icon: SwitchHorizontalIcon, label: '個人代理' },
+        // 整合示範頁，不在 BPMRoutes 內，路徑直接寫死。
+        { href: '/examples/filterable-expense', icon: FilterIcon, label: '欄位篩選示範' },
       ],
     },
     {

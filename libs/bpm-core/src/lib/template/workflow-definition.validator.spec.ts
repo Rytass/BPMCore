@@ -8,6 +8,7 @@ import {
   ApproverResolver,
   DecisionPolicy,
   ExcludeInitiatorConfig,
+  ExcludeNodeActorsConfig,
   ReturnBehavior,
   ServiceAction,
   SlaConfig,
@@ -731,6 +732,31 @@ describe('workflow definition validator', () => {
     );
   });
 
+  it('rejects a non-boolean requireApprovalComment', (): void => {
+    const workflow = createUserTaskWorkflow({
+      requireApprovalComment: 'yes' as never,
+    });
+
+    expect(lintWorkflowDefinition(workflow).errors).toContain(
+      'workflow.nodes.task_manager.requireApprovalComment must be a boolean',
+    );
+  });
+
+  it.each([true, false])(
+    'accepts requireApprovalComment set to %s',
+    (requireApprovalComment: boolean): void => {
+      const workflow = createUserTaskWorkflow({ requireApprovalComment });
+
+      expect(lintWorkflowDefinition(workflow).errors).toEqual([]);
+    },
+  );
+
+  it('accepts a node that leaves requireApprovalComment out', (): void => {
+    expect(
+      lintWorkflowDefinition(createUserTaskWorkflow({})).errors,
+    ).toEqual([]);
+  });
+
   it('rejects an excludeInitiator whose whenEmpty is not a known behaviour', (): void => {
     const workflow = createUserTaskWorkflow({
       excludeInitiator: { whenEmpty: 'IGNORE' as never },
@@ -751,6 +777,84 @@ describe('workflow definition validator', () => {
       expect(lintWorkflowDefinition(workflow).errors).toEqual([]);
     },
   );
+
+  describe('excludeNodeActors', (): void => {
+    const DIRECT: ApproverResolver = {
+      memberIds: ['member-002'],
+      type: 'DIRECT',
+    };
+    const lintExclude = (
+      excludeNodeActors: ExcludeNodeActorsConfig | Record<string, unknown>,
+    ): readonly string[] =>
+      lintWorkflowDefinition(
+        createTwoStepWorkflow(DIRECT, excludeNodeActors as ExcludeNodeActorsConfig),
+      ).errors;
+
+    it.each(['FAIL', 'INITIATOR_MANAGER', 'SKIP_NODE'] as const)(
+      'accepts a listed earlier user task with whenEmpty %s',
+      (whenEmpty): void => {
+        expect(lintExclude({ nodeIds: ['task_first'], whenEmpty })).toEqual([]);
+      },
+    );
+
+    it('accepts a workflow that omits the setting (control)', (): void => {
+      expect(
+        lintWorkflowDefinition(createTwoStepWorkflow(DIRECT)).errors,
+      ).toEqual([]);
+    });
+
+    it.each([
+      ['no nodeIds', { whenEmpty: 'FAIL' }],
+      ['an empty nodeIds', { nodeIds: [], whenEmpty: 'FAIL' }],
+      ['nodeIds that is not an array', { nodeIds: 'task_first', whenEmpty: 'FAIL' }],
+    ])('rejects %s', (_name, config): void => {
+      expect(lintExclude(config)).toEqual([
+        'workflow.nodes.task_manager.excludeNodeActors.nodeIds is required',
+      ]);
+    });
+
+    it.each([
+      ['a blank id', ['task_first', ' ']],
+      ['a repeated id', ['task_first', 'task_first']],
+      ['an id that is not text', [7]],
+    ])('rejects %s', (_name, nodeIds): void => {
+      expect(lintExclude({ nodeIds, whenEmpty: 'FAIL' })).toEqual([
+        'workflow.nodes.task_manager.excludeNodeActors.nodeIds must be unique non-empty strings',
+      ]);
+    });
+
+    it('rejects an unknown whenEmpty', (): void => {
+      expect(lintExclude({ nodeIds: ['task_first'], whenEmpty: 'IGNORE' })).toEqual([
+        'workflow.nodes.task_manager.excludeNodeActors.whenEmpty is invalid',
+      ]);
+    });
+
+    it('rejects a missing whenEmpty', (): void => {
+      expect(lintExclude({ nodeIds: ['task_first'] })).toEqual([
+        'workflow.nodes.task_manager.excludeNodeActors.whenEmpty is invalid',
+      ]);
+    });
+
+    it('rejects the node itself', (): void => {
+      expect(
+        lintExclude({ nodeIds: ['task_first', 'task_manager'], whenEmpty: 'FAIL' }),
+      ).toEqual([
+        'workflow.nodes.task_manager.excludeNodeActors.nodeIds must not include the node itself',
+      ]);
+    });
+
+    it('rejects a node that does not exist', (): void => {
+      expect(lintExclude({ nodeIds: ['ghost'], whenEmpty: 'FAIL' })).toEqual([
+        'workflow.nodes.task_manager.excludeNodeActors.nodeIds references a missing node: ghost',
+      ]);
+    });
+
+    it('rejects a node that is not a user task', (): void => {
+      expect(lintExclude({ nodeIds: ['start'], whenEmpty: 'FAIL' })).toEqual([
+        'workflow.nodes.task_manager.excludeNodeActors.nodeIds must reference userTask nodes: start',
+      ]);
+    });
+  });
 
   it('accepts a business-day SLA without warnings', (): void => {
     const workflow = createUserTaskWorkflow({
@@ -1527,8 +1631,9 @@ describe('workflow definition validator: manager chain start settings', (): void
 
 function createTwoStepWorkflow(
   approverResolver: ApproverResolver,
+  excludeNodeActors?: ExcludeNodeActorsConfig,
 ): WorkflowDefinition {
-  const base = createUserTaskWorkflow({ approverResolver });
+  const base = createUserTaskWorkflow({ approverResolver, excludeNodeActors });
 
   return {
     ...base,
@@ -1579,12 +1684,16 @@ function createUserTaskWorkflow({
   approverResolver = { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
   decisionPolicy = { type: 'SINGLE' },
   excludeInitiator,
+  requireApprovalComment,
+  excludeNodeActors,
   returnBehavior = { allowReturn: true, allowedTargets: 'INITIATOR' },
   sla,
 }: {
   readonly approverResolver?: ApproverResolver;
   readonly decisionPolicy?: DecisionPolicy;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly requireApprovalComment?: boolean;
+  readonly excludeNodeActors?: ExcludeNodeActorsConfig;
   readonly returnBehavior?: ReturnBehavior;
   readonly sla?: SlaConfig;
 }): WorkflowDefinition {
@@ -1623,6 +1732,10 @@ function createUserTaskWorkflow({
           label: '主管簽核',
           returnBehavior,
           ...(excludeInitiator ? { excludeInitiator } : {}),
+          ...(requireApprovalComment !== undefined
+            ? { requireApprovalComment }
+            : {}),
+          ...(excludeNodeActors ? { excludeNodeActors } : {}),
           ...(sla ? { sla } : {}),
         },
         id: 'task_manager',

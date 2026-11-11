@@ -5,10 +5,14 @@ import {
 } from '@rytass/bpm-core-shared/workflow';
 import { readNodeActorSourceIssues } from '@rytass/bpm-core-shared/workflow-graph';
 import {
+  EXCLUDE_NODE_ACTORS_STAGE_HINT,
   NODE_ACTOR_STAGE_HINT,
+  NO_EXCLUDABLE_STAGE_HINT,
   NO_UPSTREAM_USER_TASK_HINT,
   ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT,
   ORG_MANAGER_CHAIN_STAGE_HINT,
+  readExcludeNodeActorsGraphIssues,
+  readExcludeNodeActorStageChoice,
   readNodeActorGraphIssues,
   readNodeActorStageChoice,
   readOrgManagerChainStageChoice,
@@ -632,5 +636,207 @@ describe('manager chain NODE_ACTOR start', () => {
         ),
       ).toEqual([]);
     });
+  });
+});
+
+describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () => {
+  it('offers every user task upstream of the node, in definition order, and nothing else', () => {
+    const choice = readExcludeNodeActorStageChoice(LINE, 'me', [], 'FAIL');
+
+    expect(choice.options.map((option) => option.id)).toEqual(['a', 'b']);
+    expect(choice.problems).toEqual([]);
+  });
+
+  it('does not offer the node itself, a node after it, or a node off the line', () => {
+    const ids = readExcludeNodeActorStageChoice(LINE, 'me', [], 'FAIL').options.map(
+      (option) => option.id,
+    );
+
+    expect(ids).not.toContain('me');
+    expect(ids).not.toContain('after');
+    expect(ids).not.toContain('side');
+  });
+
+  it.each([
+    ['an entry condition', { entryCondition: 'form.x > 1' }],
+    ['excludeInitiator SKIP_NODE', { excludeInitiator: { whenEmpty: 'SKIP_NODE' } }],
+    [
+      'excludeNodeActors SKIP_NODE',
+      { excludeNodeActors: { nodeIds: ['x'], whenEmpty: 'SKIP_NODE' } },
+    ],
+    ['an SLA auto-approval', { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } }],
+  ])('does not offer a stage with %s (it may run without a signer)', (_name, data) => {
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        taskNode('ok'),
+        taskNode('risky', data),
+        taskNode('me'),
+        plainNode('end', 'endEvent'),
+      ],
+      [
+        link('start', 'ok'),
+        link('ok', 'risky'),
+        link('risky', 'me'),
+        link('me', 'end'),
+      ],
+    );
+
+    expect(
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options.map(
+        (option) => option.id,
+      ),
+    ).toEqual(['ok']);
+  });
+
+  it('does not offer a stage that only one branch passes, and offers the stage both branches share', () => {
+    // start -> split -> (only | other) -> merge -> shared -> me
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        plainNode('split', 'exclusiveGateway'),
+        taskNode('only'),
+        taskNode('other'),
+        plainNode('merge', 'exclusiveGateway'),
+        taskNode('shared'),
+        taskNode('me'),
+        plainNode('end', 'endEvent'),
+      ],
+      [
+        link('start', 'split'),
+        link('split', 'only'),
+        link('split', 'other'),
+        link('only', 'merge'),
+        link('other', 'merge'),
+        link('merge', 'shared'),
+        link('shared', 'me'),
+        link('me', 'end'),
+      ],
+    );
+
+    expect(
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options.map(
+        (option) => option.id,
+      ),
+    ).toEqual(['shared']);
+  });
+
+  it('keeps a stored stage that no longer qualifies, marked, and says why', () => {
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        taskNode('cond', { entryCondition: 'form.x > 1' }),
+        taskNode('me'),
+        plainNode('end', 'endEvent'),
+      ],
+      [link('start', 'cond'), link('cond', 'me'), link('me', 'end')],
+    );
+    const choice = readExcludeNodeActorStageChoice(
+      definition,
+      'me',
+      ['cond'],
+      'FAIL',
+    );
+
+    expect(choice.selected.map((option) => option.name)).toEqual([
+      '關卡 cond（無法使用）',
+    ]);
+    expect(choice.problems).toEqual([expect.stringContaining('設有進入條件')]);
+  });
+
+  it('shows the hint that nothing can be picked when no stage is upstream', () => {
+    const choice = readExcludeNodeActorStageChoice(LINE, 'a', [], 'FAIL');
+
+    expect(choice.options).toEqual([]);
+    expect(choice.problems).toEqual([NO_EXCLUDABLE_STAGE_HINT]);
+  });
+
+  it('keeps a stage that is gone, or no longer upstream, in the list marked', () => {
+    const choice = readExcludeNodeActorStageChoice(
+      LINE,
+      'me',
+      ['a', 'ghost', 'after'],
+      'FAIL',
+    );
+
+    expect(choice.selected.map((option) => option.name)).toEqual([
+      '關卡 a',
+      'ghost（已不存在）',
+      '關卡 after（無法使用）',
+    ]);
+    expect(choice.problems.length).toBeGreaterThan(0);
+  });
+
+  it('reports the SKIP_NODE problem for a node whose approver fills fields in', () => {
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        taskNode('a'),
+        taskNode('me', {
+          fieldAccess: [{ display: 'SHOW', fieldKey: 'memo', fill: 'OPTIONAL' }],
+        }),
+        plainNode('end', 'endEvent'),
+      ],
+      [link('start', 'a'), link('a', 'me'), link('me', 'end')],
+    );
+
+    expect(
+      readExcludeNodeActorStageChoice(definition, 'me', ['a'], 'SKIP_NODE').problems,
+    ).toEqual([expect.stringContaining('不能選擇略過此節點')]);
+    expect(
+      readExcludeNodeActorStageChoice(definition, 'me', ['a'], 'FAIL').problems,
+    ).toEqual([]);
+  });
+
+  it('exposes a hint that is not the NODE_ACTOR one', () => {
+    expect(EXCLUDE_NODE_ACTORS_STAGE_HINT).not.toBe(NODE_ACTOR_STAGE_HINT);
+  });
+});
+
+describe('readExcludeNodeActorsGraphIssues', () => {
+  it('is empty when no node has the setting', () => {
+    expect(readExcludeNodeActorsGraphIssues(LINE)).toEqual([]);
+  });
+
+  it('is empty for a sound setting', () => {
+    const definition = {
+      ...LINE,
+      nodes: LINE.nodes.map((node) =>
+        node.id === 'me'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                excludeNodeActors: { nodeIds: ['a', 'b'], whenEmpty: 'FAIL' },
+              },
+            }
+          : node,
+      ),
+    } as WorkflowDefinition;
+
+    expect(readExcludeNodeActorsGraphIssues(definition)).toEqual([]);
+  });
+
+  it('names the node and the problem when a listed stage is downstream', () => {
+    const definition = {
+      ...LINE,
+      nodes: LINE.nodes.map((node) =>
+        node.id === 'me'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                excludeNodeActors: { nodeIds: ['after'], whenEmpty: 'FAIL' },
+              },
+            }
+          : node,
+      ),
+    } as WorkflowDefinition;
+
+    // A stage after the node is also on no path to it, so coverage reports too.
+    expect(readExcludeNodeActorsGraphIssues(definition)).toEqual([
+      expect.stringMatching(/^簽核節點「關卡 me」：.*不會經過/),
+      expect.stringMatching(/^簽核節點「關卡 me」：.*不在 .* 的上游/),
+    ]);
   });
 });

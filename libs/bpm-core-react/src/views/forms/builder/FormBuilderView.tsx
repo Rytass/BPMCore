@@ -90,6 +90,7 @@ import {
   isTableFieldDefinition,
   readFormFieldSelectionMode,
 } from '@rytass/bpm-core-shared/form';
+import { readFilterableFieldPaths } from '@rytass/bpm-core-shared';
 import {
   createFieldDefinition,
   createTableColumnDefinition,
@@ -805,7 +806,12 @@ export function FormBuilderView({
   // Debounced: the schema changes on every keystroke in the JSON editor.
   // Cleanup cancels both the timer and any response still in flight.
   useEffect((): (() => void) => {
-    if (!templateId && !formDefinitionId) {
+    // Issues only ever concern filterable fields, so a schema without one
+    // needs no round trip.
+    if (
+      (!templateId && !formDefinitionId) ||
+      readFilterableFieldPaths(schema).length === 0
+    ) {
       setFilterableIssues([]);
       setFilterableCheckError(null);
 

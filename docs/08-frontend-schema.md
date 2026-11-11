@@ -86,16 +86,26 @@ interface UserTaskNodeData extends BaseNodeData {
   readonly description?: string;
   readonly entryCondition?: string;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly excludeNodeActors?: ExcludeNodeActorsConfig;
   readonly fieldAccess?: readonly FieldAccessEntry[];
   /** @deprecated 從未生效；草稿仍帶這個鍵時無法發布（見 §8.6）。 */
   readonly fieldPermissions?: readonly FieldPermission[];
   readonly notification?: NotificationOverride;
+  /** 核准時必須填寫意見；省略或 false 維持原行為（見 07 §5.1）。 */
+  readonly requireApprovalComment?: boolean;
   readonly returnBehavior: ReturnBehavior;
   readonly sla?: SlaConfig;
 }
 
 interface ExcludeInitiatorConfig {
   /** 排除申請人後沒有任何簽核人時的處理方式。 */
+  readonly whenEmpty: 'FAIL' | 'INITIATOR_MANAGER' | 'SKIP_NODE';
+}
+
+interface ExcludeNodeActorsConfig {
+  /** 前面哪幾個簽核節點；實際簽核過這些關卡的人不能是本關的簽核人。 */
+  readonly nodeIds: readonly string[];
+  /** 排除後沒有任何簽核人時的處理方式，三個值與 `excludeInitiator` 相同。 */
   readonly whenEmpty: 'FAIL' | 'INITIATOR_MANAGER' | 'SKIP_NODE';
 }
 
@@ -119,12 +129,20 @@ Client 端的 `ApprovalInstanceRecord.submittedByMemberId`（選填、可為 `nu
 `null`、缺省、或等於 `initiatorMemberId` 都表示申請人自己送出，只有不同的非空值才顯示「由 X 代 Y 送出」。
 讀取權限與通知內文見 [07-workflow-execution.md](./07-workflow-execution.md) §4.4。
 
+`excludeNodeActors` 是關卡之間的權責分離設定（例：信管審核與會計審核不能是同一人）：存在時，
+實際簽核過 `nodeIds` 所列前面關卡的人（含代理關係的任何一端）不會是該節點的簽核人，也不能被轉簽
+或加簽到該節點。「誰算那一關的簽核者」與 `NODE_ACTOR` 來源同一套讀法，臨時加簽、會簽的同意者不會被排除（刻意設計）；來源關必須是每條路徑都會經過、
+而且一定有人實際簽核的關卡（發布時檢查，每個來源關各自都要通過）。省略時行為與過去完全相同；可與 `excludeInitiator` 同時開，兩組名單取聯集。
+runtime 規則、`whenEmpty` 的決定方式與發布檢查見 [07-workflow-execution.md](./07-workflow-execution.md) §4.5。
+
 Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
 
 - 節點名稱。
 - 簽核者來源與 resolver 詳細設定。
 - resolver fallback。
 - `returnBehavior.resubmitStrategy`、`returnBehavior.requireComment`。
+- `requireApprovalComment`（核准時意見必填；`setUserTaskRequireApprovalComment` command，
+  AI 工具 `set_user_task_require_approval_comment`；簽核畫面在送出同意前就要求意見）。
 - `sla`（期限、單位、`calendar` 計算方式、`onTimeout`、`escalateLevelsUp`、
   `warningAt`）。
 - 多 incoming edge 時的 `triggerMode`。
@@ -136,7 +154,9 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 
 目前 designer 可編輯 `allowAddSigner`、`allowTransfer`、`allowReject`、
 `excludeInitiator`（`setUserTaskExcludeInitiator` command；AI 工具
-`set_user_task_exclude_initiator`）與 `fieldAccess`（見下方說明），以及
+`set_user_task_exclude_initiator`）、`excludeNodeActors`（面板的「不可與前面關卡同一人」，
+`setUserTaskExcludeNodeActors` command；AI 工具 `set_user_task_exclude_node_actors`；選項只列
+單獨通過發布檢查的關卡：在本節點之前、不可能被跳過、每條路徑都會經過）與 `fieldAccess`（見下方說明），以及
 `description`、`entryCondition`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
@@ -775,6 +795,9 @@ BPM 自己的發起頁與重送編輯狀態**不渲染、不驗證、不送出**
 
 通知：`TASK_ASSIGNED`／`TASK_TRANSFERRED` 的 payload 帶 `hasFillableFields`（非加簽任務、節點有可補填
 欄位時為 `true`），讓 host 在推播時改成「開啟案件」而不是一鍵同意。舊通知沒有這個鍵，請當作 `false`。
+同一份 payload 在節點開了 `requireApprovalComment` 時另帶 `requireApprovalComment: true`（沒開時不帶這個鍵，
+不寫 `false`），內建通知抽屜讀到時把「同意」改成「開啟案件」，到案件頁寫意見。舊通知沒有這個鍵，抽屜仍會顯示
+「同意」，這時只靠引擎拒絕（抽屜的同意視窗會顯示錯誤訊息）。
 
 #### 錯誤表一：`decideTask` 新增的拒絕
 

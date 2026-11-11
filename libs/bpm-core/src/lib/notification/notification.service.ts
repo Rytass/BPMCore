@@ -625,6 +625,12 @@ export class NotificationService {
           nodeId: node.id,
           nodeLabel: node.data.label,
           originalAssigneeMemberId: task.originalAssigneeMemberId,
+          // Only written when on, so the payload of every other node stays
+          // exactly as it was. A host can tell the recipient to open the case
+          // (and write the comment there) instead of offering a quick approve.
+          ...(node.data.requireApprovalComment === true
+            ? { requireApprovalComment: true }
+            : {}),
           slaDueAt: task.slaDueAt?.toISOString() ?? null,
           taskId: task.id,
         },

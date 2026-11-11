@@ -111,6 +111,11 @@ async function mockWorkspaceGraphQl(page: Page): Promise<void> {
       return;
     }
 
+    if (query.includes('query ApprovalTemplates')) {
+      await fulfillGraphQl(route, { approvalTemplates: [] });
+      return;
+    }
+
     await fulfillGraphQl(route, {});
   });
 }

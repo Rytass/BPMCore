@@ -2,6 +2,7 @@ import {
   FormDefinitionSchema,
   FormDataSourceValueSnapshots,
   FormFieldDefinition,
+  FormFieldOption,
   FormFieldValue,
   FormUiSchema,
   FormStaticOptionFieldDefinition,
@@ -37,37 +38,23 @@ export type ApprovalInstanceState =
   | 'RUNNING';
 
 export type TaskStatus =
-  | 'CANCELLED'
-  | 'COMPLETED'
-  | 'IN_PROGRESS'
-  | 'PENDING'
-  | 'TRANSFERRED';
+  'CANCELLED' | 'COMPLETED' | 'IN_PROGRESS' | 'PENDING' | 'TRANSFERRED';
 
 export type TaskAssignmentType = 'CANDIDATE_GROUP' | 'DIRECT_MEMBER';
 
 export type TaskDecisionAction =
-  | 'APPROVED'
-  | 'REJECTED'
-  | 'RETURNED'
-  | 'TRANSFERRED';
+  'APPROVED' | 'REJECTED' | 'RETURNED' | 'TRANSFERRED';
 
 export type AdhocDirectiveType =
-  | 'COMPLETION_NOTIFY'
-  | 'COUNTERSIGN'
-  | 'PRE_APPROVAL'
-  | 'STAGE_NOTIFY';
+  'COMPLETION_NOTIFY' | 'COUNTERSIGN' | 'PRE_APPROVAL' | 'STAGE_NOTIFY';
 
 export type AdhocDirectiveStatus = 'CANCELLED' | 'CONSUMED' | 'PENDING';
 
 export type AdhocTargetKind =
-  | 'MEMBER'
-  | 'ORG_UNIT_MEMBER'
-  | 'POSITION'
-  | 'WEBHOOK';
+  'MEMBER' | 'ORG_UNIT_MEMBER' | 'POSITION' | 'WEBHOOK';
 
 export type AdhocPreApprovalRejectBehavior =
-  | 'REJECT_INSTANCE'
-  | 'RETURN_TO_ORIGIN';
+  'REJECT_INSTANCE' | 'RETURN_TO_ORIGIN';
 
 /**
  * Polymorphic target of an ad-hoc directive. Set exactly the fields matching
@@ -273,6 +260,7 @@ export type TaskReassignmentErrorCode =
   | 'TARGET_ALREADY_DECIDED'
   | 'TARGET_ALREADY_ON_TASK'
   | 'TARGET_GRADE_TOO_LOW'
+  | 'TARGET_IS_EXCLUDED_NODE_ACTOR'
   | 'TARGET_IS_INITIATOR'
   | 'TARGET_IS_SUBMITTER'
   | 'TARGET_SAME_AS_SOURCE'
@@ -340,11 +328,7 @@ export type NotificationType =
   | 'TASK_TRANSFERRED';
 
 export type NotificationResolution =
-  | 'APPROVED'
-  | 'REJECTED'
-  | 'RETURNED'
-  | 'SUPERSEDED'
-  | 'TRANSFERRED';
+  'APPROVED' | 'REJECTED' | 'RETURNED' | 'SUPERSEDED' | 'TRANSFERRED';
 
 export interface NotificationRecord {
   /**
@@ -790,12 +774,12 @@ function readFieldFilterVariables(
   return fieldFilters && fieldFilters.length > 0 ? fieldFilters : null;
 }
 
-function readSortVariables(
-  sort: ApprovalInstancesPageInput['sort'],
-): readonly {
-  readonly direction: NonNullable<ApprovalInstanceSort['direction']>;
-  readonly field: string;
-}[] | null {
+function readSortVariables(sort: ApprovalInstancesPageInput['sort']):
+  | readonly {
+      readonly direction: NonNullable<ApprovalInstanceSort['direction']>;
+      readonly field: string;
+    }[]
+  | null {
   return sort && sort.length > 0
     ? sort.map((item) => ({
         // The server defaults to DESC, but the client states it so a request
@@ -2623,10 +2607,7 @@ export async function listAdhocDirectives(
  * {@link retryWorkflowWebhookDelivery}.
  */
 export type WorkflowWebhookDeliveryStatus =
-  | 'DELIVERY_IN_PROGRESS'
-  | 'FAILED'
-  | 'PENDING'
-  | 'SENT';
+  'DELIVERY_IN_PROGRESS' | 'FAILED' | 'PENDING' | 'SENT';
 
 /**
  * One queued webhook call from a notify node. Carries no URL, header or
@@ -2729,6 +2710,7 @@ export function readApprovalInstanceCaseTitle(
   return readFormDataCaseTitle({
     fallbackTitle: instance.title || instance.id,
     formData: instance.formData,
+    optionSnapshots: instance.formDataOptionSnapshot,
     schema: instance.formDefinitionSnapshot.schema ?? null,
     uiSchema: instance.formDefinitionSnapshot.uiSchema ?? null,
   });
@@ -2737,11 +2719,18 @@ export function readApprovalInstanceCaseTitle(
 export function readFormDataCaseTitle({
   fallbackTitle,
   formData,
+  optionSnapshots,
   schema,
   uiSchema,
 }: {
   readonly fallbackTitle: string;
   readonly formData: WorkflowFormData;
+  /**
+   * The case's data-source option snapshots. A data-source field stores only
+   * the option value, so without them the title would show that value (a
+   * vendor id, say) instead of its name.
+   */
+  readonly optionSnapshots?: FormDataSourceValueSnapshots;
   readonly schema: FormDefinitionSchema | null;
   readonly uiSchema: FormUiSchema | null;
 }): string {
@@ -2754,6 +2743,7 @@ export function readFormDataCaseTitle({
   const valueLabel = readFieldValueLabel(
     firstField,
     formData[firstField.fieldKey],
+    optionSnapshots?.[firstField.fieldKey]?.options,
   );
 
   return valueLabel ? `${firstField.label}：${valueLabel}` : fallbackTitle;
@@ -2839,6 +2829,7 @@ function isCaseTitleField(field: FormFieldDefinition): boolean {
 function readFieldValueLabel(
   field: FormFieldDefinition,
   value: FormFieldValue | undefined,
+  snapshotOptions?: readonly FormFieldOption[],
 ): string | null {
   if (typeof value === 'undefined' || value === null) {
     return null;
@@ -2855,7 +2846,7 @@ function readFieldValueLabel(
   }
 
   if (Array.isArray(value)) {
-    return readArrayFieldValueLabel(field, value);
+    return readArrayFieldValueLabel(field, value, snapshotOptions);
   }
 
   if (field.type === 'boolean') {
@@ -2866,6 +2857,10 @@ function readFieldValueLabel(
     return readSelectOptionLabel(field, value);
   }
 
+  if (snapshotOptions && typeof value === 'string') {
+    return readOptionLabel(snapshotOptions, value) || null;
+  }
+
   const valueLabel = String(value).trim();
 
   return valueLabel || null;
@@ -2874,10 +2869,13 @@ function readFieldValueLabel(
 function readArrayFieldValueLabel(
   field: FormFieldDefinition,
   value: readonly string[],
+  snapshotOptions?: readonly FormFieldOption[],
 ): string | null {
   const labels = isSelectFieldDefinition(field)
     ? value.map((item) => readSelectOptionLabel(field, item))
-    : value;
+    : snapshotOptions
+      ? value.map((item) => readOptionLabel(snapshotOptions, item))
+      : value;
   const label = labels.filter((item) => item.trim()).join('、');
 
   return label || null;
@@ -2887,8 +2885,16 @@ function readSelectOptionLabel(
   field: FormStaticOptionFieldDefinition,
   value: string,
 ): string {
+  return readOptionLabel(field.options, value);
+}
+
+/** The option's label, or the value itself when no option carries it. */
+function readOptionLabel(
+  options: readonly FormFieldOption[],
+  value: string,
+): string {
   return (
-    field.options.find((option) => option.value === value)?.label ?? value
+    options.find((option) => option.value === value)?.label ?? value
   ).trim();
 }
 

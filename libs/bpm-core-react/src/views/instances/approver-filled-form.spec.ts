@@ -307,7 +307,7 @@ describe('approver-filled form helpers', () => {
     it('maps the server\'s fill errors onto renderer paths', () => {
       expect(
         readFillServerErrors(
-          'formData.financeItems[0].name is required; formData.financeItems must include at most 3 row(s)',
+          '「財務明細」第 1 列的「品項」為必填；欄位「財務明細」最多 3 列',
           SCHEMA,
           fillNode,
         ),
@@ -317,7 +317,7 @@ describe('approver-filled form helpers', () => {
       });
       expect(
         readFillServerErrors(
-          'Form data is missing required fields: 備註',
+          '缺少必填欄位：備註',
           SCHEMA,
           fillNode,
         ),
@@ -327,7 +327,7 @@ describe('approver-filled form helpers', () => {
     it('maps the server\'s text length and format errors', () => {
       expect(
         readFillServerErrors(
-          'formData.note must be at most 20 characters; formData.financeItems[1].name does not match the required format',
+          '欄位「備註」最多 20 個字；「財務明細」第 2 列的「品項」格式不正確',
           SCHEMA,
           fillNode,
         ),
@@ -337,7 +337,7 @@ describe('approver-filled form helpers', () => {
       });
       expect(
         readFillServerErrors(
-          'formData.note must be at least 2 characters',
+          '欄位「備註」至少需要 2 個字',
           SCHEMA,
           fillNode,
         ),
@@ -356,7 +356,7 @@ describe('approver-filled form helpers', () => {
 
       expect(
         readFillServerErrors(
-          'formData.note does not match the required format',
+          '欄位「備註」格式不正確',
           schema,
           fillNode,
         ),
@@ -366,7 +366,7 @@ describe('approver-filled form helpers', () => {
     it('does not word a format check that ran out of time as a format error', () => {
       expect(
         readFillServerErrors(
-          'formData.note could not be checked against the required format in time',
+          '欄位「備註」無法在時限內完成格式檢查',
           SCHEMA,
           fillNode,
         ),
@@ -383,7 +383,7 @@ describe('approver-filled form helpers', () => {
 
       expect(
         readFillServerErrors(
-          'Form data is missing required fields: 備註, 說明',
+          '缺少必填欄位：備註, 說明',
           schema,
           fillNode,
         ),
@@ -393,11 +393,168 @@ describe('approver-filled form helpers', () => {
       ).toBeNull();
       expect(
         readFillServerErrors(
-          'formData.note is required; something else',
+          '欄位「備註」為必填；something else',
           SCHEMA,
           fillNode,
         ),
       ).toBeNull();
+    });
+
+    describe('structured form data issues', () => {
+      const LABELED_SCHEMA: FormDefinitionSchema = {
+        fields: [
+          { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+          { fieldKey: 'note2', label: '備註', required: false, type: 'text' },
+          {
+            fieldKey: 'memo',
+            label: 'a「b」；c',
+            required: false,
+            type: 'text',
+          },
+          {
+            columns: [
+              { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+            ],
+            fieldKey: 'financeItems',
+            label: '財務明細',
+            minRows: 0,
+            required: false,
+            type: 'table',
+          },
+        ],
+        schemaVersion: 1,
+      };
+      const labeledNode = {
+        ...fillNode,
+        data: {
+          ...fillNode.data,
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'note', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'note2', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'memo', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'financeItems', fill: 'OPTIONAL' },
+          ],
+        },
+      } as UserTaskNode;
+
+      it('lands on the field the path names when two fields share a label', () => {
+        expect(
+          readFillServerErrors(
+            '欄位「備註」最多 20 個字',
+            LABELED_SCHEMA,
+            labeledNode,
+            [
+              {
+                message: '欄位「備註」最多 20 個字',
+                path: 'note2',
+                reason: 'MAX_LENGTH',
+                limit: 20,
+              },
+            ],
+          ),
+        ).toEqual({ note2: '最多 20 個字。' });
+      });
+
+      it('maps a file count past maxFiles, from the structured issue and from the message alone', () => {
+        const fileSchema: FormDefinitionSchema = {
+          fields: [
+            {
+              fieldKey: 'files',
+              label: '附件',
+              maxFiles: 2,
+              required: false,
+              type: 'file_upload',
+            },
+          ],
+          schemaVersion: 1,
+        };
+        const fileNode = {
+          ...fillNode,
+          data: {
+            ...fillNode.data,
+            fieldAccess: [{ display: 'SHOW', fieldKey: 'files', fill: 'OPTIONAL' }],
+          },
+        } as UserTaskNode;
+        const message = '欄位「附件」最多 2 個檔案';
+
+        expect(
+          readFillServerErrors(message, fileSchema, fileNode, [
+            { message, path: 'files', reason: 'MAX_FILES', limit: 2 },
+          ]),
+        ).toEqual({ files: '最多 2 個檔案。' });
+        expect(readFillServerErrors(message, fileSchema, fileNode)).toEqual({
+          files: '最多 2 個檔案。',
+        });
+      });
+
+      it('reads a label holding 「」 and ； by path, not by splitting the message', () => {
+        expect(
+          readFillServerErrors(
+            '欄位「a「b」；c」為必填',
+            LABELED_SCHEMA,
+            labeledNode,
+            [
+              {
+                message: '欄位「a「b」；c」為必填',
+                path: 'memo',
+                reason: 'REQUIRED',
+              },
+            ],
+          ),
+        ).toEqual({ memo: 'a「b」；c為必填欄位。' });
+      });
+
+      it('addresses a table cell by its row path', () => {
+        expect(
+          readFillServerErrors(
+            '「財務明細」第 2 列的「品項」為必填',
+            LABELED_SCHEMA,
+            labeledNode,
+            [
+              {
+                message: '「財務明細」第 2 列的「品項」為必填',
+                path: 'financeItems[1].name',
+                reason: 'REQUIRED',
+              },
+            ],
+          ),
+        ).toEqual({ 'financeItems[1].name': '此欄為必填。' });
+      });
+
+      it('words the same refusal the same way whether it came structured or as a message', () => {
+        const message =
+          '欄位「備註」最多 20 個字；「財務明細」第 2 列的「品項」格式不正確';
+        const issues = [
+          {
+            message: '欄位「備註」最多 20 個字',
+            path: 'note',
+            reason: 'MAX_LENGTH' as const,
+            limit: 20,
+          },
+          {
+            message: '「財務明細」第 2 列的「品項」格式不正確',
+            path: 'financeItems[1].name',
+            reason: 'PATTERN' as const,
+          },
+        ];
+
+        expect(
+          readFillServerErrors(message, LABELED_SCHEMA, labeledNode, issues),
+        ).toEqual(readFillServerErrors(message, LABELED_SCHEMA, labeledNode));
+      });
+
+      it('gives up when a path names nothing the approver can fill', () => {
+        expect(
+          readFillServerErrors('欄位「備註」為必填', LABELED_SCHEMA, labeledNode, [
+            { message: '欄位「備註」為必填', path: 'ghost', reason: 'REQUIRED' },
+          ]),
+        ).toBeNull();
+        expect(
+          readFillServerErrors('欄位「備註」為必填', SCHEMA, fillNode, [
+            { message: '欄位「備註」為必填', path: 'title', reason: 'REQUIRED' },
+          ]),
+        ).toBeNull();
+      });
     });
 
     it('summarises each fill field for the approve dialog', () => {

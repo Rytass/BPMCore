@@ -96,6 +96,7 @@ import {
   DecisionPolicy,
   ExcludeInitiatorConfig,
   ExcludeInitiatorWhenEmpty,
+  ExcludeNodeActorsConfig,
   NotifyWebhookTarget,
   readUnsupportedApproverFallbackType,
   ServiceAction,
@@ -129,6 +130,7 @@ import {
   readConditionOperatorOptionsForField,
   readDesignTimeApproverCount,
   readExcludeInitiatorIssue,
+  readExcludeNodeActorsShapeIssue,
   readNotifyServiceTaskIssue,
   readNotifyWebhookTargets,
   readSlaDurationParts,
@@ -141,8 +143,11 @@ import {
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import {
+  EXCLUDE_NODE_ACTORS_STAGE_HINT,
   NODE_ACTOR_STAGE_HINT,
   ORG_MANAGER_CHAIN_STAGE_HINT,
+  readExcludeNodeActorsGraphIssues,
+  readExcludeNodeActorStageChoice,
   readNodeActorGraphIssues,
   readNodeActorStageChoice,
   readOrgManagerChainStageChoice,
@@ -642,6 +647,12 @@ const EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS: readonly ExcludeInitiatorWhenEmptyOp
   ];
 const DEFAULT_EXCLUDE_INITIATOR_CONFIG: ExcludeInitiatorConfig = {
   whenEmpty: 'INITIATOR_MANAGER',
+};
+// Stopping loudly is the safe default for a stage-to-stage exclusion: handing
+// the seat to the initiator's manager is a choice the author makes on purpose.
+const DEFAULT_EXCLUDE_NODE_ACTORS_CONFIG: ExcludeNodeActorsConfig = {
+  nodeIds: [],
+  whenEmpty: 'FAIL',
 };
 const CONDITION_OPERATORS_REQUIRING_VALUE: readonly WorkflowEdgeConditionOperator[] =
   [
@@ -1320,8 +1331,18 @@ export function TemplateDesignerView({
       readNodeActorGraphIssues(workflowDefinition)[0] ?? null,
     [workflowDefinition],
   );
+  // Publish-only as well: every stage of 不可與前面關卡同一人 must sit upstream,
+  // be on every path to the node and always have a person sign.
+  const excludeNodeActorsPublishIssue = useMemo(
+    (): string | null =>
+      readExcludeNodeActorsGraphIssues(workflowDefinition)[0] ?? null,
+    [workflowDefinition],
+  );
   const publishIssue =
-    webhookPublishIssue ?? fieldAccessPublishIssue ?? nodeActorPublishIssue;
+    webhookPublishIssue ??
+    fieldAccessPublishIssue ??
+    nodeActorPublishIssue ??
+    excludeNodeActorsPublishIssue;
   const flowNodes = useMemo((): FlowNode[] => {
     // Stage names for the 依前面關卡的簽核者 cards, instead of a count.
     const nodeNames = workflowDefinition.nodes.map((candidate) => ({
@@ -1983,6 +2004,20 @@ export function TemplateDesignerView({
     });
   }
 
+  function updateUserTaskRequireApprovalComment(
+    requireApprovalComment: boolean,
+  ): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    controller.dispatch({
+      nodeId: selectedNode.id,
+      requireApprovalComment,
+      type: 'setUserTaskRequireApprovalComment',
+    });
+  }
+
   function updateUserTaskSla(sla: SlaConfig | null): void {
     if (!selectedNode || selectedNode.type !== 'userTask') {
       return;
@@ -2006,6 +2041,20 @@ export function TemplateDesignerView({
       excludeInitiator,
       nodeId: selectedNode.id,
       type: 'setUserTaskExcludeInitiator',
+    });
+  }
+
+  function updateUserTaskExcludeNodeActors(
+    excludeNodeActors: ExcludeNodeActorsConfig | null,
+  ): void {
+    if (!selectedNode || selectedNode.type !== 'userTask') {
+      return;
+    }
+
+    controller.dispatch({
+      excludeNodeActors,
+      nodeId: selectedNode.id,
+      type: 'setUserTaskExcludeNodeActors',
     });
   }
 
@@ -3045,6 +3094,15 @@ export function TemplateDesignerView({
       node.data.returnBehavior.resubmitStrategy ?? 'RESTART';
     const sla = node.data.sla ?? null;
     const excludeInitiator = node.data.excludeInitiator ?? null;
+    const excludeNodeActors = node.data.excludeNodeActors ?? null;
+    const excludeNodeActorChoice = excludeNodeActors
+      ? readExcludeNodeActorStageChoice(
+          workflowDefinition,
+          node.id,
+          excludeNodeActors.nodeIds,
+          excludeNodeActors.whenEmpty,
+        )
+      : null;
     // A hand-authored or AI-authored template may carry a mixed duration such
     // as `P1DT4H`, which this form cannot represent. Keep it visible and
     // read-only rather than silently rewriting it.
@@ -3964,6 +4022,24 @@ export function TemplateDesignerView({
           </BPMFormField>
         ) : null}
         <BPMFormField
+          hintText="開啟後，簽核者按下同意時必須填寫意見，未填寫會被擋下；逾時自動同意不受影響。"
+          label="核准時意見必填"
+          name="approvalRequireComment"
+        >
+          <Toggle
+            checked={node.data.requireApprovalComment === true}
+            // FormField renders `<label htmlFor={name}>`, so the control needs
+            // the matching id for the label to be clickable.
+            inputProps={{
+              id: 'approvalRequireComment',
+              name: 'approvalRequireComment',
+            }}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateUserTaskRequireApprovalComment(event.target.checked)
+            }
+          />
+        </BPMFormField>
+        <BPMFormField
           hintText="開啟後可設定簽核期限，逾時將依下方設定處理。"
           label="啟用時效"
           name="slaEnabled"
@@ -4191,6 +4267,77 @@ export function TemplateDesignerView({
               )}
             />
           </BPMFormField>
+        ) : null}
+        <BPMFormField
+          hintText="開啟後，實際簽核過所選前面關卡的人（含其代理人）不會成為此關的簽核人，也不能被轉簽或加簽到此關。例：信管審核與會計審核不能是同一人。臨時加簽、會簽的同意者不在此限。"
+          label="不可與前面關卡同一人"
+          name="excludeNodeActors"
+        >
+          <Toggle
+            checked={Boolean(excludeNodeActors)}
+            inputProps={{
+              id: 'excludeNodeActors',
+              name: 'excludeNodeActors',
+            }}
+            onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+              updateUserTaskExcludeNodeActors(
+                event.target.checked ? DEFAULT_EXCLUDE_NODE_ACTORS_CONFIG : null,
+              )
+            }
+          />
+        </BPMFormField>
+        {excludeNodeActors && excludeNodeActorChoice ? (
+          <>
+            <BPMFormField
+              hintText={
+                excludeNodeActorChoice.problems.length > 0
+                  ? excludeNodeActorChoice.problems.join('；')
+                  : EXCLUDE_NODE_ACTORS_STAGE_HINT
+              }
+              label="不能與以下關卡同一人"
+              name="excludeNodeActorsNodeIds"
+              required
+            >
+              <Select
+                clearable
+                mode="multiple"
+                onChange={(options): void =>
+                  updateUserTaskExcludeNodeActors({
+                    ...excludeNodeActors,
+                    nodeIds: options.map((option) => option.id),
+                  })
+                }
+                options={[...excludeNodeActorChoice.options]}
+                overflowStrategy="wrap"
+                placeholder="選擇前面的簽核關卡"
+                value={[...excludeNodeActorChoice.selected]}
+              />
+            </BPMFormField>
+            <BPMFormField
+              label="排除後沒有簽核人時"
+              name="excludeNodeActorsWhenEmpty"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void =>
+                  updateUserTaskExcludeNodeActors({
+                    ...excludeNodeActors,
+                    whenEmpty:
+                      readSelectOption(
+                        EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS,
+                        option?.id ?? null,
+                      )?.id ?? DEFAULT_EXCLUDE_NODE_ACTORS_CONFIG.whenEmpty,
+                  })
+                }
+                options={[...EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS]}
+                value={readSelectOption(
+                  EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS,
+                  excludeNodeActors.whenEmpty,
+                )}
+              />
+            </BPMFormField>
+          </>
         ) : null}
         <FieldAccessNodeSection
           definition={workflowDefinition}
@@ -6116,6 +6263,14 @@ function readWorkflowDefinitionIssue(
       node.type === 'userTask' &&
       Boolean(readExcludeInitiatorIssue(node.data.excludeInitiator)),
   );
+  const excludeNodeActorsShapeIssue =
+    definition.nodes
+      .map((node) =>
+        node.type === 'userTask'
+          ? readExcludeNodeActorsShapeIssue(node.data.excludeNodeActors)
+          : null,
+      )
+      .find((issue): issue is string => issue !== null) ?? null;
   // Shared with the backend lint and the AI toolset so a webhook-only or a
   // runtime-resolved (position, org unit, manager) NOTIFY node is judged the
   // same everywhere (ADR 18 P0).
@@ -6152,6 +6307,10 @@ function readWorkflowDefinitionIssue(
     return readExcludeInitiatorIssue(
       excludeInitiatorNode.data.excludeInitiator,
     );
+  }
+
+  if (excludeNodeActorsShapeIssue) {
+    return excludeNodeActorsShapeIssue;
   }
 
   if (notifyNodeIssue) {
