@@ -1,9 +1,11 @@
 import { readReachableWorkflowNodeIds } from '@rytass/bpm-core-shared';
 import {
+  ExcludeInitiatorWhenEmpty,
   WorkflowDefinition,
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  readExcludeNodeActorsIssues,
   readNodeActorSourceIssues,
   readNodeActorSourceSkipReasons,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -125,4 +127,87 @@ export function readNodeActorGraphIssues(
       (issue) => `簽核節點「${readNodeName(node)}」：${issue}`,
     );
   });
+}
+
+/** The hint under the 不可與前面關卡同一人 picker while it has no problem to report. */
+export const EXCLUDE_NODE_ACTORS_STAGE_HINT =
+  '此關的簽核人不會是你選的前面關卡實際簽核的人（含其代理人），也不能被轉簽或加簽到此關；可複選，每個關卡都會排除。前面關卡沒有執行或沒人簽過時，不排除任何人。';
+
+/** Shown when no earlier stage can be picked. */
+export const NO_EXCLUDABLE_STAGE_HINT =
+  '這個節點前面沒有可以選的簽核關卡，請先在它前面加入簽核節點';
+
+/**
+ * The 不可與前面關卡同一人 picker: every user task upstream of `nodeId`. Unlike
+ * the `NODE_ACTOR` stage picker nothing is filtered by entry condition, 跳過此關
+ * or 逾時自動核准: a stage that did not run, or that nobody approved, simply
+ * excludes nobody. A stored stage that is gone or no longer upstream stays in
+ * the list, marked, so the stored choice stays visible until the author fixes
+ * it.
+ */
+export function readExcludeNodeActorStageChoice(
+  definition: WorkflowDefinition,
+  nodeId: string,
+  selectedIds: readonly string[],
+  whenEmpty: ExcludeInitiatorWhenEmpty,
+): NodeActorStageChoice {
+  const offered: readonly NodeActorOption[] = definition.nodes
+    .filter(isUserTaskNode)
+    .filter(
+      (node) =>
+        node.id !== nodeId &&
+        readReachableWorkflowNodeIds(definition.edges, [node.id]).has(nodeId),
+    )
+    .map((node) => ({ id: node.id, name: readNodeName(node) }));
+  const stale: readonly NodeActorOption[] = selectedIds
+    .filter((id) => !offered.some((option) => option.id === id))
+    .map((id) => {
+      const node = definition.nodes.find((candidate) => candidate.id === id);
+
+      return {
+        id,
+        name: node
+          ? `${readNodeName(node)}${UNUSABLE_STAGE_SUFFIX}`
+          : `${id}${MISSING_STAGE_SUFFIX}`,
+      };
+    });
+  const options = [...offered, ...stale];
+  const selected = selectedIds.flatMap((id): readonly NodeActorOption[] => {
+    const option = options.find((candidate) => candidate.id === id);
+
+    return option ? [option] : [];
+  });
+
+  return {
+    options,
+    problems:
+      selectedIds.length > 0
+        ? readExcludeNodeActorsIssues(definition, nodeId, {
+            nodeIds: selectedIds,
+            whenEmpty,
+          })
+        : options.length === 0
+          ? [NO_EXCLUDABLE_STAGE_HINT]
+          : [],
+    selected,
+  };
+}
+
+/**
+ * The graph problems of every node with 不可與前面關卡同一人, naming the node:
+ * the checks the backend publish lint runs (`readExcludeNodeActorsIssues`),
+ * for the designer to show before publish. The shape of the setting (no stage
+ * chosen, no 排除後沒有簽核人時) is left to `readExcludeNodeActorsShapeIssue`,
+ * which blocks saving.
+ */
+export function readExcludeNodeActorsGraphIssues(
+  definition: WorkflowDefinition,
+): readonly string[] {
+  return definition.nodes.filter(isUserTaskNode).flatMap((node) =>
+    readExcludeNodeActorsIssues(
+      definition,
+      node.id,
+      node.data.excludeNodeActors,
+    ).map((issue) => `簽核節點「${readNodeName(node)}」：${issue}`),
+  );
 }
