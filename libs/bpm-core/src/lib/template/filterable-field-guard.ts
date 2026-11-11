@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import {
   describeFilterableFieldIssue,
   FilterableFieldIssue,
+  FilterableFieldPath,
   readFilterableFieldIssues,
   readFilterableFieldPaths,
 } from '@rytass/bpm-core-shared';
@@ -45,11 +46,21 @@ interface FormDefinitionTemplateRow {
 /**
  * Issues that block a template from using `schema`. Empty when the schema has
  * no filterable field, which skips every query.
+ *
+ * `inForceSchema`, when given, is the form schema of the template's current
+ * version, read under the template row lock a publish or rollback holds. Its
+ * filterable fields are already guaranteed by the stored data: each was
+ * checked against every instance when it became filterable, and every write
+ * since has been checked against it under the same lock (ADR 25 §6, §15). So
+ * only the paths that are new here, or whose field type changed, are scanned;
+ * a publish that enables nothing reads no instance at all. Without it (the
+ * designer's read-only check), every filterable path is scanned.
  */
 export async function readTemplateFilterableFieldIssues(
   manager: EntityManager,
   templateId: string,
   schema: FormDefinitionSchema | null | undefined,
+  inForceSchema?: FormDefinitionSchema | null,
 ): Promise<readonly FilterableFieldIssueReport[]> {
   const paths = readFilterableFieldPaths(schema);
 
@@ -57,12 +68,19 @@ export async function readTemplateFilterableFieldIssues(
     return [];
   }
 
+  const scannedPaths =
+    inForceSchema === undefined
+      ? paths
+      : readNewlyFilterablePaths(paths, inForceSchema);
   const history = await readHistoryFormVersions(manager, templateId);
-  const instances = await readInstanceFilterableValues(
-    manager,
-    templateId,
-    paths.map((item) => item.tableKey ?? item.key),
-  );
+  const instances =
+    scannedPaths.length === 0
+      ? []
+      : await readInstanceFilterableValues(
+          manager,
+          templateId,
+          scannedPaths.map((item) => item.tableKey ?? item.key),
+        );
   const issues = readFilterableFieldIssues({
     history: history.map((row) => ({
       schema: row.schema,
@@ -81,16 +99,22 @@ export async function readTemplateFilterableFieldIssues(
   return issues.map((issue) => ({ issue, templateId, templateName }));
 }
 
-/** Throws a conflict that lists every blocking issue, one per line. */
+/**
+ * Throws a conflict that lists every blocking issue, one per line. Pass the
+ * current version's schema as `inForceSchema` (null when the template has no
+ * published version) to scan only what this change makes filterable.
+ */
 export async function assertTemplateFilterableFieldsEnabled(
   manager: EntityManager,
   templateId: string,
   schema: FormDefinitionSchema | null | undefined,
+  inForceSchema?: FormDefinitionSchema | null,
 ): Promise<void> {
   const reports = await readTemplateFilterableFieldIssues(
     manager,
     templateId,
     schema,
+    inForceSchema,
   );
 
   if (reports.length > 0) {
@@ -132,6 +156,27 @@ export async function readFormDefinitionFilterableFieldIssues(
   );
 
   return reports.flat();
+}
+
+/**
+ * The paths of `paths` that `inForceSchema` does not already hold as
+ * filterable with the same field type: a field made filterable, a column
+ * moved into a new table path, or a type change (which changes what a stored
+ * value must look like).
+ */
+function readNewlyFilterablePaths(
+  paths: readonly FilterableFieldPath[],
+  inForceSchema: FormDefinitionSchema | null,
+): readonly FilterableFieldPath[] {
+  const inForceTypes = new Map(
+    readFilterableFieldPaths(inForceSchema).map(
+      (item): readonly [string, string] => [item.path, item.field.type],
+    ),
+  );
+
+  return paths.filter(
+    (item) => inForceTypes.get(item.path) !== item.field.type,
+  );
 }
 
 /**

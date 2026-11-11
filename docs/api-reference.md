@@ -1261,7 +1261,7 @@ audit sink must not be able to fail the mutation it observes.
 `rolledBackByMemberId`, supplied by the mutation from `@BPMCurrentMemberId()`,
 so the rollback event names an actor.
 
-**Filterable-field checks (ADR 25, not yet released).** Publishing a version (`publishApprovalTemplateVersion`, including the compose path) and rolling back (`rollbackApprovalTemplateVersion`) run `assertTemplateFilterableFieldsEnabled` on the version that becomes current. Any issue is a `ConflictException` (409) that lists each one: a type change against an older version that holds instances, or instance values that do not fit the type. The helpers are in `filterable-field-guard.ts`, which is not re-exported from the package index.
+**Filterable-field checks (ADR 25, not yet released).** Publishing a version (`publishApprovalTemplateVersion`, including the compose path) and rolling back (`rollbackApprovalTemplateVersion`) run `assertTemplateFilterableFieldsEnabled` on the version that becomes current. Any issue is a `ConflictException` (409) that lists each one: a type change against an older version that holds instances, or instance values that do not fit the type. The instance scan covers only the paths that are filterable for the first time, or whose field type changed, relative to the template's current version; a publish that makes nothing newly filterable reads no instance. The designer's read-only `filterableFieldIssues` query still scans every filterable path. The helpers are in `filterable-field-guard.ts`, which is not re-exported from the package index.
 
 The designer's read-only check is the `filterableFieldIssues` GraphQL query, guarded by `@BPMDesignerOnly()` (the answer names templates and instance ids):
 

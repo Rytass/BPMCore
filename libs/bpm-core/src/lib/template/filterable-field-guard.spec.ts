@@ -357,6 +357,117 @@ describe('filterable field guard (ADR 25 §5.4)', () => {
     ).resolves.toBeUndefined();
   });
 
+  describe('against the in-force schema (ADR 25 §15)', () => {
+    const MONEY_AMOUNT = {
+      fieldKey: 'amount',
+      filterable: true,
+      label: '金額',
+      required: false,
+      type: 'money',
+    };
+    const TEXT_VENDOR = {
+      fieldKey: 'vendor',
+      filterable: true,
+      label: '廠商',
+      required: false,
+      type: 'text',
+    };
+
+    it('reads no instance when the publish makes nothing newly filterable', async (): Promise<void> => {
+      // The stored value is dirty, but the field was already filterable with
+      // this type: the guard at enable time and on every write keeps it clean,
+      // so a publish that enables nothing new has nothing to scan.
+      const { manager, query } = createFakeManager({
+        instances: [{ formData: { amount: 'abc' }, id: 'i-1' }],
+      });
+      const inForce = schemaOf([MONEY_AMOUNT]);
+      const next = schemaOf([
+        MONEY_AMOUNT,
+        { fieldKey: 'memo', label: '說明', required: false, type: 'text' },
+      ]);
+
+      await expect(
+        assertTemplateFilterableFieldsEnabled(
+          manager,
+          'template-1',
+          next,
+          inForce,
+        ),
+      ).resolves.toBeUndefined();
+      expect(
+        query.mock.calls.some(([sql]) =>
+          String(sql).includes('jsonb_object_agg'),
+        ),
+      ).toBe(false);
+    });
+
+    it('scans only the field made filterable here, and refuses its dirty values', async (): Promise<void> => {
+      const { manager, query } = createFakeManager({
+        instances: [{ formData: { amount: 'abc', vendor: 'x' }, id: 'i-1' }],
+      });
+      const inForce = schemaOf([
+        TEXT_VENDOR,
+        { ...MONEY_AMOUNT, filterable: false },
+      ]);
+      const next = schemaOf([TEXT_VENDOR, MONEY_AMOUNT]);
+
+      const reports = await readTemplateFilterableFieldIssues(
+        manager,
+        'template-1',
+        next,
+        inForce,
+      );
+      const instanceCall = query.mock.calls.find(([sql]) =>
+        String(sql).includes('jsonb_object_agg'),
+      );
+
+      expect(instanceCall?.[1]).toEqual(['template-1', ['amount']]);
+      expect(reports.map((report) => report.issue.path)).toEqual(['amount']);
+      expect(reports[0].issue.kind).toBe('INVALID_VALUES');
+    });
+
+    it('scans a field whose type changed even though it was already filterable', async (): Promise<void> => {
+      const { manager, query } = createFakeManager({
+        instances: [{ formData: { amount: 'abc' }, id: 'i-1' }],
+      });
+      const inForce = schemaOf([{ ...MONEY_AMOUNT, type: 'text' }]);
+      const next = schemaOf([MONEY_AMOUNT]);
+
+      const reports = await readTemplateFilterableFieldIssues(
+        manager,
+        'template-1',
+        next,
+        inForce,
+      );
+      const instanceCall = query.mock.calls.find(([sql]) =>
+        String(sql).includes('jsonb_object_agg'),
+      );
+
+      expect(instanceCall?.[1]).toEqual(['template-1', ['amount']]);
+      expect(reports.map((report) => report.issue.kind)).toContain(
+        'INVALID_VALUES',
+      );
+    });
+
+    it('scans every filterable field when the template has no published version', async (): Promise<void> => {
+      const { manager, query } = createFakeManager({
+        instances: [],
+      });
+
+      await readTemplateFilterableFieldIssues(
+        manager,
+        'template-1',
+        schemaOf([TEXT_VENDOR, MONEY_AMOUNT]),
+        null,
+      );
+      const instanceCall = query.mock.calls.find(([sql]) =>
+        String(sql).includes('jsonb_object_agg'),
+      );
+
+      expect(instanceCall?.[1]).toEqual(['template-1', ['vendor', 'amount']]);
+    });
+  });
+
   it('checks every template on a shared form definition, labelling each', async (): Promise<void> => {
     const { manager } = createFakeManager({
       formDefinitionTemplates: ['template-a'],
