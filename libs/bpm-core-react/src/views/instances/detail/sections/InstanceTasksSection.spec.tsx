@@ -393,7 +393,7 @@ describe('InstanceTasksSection approver fill', () => {
 
     await approve(ref);
 
-    expect(onFillApproveError).toHaveBeenCalledWith(message);
+    expect(onFillApproveError).toHaveBeenCalledWith(message, []);
     expect(container.querySelector('[data-modal="簽核意見"]')).toBeNull();
   });
 

@@ -400,6 +400,131 @@ describe('approver-filled form helpers', () => {
       ).toBeNull();
     });
 
+    describe('structured form data issues', () => {
+      const LABELED_SCHEMA: FormDefinitionSchema = {
+        fields: [
+          { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+          { fieldKey: 'note2', label: '備註', required: false, type: 'text' },
+          {
+            fieldKey: 'memo',
+            label: 'a「b」；c',
+            required: false,
+            type: 'text',
+          },
+          {
+            columns: [
+              { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+            ],
+            fieldKey: 'financeItems',
+            label: '財務明細',
+            minRows: 0,
+            required: false,
+            type: 'table',
+          },
+        ],
+        schemaVersion: 1,
+      };
+      const labeledNode = {
+        ...fillNode,
+        data: {
+          ...fillNode.data,
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'note', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'note2', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'memo', fill: 'OPTIONAL' },
+            { display: 'SHOW', fieldKey: 'financeItems', fill: 'OPTIONAL' },
+          ],
+        },
+      } as UserTaskNode;
+
+      it('lands on the field the path names when two fields share a label', () => {
+        expect(
+          readFillServerErrors(
+            '欄位「備註」最多 20 個字',
+            LABELED_SCHEMA,
+            labeledNode,
+            [
+              {
+                message: '欄位「備註」最多 20 個字',
+                path: 'note2',
+                reason: 'MAX_LENGTH',
+                limit: 20,
+              },
+            ],
+          ),
+        ).toEqual({ note2: '最多 20 個字。' });
+      });
+
+      it('reads a label holding 「」 and ； by path, not by splitting the message', () => {
+        expect(
+          readFillServerErrors(
+            '欄位「a「b」；c」為必填',
+            LABELED_SCHEMA,
+            labeledNode,
+            [
+              {
+                message: '欄位「a「b」；c」為必填',
+                path: 'memo',
+                reason: 'REQUIRED',
+              },
+            ],
+          ),
+        ).toEqual({ memo: 'a「b」；c為必填欄位。' });
+      });
+
+      it('addresses a table cell by its row path', () => {
+        expect(
+          readFillServerErrors(
+            '「財務明細」第 2 列的「品項」為必填',
+            LABELED_SCHEMA,
+            labeledNode,
+            [
+              {
+                message: '「財務明細」第 2 列的「品項」為必填',
+                path: 'financeItems[1].name',
+                reason: 'REQUIRED',
+              },
+            ],
+          ),
+        ).toEqual({ 'financeItems[1].name': '此欄為必填。' });
+      });
+
+      it('words the same refusal the same way whether it came structured or as a message', () => {
+        const message =
+          '欄位「備註」最多 20 個字；「財務明細」第 2 列的「品項」格式不正確';
+        const issues = [
+          {
+            message: '欄位「備註」最多 20 個字',
+            path: 'note',
+            reason: 'MAX_LENGTH' as const,
+            limit: 20,
+          },
+          {
+            message: '「財務明細」第 2 列的「品項」格式不正確',
+            path: 'financeItems[1].name',
+            reason: 'PATTERN' as const,
+          },
+        ];
+
+        expect(
+          readFillServerErrors(message, LABELED_SCHEMA, labeledNode, issues),
+        ).toEqual(readFillServerErrors(message, LABELED_SCHEMA, labeledNode));
+      });
+
+      it('gives up when a path names nothing the approver can fill', () => {
+        expect(
+          readFillServerErrors('欄位「備註」為必填', LABELED_SCHEMA, labeledNode, [
+            { message: '欄位「備註」為必填', path: 'ghost', reason: 'REQUIRED' },
+          ]),
+        ).toBeNull();
+        expect(
+          readFillServerErrors('欄位「備註」為必填', SCHEMA, fillNode, [
+            { message: '欄位「備註」為必填', path: 'title', reason: 'REQUIRED' },
+          ]),
+        ).toBeNull();
+      });
+    });
+
     it('summarises each fill field for the approve dialog', () => {
       const schema: FormDefinitionSchema = {
         ...SCHEMA,

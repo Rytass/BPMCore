@@ -14,6 +14,8 @@ import {
   type FormDefinitionSchema,
   type FormFieldDefinition,
   type FormFieldValue,
+  type FormDataIssue,
+  type FormDataIssueReason,
   type TableColumnDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { readFormTableRows } from '@rytass/bpm-core-client/form';
@@ -210,15 +212,172 @@ export function isFillConflictMessage(message: string): boolean {
 
 // The server names a field by its label: `欄位「標籤」`, a table row as
 // `「表格」第 N 列` (1-based), and a cell as `「表格」第 N 列的「欄位」`.
-// Each part of a message is separated by `；`.
+// Each part of a message is separated by `；`. This is the fallback for a
+// response that carries no `formDataIssues`: labels are not unique, so the
+// issues, which address each value by its path, are the primary route.
 const TOP_LEVEL_REF_PATTERN = /^欄位「(.+?)」(.+)$/;
 const TABLE_REF_PATTERN = /^「(.+?)」第 (\d+) 列(?:的「(.+?)」)?(.+)$/;
 const MISSING_FIELDS_PREFIX = '缺少必填欄位：';
 
-/** The field, or table column, a server error part names, with its renderer key. */
+/** The field, or table column, a server error names, with its renderer key. */
 interface FillErrorTarget {
   readonly key: string;
   readonly settings: FormFieldDefinition | TableColumnDefinition | undefined;
+  readonly topLevel: boolean;
+}
+
+/** The sentence a refused value shows, by its reason. */
+function readFillIssueText(
+  reason: FormDataIssueReason,
+  limit: number | undefined,
+  target: FillErrorTarget,
+): string {
+  const name = target.settings?.label || target.settings?.fieldKey || '';
+
+  switch (reason) {
+    case 'REQUIRED':
+      return target.topLevel && name !== ''
+        ? `${name}為必填欄位。`
+        : '此欄為必填。';
+    case 'MIN_LENGTH':
+      return `至少需要 ${limit ?? 0} 個字。`;
+    case 'MAX_LENGTH':
+      return `最多 ${limit ?? 0} 個字。`;
+    case 'MIN_ROWS':
+      return `至少需要 ${limit ?? 0} 列。`;
+    case 'MAX_ROWS':
+      return `最多 ${limit ?? 0} 列。`;
+    case 'PATTERN': {
+      const message =
+        target.settings &&
+        (target.settings.type === 'text' || target.settings.type === 'textarea')
+          ? target.settings.patternErrorMessage?.trim()
+          : undefined;
+
+      return message || '格式不正確。';
+    }
+    // The server ran out of time on the format check; the value may be fine.
+    case 'PATTERN_TIMEOUT':
+      return '格式檢查逾時，請縮短內容後再試，或請表單設計者簡化格式。';
+    default:
+      return '此欄內容不正確。';
+  }
+}
+
+/** The reason a message sentence stands for, for the message fallback. */
+function readFillReasonFromSentence(sentence: string): {
+  readonly limit?: number;
+  readonly reason: FormDataIssueReason;
+} {
+  const atLeastRows = /^至少需要 (\d+) 列$/.exec(sentence);
+  const atMostRows = /^最多 (\d+) 列$/.exec(sentence);
+  const shortest = /^至少需要 (\d+) 個字$/.exec(sentence);
+  const longest = /^最多 (\d+) 個字$/.exec(sentence);
+
+  if (sentence === '為必填') {
+    return { reason: 'REQUIRED' };
+  }
+
+  if (atLeastRows) {
+    return { limit: Number(atLeastRows[1]), reason: 'MIN_ROWS' };
+  }
+
+  if (atMostRows) {
+    return { limit: Number(atMostRows[1]), reason: 'MAX_ROWS' };
+  }
+
+  if (shortest) {
+    return { limit: Number(shortest[1]), reason: 'MIN_LENGTH' };
+  }
+
+  if (longest) {
+    return { limit: Number(longest[1]), reason: 'MAX_LENGTH' };
+  }
+
+  if (sentence === '格式不正確') {
+    return { reason: 'PATTERN' };
+  }
+
+  if (sentence === '無法在時限內完成格式檢查') {
+    return { reason: 'PATTERN_TIMEOUT' };
+  }
+
+  return { reason: 'TYPE' };
+}
+
+/**
+ * The renderer key of the value an issue path addresses, among the fields
+ * `fields` lets the approver fill. `items` is a table, `items[1]` a row,
+ * `items[1].qty` a cell. `null` when the path names nothing fillable.
+ */
+function readFillIssueTarget(
+  path: string,
+  fields: readonly FormFieldDefinition[],
+): FillErrorTarget | null {
+  const field = fields.find(
+    (candidate) =>
+      path === candidate.fieldKey ||
+      (isTableFieldDefinition(candidate) &&
+        path.startsWith(`${candidate.fieldKey}[`)),
+  );
+
+  if (!field) {
+    return null;
+  }
+
+  if (path === field.fieldKey) {
+    return { key: path, settings: field, topLevel: true };
+  }
+
+  if (!isTableFieldDefinition(field)) {
+    return null;
+  }
+
+  const rowPath = /^\[(\d+)\](?:\.(.+))?$/u.exec(
+    path.slice(field.fieldKey.length),
+  );
+
+  if (!rowPath) {
+    return null;
+  }
+
+  const rowKey = `${field.fieldKey}[${rowPath[1]}]`;
+  const columnKey = rowPath[2];
+
+  if (columnKey === undefined) {
+    return { key: rowKey, settings: undefined, topLevel: false };
+  }
+
+  const column = field.columns.find(
+    (candidate) => candidate.fieldKey === columnKey,
+  );
+
+  return column
+    ? { key: `${rowKey}.${column.fieldKey}`, settings: column, topLevel: false }
+    : null;
+}
+
+function readFillErrorsFromIssues(
+  issues: readonly FormDataIssue[],
+  fields: readonly FormFieldDefinition[],
+): Readonly<Record<string, string>> | null {
+  const entries = issues.map((issue): readonly [string, string] | null => {
+    const target = readFillIssueTarget(issue.path, fields);
+
+    return target === null
+      ? null
+      : [target.key, readFillIssueText(issue.reason, issue.limit, target)];
+  });
+
+  if (entries.length === 0 || entries.some((entry) => entry === null)) {
+    return null;
+  }
+
+  return Object.fromEntries(
+    entries.filter(
+      (entry): entry is readonly [string, string] => entry !== null,
+    ),
+  );
 }
 
 function readFillErrorTarget(
@@ -235,7 +394,7 @@ function readFillErrorTarget(
     return field
       ? {
           reason: topLevel[2],
-          target: { key: field.fieldKey, settings: field },
+          target: { key: field.fieldKey, settings: field, topLevel: true },
         }
       : null;
   }
@@ -262,7 +421,7 @@ function readFillErrorTarget(
   if (columnLabel === undefined) {
     return {
       reason: tableRef[4],
-      target: { key: rowKey, settings: undefined },
+      target: { key: rowKey, settings: undefined, topLevel: false },
     };
   }
 
@@ -273,71 +432,37 @@ function readFillErrorTarget(
   return column
     ? {
         reason: tableRef[4],
-        target: { key: `${rowKey}.${column.fieldKey}`, settings: column },
+        target: {
+          key: `${rowKey}.${column.fieldKey}`,
+          settings: column,
+          topLevel: false,
+        },
       }
     : null;
 }
 
-function readFillPathErrorText(
-  reason: string,
-  settings: FormFieldDefinition | TableColumnDefinition | undefined,
-): string {
-  const atLeastRows = /^至少需要 (\d+) 列$/.exec(reason);
-  const atMostRows = /^最多 (\d+) 列$/.exec(reason);
-  const shortest = /^至少需要 (\d+) 個字$/.exec(reason);
-  const longest = /^最多 (\d+) 個字$/.exec(reason);
-
-  if (reason === '為必填') {
-    return '此欄為必填。';
-  }
-
-  if (atLeastRows) {
-    return `至少需要 ${atLeastRows[1]} 列。`;
-  }
-
-  if (atMostRows) {
-    return `最多 ${atMostRows[1]} 列。`;
-  }
-
-  if (shortest) {
-    return `至少需要 ${shortest[1]} 個字。`;
-  }
-
-  if (longest) {
-    return `最多 ${longest[1]} 個字。`;
-  }
-
-  if (reason === '格式不正確') {
-    const message =
-      settings && (settings.type === 'text' || settings.type === 'textarea')
-        ? settings.patternErrorMessage?.trim()
-        : undefined;
-
-    return message || '格式不正確。';
-  }
-
-  // The server ran out of time on the format check; the value may be fine.
-  if (reason === '無法在時限內完成格式檢查') {
-    return '格式檢查逾時，請縮短內容後再試，或請表單設計者簡化格式。';
-  }
-
-  return '此欄內容不正確。';
-}
-
 /**
- * Turns the server's fill validation message (docs/08 §8.5, error table 2)
+ * Turns the server's fill validation refusal (docs/08 §8.5, error table 2)
  * into field errors keyed the way `FormRenderer` addresses them, so a check
- * the page missed still lands on the field. `null` when any part does not
- * parse — the caller then shows the message as it is.
+ * the page missed still lands on the field. `formDataIssues` is the refusal's
+ * structured list and wins when it is present: each issue names its value by
+ * path, so two fields sharing a label stay apart. Without it, the Chinese
+ * `message` is parsed. `null` when any part does not resolve to a fillable
+ * field — the caller then shows the message as it is.
  */
 export function readFillServerErrors(
   message: string,
   schema: FormDefinitionSchema,
   node: UserTaskNode,
+  formDataIssues: readonly FormDataIssue[] = [],
 ): Readonly<Record<string, string>> | null {
   const fillableFields = schema.fields.filter((field) =>
     readNodeFillableFieldKeys(node).has(field.fieldKey),
   );
+
+  if (formDataIssues.length > 0) {
+    return readFillErrorsFromIssues(formDataIssues, fillableFields);
+  }
 
   if (message.startsWith(MISSING_FIELDS_PREFIX)) {
     // Labels may hold commas, so match each fillable field's label (or key)
@@ -366,16 +491,15 @@ export function readFillServerErrors(
   }
 
   return Object.fromEntries(
-    parts.flatMap((part) =>
-      part === null
-        ? []
-        : [
-            [
-              part.target.key,
-              readFillPathErrorText(part.reason, part.target.settings),
-            ],
-          ],
-    ),
+    parts.flatMap((part) => {
+      if (part === null) {
+        return [];
+      }
+
+      const { limit, reason } = readFillReasonFromSentence(part.reason);
+
+      return [[part.target.key, readFillIssueText(reason, limit, part.target)]];
+    }),
   );
 }
 
