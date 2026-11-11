@@ -1,6 +1,6 @@
 # 26 — 簽核實例欄位篩選開發 Phase
 
-- **狀態**：P0–P3 VERIFIED（2026-11-11，獨立 verifier 以真實 GraphQL 與設計器操作驗證 E1–E17 全數通過，見 §E2E 驗收矩陣下的驗證紀錄）；P4 IMPLEMENTING
+- **狀態**：P0–P3 VERIFIED（2026-11-11，獨立 verifier 以真實 GraphQL 與設計器操作驗證 E1–E17 全數通過，見 §E2E 驗收矩陣下的驗證紀錄）；P4 PLANNED（2026-11-11 擱置，見 §P4）
 - **規劃日期**：2026-11-10；依 ADR 25 的裁決（2026-11-11）改寫
 - **權威決策**：[25 — ADR：簽核實例依表單欄位篩選與排序](./25-instance-field-filter-adr.md)（Accepted）
 - **完成定義**：P0–P4 全部 VERIFIED，且請款範本的驗收情境（§驗收情境）在 wrapper host 實際操作通過；`docs/api-reference.md` 同步更新。
@@ -16,7 +16,7 @@
 | P1 | `filterable` 宣告、lint、啟用檢查（歷史型別與舊資料）、四路徑寫入型別檢查 | P0 | VERIFIED |
 | P2 | 查詢：GIN migration、條件編譯器（內部介面）、權限擴充點、sort、service 與 GraphQL | P1 | VERIFIED |
 | P3 | Client SDK、設計器勾選與錯誤提示、列表篩選面板、api-reference 同步 | P2 | VERIFIED |
-| P4 | 1 萬筆效能實測、wrapper host 驗收 | P3 | IMPLEMENTING |
+| P4 | 1 萬筆效能實測、wrapper host 驗收 | P3 | PLANNED（擱置） |
 
 ```
  P0 ──▶ P1 ──▶ P2 ──▶ P3 ──▶ P4 ──▶ 驗收（wrapper host）
@@ -122,6 +122,10 @@
 - 在 develop 或獨立 schema 產生單一範本 1 萬筆合成實例（含 table 欄位，每筆 5–20 列）。
 - 依 §E2E 矩陣 S1–S5 執行查詢，記錄 `EXPLAIN (ANALYZE, BUFFERS)` 與 p95（每情境至少 200 次，暖快取與冷快取各一組），量測包含 GraphQL 序列化。
 - 量測結果寫回 ADR 25 §9（取代「未實測」）。
+
+**擱置（2026-11-11）**
+
+第一次實測因量測機器長時間高負載（load average 約 50／18 核，`SELECT 1` 來回 p95 167 ms）而作廢，數字不用於判定；使用者決定先擱置 P4，待有安靜的量測環境再重跑。第一輪留存的事實：API 在本機、DB 在遠端 Cloud SQL，延遲含網路來回；S4 在負載下出現過一次間歇 500，之後 420 次請求未重現。產生資料與量測的腳本未進 repo。wrapper host 驗收（示範頁 `/examples/filterable-expense`）已在本機 develop 與 staging 實際操作通過。
 
 **Gate**
 

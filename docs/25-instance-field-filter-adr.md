@@ -187,6 +187,7 @@ CREATE INDEX IF NOT EXISTS "IDX_approval_instances_form_data_gin"
 
 - **勾選當下**：設計器呼叫唯讀 query `filterableFieldIssues(templateId, formDefinitionId, schemaJson)` 取得問題清單，在勾選框旁明確顯示錯誤。草稿儲存**不阻擋**——草稿不影響任何實例，擋在草稿會讓設計者無法先存再改。
 - **發布時**：伺服器再檢查一次，作為最終依據（防止繞過設計器直接呼叫 API）。掛點為範本服務的版本發布（一般發布與「表單＋流程一次建立」的 compose 共用）與**回滾**——回滾會讓舊版本成為目前版本，同樣要通過檢查。不通過回 `ConflictException`，訊息逐條列出問題。
+- 設計器「儲存草稿」會把表單存成**已發布**的表單定義版本——範本版本只能綁定已發布的表單版本（既有設計）。這不影響本節的保證：送出、寫入檢查（§6）與列表篩選都讀**範本現行版本所綁的表單版本**，範本發布被拒時現行版本與其表單不變，衝突的欄位對任何案件都不生效；其他範本改綁這個表單版本時，同樣在它自己的發布時點受檢查。
 - 判定邏輯是 `@rytass/bpm-core-shared` 的純函式 `readFilterableFieldIssues`，前後端共用，訊息由 `describeFilterableFieldIssue` 產生。
 
 錯誤訊息必須明確且給出路：
@@ -348,7 +349,7 @@ LIMIT $pageSize OFFSET $offset;
 ## 9. 效能
 
 - **範圍**：單一範本 1 萬筆實例以內，2–3 個條件加排序的分頁查詢 p95 < 300 ms。
-- **狀態**：**未實測**，所有判斷皆為分析，P4 以實測取代。
+- **狀態**：**未實測**，所有判斷皆為分析，P4 以實測取代。2026-11-11 第一次實測因量測機器長時間高負載而作廢、P4 擱置（見 Phase 26 §P4），數字未採用。
 - 主要成本依序：
   1. 可見範圍的 EXISTS 子句（非管理員）。
   2. count 與 list 各查一次（client 端 `Promise.all` 並行）。
