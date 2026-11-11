@@ -216,6 +216,10 @@ type ApproverResolver =
   | {
       readonly fallback?: ApproverResolverFallback;
       readonly minPositionLevel: number;
+      // 鏈從誰的主管開始爬；省略＝申請人。舊版引擎不認得，會照申請人起算
+      readonly startFrom?: OrgManagerChainStart;
+      // 職等低於它的主管穿過不簽；省略＝第一位有職等的主管就開始簽
+      readonly startPositionLevel?: number;
       readonly type: 'ORG_MANAGER_CHAIN';
     }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
@@ -245,6 +249,12 @@ type ApproverResolver =
       readonly preferClosestOrgUnit?: boolean;
       readonly type: 'NODE_ACTOR_MANAGER';
     };
+
+// 主管鏈的起點（起點本人不在鏈上，從他的直屬主管開始爬）
+type OrgManagerChainStart =
+  | { readonly type: 'INITIATOR' }
+  | { readonly formPath: string; readonly type: 'FORM_MEMBER' }
+  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' };
 
 type ApproverResolverFallback =
   | { readonly type: 'NONE' }
@@ -396,6 +406,12 @@ type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
 `minPositionLevel` 必須是有限整數；`userTask` 的 `decisionPolicy` 只能是
 `SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。同一個 resolver
 用在 `NOTIFY.recipients` 時不受 decision policy 限制（所有人都會收到通知）。
+
+可省略的 `startFrom`（鏈從誰的主管開始）與 `startPositionLevel`（職等低於它的主管穿過不簽）
+也在 publish 時檢查：`startPositionLevel` 必須是整數且不可高於 `minPositionLevel`；
+`startFrom: { type: 'FORM_MEMBER', formPath }` 指到的欄位須是必填、永遠顯示的單選人員欄位，
+`startFrom: { type: 'NODE_ACTOR', nodeIds }` 指到的關卡須符合 `NODE_ACTOR` 的圖規則。
+用在 `NOTIFY.recipients` 時 `startFrom` 只能省略或 `INITIATOR`。
 
 ### Service Task
 

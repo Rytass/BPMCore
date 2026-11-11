@@ -69,6 +69,11 @@ without a `mode` normalize to `single`; `radio` is always single and
   `ORG_MANAGER_CHAIN` accept an optional `fallback` (`NONE`, `DIRECT`, or
   `POSITION`). The `POSITION` fallback type is not released yet (it landed after
   `v0.16.2`); older engines reject it at run time.
+  `ORG_MANAGER_CHAIN` also takes `startFrom` (`OrgManagerChainStart`: the
+  initiator, the person picked in a form field, or the person who approved an
+  earlier stage) and `startPositionLevel` (managers below it are walked past);
+  both are optional, and an older engine ignores them and climbs from the
+  initiator.
 - Service task actions (`ServiceAction`) have three types. The workflow engine
   executes all three at run time:
   - `NOTIFY`: `channels`, `recipients` (an `ApproverResolver`), optional
