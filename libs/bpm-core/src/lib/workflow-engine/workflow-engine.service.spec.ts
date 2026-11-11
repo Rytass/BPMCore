@@ -3138,7 +3138,7 @@ describe('WorkflowEngineService', () => {
 
     it('leaves the file count open when the field sets no maxFiles', async (): Promise<void> => {
       const fixture = createFilesFixture({
-        formSchema: createMaxFilesFormSchema({ maxFiles: undefined }),
+        formSchema: createMaxFilesFormSchema({ maxFiles: null }),
       });
 
       await expect(
@@ -20445,7 +20445,8 @@ function createMaxFilesFormSchema({
   visibleWhen,
 }: {
   readonly hidden?: boolean;
-  readonly maxFiles?: number;
+  // `null` leaves `maxFiles` off the field.
+  readonly maxFiles?: number | null;
   readonly visibleWhen?: string;
 } = {}): FormDefinitionSchema {
   return {
@@ -20472,7 +20473,7 @@ function createMaxFilesFormSchema({
         required: false,
         type: 'file_upload',
         ...(hidden === undefined ? {} : { hidden }),
-        ...(maxFiles === undefined ? {} : { maxFiles }),
+        ...(maxFiles === null ? {} : { maxFiles }),
         ...(visibleWhen === undefined ? {} : { visibleWhen }),
       },
     ],
