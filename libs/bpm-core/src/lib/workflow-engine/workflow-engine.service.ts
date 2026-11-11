@@ -915,7 +915,7 @@ export class WorkflowEngineService {
 
         if (lockedTemplate?.currentVersionId !== templateVersion.id) {
           throw new ConflictException(
-            'Approval template was published while this submission was in progress; refresh and retry',
+            '範本在送出期間發布了新版本，這次申請沒有送出；請重新整理頁面後再送出',
           );
         }
 

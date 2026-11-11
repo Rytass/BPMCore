@@ -1679,7 +1679,7 @@ describe('WorkflowEngineService', () => {
             '{"reviewScore":"ten","financeItems":[{"seq":1,"taxAmount":5}]}',
         }),
         BadRequestException,
-        '可篩選欄位的值型別不正確：formData.reviewScore must be number',
+        '可篩選欄位的值型別不正確：欄位「評分」必須是數字',
       );
 
       const advisoryOrder = fixture.managerQuery.mock.invocationCallOrder[
@@ -4988,7 +4988,7 @@ describe('WorkflowEngineService', () => {
           templateId: 'template-1',
           title: null,
         }),
-      ).rejects.toThrow(/formData\.amount must be number/u);
+      ).rejects.toThrow(/欄位「金額」必須是數字/u);
 
       expect(fixture.templateFindOne).toHaveBeenCalledWith(
         expect.objectContaining(sharedLock),
@@ -5014,7 +5014,7 @@ describe('WorkflowEngineService', () => {
           instanceId: 'instance-1',
           title: null,
         }),
-      ).rejects.toThrow(/formData\.amount must be number/u);
+      ).rejects.toThrow(/欄位「金額」必須是數字/u);
 
       expect(fixture.templateFindOne).toHaveBeenCalledWith(
         expect.objectContaining(sharedLock),
