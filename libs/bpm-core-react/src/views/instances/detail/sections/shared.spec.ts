@@ -619,8 +619,8 @@ describe('readMemberDisplayText', (): void => {
   });
 });
 
-describe('administrator reassignment in the timeline', () => {
-  it('puts a TASK_REASSIGNED entry on the user timeline', () => {
+describe('administrator reassignment in the timeline', (): void => {
+  it('puts a TASK_REASSIGNED entry on the user timeline', (): void => {
     expect(
       isUserMeaningfulActivity({
         actorMemberId: 'admin-001',
@@ -652,6 +652,14 @@ describe('administrator reassignment in the timeline', () => {
         name: '李大華',
       } as MemberProfileRecord,
     ],
+    [
+      'member-blank',
+      {
+        email: '',
+        memberId: 'member-blank',
+        name: '',
+      } as MemberProfileRecord,
+    ],
   ]);
 
   function reassignedParts(
@@ -673,7 +681,7 @@ describe('administrator reassignment in the timeline', () => {
     );
   }
 
-  it('says whose task it was, who it moved to and why', () => {
+  it('says whose task it was, who it moved to and why', (): void => {
     expect(
       reassignedParts({
         fromMemberId: 'member-left',
@@ -686,7 +694,7 @@ describe('administrator reassignment in the timeline', () => {
     });
   });
 
-  it('keeps the original approver visible by id when their profile is gone', () => {
+  it('keeps the original approver visible by id when their profile is gone', (): void => {
     expect(
       reassignedParts({
         fromMemberId: 'member-gone',
@@ -698,12 +706,61 @@ describe('administrator reassignment in the timeline', () => {
     });
   });
 
-  it('adds no reassignment text when the payload names nobody', () => {
+  it('adds no reassignment text when the payload names nobody', (): void => {
     expect(
       reassignedParts({}).filter(
         (part) => part.type === 'text' && part.text.includes('改派'),
       ),
     ).toHaveLength(0);
+  });
+
+  it('says a group seat moved, not that the original approver did', (): void => {
+    expect(
+      reassignedParts({
+        assigneeChanged: false,
+        fromMemberId: 'member-left',
+        reason: '原簽核人已離職',
+        toMemberId: 'member-new',
+      }),
+    ).toContainEqual({
+      text: '原座位：王小明 → 改派給：李大華 · 原因：原簽核人已離職',
+      type: 'text',
+    });
+  });
+
+  it('keeps 原簽核人 when the assignee itself changed', (): void => {
+    expect(
+      reassignedParts({
+        assigneeChanged: true,
+        fromMemberId: 'member-left',
+        toMemberId: 'member-new',
+      }),
+    ).toContainEqual({
+      text: '原簽核人：王小明 → 改派給：李大華',
+      type: 'text',
+    });
+  });
+
+  it('leaves out the original side when the payload has no fromMemberId', (): void => {
+    expect(
+      reassignedParts({
+        toMemberId: 'member-new',
+      }),
+    ).toContainEqual({
+      text: '改派給：李大華',
+      type: 'text',
+    });
+  });
+
+  it('leaves out the target side when the payload has no toMemberId', (): void => {
+    expect(
+      reassignedParts({
+        fromMemberId: 'member-left',
+      }),
+    ).toContainEqual({
+      text: '原簽核人：王小明',
+      type: 'text',
+    });
   });
 
   function pendingTask(overrides: Partial<TaskRecord>): TaskRecord {
@@ -743,11 +800,38 @@ describe('administrator reassignment in the timeline', () => {
     ).find((step) => step.id === `pending-task-${task.id}`);
   }
 
-  it('names the original approver on a waiting task that was moved', () => {
+  it('names the original approver on a waiting task that was moved', (): void => {
     expect(pendingStep(pendingTask({}))?.descriptionParts).toContainEqual({
       email: '',
       label: '王小明',
       memberId: 'member-left',
+      prefix: '原簽核人',
+      type: 'member',
+    });
+  });
+
+  it('does not name an original approver on a candidate pool with no assignee', (): void => {
+    expect(
+      pendingStep(
+        pendingTask({
+          assigneeMemberId: null,
+          candidateMemberIds: ['member-new'],
+        }),
+      )?.descriptionParts.filter(
+        (part) => part.type === 'member' && part.prefix === '原簽核人',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('falls back to the id when the original approver has a blank name', (): void => {
+    expect(
+      pendingStep(
+        pendingTask({ originalAssigneeMemberId: 'member-blank' }),
+      )?.descriptionParts,
+    ).toContainEqual({
+      email: '',
+      label: 'member-blank',
+      memberId: 'member-blank',
       prefix: '原簽核人',
       type: 'member',
     });
@@ -759,7 +843,7 @@ describe('administrator reassignment in the timeline', () => {
       'it never left its first approver',
       { originalAssigneeMemberId: 'member-new' },
     ],
-  ])('does not add an original approver when %s', (_label, overrides) => {
+  ])('does not add an original approver when %s', (_label, overrides): void => {
     expect(
       pendingStep(pendingTask(overrides))?.descriptionParts.filter(
         (part) => part.type === 'member' && part.prefix === '原簽核人',

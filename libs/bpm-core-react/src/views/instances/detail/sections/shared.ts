@@ -291,12 +291,25 @@ export function readMemberDisplayText(
     : memberId;
 }
 
+/**
+ * Whether a task now sits with someone other than the approver it was first
+ * meant for, through administrator reassignment or delegation. The timeline and
+ * the tasks section both read this one rule. A candidate pool has no assignee,
+ * so nothing has moved to anyone yet.
+ */
+function hasMovedFromOriginalAssignee(task: TaskRecord): boolean {
+  return (
+    Boolean(task.assigneeMemberId) &&
+    Boolean(task.originalAssigneeMemberId) &&
+    task.originalAssigneeMemberId !== task.assigneeMemberId &&
+    readDelegationChain(task.delegationChainJson).length > 0
+  );
+}
+
 export function readTaskAssigneeLabel(
   task: TaskRecord,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord> = new Map(),
 ): string {
-  const delegationChain = readDelegationChain(task.delegationChainJson);
-
   if (!task.assigneeMemberId) {
     return task.candidateMemberIds.length
       ? `候選 ${task.candidateMemberIds
@@ -309,17 +322,15 @@ export function readTaskAssigneeLabel(
     task.assigneeMemberId,
     memberProfilesById,
   );
+
+  if (!hasMovedFromOriginalAssignee(task)) {
+    return assigneeLabel;
+  }
+
   const originalAssigneeLabel = readMemberDisplayText(
     task.originalAssigneeMemberId,
     memberProfilesById,
   );
-
-  if (
-    delegationChain.length === 0 ||
-    task.originalAssigneeMemberId === task.assigneeMemberId
-  ) {
-    return assigneeLabel;
-  }
 
   return `${assigneeLabel}（原：${originalAssigneeLabel}）`;
 }
@@ -505,17 +516,19 @@ export function readCommentDescriptionPart(
   return isPresentText(text) ? { label, text, tone, type: 'comment' } : null;
 }
 
-export function readMemberDescriptionPart(
+function readMemberDescriptionPart(
   prefix: string,
   memberId: string | null,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
   fallbackLabel: string,
 ): ActivityStepDescriptionPart {
   const profile = memberId ? memberProfilesById.get(memberId) : null;
+  const name = profile?.name ?? '';
 
   return {
     email: profile?.email ?? null,
-    label: profile?.name ?? fallbackLabel,
+    // An empty name falls back to the id too, so the label is never blank.
+    label: name.trim() ? name : fallbackLabel,
     memberId,
     prefix,
     type: 'member',
@@ -529,17 +542,13 @@ export function readMemberDescriptionPart(
  * section agree. Falls back to the raw id so the person is never silently
  * dropped when their profile cannot be resolved.
  */
-export function readOriginalAssigneeDescriptionPart(
+function readOriginalAssigneeDescriptionPart(
   task: TaskRecord,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
 ): ActivityStepDescriptionPart | null {
   const originalMemberId = task.originalAssigneeMemberId;
 
-  if (
-    !originalMemberId ||
-    originalMemberId === task.assigneeMemberId ||
-    readDelegationChain(task.delegationChainJson).length === 0
-  ) {
+  if (!originalMemberId || !hasMovedFromOriginalAssignee(task)) {
     return null;
   }
 
@@ -737,13 +746,21 @@ function readTaskReassignedLabel(
   const fromMemberId = readStringField(payload, 'fromMemberId');
   const toMemberId = readStringField(payload, 'toMemberId');
   const reason = readStringField(payload, 'reason');
+  // A group stage (parallel, any, quorum) moves one seat and leaves the task's
+  // assignee alone, so the seat's holder was not the 原簽核人. Payloads from
+  // before assigneeChanged existed keep the original wording.
+  const fromLabel = payload.assigneeChanged === false ? '原座位' : '原簽核人';
   const moveLabel =
-    fromMemberId || toMemberId
-      ? `原簽核人：${readMemberDisplayText(
-          fromMemberId,
-          memberProfilesById,
-        )} → 改派給：${readMemberDisplayText(toMemberId, memberProfilesById)}`
-      : null;
+    [
+      fromMemberId
+        ? `${fromLabel}：${readMemberDisplayText(fromMemberId, memberProfilesById)}`
+        : null,
+      toMemberId
+        ? `改派給：${readMemberDisplayText(toMemberId, memberProfilesById)}`
+        : null,
+    ]
+      .filter(isPresentText)
+      .join(' → ') || null;
   const label = [moveLabel, reason?.trim() ? `原因：${reason.trim()}` : null]
     .filter(isPresentText)
     .join(' · ');
