@@ -1114,18 +1114,38 @@ describe('TemplateService', () => {
       ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
-    it('still publishes when the earlier node can be skipped (it excludes nobody when skipped)', async (): Promise<void> => {
-      // The same node is refused as a NODE_ACTOR source: it may end with
-      // nobody having approved it, which an exclusion does not mind.
-      await expect(
-        publish(
-          withExclusion(
-            { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
-            { excludeInitiator: { whenEmpty: 'SKIP_NODE' } },
+    it.each([
+      [
+        'an entry condition',
+        { entryCondition: 'form.amount > 10' },
+        '排除對象的前面關卡 「補填 1」 設有進入條件，可能被跳過；被跳過時會改讀到上一輪的簽核者',
+      ],
+      [
+        'excludeInitiator SKIP_NODE',
+        { excludeInitiator: { whenEmpty: 'SKIP_NODE' } },
+        '排除對象的前面關卡 「補填 1」 在排除發起人後沒人時會跳過此關',
+      ],
+      [
+        'an SLA auto-approval',
+        { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } },
+        '排除對象的前面關卡 「補填 1」 設有逾時自動核准',
+      ],
+    ])(
+      'rejects an earlier node with %s: when it is skipped the node would read the previous round\'s approver',
+      async (_name, firstNodeData, wording): Promise<void> => {
+        // The same node is refused as a NODE_ACTOR source for the same reason.
+        await expect(
+          publish(
+            withExclusion(
+              { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
+              firstNodeData,
+            ),
           ),
-        ),
-      ).resolves.toMatchObject({ id: 'template-version-1' });
-    });
+        ).rejects.toThrow(
+          `workflow.nodes.task_2.excludeNodeActors: ${wording}`,
+        );
+      },
+    );
 
     it('publishes a workflow that omits the setting (control)', async (): Promise<void> => {
       await expect(publish(withExclusion({}))).resolves.toMatchObject({

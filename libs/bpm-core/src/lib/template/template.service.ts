@@ -1759,8 +1759,10 @@ function lintWorkflowNodeActorSources(
 
 /**
  * The graph checks behind `excludeNodeActors` (shared with the designer): every
- * listed node is an upstream user task that cannot still be open when the node
- * starts. Runs after the structural lint, like the `NODE_ACTOR` checks.
+ * listed node, on its own, is an upstream user task that is on every path to
+ * the node and always has a person sign (the `NODE_ACTOR` source rules, worded
+ * for the exclusion). Runs after the structural lint, like the `NODE_ACTOR`
+ * checks.
  */
 function lintWorkflowExcludeNodeActors(
   definition: WorkflowDefinition,
