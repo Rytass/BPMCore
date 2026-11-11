@@ -744,6 +744,7 @@ class StationCustomFieldsResolver implements BPMInitiatorCustomFieldsResolver {
 }
 
 BPMRootModule.forRootAsync({
+  imports: [HrModule],
   inject: [HrDirectory],
   useFactory: (hr: HrDirectory) => ({
     initiatorCustomFieldsResolver: new StationCustomFieldsResolver(hr),
@@ -764,9 +765,18 @@ condition. Keep it out of `initiatorPolicyCel` for now: see the last bullet.
   error, fails the submission and creates no case; BPM does not fall back to `{}`.
 - The snapshot is fixed at submission. Resubmitting a returned case does not call
   it again. The dry run and the launchable-template list do not call it either.
-  The list judges an initiator policy against `customFields: {}`, and on cel-v2
-  reading an absent key is an error the list does not catch, so a policy that
-  reads `initiator.customFields` makes `launchableApprovalTemplates` fail.
+  The list judges an initiator policy against `customFields: {}`, and reading an
+  absent key is an error in either dialect (`cel-legacy`, the default, as well as
+  `cel-v2`) that the list does not catch, so a policy that reads
+  `initiator.customFields` makes `launchableApprovalTemplates` fail. The
+  designer's trial run sends its own sample snapshot, whose `customFields` is
+  `{}`, so a condition that reads it can evaluate differently there than in a
+  real submission.
+- Return a value for every key a template reads: a key whose value is `undefined`
+  is dropped, and a condition that reads it then fails with
+  `EXPRESSION_MISSING_KEY`, unless the template guards it with
+  `has(initiator.customFields.<key>)`. What you return is stored with the case
+  and can be read by anyone who can read the case, so do not return secrets.
 - Register it as the `initiatorCustomFieldsResolver` runtime value or bind the
   token in a `@Global()` host module. `initiatorCustomFieldsResolverProvider`
   configures only one of the two engine instances Nest builds (the same caveat as

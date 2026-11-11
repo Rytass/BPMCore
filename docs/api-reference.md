@@ -1326,7 +1326,7 @@ fill it:
 | Caller passed `initiatorMetadataSnapshotJson` (a host calling the service) | The caller's snapshot, stored as it is; the resolver is **not** called |
 | Engine-built snapshot (no snapshot passed, including every GraphQL submission) | What `resolveCustomFields` returned |
 | Resolver throws | The submission fails with that error; no case is created |
-| Resolver returns anything but a plain, JSON-serializable object (`null`, an array, a string, a `Date`, a circular object) | The submission fails with `InternalServerErrorException` (`Initiator customFields resolver must return a plain object` or `... a JSON-serializable object`); no case is created; the engine never falls back to `{}` |
+| Resolver returns anything but a plain, JSON-serializable object (`null`, an array, a string, a `Date`, a circular object, an object whose `toJSON` returns a non-object) | The submission fails with `InternalServerErrorException` (`Initiator customFields resolver must return a plain object` or `... a JSON-serializable object`); no case is created; the engine never falls back to `{}` |
 
 Rules:
 
@@ -1345,10 +1345,21 @@ Rules:
   The list evaluates an initiator policy against the engine's snapshot with
   `customFields: {}`, so a policy that reads `initiator.customFields` is judged
   differently there than at submission. Reading a key that is absent is an
-  error on cel-v2 (`EXPRESSION_MISSING_KEY`), and the list does not catch an
-  evaluation error, so such a policy fails `launchableApprovalTemplates` itself.
-  Until that is settled, keep `initiator.customFields` out of `initiatorPolicyCel`
-  and use it in conditions and approver expressions.
+  error in either dialect, `cel-legacy` (the default) as well as `cel-v2`
+  (`EXPRESSION_MISSING_KEY`), and the list does not catch an evaluation error,
+  so such a policy fails `launchableApprovalTemplates` itself. Until that is
+  settled, keep `initiator.customFields` out of `initiatorPolicyCel` and use it
+  in conditions and approver expressions.
+- The designer's trial run (`dryRunApprovalWorkflow`) uses the sample snapshot the
+  designer sends, whose `customFields` is `{}`. A condition that reads
+  `initiator.customFields` therefore evaluates differently in a trial run than
+  in a real submission.
+- Return a value for every key a template reads. A key whose value is `undefined`
+  is dropped when the result is stored, and a condition that reads it then fails
+  with `EXPRESSION_MISSING_KEY`, unless the template guards the read with
+  `has(initiator.customFields.<key>)`.
+- What the resolver returns is stored with the case (`initiatorMetadataSnapshotJson`)
+  and can be read by anyone who can read the case. Do not return secrets.
 - Like the dispatcher above, `initiatorCustomFieldsResolverProvider` configures only
   the engine copy it is registered on. The `initiatorCustomFieldsResolver` runtime
   value, or a binding of the token in a `@Global()` host module, reaches both
@@ -1374,13 +1385,18 @@ class StationCustomFieldsResolver implements BPMInitiatorCustomFieldsResolver {
   }
 }
 
-// BPMRootModule.forRootAsync({ useFactory: (hr: HrDirectory) => ({
-//   initiatorCustomFieldsResolver: new StationCustomFieldsResolver(hr),
-// }), inject: [HrDirectory] })
+// BPMRootModule.forRootAsync({
+//   imports: [HrModule],
+//   inject: [HrDirectory],
+//   useFactory: (hr: HrDirectory) => ({
+//     initiatorCustomFieldsResolver: new StationCustomFieldsResolver(hr),
+//   }),
+// })
 ```
 
 A template can then say `initiator.customFields.station == 'TPE'` in an edge
-condition (see the list caveat above before using it in an initiator policy). A host that computes the approvers itself can return
+condition (see the list caveat above before using it in an initiator policy).
+A host that computes the approvers itself can return
 them in `customFields` (say `approverIds`) and name them with an `EXPRESSION`
 approver, `initiator.customFields.approverIds`: an expression approver is evaluated
 against the stored snapshot like any other expression.

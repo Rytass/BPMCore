@@ -64,8 +64,11 @@
   `initiator.customFields` 預設是 `{}`；宿主要放東西（例如申請人的站別、職等，或先算好的主管名單）有兩條路：
   自己呼叫 `submitApprovalInstance` 時帶完整快照，或註冊 `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER`，讓從 BPM 頁（GraphQL）開的單也有。
   後者的快照在送單那一刻定下，重送不重算；送單時評估的發起權限（`initiatorPolicyCel`）讀的是同一份。
-  但「可發起範本」列表與試跑不呼叫它：列表拿 `customFields: {}` 評估發起權限，cel-v2 讀不存在的鍵會丟錯、列表不接，
+  但「可發起範本」列表與試跑不呼叫它：列表拿 `customFields: {}` 評估發起權限，讀不存在的鍵在兩種方言（預設的 cel-legacy 與 cel-v2）都會丟錯、列表不接，
   所以目前請不要在 `initiatorPolicyCel` 讀 `initiator.customFields`（見 `docs/api-reference.md` 的 workflow-engine 段）。
+  設計器試跑送的範例快照 `customFields` 是 `{}`，讀 `initiator.customFields` 的條件在試跑時的結果會跟實際送單不同。
+  resolver 要對範本會讀的每個鍵都給值（值是 `undefined` 的鍵存進去時會被丟掉，之後讀它會丟 `EXPRESSION_MISSING_KEY`），或範本用 `has(initiator.customFields.<key>)` 保護。
+  回傳值會存進案件，能讀案件的人都看得到，不要放機密。
 - `form` 與 `formData` 相同，是案件的表單資料。
 - `instance`：`id`、`state`、`templateId`、`templateVersionId`、`title`；委派條件另有 `nodeId`（被委派任務所在的節點）。
 - `principal`：`{ memberId }`，即被代理的人。委派條件沒有 `subject`、`task`、`template`，要用模板請寫 `instance.templateId`。
