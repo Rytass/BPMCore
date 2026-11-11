@@ -1514,6 +1514,27 @@ describe('ORG_MANAGER_CHAIN start settings', () => {
     expect(readNotifyRecipientsIssue(CHAIN)).toBeNull();
   });
 
+  it.each([
+    ['missing', undefined],
+    ['fractional', 2.5],
+    ['a string', '30'],
+  ])(
+    'refuses a chain whose minPositionLevel is %s, for both a signer and a notify recipient',
+    (_label, minPositionLevel) => {
+      const broken = {
+        minPositionLevel,
+        type: 'ORG_MANAGER_CHAIN',
+      } as unknown as ApproverResolver;
+
+      expect(readApproverResolverIssue(broken)).toBe(
+        '簽核節點需要指定有效的職等門檻。',
+      );
+      expect(readNotifyRecipientsIssue(broken)).toBe(
+        '知會節點需要指定有效的職等門檻。',
+      );
+    },
+  );
+
   it('accepts every start the designer can write', () => {
     [
       { type: 'INITIATOR' },

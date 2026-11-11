@@ -1609,6 +1609,67 @@ describe('set_service_action — NOTIFY recipients', () => {
       await recipientsAfter({ formPath: 'form.people', type: 'DYNAMIC_FORM' }),
     ).toEqual({ formPath: 'form.people', type: 'DYNAMIC_FORM' });
   });
+
+  it('keeps a notify chain with no minPositionLevel as written, and validate_workflow refuses it', async () => {
+    const state = initialState();
+    const withNotify: WorkflowDesignerState = {
+      ...state,
+      definition: {
+        ...state.definition,
+        nodes: [
+          ...state.definition.nodes,
+          {
+            data: {
+              action: {
+                channels: ['IN_APP'],
+                recipients: { memberIds: ['m1'], type: 'DIRECT' },
+                type: 'NOTIFY',
+              },
+              label: '通知',
+              triggerMode: 'AND',
+            },
+            id: 'notify',
+            position: { x: 300, y: 320 },
+            type: 'serviceTask',
+          },
+        ],
+      },
+    };
+    const result = await executeWorkflowTool(withNotify, 'set_service_action', {
+      action: { recipients: { type: 'ORG_MANAGER_CHAIN' }, type: 'NOTIFY' },
+      nodeId: 'notify',
+    });
+
+    expect(result.ok && result.kind === 'mutation').toBe(true);
+
+    if (!result.ok || result.kind !== 'mutation') {
+      return;
+    }
+
+    const node = result.result.state.definition.nodes.find(
+      (item) => item.id === 'notify',
+    );
+
+    expect(node).toMatchObject({
+      data: {
+        action: { recipients: { type: 'ORG_MANAGER_CHAIN' } },
+      },
+    });
+
+    const validation = await executeWorkflowTool(
+      result.result.state,
+      'validate_workflow',
+      {},
+    );
+
+    expect(validation.ok && validation.kind === 'query').toBe(true);
+
+    if (validation.ok && validation.kind === 'query') {
+      expect(validation.data).toEqual({
+        issue: '知會節點需要指定有效的職等門檻。',
+      });
+    }
+  });
 });
 
 describe('set_user_task_approver — manager chain start settings', () => {

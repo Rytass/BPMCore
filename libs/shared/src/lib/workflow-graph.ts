@@ -1194,18 +1194,25 @@ export function isOrgManagerChainDecisionPolicyInvalid(
 
 /**
  * The designer-facing issue with the two optional settings of an
- * `ORG_MANAGER_CHAIN` (`startFrom`, `startPositionLevel`), or `null` when both
- * are absent or well-formed. `subject` names the node kind in the sentence;
- * a notify node's chain may only start at the initiator (it has no earlier
- * stage and no form pick to start from). Reads defensively: on the backend the
- * definition is parsed JSON that no DTO has validated. The form field and the
- * earlier stages the start names are checked elsewhere, against the form
- * schema and the graph.
+ * `ORG_MANAGER_CHAIN` (`minPositionLevel`, `startFrom`, `startPositionLevel`),
+ * or `null` when all are well-formed. `subject` names the node kind in the
+ * sentence; a notify node's chain may only start at the initiator (it has no
+ * earlier stage and no form pick to start from). Reads defensively: on the
+ * backend the definition is parsed JSON that no DTO has validated. The form
+ * field and the earlier stages the start names are checked elsewhere, against
+ * the form schema and the graph.
  */
 export function readOrgManagerChainIssue(
   resolver: Extract<ApproverResolver, { readonly type: 'ORG_MANAGER_CHAIN' }>,
   subject: '簽核節點' | '知會節點',
 ): string | null {
+  // Checked first, for both subjects: without a whole-number level the climb
+  // never stops (`level >= undefined` is always false) and collects every
+  // manager up to the top.
+  if (!Number.isInteger(resolver.minPositionLevel)) {
+    return `${subject}需要指定有效的職等門檻。`;
+  }
+
   const startFrom: unknown = resolver.startFrom;
 
   if (startFrom !== undefined && startFrom !== null) {
@@ -1293,14 +1300,8 @@ export function readApproverResolverIssue(
     return '簽核節點需要指定組織與職位。';
   }
 
-  if (
-    resolver.type === 'ORG_MANAGER_CHAIN' &&
-    !Number.isInteger(resolver.minPositionLevel)
-  ) {
-    return '簽核節點需要指定有效的職等門檻。';
-  }
-
   if (resolver.type === 'ORG_MANAGER_CHAIN') {
+    // The level is checked first inside `readOrgManagerChainIssue`.
     const chainIssue = readOrgManagerChainIssue(resolver, '簽核節點');
 
     if (chainIssue !== null) {
