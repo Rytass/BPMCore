@@ -1079,6 +1079,96 @@ describe('TemplateService', () => {
     });
   });
 
+  describe('excludeNodeActors graph rules', (): void => {
+    const withExclusion = (
+      secondNodeData: Readonly<Record<string, unknown>>,
+      firstNodeData: Readonly<Record<string, unknown>> = {},
+    ): WorkflowDefinition => {
+      const base = createFieldAccessWorkflow([[], []]);
+
+      return {
+        ...base,
+        nodes: base.nodes.map((node) => {
+          if (node.id === 'task_1' && node.type === 'userTask') {
+            return { ...node, data: { ...node.data, ...firstNodeData } };
+          }
+
+          return node.id === 'task_2' && node.type === 'userTask'
+            ? { ...node, data: { ...node.data, ...secondNodeData } }
+            : node;
+        }),
+      } as WorkflowDefinition;
+    };
+    const publish = (workflowDefinition: WorkflowDefinition): Promise<unknown> =>
+      createTableConditionPublishService({
+        workflowDefinition,
+      }).publishApprovalTemplateVersion('template-version-1');
+
+    it('publishes a node that excludes an earlier upstream node', async (): Promise<void> => {
+      await expect(
+        publish(
+          withExclusion({
+            excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' },
+          }),
+        ),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('still publishes when the earlier node has an entry condition (it excludes nobody when skipped)', async (): Promise<void> => {
+      await expect(
+        publish(
+          withExclusion(
+            { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
+            { entryCondition: 'form.amount > 10' },
+          ),
+        ),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('publishes a workflow that omits the setting (control)', async (): Promise<void> => {
+      await expect(publish(withExclusion({}))).resolves.toMatchObject({
+        id: 'template-version-1',
+      });
+    });
+
+    it('rejects an earlier node that does not exist, naming the node and the setting', async (): Promise<void> => {
+      await expect(
+        publish(
+          withExclusion({
+            excludeNodeActors: { nodeIds: ['ghost'], whenEmpty: 'FAIL' },
+          }),
+        ),
+      ).rejects.toThrow(
+        'workflow.nodes.task_2.excludeNodeActors.nodeIds references a missing node: ghost',
+      );
+    });
+
+    it('rejects the node itself', async (): Promise<void> => {
+      await expect(
+        publish(
+          withExclusion({
+            excludeNodeActors: { nodeIds: ['task_2'], whenEmpty: 'FAIL' },
+          }),
+        ),
+      ).rejects.toThrow(
+        'workflow.nodes.task_2.excludeNodeActors.nodeIds must not include the node itself',
+      );
+    });
+
+    it('rejects a node that sits downstream of this one', async (): Promise<void> => {
+      await expect(
+        publish(
+          withExclusion(
+            {},
+            { excludeNodeActors: { nodeIds: ['task_2'], whenEmpty: 'FAIL' } },
+          ),
+        ),
+      ).rejects.toThrow(
+        /workflow\.nodes\.task_1\.excludeNodeActors: .*不在 .* 的上游/,
+      );
+    });
+  });
+
   describe('approver-filled fields against the bound form', (): void => {
     const dataSource = { bindings: [], key: 'invoice_kinds', version: 1 };
     const fillSchema: FormDefinitionSchema = {
