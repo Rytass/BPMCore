@@ -5,7 +5,9 @@ import type {
 } from '@rytass/bpm-core-client/organization';
 import {
   readActivePositionIds,
+  readOrgPositionPickerState,
   readOrgScopedPositions,
+  readTodayDateOnlyString,
 } from './position-scope';
 
 const ORG_UNITS = [
@@ -89,5 +91,84 @@ describe('readOrgScopedPositions', () => {
         (position) => position.id,
       ),
     ).toEqual(['pos_active']);
+  });
+});
+
+describe('readTodayDateOnlyString', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('reads today in the organization zone, not in UTC', () => {
+    // 23:00 UTC on 11-11 is already 07:00 on 11-12 in Taipei.
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-11-11T23:00:00Z'));
+
+    expect(readTodayDateOnlyString()).toBe('2026-11-12');
+    expect(readTodayDateOnlyString(new Date(), 'UTC')).toBe('2026-11-11');
+  });
+
+  it('uses that day when readActivePositionIds is called without a date', () => {
+    const starting = [
+      membership({
+        effectiveFrom: '2026-11-12',
+        positionId: 'pos_starts_today',
+      }),
+    ];
+
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-11-11T23:00:00Z'));
+
+    expect([...readActivePositionIds(starting)]).toEqual(['pos_starts_today']);
+  });
+});
+
+describe('readOrgPositionPickerState', () => {
+  const SCOPED = [POSITIONS[0]] as readonly PositionRecord[];
+
+  it('flags a stored position with no effective holder in scope and keeps it selectable', () => {
+    const state = readOrgPositionPickerState({
+      orgUnitId: 'org_hq',
+      positionId: 'pos_ended',
+      positions: POSITIONS,
+      scopedPositions: SCOPED,
+    });
+
+    expect(state.isInactive).toBe(true);
+    expect(state.options.map((position) => position.id)).toEqual([
+      'pos_active',
+      'pos_ended',
+    ]);
+  });
+
+  it('does not flag a position that is in scope', () => {
+    const state = readOrgPositionPickerState({
+      orgUnitId: 'org_hq',
+      positionId: 'pos_active',
+      positions: POSITIONS,
+      scopedPositions: SCOPED,
+    });
+
+    expect(state.isInactive).toBe(false);
+    expect(state.options).toBe(SCOPED);
+  });
+
+  it('does not flag an empty position or an unset organization', () => {
+    expect(
+      readOrgPositionPickerState({
+        orgUnitId: 'org_hq',
+        positionId: '',
+        positions: POSITIONS,
+        scopedPositions: [],
+      }).isInactive,
+    ).toBe(false);
+    expect(
+      readOrgPositionPickerState({
+        orgUnitId: '',
+        positionId: 'pos_ended',
+        positions: POSITIONS,
+        scopedPositions: [],
+      }).isInactive,
+    ).toBe(false);
   });
 });

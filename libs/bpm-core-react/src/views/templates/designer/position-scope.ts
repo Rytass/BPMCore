@@ -4,9 +4,34 @@ import {
   PositionRecord,
 } from '@rytass/bpm-core-client/organization';
 
-/** Today as `YYYY-MM-DD`, the clock the designer's pickers and dry run share. */
-export function readTodayDateOnlyString(): string {
-  return new Date().toISOString().slice(0, 10);
+/**
+ * Zone the engine reads organization dates in when the host does not set
+ * `organizationTimeZone` (`DEFAULT_BPM_ORGANIZATION_TIME_ZONE` in bpm-core).
+ * The designer cannot see a host's override, so it follows the default.
+ */
+export const DESIGNER_ORGANIZATION_TIME_ZONE = 'Asia/Taipei';
+
+/**
+ * Today as `YYYY-MM-DD` in the organization zone, the clock the designer's
+ * pickers and dry run share. Mirrors the engine's `formatDateOnlyInTimeZone`;
+ * a UTC date is one day behind Taipei between 00:00 and 08:00.
+ */
+export function readTodayDateOnlyString(
+  now: Date = new Date(),
+  timeZone: string = DESIGNER_ORGANIZATION_TIME_ZONE,
+): string {
+  const byType = new Map(
+    new Intl.DateTimeFormat('en-CA', {
+      day: '2-digit',
+      month: '2-digit',
+      timeZone,
+      year: 'numeric',
+    })
+      .formatToParts(now)
+      .map((part): readonly [string, string] => [part.type, part.value]),
+  );
+
+  return `${byType.get('year')}-${byType.get('month')}-${byType.get('day')}`;
 }
 
 export function isMembershipActiveOn(
@@ -63,6 +88,42 @@ export function readOrgScopedPositions({
   );
 
   return positions.filter((position) => positionIds.has(position.id));
+}
+
+/**
+ * Options for an organization-scoped position picker, and whether the stored
+ * position has no effective holder in that scope. A stored position outside
+ * the scope stays in the options (and so selected), as the POSITION picker
+ * keeps an inactive one, so the author sees what the engine will not resolve.
+ */
+export function readOrgPositionPickerState({
+  orgUnitId,
+  positionId,
+  positions,
+  scopedPositions,
+}: {
+  readonly orgUnitId: string;
+  readonly positionId: string;
+  readonly positions: readonly PositionRecord[];
+  readonly scopedPositions: readonly PositionRecord[];
+}): {
+  readonly isInactive: boolean;
+  readonly options: readonly PositionRecord[];
+} {
+  const isInactive =
+    Boolean(orgUnitId.trim()) &&
+    Boolean(positionId) &&
+    !scopedPositions.some((position) => position.id === positionId);
+
+  return {
+    isInactive,
+    options: isInactive
+      ? [
+          ...scopedPositions,
+          ...positions.filter((position) => position.id === positionId),
+        ]
+      : scopedPositions,
+  };
 }
 
 export function readOrgUnitScopeIds(
