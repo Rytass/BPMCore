@@ -1721,10 +1721,10 @@ function parseApproverResolverFallback(
     return null;
   }
 
-  const selfApprovalField =
-    allowInitiatorSelfApproval === undefined
-      ? {}
-      : { allowInitiatorSelfApproval };
+  const selfApprovalField: { readonly allowInitiatorSelfApproval?: boolean } =
+    typeof allowInitiatorSelfApproval === 'boolean'
+      ? { allowInitiatorSelfApproval }
+      : {};
 
   if (value['type'] === 'POSITION') {
     const positionId = readNonEmptyString(value['positionId']);
