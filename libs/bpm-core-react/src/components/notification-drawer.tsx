@@ -35,6 +35,10 @@ import { useNotificationUnread } from '../lib/notification-unread-provider';
 import { useRouterAdapter } from '../lib/router-adapter';
 import { useBPMRoutes } from '../lib/routes-config';
 import { BPMFormField } from './bpm-form-field';
+import {
+  buildNotificationOptions,
+  type NotificationAction,
+} from './notification-drawer-options';
 
 type FilterValue = 'all' | 'read' | 'unread';
 
@@ -56,59 +60,8 @@ const TIME_GROUP_LABEL: Readonly<Record<TimeGroup, string>> = {
 
 const PAGE_SIZE = 50;
 
-/** Identifiers for the per-notification `...` dropdown menu entries. */
-type NotificationAction =
-  | 'approve'
-  | 'archive'
-  | 'reject'
-  | 'unarchive'
-  | 'view'
-  | 'read';
-
 /** Identifier for the filter-bar dropdown entry toggling the archived view. */
 const TOGGLE_ARCHIVED_OPTION_ID = 'toggleArchived';
-
-/**
- * Build the `...` dropdown options for one notification. Approve / reject are
- * offered only while the server still reports the notification as `actionable`
- * (an unresolved task assignment) — once the task is decided / cancelled the
- * backend flips `actionable` to false, so a stale "同意" can never appear.
- * A task that fills in form fields (`hasFillableFields`) cannot be approved
- * from here — the fill has to be entered on the case page — so its "同意"
- * becomes "開啟案件".
- * "查看案件" needs an `instanceId`; "標為已讀" only shows while unread.
- * Archiving is independent of read state, so the entry flips between
- * "封存" / "取消封存" for every notification.
- */
-function buildNotificationOptions(
-  record: NotificationRecord,
-): readonly DropdownOption[] {
-  const canReject = readNotificationAllowReject(record) !== false;
-  const opensToFill =
-    record.actionable &&
-    Boolean(record.instanceId) &&
-    readNotificationHasFillableFields(record);
-
-  return [
-    ...(record.actionable
-      ? ([
-          opensToFill
-            ? { id: 'view', name: '開啟案件' }
-            : { id: 'approve', name: '同意' },
-          ...(canReject ? [{ id: 'reject', name: '拒絕' }] : []),
-        ] satisfies DropdownOption[])
-      : []),
-    ...(record.instanceId && !opensToFill
-      ? ([{ id: 'view', name: '查看案件' }] satisfies DropdownOption[])
-      : []),
-    ...(record.status !== 'READ'
-      ? ([{ id: 'read', name: '標為已讀' }] satisfies DropdownOption[])
-      : []),
-    record.archivedAt
-      ? { id: 'unarchive', name: '取消封存' }
-      : { id: 'archive', name: '封存' },
-  ];
-}
 
 /**
  * Title shown for a resolved task-assignment notification, replacing the
@@ -699,40 +652,4 @@ function resolveTimeGroup(value: string, now: Date): TimeGroup {
 
 function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '發生未知錯誤';
-}
-
-function readNotificationAllowReject(
-  record: NotificationRecord,
-): boolean | null {
-  try {
-    const payload: unknown = JSON.parse(record.payloadJson);
-
-    if (isRecord(payload) && typeof payload.allowReject === 'boolean') {
-      return payload.allowReject;
-    }
-
-    return record.allowReject;
-  } catch {
-    return record.allowReject;
-  }
-}
-
-/**
- * `TASK_ASSIGNED` / `TASK_TRANSFERRED` payloads carry `hasFillableFields`;
- * older notifications do not, which reads as `false`.
- */
-function readNotificationHasFillableFields(
-  record: NotificationRecord,
-): boolean {
-  try {
-    const payload: unknown = JSON.parse(record.payloadJson);
-
-    return isRecord(payload) && payload.hasFillableFields === true;
-  } catch {
-    return false;
-  }
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

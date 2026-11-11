@@ -1431,7 +1431,23 @@ export class WorkflowEngineService {
           isReturnCommentRequired(instance.workflowSnapshot, task.nodeId)
         ) {
           throw new BadRequestException(
-            `Return decision comment is required by workflow node ${task.nodeId}`,
+            '此節點要求退回時填寫意見，請輸入意見後再退回。',
+          );
+        }
+
+        // Same snapshot rule as the return check above. Only a person's
+        // approval is held to it: an engine-made approval (the SLA
+        // `AUTO_APPROVE` timeout) carries `options.automatic` and must never
+        // stall waiting for a comment nobody is there to write. A person's
+        // approval of an ad-hoc task counts too: it runs on the main node.
+        if (
+          input.action === TaskDecisionActionEnum.APPROVED &&
+          options.automatic === undefined &&
+          !decisionComment &&
+          taskNode.data.requireApprovalComment === true
+        ) {
+          throw new BadRequestException(
+            '此節點要求同意時填寫意見，請輸入意見後再同意。',
           );
         }
 

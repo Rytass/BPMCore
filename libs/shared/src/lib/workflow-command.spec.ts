@@ -380,6 +380,78 @@ describe('user task return and SLA commands', () => {
     });
   });
 
+  it('leaves a new user task without the approval comment requirement', () => {
+    expect(readUserTaskNode(stateWithUserTask()).data).not.toHaveProperty(
+      'requireApprovalComment',
+    );
+  });
+
+  it('turns the approval comment requirement on and keeps every other setting', () => {
+    const state = stateWithUserTask();
+    const before = readUserTaskNode(state);
+    const result = applyWorkflowCommand(state, {
+      nodeId: before.id,
+      requireApprovalComment: true,
+      type: 'setUserTaskRequireApprovalComment',
+    });
+
+    expect(readUserTaskNode(result.state).data).toEqual({
+      ...before.data,
+      requireApprovalComment: true,
+    });
+  });
+
+  it('drops the key when the approval comment requirement is turned back off', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const on = applyWorkflowCommand(state, {
+      nodeId,
+      requireApprovalComment: true,
+      type: 'setUserTaskRequireApprovalComment',
+    });
+    const off = applyWorkflowCommand(on.state, {
+      nodeId,
+      requireApprovalComment: false,
+      type: 'setUserTaskRequireApprovalComment',
+    });
+
+    expect(readUserTaskNode(off.state).data).not.toHaveProperty(
+      'requireApprovalComment',
+    );
+    expect(readUserTaskNode(off.state).data).toEqual(
+      readUserTaskNode(state).data,
+    );
+  });
+
+  it('keeps the approval comment requirement when other node settings change', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const on = applyWorkflowCommand(state, {
+      nodeId,
+      requireApprovalComment: true,
+      type: 'setUserTaskRequireApprovalComment',
+    });
+    const afterReturn = applyWorkflowCommand(on.state, {
+      nodeId,
+      requireComment: true,
+      type: 'setUserTaskReturnRequireComment',
+    });
+    const afterSla = applyWorkflowCommand(afterReturn.state, {
+      nodeId,
+      sla: { duration: 'P1D', onTimeout: 'REMIND' },
+      type: 'setUserTaskSla',
+    });
+    const afterExclude = applyWorkflowCommand(afterSla.state, {
+      excludeInitiator: { whenEmpty: 'FAIL' },
+      nodeId,
+      type: 'setUserTaskExcludeInitiator',
+    });
+
+    expect(readUserTaskNode(afterExclude.state).data).toMatchObject({
+      requireApprovalComment: true,
+    });
+  });
+
   it('changes where a return goes without touching other return settings', () => {
     const state = stateWithUserTask();
     const nodeId = readUserTaskNode(state).id;
