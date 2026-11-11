@@ -66,6 +66,7 @@ The "First released in" column is the earliest `v*` tag that contains the change
 | Edges saved before the guard fall back to their structured fields when their CEL fails: `WorkflowEngineService` (actual runs and the designer dry run) evaluates an edge's stored CEL as before, and only when that throws `EXPRESSION_MISSING_KEY` or `EXPRESSION_TYPE_ERROR` (`Identifier "agent" not found` for an untouched optional field, `null > 5`, `"" > 5`) **and** the edge's own field is unfilled does an edge that carries `conditionFieldKey` and `conditionOperator` answer from those fields — for a missing key only when the key named is that field (a CEL that also reads another key fails as written when that key is missing), and for a type error, which names no key, with a `warn` log (`code=EDGE_STRUCTURED_FALLBACK edge=… field=… reason=EXPRESSION_TYPE_ERROR`, no values) instead of failing the submit or decision; a list value still goes straight to them, as before. A stored CEL that evaluates keeps its result, so no route that worked changes (a date `"" < "2026-01-01"` stays `true`). A missing key or type error while the edge's field is filled (a CEL edited by hand while the structured fields stayed, `form.amount > "abc"`) is rethrown, a budget overrun or a function failure is never absorbed, and an edge with no structured fields (hand-written CEL) still fails as written. `evaluateWorkflowEdgeCondition` reads an unfilled value (absent, `null`, `""`, whitespace only or an empty list) as not matching: equals and the four ordering comparisons are `false`, not-equals and is-empty are `true`, is-filled is `false`; it reads only the form data's own keys, so a field key named like an inherited member (`constructor`) is unfilled, not a function. The own-key read and the unfilled test live in `workflow-engine/workflow-form-value.ts`, which `index.ts` does not re-export. No export changes | Not yet released |
 | Missing-key names stay out of messages after a computed index: `ExpressionRuntimeError.keyName` is now `null` whenever the expression indexes with an identifier (`form.rates[form.currency]`, `form.m[k]`). The engine may report the value read through the index as the missing key, and that value can equal a name the author wrote (`rates`), which the previous "written in the expression" check let through. An index holding only literals (`form["a-b"]`, `["a", "b"]`, `[0]`) still keeps the name. No export changes | Not yet released |
 | Approval-instance field filters and sort (ADR 25): `fieldFilters` and `sort` on `approvalInstances` / `approvalInstancePageInfo` / `approvalInstanceCount`, the `filterableFieldIssues` query, `filterable` on field definitions, write-time type checks on submit / resubmit / decide-fill / `SET_FORM_FIELD`, publish and rollback checks (409), migration `ApprovalInstanceFormDataGin0000000031000`, and the client and designer wiring | Not yet released |
+| Designer reads "today" in the host's organization zone (F43): `organizationTimeZone?: string` on `Providers` / `BPMNextProviders`, `BPMOrganizationTimeZoneProvider` / `useBPMOrganizationTimeZone()`, and `DEFAULT_BPM_ORGANIZATION_TIME_ZONE` moved to `@rytass/bpm-core-shared` (bpm-core re-exports it). The template designer's position pickers, the org-unit position inactive warning and the dry-run initiator snapshot now judge effective dates in that zone instead of a hard-coded `Asia/Taipei` | Not yet released |
 
 ---
 
@@ -1022,12 +1023,12 @@ the engine's moves from UTC to `Asia/Taipei`.
 > upgrading. Instances already running keep the tasks they have; only
 > resolutions made after the upgrade read the new date.
 
-Known limitation: the template designer (`readTodayDateOnlyString` in
-`designer/position-scope.ts`) reads "today" in `Asia/Taipei`, the engine's
-default, because the browser has no access to the host's
-`organizationTimeZone`. A host that sets another zone can see the designer's
-position pickers and dry-run preview disagree with the engine for a membership
-effective from today.
+The template designer reads "today" in the zone passed to the React providers
+as `organizationTimeZone` (`<BPMNextProviders organizationTimeZone="…">` or
+`<Providers>`), defaulting to the same `Asia/Taipei`. A host that sets
+`organizationTimeZone` on `BPMRootModule` passes the same value there, or the
+designer's position pickers and dry-run preview can disagree with the engine
+for a membership effective from today (not yet released).
 
 ## `@rytass/bpm-core-nestjs-module/form`
 
@@ -1944,11 +1945,13 @@ React UI library. Four export families: root barrel (foundation + host integrati
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `BPMLanguageProvider` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay. `language?: BPMLanguage` (default `'zh-TW'`, separate from the calendar `locale`; since `v0.17.3`) |
+| `Providers` | Component | Composes Mezzanine `CalendarConfigProviderMoment` + `BPMLanguageProvider` + `AuthProvider` + `NotificationUnreadProvider` + `NotificationDrawerProvider` + mounts `<NotificationDrawer />` overlay. `language?: BPMLanguage` (default `'zh-TW'`, separate from the calendar `locale`; since `v0.17.3`). `organizationTimeZone?: string` (Not yet released): the IANA zone given to `BPMRootModule` as `organizationTimeZone`, in which BPM views read "today" against membership effective dates; defaults to `DEFAULT_BPM_ORGANIZATION_TIME_ZONE` (`'Asia/Taipei'`), and an unknown zone falls back to it with one console warning |
 | `BPMLanguage` | type | `'en' \| 'zh-TW'` — language BPM views write their messages in. |
 | `BPMLanguageProvider` | Component | `{ language, children }`; hosts pass the user's choice as state to switch it. |
 | `useBPMLanguage()` | hook | Active `BPMLanguage`; `'zh-TW'` when no provider. |
 | `BPM_LANGUAGES` / `DEFAULT_BPM_LANGUAGE` | const | Supported languages / `'zh-TW'`. |
+| `BPMOrganizationTimeZoneProvider` | Component | Not yet released: `{ timeZone?, children }`. Resolves the zone as the engine does (trimmed; blank or missing → `DEFAULT_BPM_ORGANIZATION_TIME_ZONE`), except that a zone `Intl` rejects falls back to the default with one `console.warn` per value instead of throwing. Mounted by `Providers` from its `organizationTimeZone` prop. |
+| `useBPMOrganizationTimeZone()` | hook | Not yet released: the resolved organization zone; `'Asia/Taipei'` when no provider. The template designer reads "today" with it. |
 | `AuthProvider` | Component | Wraps current-member context, handles login/logout |
 | `AuthProviderProps` | interface | `publicPaths`, `loginPath`, etc. |
 | `useAuth()` | hook | Current member + login/logout methods (internal-leaning surface) |
@@ -1999,7 +2002,7 @@ They reach hosts through the views that use them (`views/instances/detail`,
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary. Forwards `language?: BPMLanguage` (since `v0.17.3`) |
+| `BPMNextProviders` | Component | One-line layout wrapper: reads `next/navigation` hooks → builds RouterAdapter → composes Providers inside a Suspense boundary. Forwards `language?: BPMLanguage` (since `v0.17.3`) and `organizationTimeZone?: string` (Not yet released) |
 
 ## `@rytass/bpm-core-react/next/workflow-chat-route`
 

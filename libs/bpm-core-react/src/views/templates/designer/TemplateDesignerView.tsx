@@ -152,7 +152,7 @@ import {
   readOrgPositionPickerState,
   readOrgScopedPositions,
   readOrgUnitScopeIds,
-  readTodayDateOnlyString,
+  useOrganizationTodayDateOnlyString,
 } from './position-scope';
 
 const ORG_POSITION_INACTIVE_HINT =
@@ -810,6 +810,9 @@ export function TemplateDesignerView({
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
   const language = useBPMLanguage();
+  // "Today" in the host's organizationTimeZone, the day the engine judges
+  // membership effective dates on; pickers and the dry run share it.
+  const organizationToday = useOrganizationTodayDateOnlyString();
   const [record, setRecord] = useState<TemplateDesignerRecord | null>(null);
   const [draft, setDraft] = useState<ApprovalTemplateVersionRecord | null>(
     null,
@@ -1720,6 +1723,7 @@ export function TemplateDesignerView({
         initiatorMetadataSnapshot: readDryRunInitiatorMetadataSnapshot(
           DRY_RUN_MEMBER_ID,
           memberships,
+          organizationToday,
         ),
         workflowDefinition,
       });
@@ -2756,6 +2760,7 @@ export function TemplateDesignerView({
     const initiatorScopedPositions =
       initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION'
         ? readOrgScopedPositions({
+            date: organizationToday,
             includeDescendants: Boolean(
               initiatorPolicyDraft.includeDescendants,
             ),
@@ -2967,6 +2972,7 @@ export function TemplateDesignerView({
     const orgScopedPositions =
       resolver.type === 'ORG_UNIT_POSITION'
         ? readOrgScopedPositions({
+            date: organizationToday,
             includeDescendants: Boolean(resolver.includeDescendants),
             memberships,
             orgUnitId: resolver.orgUnitId,
@@ -4134,7 +4140,10 @@ export function TemplateDesignerView({
     // The picker offers only positions someone holds through an effective
     // membership, the same set the engine can resolve. A stored position that
     // is no longer held stays selected, with a warning, so the author sees it.
-    const activeRecipientPositionIds = readActivePositionIds(memberships);
+    const activeRecipientPositionIds = readActivePositionIds(
+      memberships,
+      organizationToday,
+    );
     const isRecipientPositionInactive =
       recipients.type === 'POSITION' &&
       Boolean(recipients.positionId) &&
@@ -4147,6 +4156,7 @@ export function TemplateDesignerView({
     const recipientOrgScopedPositions =
       recipients.type === 'ORG_UNIT_POSITION'
         ? readOrgScopedPositions({
+            date: organizationToday,
             includeDescendants: Boolean(recipients.includeDescendants),
             memberships,
             orgUnitId: recipients.orgUnitId,
@@ -5861,8 +5871,8 @@ function readMemberSelectOptions(
 function readDryRunInitiatorMetadataSnapshot(
   memberId: string,
   memberships: readonly MembershipRecord[],
+  today: string,
 ): Readonly<Record<string, unknown>> {
-  const today = readTodayDateOnlyString();
   const activeMemberships = memberships.filter(
     (membership) =>
       membership.memberId === memberId &&

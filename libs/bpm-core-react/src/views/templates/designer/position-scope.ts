@@ -3,22 +3,18 @@ import {
   OrgUnitRecord,
   PositionRecord,
 } from '@rytass/bpm-core-client/organization';
-
-/**
- * Zone the engine reads organization dates in when the host does not set
- * `organizationTimeZone` (`DEFAULT_BPM_ORGANIZATION_TIME_ZONE` in bpm-core).
- * The designer cannot see a host's override, so it follows the default.
- */
-export const DESIGNER_ORGANIZATION_TIME_ZONE = 'Asia/Taipei';
+import { DEFAULT_BPM_ORGANIZATION_TIME_ZONE } from '@rytass/bpm-core-shared';
+import { useBPMOrganizationTimeZone } from '../../../lib/organization-time-zone-provider';
 
 /**
  * Today as `YYYY-MM-DD` in the organization zone, the clock the designer's
  * pickers and dry run share. Mirrors the engine's `formatDateOnlyInTimeZone`;
- * a UTC date is one day behind Taipei between 00:00 and 08:00.
+ * a UTC date is one day behind Taipei between 00:00 and 08:00. `timeZone`
+ * must already be resolved (see `useBPMOrganizationTimeZone`).
  */
 export function readTodayDateOnlyString(
   now: Date = new Date(),
-  timeZone: string = DESIGNER_ORGANIZATION_TIME_ZONE,
+  timeZone: string = DEFAULT_BPM_ORGANIZATION_TIME_ZONE,
 ): string {
   const byType = new Map(
     new Intl.DateTimeFormat('en-CA', {
@@ -32,6 +28,15 @@ export function readTodayDateOnlyString(
   );
 
   return `${byType.get('year')}-${byType.get('month')}-${byType.get('day')}`;
+}
+
+/**
+ * Today in the host's organization zone (`organizationTimeZone` on the BPM
+ * providers, the value the engine's `BPMRootModule` is given), read on every
+ * render, so the designer judges effective dates on the engine's day.
+ */
+export function useOrganizationTodayDateOnlyString(): string {
+  return readTodayDateOnlyString(new Date(), useBPMOrganizationTimeZone());
 }
 
 export function isMembershipActiveOn(
@@ -52,7 +57,7 @@ export function isMembershipActiveOn(
  */
 export function readActivePositionIds(
   memberships: readonly MembershipRecord[],
-  date: string = readTodayDateOnlyString(),
+  date: string,
 ): ReadonlySet<string> {
   return new Set(
     memberships
@@ -63,17 +68,19 @@ export function readActivePositionIds(
 }
 
 /**
- * The positions an organization-scoped picker offers: those held by an
- * effective member inside the organization scope. Memberships that have
+ * The positions an organization-scoped picker offers: those held by a member
+ * effective on `date` inside the organization scope. Memberships that have
  * ended or not started yet do not count, the same rule the engine applies.
  */
 export function readOrgScopedPositions({
+  date,
   includeDescendants,
   memberships,
   orgUnitId,
   orgUnits,
   positions,
 }: {
+  readonly date: string;
   readonly includeDescendants: boolean;
   readonly memberships: readonly MembershipRecord[];
   readonly orgUnitId: string;
@@ -85,6 +92,7 @@ export function readOrgScopedPositions({
   );
   const positionIds = readActivePositionIds(
     memberships.filter((membership) => orgUnitIds.has(membership.orgUnitId)),
+    date,
   );
 
   return positions.filter((position) => positionIds.has(position.id));

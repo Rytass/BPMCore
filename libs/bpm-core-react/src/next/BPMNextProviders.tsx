@@ -39,6 +39,13 @@ export interface BPMNextProvidersProps {
    */
   readonly language?: BPMLanguage;
   /**
+   * IANA zone in which BPM views read "today" against organization effective
+   * dates — the `organizationTimeZone` given to `BPMRootModule`. Forwarded to
+   * the inner `<Providers>`. Defaults to `'Asia/Taipei'`
+   * (`DEFAULT_BPM_ORGANIZATION_TIME_ZONE`).
+   */
+  readonly organizationTimeZone?: string;
+  /**
    * Routes that must remain accessible without a BPM session — visiting
    * these does not redirect to `loginPath` even when `member` is null.
    * Forwarded to `<AuthProvider>`. Defaults to `['/login']`.
@@ -84,6 +91,7 @@ export function BPMNextProviders({
   children,
   locale,
   language,
+  organizationTimeZone,
   publicPaths,
   loginPath,
 }: BPMNextProvidersProps): ReactElement {
@@ -106,6 +114,7 @@ export function BPMNextProviders({
       <BPMProviders
         locale={locale}
         language={language}
+        organizationTimeZone={organizationTimeZone}
         publicPaths={publicPaths}
         loginPath={loginPath}
       >

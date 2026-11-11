@@ -34,6 +34,8 @@ function membership(
   } as MembershipRecord;
 }
 
+const TODAY = '2026-11-12';
+
 const MEMBERSHIPS: readonly MembershipRecord[] = [
   membership({ positionId: 'pos_active' }),
   membership({
@@ -50,7 +52,9 @@ const MEMBERSHIPS: readonly MembershipRecord[] = [
 
 describe('readActivePositionIds', () => {
   it('keeps only positions held through a membership in effect today', () => {
-    expect([...readActivePositionIds(MEMBERSHIPS)]).toEqual(['pos_active']);
+    expect([...readActivePositionIds(MEMBERSHIPS, TODAY)]).toEqual([
+      'pos_active',
+    ]);
   });
 
   it('judges the given date when one is passed', () => {
@@ -63,6 +67,7 @@ describe('readActivePositionIds', () => {
 describe('readOrgScopedPositions', () => {
   it('offers no position whose only holder has left', () => {
     const offered = readOrgScopedPositions({
+      date: TODAY,
       includeDescendants: false,
       memberships: MEMBERSHIPS,
       orgUnitId: 'org_hq',
@@ -75,6 +80,7 @@ describe('readOrgScopedPositions', () => {
 
   it('counts descendant organizations only when included', () => {
     const base = {
+      date: TODAY,
       memberships: [
         membership({ orgUnitId: 'org_ops', positionId: 'pos_active' }),
       ],
@@ -108,7 +114,7 @@ describe('readTodayDateOnlyString', () => {
     expect(readTodayDateOnlyString(new Date(), 'UTC')).toBe('2026-11-11');
   });
 
-  it('uses that day when readActivePositionIds is called without a date', () => {
+  it('counts a membership starting on that day as active', () => {
     const starting = [
       membership({
         effectiveFrom: '2026-11-12',
@@ -119,7 +125,9 @@ describe('readTodayDateOnlyString', () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-11-11T23:00:00Z'));
 
-    expect([...readActivePositionIds(starting)]).toEqual(['pos_starts_today']);
+    expect([
+      ...readActivePositionIds(starting, readTodayDateOnlyString()),
+    ]).toEqual(['pos_starts_today']);
   });
 });
 

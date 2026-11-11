@@ -14,6 +14,7 @@ export * from './lib/format-date-time';
 export * from './lib/language-provider';
 export * from './lib/notification-drawer-provider';
 export * from './lib/notification-unread-provider';
+export * from './lib/organization-time-zone-provider';
 export * from './lib/providers';
 export * from './lib/router-adapter';
 export * from './lib/routes-config';
