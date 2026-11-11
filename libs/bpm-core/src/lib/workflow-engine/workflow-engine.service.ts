@@ -1390,7 +1390,7 @@ export class WorkflowEngineService {
           isReturnCommentRequired(instance.workflowSnapshot, task.nodeId)
         ) {
           throw new BadRequestException(
-            `Return decision comment is required by workflow node ${task.nodeId}`,
+            '此節點要求退回時填寫意見，請輸入意見後再退回。',
           );
         }
 
@@ -1403,10 +1403,10 @@ export class WorkflowEngineService {
           input.action === TaskDecisionActionEnum.APPROVED &&
           options.automatic === undefined &&
           !decisionComment &&
-          isApprovalCommentRequired(instance.workflowSnapshot, task.nodeId)
+          taskNode.data.requireApprovalComment === true
         ) {
           throw new BadRequestException(
-            `Approve decision comment is required by workflow node ${task.nodeId}`,
+            '此節點要求同意時填寫意見，請輸入意見後再同意。',
           );
         }
 
@@ -9594,15 +9594,6 @@ function isReturnCommentRequired(
     node.type === 'userTask' &&
     node.data.returnBehavior.requireComment === true
   );
-}
-
-function isApprovalCommentRequired(
-  workflow: WorkflowDefinition,
-  nodeId: string,
-): boolean {
-  const node = readWorkflowNodeOrThrow(workflow, nodeId);
-
-  return node.type === 'userTask' && node.data.requireApprovalComment === true;
 }
 
 function readReturnResubmitStrategy(

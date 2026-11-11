@@ -10708,7 +10708,7 @@ describe('WorkflowEngineService', () => {
         taskId: 'task-1',
       }),
     ).rejects.toThrow(
-      'Return decision comment is required by workflow node task_finance',
+      '此節點要求退回時填寫意見，請輸入意見後再退回。',
     );
   });
 
@@ -11077,7 +11077,7 @@ describe('WorkflowEngineService', () => {
             taskId: 'task-1',
           }),
         ).rejects.toThrow(
-          'Approve decision comment is required by workflow node task_finance',
+          '此節點要求同意時填寫意見，請輸入意見後再同意。',
         );
       },
     );
@@ -11156,7 +11156,7 @@ describe('WorkflowEngineService', () => {
           taskId: 'task-1',
         }),
       ).rejects.toThrow(
-        'Approve decision comment is required by workflow node task_finance',
+        '此節點要求同意時填寫意見，請輸入意見後再同意。',
       );
     });
 
@@ -11180,7 +11180,7 @@ describe('WorkflowEngineService', () => {
           taskId: 'task-1',
         }),
       ).rejects.toThrow(
-        'Approve decision comment is required by workflow node task_finance',
+        '此節點要求同意時填寫意見，請輸入意見後再同意。',
       );
     });
 
