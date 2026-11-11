@@ -1703,10 +1703,34 @@ describe('set_user_task_approver — manager chain start settings', () => {
     },
   );
 
-  it('reads a start that is not an object as no start', async () => {
+  it.each([
+    ['a bare string', 'FORM_MEMBER'],
+    ['an empty string', ''],
+    ['a number', 0],
+    ['an array', []],
+  ])(
+    'keeps a start that is %s as written so validation reports it',
+    async (_label, startFrom) => {
+      const { resolver } = await chainAfter({
+        minPositionLevel: 30,
+        startFrom,
+      });
+
+      expect(resolver).toEqual({
+        minPositionLevel: 30,
+        startFrom,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+      expect(readApproverResolverIssue(resolver as ApproverResolver)).toBe(
+        '簽核節點的主管鏈起點不在這個版本支援的範圍內，請改選其他起點。',
+      );
+    },
+  );
+
+  it('reads a null start as no start (control)', async () => {
     const { resolver } = await chainAfter({
       minPositionLevel: 30,
-      startFrom: 'FORM_MEMBER',
+      startFrom: null,
     });
 
     expect(resolver).toEqual({
@@ -1715,8 +1739,27 @@ describe('set_user_task_approver — manager chain start settings', () => {
     });
   });
 
-  it.each([2.5, '20', null, Number.NaN])(
-    'drops a start level that is not a whole number (%s)',
+  it.each([2.5, Number.NaN])(
+    'keeps a start level that is not a whole number so validation reports it (%s)',
+    async (startPositionLevel) => {
+      const { resolver } = await chainAfter({
+        minPositionLevel: 30,
+        startPositionLevel,
+      });
+
+      expect(resolver).toEqual({
+        minPositionLevel: 30,
+        startPositionLevel,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+      expect(readApproverResolverIssue(resolver as ApproverResolver)).toBe(
+        '簽核節點需要指定有效的起始職等。',
+      );
+    },
+  );
+
+  it.each(['20', null])(
+    'drops a start level that is not a number (%s)',
     async (startPositionLevel) => {
       const { resolver } = await chainAfter({
         minPositionLevel: 30,

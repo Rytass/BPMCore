@@ -1529,9 +1529,8 @@ function parseApproverResolver(value: unknown): ApproverResolver {
             minPositionLevel,
             type: 'ORG_MANAGER_CHAIN',
             ...(fallback ? { fallback } : {}),
-            ...(startFrom ? { startFrom } : {}),
-            ...(typeof startPositionLevel === 'number' &&
-            Number.isInteger(startPositionLevel)
+            ...(startFrom === null ? {} : { startFrom }),
+            ...(typeof startPositionLevel === 'number'
               ? { startPositionLevel }
               : {}),
           }
@@ -1613,14 +1612,20 @@ function parseApproverResolver(value: unknown): ApproverResolver {
  * `FORM_MEMBER` / `NODE_ACTOR` keeps its type with an empty `formPath` /
  * `nodeIds`, and an object with a type this build does not know (or none) is
  * kept as written, so `validate_workflow` and the publish lint report the gap
- * rather than the chain quietly starting at the initiator. Only a value that is
- * absent, `null` or not an object is read as absent.
+ * rather than the chain quietly starting at the initiator. So is a value that
+ * is not an object (a bare `'FORM_MEMBER'`, say). Only an absent or `null`
+ * value is read as absent.
  */
 function parseOrgManagerChainStart(
   value: unknown,
 ): OrgManagerChainStart | null {
-  if (!isRecord(value)) {
+  if (value === undefined || value === null) {
     return null;
+  }
+
+  if (!isRecord(value)) {
+    // `readOrgManagerChainIssue` names it as unsupported.
+    return value as unknown as OrgManagerChainStart;
   }
 
   switch (value['type']) {
