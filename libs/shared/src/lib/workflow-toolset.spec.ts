@@ -1683,9 +1683,31 @@ describe('set_user_task_approver — manager chain start settings', () => {
 
   it.each([
     ['an unknown type', { type: 'FUTURE_START' }],
-    ['a non-object', 'FORM_MEMBER'],
-  ])('reads %s as no start', async (_label, startFrom) => {
-    const { resolver } = await chainAfter({ minPositionLevel: 30, startFrom });
+    ['no type', { formPath: 'picked' }],
+  ])(
+    'keeps a start with %s as written so validation reports it',
+    async (_label, startFrom) => {
+      const { resolver } = await chainAfter({
+        minPositionLevel: 30,
+        startFrom,
+      });
+
+      expect(resolver).toEqual({
+        minPositionLevel: 30,
+        startFrom,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+      expect(readApproverResolverIssue(resolver as ApproverResolver)).toBe(
+        '簽核節點的主管鏈起點不在這個版本支援的範圍內，請改選其他起點。',
+      );
+    },
+  );
+
+  it('reads a start that is not an object as no start', async () => {
+    const { resolver } = await chainAfter({
+      minPositionLevel: 30,
+      startFrom: 'FORM_MEMBER',
+    });
 
     expect(resolver).toEqual({
       minPositionLevel: 30,
@@ -1794,48 +1816,150 @@ describe('set_user_task_approver — manager chain start settings', () => {
     );
   });
 
-  it('does not carry the old start over when a rewrite leaves the keys out', async () => {
-    const { nodeId, state } = await stateWithUserTask();
-    const withStart = await executeWorkflowTool(
-      state,
-      'set_user_task_approver',
-      {
-        approverResolver: {
-          minPositionLevel: 30,
-          startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
-          startPositionLevel: 20,
-          type: 'ORG_MANAGER_CHAIN',
-        },
-        nodeId,
-      },
-      deterministicIds,
-    );
-
-    if (!withStart.ok || withStart.kind !== 'mutation') {
-      throw new Error('Expected a mutation result');
-    }
-
-    const rewritten = await executeWorkflowTool(
-      withStart.result.state,
-      'set_user_task_approver',
-      {
-        approverResolver: { minPositionLevel: 30, type: 'ORG_MANAGER_CHAIN' },
-        nodeId,
-      },
-      deterministicIds,
-    );
-
-    if (!rewritten.ok || rewritten.kind !== 'mutation') {
-      throw new Error('Expected a mutation result');
-    }
-
-    const node = rewritten.result.state.definition.nodes.find(
-      (candidate) => candidate.id === nodeId,
-    );
-
-    expect(node?.type === 'userTask' && node.data.approverResolver).toEqual({
+  describe('rewriting a chain that already has a start', () => {
+    const WITH_START = {
       minPositionLevel: 30,
+      startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+      startPositionLevel: 20,
       type: 'ORG_MANAGER_CHAIN',
+    };
+
+    async function rewriteAs(
+      approverResolver: Readonly<Record<string, unknown>>,
+      before: Readonly<Record<string, unknown>> = WITH_START,
+    ): Promise<unknown> {
+      const { nodeId, state } = await stateWithUserTask();
+      const withStart = await executeWorkflowTool(
+        state,
+        'set_user_task_approver',
+        { approverResolver: before, nodeId },
+        deterministicIds,
+      );
+
+      if (!withStart.ok || withStart.kind !== 'mutation') {
+        throw new Error('Expected a mutation result');
+      }
+
+      const rewritten = await executeWorkflowTool(
+        withStart.result.state,
+        'set_user_task_approver',
+        { approverResolver, nodeId },
+        deterministicIds,
+      );
+
+      if (!rewritten.ok || rewritten.kind !== 'mutation') {
+        throw new Error('Expected a mutation result');
+      }
+
+      const node = rewritten.result.state.definition.nodes.find(
+        (candidate) => candidate.id === nodeId,
+      );
+
+      return node?.type === 'userTask' ? node.data.approverResolver : null;
+    }
+
+    it('carries the old start and start level over when the call leaves both keys out', async () => {
+      expect(
+        await rewriteAs({ minPositionLevel: 40, type: 'ORG_MANAGER_CHAIN' }),
+      ).toEqual({ ...WITH_START, minPositionLevel: 40 });
+    });
+
+    it('carries only the key the call leaves out', async () => {
+      expect(
+        await rewriteAs({
+          minPositionLevel: 40,
+          startPositionLevel: 35,
+          type: 'ORG_MANAGER_CHAIN',
+        }),
+      ).toEqual({
+        minPositionLevel: 40,
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+        startPositionLevel: 35,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    });
+
+    it('resets to the initiator when the call sends an INITIATOR start', async () => {
+      expect(
+        await rewriteAs({
+          minPositionLevel: 30,
+          startFrom: { type: 'INITIATOR' },
+          type: 'ORG_MANAGER_CHAIN',
+        }),
+      ).toEqual({
+        minPositionLevel: 30,
+        startFrom: { type: 'INITIATOR' },
+        startPositionLevel: 20,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    });
+
+    it('clears the start when the call sends startFrom null', async () => {
+      expect(
+        await rewriteAs({
+          minPositionLevel: 30,
+          startFrom: null,
+          type: 'ORG_MANAGER_CHAIN',
+        }),
+      ).toEqual({
+        minPositionLevel: 30,
+        startPositionLevel: 20,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    });
+
+    it('clears the start level when the call sends startPositionLevel null', async () => {
+      expect(
+        await rewriteAs({
+          minPositionLevel: 30,
+          startPositionLevel: null,
+          type: 'ORG_MANAGER_CHAIN',
+        }),
+      ).toEqual({
+        minPositionLevel: 30,
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+        type: 'ORG_MANAGER_CHAIN',
+      });
+    });
+
+    it('does not carry the start onto another resolver type', async () => {
+      expect(
+        await rewriteAs({
+          baseFromInitiator: true,
+          levelsUp: 1,
+          type: 'ORG_MANAGER',
+        }),
+      ).toEqual({
+        baseFromInitiator: true,
+        levelsUp: 1,
+        preferClosestOrgUnit: false,
+        type: 'ORG_MANAGER',
+      });
+    });
+
+    it('does not carry a start onto a chain whose old resolver was another type (control)', async () => {
+      expect(
+        await rewriteAs(
+          { minPositionLevel: 30, type: 'ORG_MANAGER_CHAIN' },
+          { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
+        ),
+      ).toEqual({ minPositionLevel: 30, type: 'ORG_MANAGER_CHAIN' });
+    });
+
+    it('still carries the fallback along with the start', async () => {
+      expect(
+        await rewriteAs(
+          { minPositionLevel: 40, type: 'ORG_MANAGER_CHAIN' },
+          {
+            ...WITH_START,
+            fallback: { memberId: 'm9', type: 'DIRECT' },
+          },
+        ),
+      ).toEqual({
+        ...WITH_START,
+        fallback: { memberId: 'm9', type: 'DIRECT' },
+        minPositionLevel: 40,
+      });
     });
   });
 
