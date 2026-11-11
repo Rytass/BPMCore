@@ -9059,6 +9059,733 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  describe('ORG_MANAGER_CHAIN start settings (startFrom, startPositionLevel)', (): void => {
+    type ChainResolver = Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>;
+    type OrgData = ReturnType<typeof createManagerChainOrg>;
+
+    const at = (minute: number): Date =>
+      new Date(Date.UTC(2026, 4, 1, 0, minute));
+    const finished = (
+      id: string,
+      nodeId: string,
+      tokenId: string,
+      minute: number,
+      extra: Partial<TaskEntity> = {},
+    ): TaskEntity =>
+      createTask({
+        createdAt: at(minute),
+        id,
+        nodeId,
+        status: TaskStatusEnum.COMPLETED,
+        tokenId,
+        ...extra,
+      });
+    const approved = (
+      id: string,
+      taskId: string,
+      memberId: string,
+      minute: number,
+    ): TaskDecisionEntity =>
+      createTaskDecision({
+        action: TaskDecisionActionEnum.APPROVED,
+        decidedAt: at(minute),
+        decidedByMemberId: memberId,
+        id,
+        taskId,
+      });
+    const chainFixture = ({
+      decisions = [],
+      excludeInitiator,
+      formData = {},
+      org,
+      resolver = {},
+      tasks = [],
+    }: {
+      readonly decisions?: readonly TaskDecisionEntity[];
+      readonly excludeInitiator?: ExcludeInitiatorConfig;
+      readonly formData?: Readonly<Record<string, unknown>>;
+      readonly org: OrgData;
+      readonly resolver?: Partial<ChainResolver>;
+      readonly tasks?: readonly TaskEntity[];
+    }): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        additionalProcessTasks: tasks,
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        ...org,
+        processFormData: formData,
+        processTaskDecisions: decisions,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: {
+            minPositionLevel: 3,
+            type: 'ORG_MANAGER_CHAIN',
+            ...resolver,
+          },
+          decisionPolicy: { type: 'SEQUENTIAL' },
+          excludeInitiator,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    const assigneesOf = async (
+      options: Parameters<typeof chainFixture>[0],
+    ): Promise<readonly string[]> => {
+      const fixture = chainFixture(options);
+
+      await fixture.service.processInstance('instance-1');
+
+      return fixture.savedTaskCandidates.map((candidate) => candidate.memberId);
+    };
+    const FORM_START = {
+      startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+    } as const;
+    const STAGE_START = {
+      startFrom: { nodeIds: ['ACT3'], type: 'NODE_ACTOR' },
+    } as const;
+    // The initiator (member-001) climbs to a grade 3 manager at once, so any
+    // answer other than ['member-x1'] proves the chain started somewhere else.
+    const startedElsewhereOrg = (
+      grades: Readonly<Record<string, number | null>>,
+      links: readonly (readonly [string, string])[],
+    ): OrgData =>
+      createManagerChainOrg({
+        grades: { 'member-x1': 3, ...grades },
+        links: [['member-001', 'member-x1'], ...links],
+      });
+    const EMP_CHAIN = startedElsewhereOrg(
+      {
+        'member-emp': null,
+        'member-m1': 1,
+        'member-m2': 2,
+        'member-m3': 3,
+      },
+      [
+        ['member-emp', 'member-m1'],
+        ['member-m1', 'member-m2'],
+        ['member-m2', 'member-m3'],
+      ],
+    );
+    const noActorMessage = '沒有實際同意的簽核紀錄';
+
+    describe('omitted (today\'s behaviour)', (): void => {
+      const initiatorOrg = createManagerChainOrg({
+        grades: { 'member-m1': 1, 'member-m2': 2, 'member-m3': 3 },
+        links: [
+          ['member-001', 'member-m1'],
+          ['member-m1', 'member-m2'],
+          ['member-m2', 'member-m3'],
+        ],
+      });
+
+      it.each<readonly [string, Partial<ChainResolver>]>([
+        ['neither setting', {}],
+        ['an INITIATOR start', { startFrom: { type: 'INITIATOR' } }],
+        [
+          'null settings',
+          {
+            startFrom: null as unknown as undefined,
+            startPositionLevel: null as unknown as undefined,
+          },
+        ],
+      ])(
+        'starts at the initiator with %s',
+        async (_label, resolver): Promise<void> => {
+          await expect(
+            assigneesOf({ org: initiatorOrg, resolver }),
+          ).resolves.toEqual(['member-m1', 'member-m2', 'member-m3']);
+        },
+      );
+
+      it('keeps the wording of the no-manager reason when neither setting is used', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: createManagerChainOrg({
+              grades: { 'member-m1': 1 },
+              links: [['member-001', 'member-m1']],
+            }),
+          }),
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 無法建立待簽任務：沿主管鏈找不到職等達 3 的主管，且未設定改派固定人',
+        );
+      });
+    });
+
+    describe('startFrom FORM_MEMBER', (): void => {
+      it('climbs from the person picked on the form, not from the initiator', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            formData: { picked: 'member-emp' },
+            org: EMP_CHAIN,
+            resolver: FORM_START,
+          }),
+        ).resolves.toEqual(['member-m1', 'member-m2', 'member-m3']);
+      });
+
+      it('control: the same org without the start climbs from the initiator', async (): Promise<void> => {
+        await expect(
+          assigneesOf({ formData: { picked: 'member-emp' }, org: EMP_CHAIN }),
+        ).resolves.toEqual(['member-x1']);
+      });
+
+      it('keeps the chain source type, so the grade rules of the node still apply', async (): Promise<void> => {
+        const fixture = chainFixture({
+          formData: { picked: 'member-emp' },
+          org: EMP_CHAIN,
+          resolver: FORM_START,
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTaskCandidates[0]).toMatchObject({
+          sourceType: 'ORG_MANAGER_CHAIN',
+        });
+      });
+
+      it('works the same when the person picked is the initiator', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            formData: { picked: 'member-001' },
+            org: createManagerChainOrg({
+              grades: { 'member-m1': 1, 'member-m2': 2, 'member-m3': 3 },
+              links: [
+                ['member-001', 'member-m1'],
+                ['member-m1', 'member-m2'],
+                ['member-m2', 'member-m3'],
+              ],
+            }),
+            resolver: FORM_START,
+          }),
+        ).resolves.toEqual(['member-m1', 'member-m2', 'member-m3']);
+      });
+
+      it('takes the no-manager fallback when the field is empty', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            formData: {},
+            org: EMP_CHAIN,
+            resolver: {
+              ...FORM_START,
+              fallback: { memberId: 'member-fb', type: 'DIRECT' },
+            },
+          }),
+        ).resolves.toEqual(['member-fb']);
+      });
+
+      it('names the empty field when there is no fallback', async (): Promise<void> => {
+        await expect(
+          assigneesOf({ formData: {}, org: EMP_CHAIN, resolver: FORM_START }),
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 無法建立待簽任務：表單欄位「picked」沒有選人員，且未設定改派固定人',
+        );
+      });
+
+      it('refuses a field that picked several people instead of choosing one', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            formData: { picked: ['member-emp', 'member-emp2'] },
+            org: EMP_CHAIN,
+            resolver: FORM_START,
+          }),
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 依表單欄位「picked」只能選一位人員',
+        );
+      });
+
+      it('names the start in the reason when no manager reaches the level', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            formData: { picked: 'member-emp' },
+            org: createManagerChainOrg({
+              grades: { 'member-emp': null, 'member-m1': 1 },
+              links: [['member-emp', 'member-m1']],
+            }),
+            resolver: FORM_START,
+          }),
+        ).rejects.toThrow(
+          '無法建立待簽任務：從表單欄位「picked」所選人員起算，沿主管鏈找不到職等達 3 的主管，且未設定改派固定人',
+        );
+      });
+    });
+
+    describe('startFrom NODE_ACTOR', (): void => {
+      it('climbs from the person who approved the earlier stage', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            decisions: [approved('d1', 't1', 'member-emp', 1)],
+            org: EMP_CHAIN,
+            resolver: STAGE_START,
+            tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+          }),
+        ).resolves.toEqual(['member-m1', 'member-m2', 'member-m3']);
+      });
+
+      it('climbs from the delegate who actually approved, not the person the stage was meant for', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            decisions: [approved('d1', 't1', 'member-emp', 1)],
+            org: EMP_CHAIN,
+            resolver: STAGE_START,
+            tasks: [
+              finished('t1', 'ACT3', 'tok-1', 0, {
+                assigneeMemberId: 'member-emp',
+                originalAssigneeMemberId: 'member-x1',
+              }),
+            ],
+          }),
+        ).resolves.toEqual(['member-m1', 'member-m2', 'member-m3']);
+      });
+
+      it('refuses a stage with several approvers instead of choosing one', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            decisions: [
+              approved('d1', 't1', 'member-emp', 1),
+              approved('d2', 't1', 'member-emp2', 2),
+            ],
+            org: EMP_CHAIN,
+            resolver: STAGE_START,
+            tasks: [finished('t1', 'ACT3', 'tok-1', 0)],
+          }),
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 無法沿主管鏈簽核：關卡「ACT3」有多位實際簽核人（member-emp、member-emp2），無法決定從誰的主管開始',
+        );
+      });
+
+      it('uses the new approver after the earlier stage was returned and signed again by someone else', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            decisions: [
+              approved('d-old', 't-old', 'member-x1', 1),
+              approved('d-new', 't-new', 'member-emp', 31),
+            ],
+            org: EMP_CHAIN,
+            resolver: STAGE_START,
+            tasks: [
+              finished('t-old', 'ACT3', 'tok-1', 0),
+              finished('t-new', 'ACT3', 'tok-2', 30),
+            ],
+          }),
+        ).resolves.toEqual(['member-m1', 'member-m2', 'member-m3']);
+      });
+
+      it('takes the no-manager fallback when the stage has no approval, and names the stage when there is none', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: EMP_CHAIN,
+            resolver: {
+              ...STAGE_START,
+              fallback: { memberId: 'member-fb', type: 'DIRECT' },
+            },
+          }),
+        ).resolves.toEqual(['member-fb']);
+        await expect(
+          assigneesOf({ org: EMP_CHAIN, resolver: STAGE_START }),
+        ).rejects.toThrow(
+          `無法建立待簽任務：關卡「ACT3」${noActorMessage}，且未設定改派固定人`,
+        );
+      });
+
+      it('names a stage that is in the workflow by its label', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: EMP_CHAIN,
+            resolver: {
+              startFrom: { nodeIds: ['task_finance'], type: 'NODE_ACTOR' },
+            },
+          }),
+        ).rejects.toThrow('關卡「財務簽核」');
+      });
+    });
+
+    describe('startPositionLevel', (): void => {
+      // 課長 10 < 經理 20 < 部級 30.
+      const ladder = createManagerChainOrg({
+        grades: {
+          'member-emp': null,
+          'member-m1': 10,
+          'member-m2': 20,
+          'member-m3': 30,
+        },
+        links: [
+          ['member-001', 'member-m1'],
+          ['member-emp', 'member-m1'],
+          ['member-m1', 'member-m2'],
+          ['member-m2', 'member-m3'],
+        ],
+      });
+
+      it('control: without a start level the first graded manager starts the chain', async (): Promise<void> => {
+        await expect(
+          assigneesOf({ org: ladder, resolver: { minPositionLevel: 30 } }),
+        ).resolves.toEqual(['member-m1', 'member-m2', 'member-m3']);
+      });
+
+      it('walks past managers below the start level and starts at the first one that reaches it', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: ladder,
+            resolver: { minPositionLevel: 30, startPositionLevel: 20 },
+          }),
+        ).resolves.toEqual(['member-m2', 'member-m3']);
+      });
+
+      it('starts at a manager whose level equals the start level', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: ladder,
+            resolver: { minPositionLevel: 30, startPositionLevel: 10 },
+          }),
+        ).resolves.toEqual(['member-m1', 'member-m2', 'member-m3']);
+      });
+
+      it('stops at the first manager that reaches the required level when it is also the start', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: ladder,
+            resolver: { minPositionLevel: 20, startPositionLevel: 20 },
+          }),
+        ).resolves.toEqual(['member-m2']);
+      });
+
+      it('combines with a form start', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            formData: { picked: 'member-emp' },
+            org: ladder,
+            resolver: {
+              ...FORM_START,
+              minPositionLevel: 30,
+              startPositionLevel: 20,
+            },
+          }),
+        ).resolves.toEqual(['member-m2', 'member-m3']);
+      });
+
+      it('takes the no-manager fallback when nobody on the chain reaches the start level', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: createManagerChainOrg({
+              grades: { 'member-m1': 10, 'member-m2': 15 },
+              links: [
+                ['member-001', 'member-m1'],
+                ['member-m1', 'member-m2'],
+              ],
+            }),
+            resolver: {
+              fallback: { memberId: 'member-fb', type: 'DIRECT' },
+              minPositionLevel: 30,
+              startPositionLevel: 20,
+            },
+          }),
+        ).resolves.toEqual(['member-fb']);
+      });
+
+      it('names the start level in the reason when nobody reaches it', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: createManagerChainOrg({
+              grades: { 'member-m1': 10, 'member-m2': 15 },
+              links: [
+                ['member-001', 'member-m1'],
+                ['member-m1', 'member-m2'],
+              ],
+            }),
+            resolver: { minPositionLevel: 30, startPositionLevel: 20 },
+          }),
+        ).rejects.toThrow(
+          '無法建立待簽任務：沿主管鏈找不到職等達 20 的主管（起始職等 20、簽到職等 30），且未設定改派固定人',
+        );
+      });
+
+      it('keeps the required-level reason once the chain has started', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: createManagerChainOrg({
+              grades: { 'member-m1': 10, 'member-m2': 20 },
+              links: [
+                ['member-001', 'member-m1'],
+                ['member-m1', 'member-m2'],
+              ],
+            }),
+            resolver: { minPositionLevel: 30, startPositionLevel: 20 },
+          }),
+        ).rejects.toThrow(
+          '無法建立待簽任務：沿主管鏈找不到職等達 30 的主管，且未設定改派固定人',
+        );
+      });
+    });
+
+    describe('with excludeInitiator', (): void => {
+      // The initiator sits on the picked person's chain, between two managers.
+      const initiatorOnChainOrg = createManagerChainOrg({
+        grades: {
+          'member-001': 2,
+          'member-emp': null,
+          'member-m1': 1,
+          'member-m3': 3,
+        },
+        links: [
+          ['member-emp', 'member-m1'],
+          ['member-m1', 'member-001'],
+          ['member-001', 'member-m3'],
+        ],
+      });
+
+      it('walks through the initiator without stopping at him', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            excludeInitiator: { whenEmpty: 'FAIL' },
+            formData: { picked: 'member-emp' },
+            org: initiatorOnChainOrg,
+            resolver: FORM_START,
+          }),
+        ).resolves.toEqual(['member-m1', 'member-m3']);
+      });
+
+      it('control: without excludeInitiator the initiator signs like any other manager', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            formData: { picked: 'member-emp' },
+            org: initiatorOnChainOrg,
+            resolver: FORM_START,
+          }),
+        ).resolves.toEqual(['member-m1', 'member-001', 'member-m3']);
+      });
+    });
+
+    describe('delegation grade rule', (): void => {
+      it('still refuses a delegate below the grade of the manager it replaces on a chain with a start', async (): Promise<void> => {
+        const fixture = chainFixture({
+          formData: { picked: 'member-emp' },
+          org: createManagerChainOrg({
+            grades: {
+              'agent-low': 1,
+              'member-emp': null,
+              'member-m1': 1,
+              'member-m2': 2,
+            },
+            links: [
+              ['member-emp', 'member-m1'],
+              ['member-m1', 'member-m2'],
+            ],
+          }),
+          resolver: { ...FORM_START, minPositionLevel: 2 },
+        });
+
+        fixture.delegationService.resolveAssignee.mockImplementation(
+          (memberId: string): Promise<DelegationResolution> =>
+            Promise.resolve(
+              memberId === 'member-m2'
+                ? {
+                    delegationChain: [
+                      {
+                        from: 'member-m2',
+                        reason: 'ALL',
+                        ruleId: 'delegation-rule-grade',
+                        to: 'agent-low',
+                      },
+                    ],
+                    finalAssigneeMemberId: 'agent-low',
+                  }
+                : { delegationChain: [], finalAssigneeMemberId: memberId },
+            ),
+        );
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(['member-m1', 'member-m2']);
+        expect(
+          fixture.savedSingleActivityLogs.find(
+            (log) => log.eventType === ActivityLogEventTypeEnum.TASK_CREATED,
+          )?.payload,
+        ).toMatchObject({
+          skippedDelegations: [
+            expect.objectContaining({
+              agentMemberId: 'agent-low',
+              reason: 'AGENT_POSITION_LEVEL_TOO_LOW',
+            }),
+          ],
+        });
+      });
+    });
+
+    describe('a start from a newer engine', (): void => {
+      it('is refused by name instead of climbing from the initiator', async (): Promise<void> => {
+        await expect(
+          assigneesOf({
+            org: EMP_CHAIN,
+            resolver: {
+              startFrom: { type: 'FUTURE_START' },
+            } as unknown as Partial<ChainResolver>,
+          }),
+        ).rejects.toThrow(
+          '簽核節點「財務簽核」 無法建立待簽任務：此引擎版本不支援主管鏈起點「FUTURE_START」。請升級 BPMCore 後再發佈或執行此流程。',
+        );
+      });
+    });
+
+    describe('as a notify recipient', (): void => {
+      const notifyFixture = (
+        recipients: ApproverResolver,
+        org: OrgData,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          ...org,
+          processFormData: { picked: 'member-emp' },
+          processWorkflowSnapshot: createNotifyServiceTaskWorkflow({
+            recipients,
+          }),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      const ladder = createManagerChainOrg({
+        grades: { 'member-m1': 10, 'member-m2': 20, 'member-m3': 30 },
+        links: [
+          ['member-001', 'member-m1'],
+          ['member-m1', 'member-m2'],
+          ['member-m2', 'member-m3'],
+        ],
+      });
+
+      it('control: a chain without the new settings notifies the whole chain', async (): Promise<void> => {
+        const fixture = notifyFixture(
+          { minPositionLevel: 30, type: 'ORG_MANAGER_CHAIN' },
+          ladder,
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.notificationService.createServiceTaskNotifications,
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            recipientMemberIds: ['member-m1', 'member-m2', 'member-m3'],
+          }),
+        );
+      });
+
+      it('applies the start level to the notified managers', async (): Promise<void> => {
+        const fixture = notifyFixture(
+          {
+            minPositionLevel: 30,
+            startPositionLevel: 20,
+            type: 'ORG_MANAGER_CHAIN',
+          },
+          ladder,
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.notificationService.createServiceTaskNotifications,
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            recipientMemberIds: ['member-m2', 'member-m3'],
+          }),
+        );
+      });
+
+      it.each([FORM_START.startFrom, STAGE_START.startFrom])(
+        'refuses a %j start and sends nothing',
+        async (startFrom): Promise<void> => {
+          const fixture = notifyFixture(
+            { minPositionLevel: 30, startFrom, type: 'ORG_MANAGER_CHAIN' },
+            ladder,
+          );
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(
+            '知會節點「財務知會」 無法建立通知：知會節點的主管鏈只能從發起人開始。',
+          );
+          expect(
+            fixture.notificationService.createServiceTaskNotifications,
+          ).not.toHaveBeenCalled();
+        },
+      );
+    });
+
+    describe('dry run', (): void => {
+      const dryRun = (
+        approverResolver: ApproverResolver,
+      ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        }).service.dryRunApprovalWorkflow({
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson: JSON.stringify(
+            createLinearUserTaskWorkflow({ approverResolver }),
+          ),
+        });
+
+      it.each<readonly [string, Partial<ChainResolver>, string]>([
+        ['neither setting', {}, 'orgManagerChain:3'],
+        [
+          'an INITIATOR start',
+          { startFrom: { type: 'INITIATOR' } },
+          'orgManagerChain:3',
+        ],
+        ['a start level', { startPositionLevel: 2 }, 'orgManagerChain:3:2'],
+        [
+          'a form start',
+          { startFrom: { formPath: 'picked', type: 'FORM_MEMBER' } },
+          'orgManagerChain:3::formMember:picked',
+        ],
+        [
+          'a stage start with a start level',
+          {
+            startFrom: { nodeIds: ['task_a', 'task_b'], type: 'NODE_ACTOR' },
+            startPositionLevel: 2,
+          },
+          'orgManagerChain:3:2:nodeActor:task_a,task_b',
+        ],
+      ])(
+        'shows a chain with %s as a placeholder that names its settings',
+        (_label, resolver, placeholder): void => {
+          const result = dryRun({
+            minPositionLevel: 3,
+            type: 'ORG_MANAGER_CHAIN',
+            ...resolver,
+          });
+
+          expect(result.steps).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                assigneeMemberId: placeholder,
+                nodeId: 'task_finance',
+                status: 'WAITING',
+              }),
+            ]),
+          );
+        },
+      );
+
+      it('stops the branch on a start from a newer engine', (): void => {
+        const result = dryRun({
+          minPositionLevel: 3,
+          startFrom: { type: 'FUTURE_START' },
+          type: 'ORG_MANAGER_CHAIN',
+        } as unknown as ApproverResolver);
+
+        expect(result.steps).toEqual([
+          expect.objectContaining({ nodeId: 'start', status: 'PASSED' }),
+          expect.objectContaining({
+            assigneeMemberId: null,
+            message:
+              '簽核節點「財務簽核」此引擎版本不支援主管鏈起點「FUTURE_START」，請升級 BPMCore 後再試',
+            nodeId: 'task_finance',
+            status: 'STOPPED',
+          }),
+        ]);
+      });
+    });
+  });
+
   describe('ORG_MANAGER_CHAIN approver resolver', () => {
     const createChainFixture = (
       org: ReturnType<typeof createManagerChainOrg>,

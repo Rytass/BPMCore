@@ -38,9 +38,13 @@ import {
   ServiceTaskNode,
   ApproverResolver,
   ApproverResolverFallback,
+  formatOrgManagerChainPlaceholder,
   isNotifyRecipientResolverType,
+  isOrgManagerChainStartedFromInitiator,
+  readOrgManagerChainStartPositionLevel,
   readUnsupportedApproverFallbackType,
   readUnsupportedApproverResolverType,
+  readUnsupportedOrgManagerChainStartType,
   ReturnResubmitStrategy,
 } from '@rytass/bpm-core-shared/workflow';
 import {
@@ -3603,6 +3607,23 @@ export class WorkflowEngineService {
       return {
         assigneeMemberId: null,
         message: `簽核節點「${readDryRunNodeName(node)}」此引擎版本不支援簽核人來源「${unsupportedType}」，請升級 BPMCore 後再試`,
+        outcome: 'STOPPED',
+      };
+    }
+
+    // Same for a manager chain whose start a newer engine wrote.
+    const unsupportedStartType =
+      resolver.type === 'ORG_MANAGER_CHAIN' &&
+      !isOrgManagerChainStartedFromInitiator(resolver)
+        ? readUnsupportedOrgManagerChainStartType(
+            resolver.startFrom as { readonly type: string },
+          )
+        : null;
+
+    if (unsupportedStartType !== null) {
+      return {
+        assigneeMemberId: null,
+        message: `簽核節點「${readDryRunNodeName(node)}」此引擎版本不支援主管鏈起點「${unsupportedStartType}」，請升級 BPMCore 後再試`,
         outcome: 'STOPPED',
       };
     }
@@ -7194,8 +7215,7 @@ export class WorkflowEngineService {
       return this.resolveOrgManagerChainCandidates(
         manager,
         instance,
-        resolver.minPositionLevel,
-        resolver.fallback,
+        resolver,
         label,
         subject,
         skippedChainMemberIds,
@@ -7586,24 +7606,50 @@ export class WorkflowEngineService {
   }
 
   /**
-   * Walks up the initiator's manager chain, nearest manager first, until a
-   * manager whose position level reaches `minPositionLevel` is added. The
-   * list is returned nearest manager first. Members in `skippedMemberIds` are
-   * walked past without joining the chain or counting as the stopping point.
+   * Walks up a manager chain, nearest manager first, until a manager whose
+   * position level reaches `minPositionLevel` is added. The chain starts at
+   * the initiator unless `startFrom` names someone else, and the start person
+   * is never on it: the walk begins at their direct manager. The list is
+   * returned nearest manager first. Members in `skippedMemberIds` are walked
+   * past without joining the chain or counting as the stopping point, and so
+   * are managers below `startPositionLevel`, until the first one at or above
+   * it starts the chain.
    */
   private async resolveOrgManagerChainCandidates(
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
-    minPositionLevel: number,
-    fallback: ApproverResolverFallback | undefined,
+    resolver: Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>,
     label: string,
     subject: ResolvedSubject,
     skippedMemberIds: readonly string[],
   ): Promise<readonly string[]> {
+    const { fallback, minPositionLevel } = resolver;
+    const startPositionLevel = readOrgManagerChainStartPositionLevel(resolver);
+    const start = await this.resolveOrgManagerChainStart(
+      manager,
+      instance,
+      resolver,
+      label,
+      subject,
+    );
+
+    // Nobody to climb from: the same "no manager" path as a chain whose walk
+    // finds nobody, so the fallback decides.
+    if (start.memberId === null) {
+      return this.resolveFallbackAssignees(
+        manager,
+        instance,
+        fallback,
+        label,
+        subject,
+        start.missingReason,
+      );
+    }
+
     const date = this.readOrganizationToday();
-    const visitedMemberIds = new Set<string>([instance.initiatorMemberId]);
+    const visitedMemberIds = new Set<string>([start.memberId]);
     const chain: string[] = [];
-    let currentMemberId = instance.initiatorMemberId;
+    let currentMemberId = start.memberId;
     let lastAddedLevel: number | null = null;
 
     for (let hop = 0; hop < ORG_MANAGER_CHAIN_MAX_HOPS; hop += 1) {
@@ -7660,6 +7706,14 @@ export class WorkflowEngineService {
         continue;
       }
 
+      // Below the start level a manager is walked past like one without a
+      // position: he neither joins the chain nor raises the bar the next
+      // manager has to clear. Every manager added after the first is above
+      // the last one added, so this only ever holds before the chain starts.
+      if (startPositionLevel !== null && level < startPositionLevel) {
+        continue;
+      }
+
       chain.push(managerMemberId);
       lastAddedLevel = level;
 
@@ -7676,10 +7730,107 @@ export class WorkflowEngineService {
       fallback,
       label,
       subject,
-      `沿主管鏈找不到職等達 ${minPositionLevel} 的主管`,
+      chain.length === 0 && startPositionLevel !== null
+        ? `${start.description}沿主管鏈找不到職等達 ${startPositionLevel} 的主管（起始職等 ${startPositionLevel}、簽到職等 ${minPositionLevel}）`
+        : `${start.description}沿主管鏈找不到職等達 ${minPositionLevel} 的主管`,
     );
 
     return uniqueTexts([...chain, ...fallbackMemberIds]);
+  }
+
+  /**
+   * Whose manager an `ORG_MANAGER_CHAIN` starts from. `memberId` is `null`
+   * when the start names nobody (an empty form field, an earlier stage nobody
+   * approved), with `missingReason` saying why; `description` is the lead-in
+   * of the "no manager reaches the level" reason, empty for the initiator so
+   * a chain without a start keeps today's wording.
+   *
+   * A start that picks more than one person is refused rather than guessed,
+   * the same as a manager rule that names several managers at one priority.
+   */
+  private async resolveOrgManagerChainStart(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>,
+    label: string,
+    subject: ResolvedSubject,
+  ): Promise<{
+    readonly description: string;
+    readonly memberId: string | null;
+    readonly missingReason: string;
+  }> {
+    if (isOrgManagerChainStartedFromInitiator(resolver)) {
+      return {
+        description: '',
+        memberId: instance.initiatorMemberId,
+        missingReason: '',
+      };
+    }
+
+    // `INITIATOR` (and an absent start) was answered above.
+    const startFrom = resolver.startFrom as Exclude<
+      NonNullable<typeof resolver.startFrom>,
+      { readonly type: 'INITIATOR' }
+    >;
+    const unsupportedType = readUnsupportedOrgManagerChainStartType(
+      startFrom as { readonly type: string },
+    );
+    const failure =
+      subject === '通知對象' ? '無法建立通知' : '無法建立待簽任務';
+
+    // A template saved by a newer engine can carry a start this engine does
+    // not know. Refuse it by name instead of climbing from the initiator,
+    // which would route the task to the wrong people.
+    if (unsupportedType !== null) {
+      throw new ConflictException(
+        `${label} ${failure}：此引擎版本不支援主管鏈起點「${unsupportedType}」。請升級 BPMCore 後再發佈或執行此流程。`,
+      );
+    }
+
+    // A notify node has no earlier stage and no form pick the publish lint
+    // would have checked; one that reaches here anyway is refused.
+    if (subject === '通知對象') {
+      throw new ConflictException(
+        `${label} ${failure}：知會節點的主管鏈只能從發起人開始。`,
+      );
+    }
+
+    if (startFrom.type === 'FORM_MEMBER') {
+      const source = `依表單欄位「${startFrom.formPath}」`;
+      const pickedMemberIds = findMemberIdsInValue(
+        readValueAtPath(instance.formData, startFrom.formPath),
+      );
+
+      // Picking one silently would route the document by accident.
+      if (pickedMemberIds.length > 1) {
+        throw new ConflictException(`${label} ${source}只能選一位人員`);
+      }
+
+      return {
+        description: `從表單欄位「${startFrom.formPath}」所選人員起算，`,
+        memberId: pickedMemberIds[0] ?? null,
+        missingReason: `表單欄位「${startFrom.formPath}」沒有選人員`,
+      };
+    }
+
+    const nodeNames = readNodeActorNodeNames(instance, startFrom.nodeIds);
+    const actorMemberIds = await this.readNodeActorMemberIds(
+      manager,
+      instance,
+      startFrom.nodeIds,
+    );
+
+    if (actorMemberIds.length > 1) {
+      throw new ConflictException(
+        `${label} 無法沿主管鏈簽核：${nodeNames}有多位實際簽核人（${actorMemberIds.join('、')}），無法決定從誰的主管開始。請改選只有一位簽核人的關卡。`,
+      );
+    }
+
+    return {
+      description: `從${nodeNames}的簽核者起算，`,
+      memberId: actorMemberIds[0] ?? null,
+      missingReason: `${nodeNames}沒有實際同意的簽核紀錄`,
+    };
   }
 
   /** Highest position level over the member's active memberships, or `null`. */
@@ -11480,7 +11631,7 @@ function readDryRunPlaceholderAssignee(resolver: ApproverResolver): string {
   }
 
   return resolver.type === 'ORG_MANAGER_CHAIN'
-    ? `orgManagerChain:${resolver.minPositionLevel}`
+    ? formatOrgManagerChainPlaceholder(resolver)
     : resolver.type;
 }
 
