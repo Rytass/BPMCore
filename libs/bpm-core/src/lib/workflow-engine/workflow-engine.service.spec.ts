@@ -24,6 +24,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
@@ -120,6 +121,10 @@ import {
   TaskReassignmentResult,
   WorkflowEngineService,
 } from './workflow-engine.service';
+import {
+  BPMInitiatorCustomFieldsInput,
+  BPMInitiatorCustomFieldsResolver,
+} from './initiator-custom-fields-resolver.token';
 import { BPMWorkflowServiceTaskDispatcher } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
@@ -511,6 +516,340 @@ describe('WorkflowEngineService', () => {
       positionId: 'position-manager',
       positionIds: ['position-manager', 'position-staff'],
       primaryOrgUnitId: 'org-sales',
+    });
+  });
+
+  describe('initiator customFields resolver on submit', (): void => {
+    const ENGINE_SNAPSHOT = {
+      memberId: 'member-001',
+      orgUnitIds: ['org-sales'],
+      positionId: 'position-manager',
+      positionIds: ['position-manager'],
+      primaryOrgUnitId: 'org-sales',
+    };
+    const STATION_POLICY = 'initiator.customFields.station == "TPE"';
+    const NOT_ALLOWED = 'Current member is not allowed to start this approval template';
+    const createFixture = (
+      options: Partial<Parameters<typeof createServiceFixture>[0]> = {},
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processMemberships: [
+          createMembership({
+            id: 'membership-sales',
+            isPrimary: true,
+            orgUnitId: 'org-sales',
+            positionId: 'position-manager',
+          }),
+        ],
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        ...options,
+      });
+    const createResolver = (
+      result: unknown,
+    ): {
+      readonly resolveCustomFields: jest.Mock<
+        Promise<Readonly<Record<string, unknown>>>,
+        [BPMInitiatorCustomFieldsInput]
+      >;
+      readonly resolver: BPMInitiatorCustomFieldsResolver;
+    } => {
+      const resolveCustomFields = jest
+        .fn<
+          Promise<Readonly<Record<string, unknown>>>,
+          [BPMInitiatorCustomFieldsInput]
+        >()
+        .mockResolvedValue(result as Readonly<Record<string, unknown>>);
+
+      return { resolveCustomFields, resolver: { resolveCustomFields } };
+    };
+    const submit = (
+      fixture: ServiceFixture,
+      options: {
+        readonly authContext?: BPMAuthContext;
+        readonly initiatorMetadataSnapshotJson?: string;
+      } = {},
+    ): Promise<ApprovalInstanceEntity> =>
+      fixture.service.submitApprovalInstance(
+        {
+          // The GraphQL mutation always sends both of these.
+          endUserSubmission: true,
+          formDataJson: '{"amount":1000}',
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson:
+            options.initiatorMetadataSnapshotJson ?? null,
+          templateId: 'template-1',
+          title: null,
+        },
+        options.authContext,
+      );
+    const readEngineTransaction = (fixture: ServiceFixture): jest.Mock =>
+      (
+        fixture.service as unknown as {
+          readonly approvalInstanceRepository: {
+            readonly manager: { readonly transaction: jest.Mock };
+          };
+        }
+      ).approvalInstanceRepository.manager.transaction;
+
+    it('leaves customFields empty when no resolver is registered', async (): Promise<void> => {
+      const fixture = createFixture();
+
+      await submit(fixture);
+
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: {},
+        ...ENGINE_SNAPSHOT,
+      });
+    });
+
+    it('stores what the resolver returns as customFields and hands it the submission', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        grade: 7,
+        nested: { codes: ['a', 'b'] },
+        station: 'TPE',
+      });
+      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+      const authContext: BPMAuthContext = {
+        memberId: 'member-001',
+        metadata: { site: 'TPE' },
+        permissions: [],
+        roles: [],
+      };
+
+      await submit(fixture, { authContext });
+
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: {
+          grade: 7,
+          nested: { codes: ['a', 'b'] },
+          station: 'TPE',
+        },
+        ...ENGINE_SNAPSHOT,
+      });
+      expect(resolveCustomFields).toHaveBeenCalledTimes(1);
+      expect(resolveCustomFields).toHaveBeenCalledWith({
+        authContext,
+        defaultSnapshot: { customFields: {}, ...ENGINE_SNAPSHOT },
+        formData: { amount: 1000 },
+        memberId: 'member-001',
+        templateId: 'template-1',
+        templateVersionId: 'template-version-1',
+      });
+    });
+
+    it('gives a host that called the service without an auth context one for the initiator', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({});
+      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+
+      await submit(fixture);
+
+      expect(resolveCustomFields.mock.calls[0]?.[0].authContext).toEqual({
+        memberId: 'member-001',
+        metadata: {},
+        permissions: [],
+        roles: [],
+      });
+    });
+
+    it('keeps the engine fields when the resolver returns the same keys or edits what it was given', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        memberId: 'member-evil',
+        positionId: 'position-evil',
+      });
+
+      resolveCustomFields.mockImplementation(
+        (
+          input: BPMInitiatorCustomFieldsInput,
+        ): Promise<Readonly<Record<string, unknown>>> => {
+          (input.defaultSnapshot as Record<string, unknown>)['memberId'] =
+            'member-evil';
+          (input.defaultSnapshot['orgUnitIds'] as string[]).push('org-evil');
+          (input.formData as Record<string, unknown>)['amount'] = 1;
+
+          return Promise.resolve({
+            memberId: 'member-evil',
+            positionId: 'position-evil',
+          });
+        },
+      );
+      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+
+      await submit(fixture);
+
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: { memberId: 'member-evil', positionId: 'position-evil' },
+        ...ENGINE_SNAPSHOT,
+      });
+      expect(fixture.savedInstance?.initiatorMemberId).toBe('member-001');
+      expect(fixture.savedInstance?.formData).toEqual({ amount: 1000 });
+    });
+
+    it('does not call the resolver, and keeps the snapshot as it is, when the caller passes one', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        station: 'TPE',
+      });
+      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+
+      await submit(fixture, {
+        initiatorMetadataSnapshotJson:
+          '{"customFields":{"station":"KHH"},"memberId":"member-001","roles":["IT"]}',
+      });
+
+      expect(resolveCustomFields).not.toHaveBeenCalled();
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: { station: 'KHH' },
+        memberId: 'member-001',
+        roles: ['IT'],
+      });
+    });
+
+    it('lets an initiator policy read what the resolver returned', async (): Promise<void> => {
+      const allowed = createFixture({
+        initiatorCustomFieldsResolver: createResolver({ station: 'TPE' })
+          .resolver,
+        templateInitiatorPolicyCel: STATION_POLICY,
+      });
+      const refused = createFixture({
+        initiatorCustomFieldsResolver: createResolver({ station: 'KHH' })
+          .resolver,
+        templateInitiatorPolicyCel: STATION_POLICY,
+      });
+
+      await expect(submit(allowed)).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(submit(refused)).rejects.toThrow(NOT_ALLOWED);
+      expect(refused.savedInstance).toBeNull();
+    });
+
+    it('still refuses a policy that reads customFields when no resolver is registered', async (): Promise<void> => {
+      const fixture = createFixture({
+        templateInitiatorPolicyCel: STATION_POLICY,
+      });
+
+      await expect(submit(fixture)).rejects.toThrow(NOT_ALLOWED);
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it.each([
+      ['TPE', 'task_high'],
+      ['KHH', 'task_default'],
+    ])(
+      'routes a case on customFields.station %s to %s',
+      async (station: string, expectedNodeId: string): Promise<void> => {
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: createResolver({ station }).resolver,
+          templateWorkflowDefinition: createExclusiveGatewayWorkflow({
+            highCondition: STATION_POLICY,
+            includeStructuredCondition: false,
+          }),
+        });
+
+        await submit(fixture);
+
+        expect(fixture.savedTasks.map((task) => task.nodeId)).toEqual([
+          expectedNodeId,
+        ]);
+      },
+    );
+
+    it('fails the submission, and starts nothing, when the resolver throws', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({});
+
+      resolveCustomFields.mockRejectedValue(new Error('host lookup is down'));
+      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+
+      await expect(submit(fixture)).rejects.toThrow('host lookup is down');
+      expect(fixture.savedInstance).toBeNull();
+      expect(readEngineTransaction(fixture)).not.toHaveBeenCalled();
+    });
+
+    it.each<[string, unknown]>([
+      ['null', null],
+      ['undefined', undefined],
+      ['an array', []],
+      ['a string', 'TPE'],
+      ['a number', 7],
+      ['a Date', new Date('2026-01-01T00:00:00.000Z')],
+    ])(
+      'fails the submission when the resolver returns %s',
+      async (_label: string, returned: unknown): Promise<void> => {
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: createResolver(returned).resolver,
+        });
+
+        await expect(submit(fixture)).rejects.toThrow(
+          new InternalServerErrorException(
+            'Initiator customFields resolver must return a plain object',
+          ),
+        );
+        expect(fixture.savedInstance).toBeNull();
+        expect(readEngineTransaction(fixture)).not.toHaveBeenCalled();
+      },
+    );
+
+    it('fails the submission when the resolver returns an object JSON cannot carry', async (): Promise<void> => {
+      const circular: Record<string, unknown> = {};
+
+      circular['self'] = circular;
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: createResolver(circular).resolver,
+      });
+
+      await expect(submit(fixture)).rejects.toThrow(
+        new InternalServerErrorException(
+          'Initiator customFields resolver must return a JSON-serializable object',
+        ),
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('keeps the stored snapshot, and does not call the resolver, when a returned case is resubmitted', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        station: 'TPE',
+      });
+      const formSchema = createFinanceTableFormSchema();
+      const fixture = createFixture({
+        formSchema,
+        initiatorCustomFieldsResolver: resolver,
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processFormData: { amount: 10 },
+        processFormDefinitionSnapshot: { schema: formSchema },
+        processWorkflowSnapshot: createFieldAccessWorkflow(),
+      });
+
+      await fixture.service.resubmitApprovalInstance({
+        endUserSubmission: true,
+        formDataJson: '{"amount":11}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      });
+
+      expect(resolveCustomFields).not.toHaveBeenCalled();
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual(
+        createApprovalInstance().initiatorMetadataSnapshot,
+      );
+    });
+
+    it('does not call the resolver for a dry run or the launchable template list', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        station: 'TPE',
+      });
+      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+
+      const dryRun = fixture.service.dryRunApprovalWorkflow({
+        formDataJson: '{}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        workflowDefinitionJson: JSON.stringify(createStartEndWorkflow()),
+      });
+      const launchable =
+        await fixture.service.listLaunchableApprovalTemplates('member-001');
+
+      expect(dryRun.valid).toBe(true);
+      expect(launchable.map((template) => template.id)).toEqual(['template-1']);
+      expect(resolveCustomFields).not.toHaveBeenCalled();
     });
   });
 
@@ -18361,6 +18700,7 @@ function createServiceFixture({
   formDataSourceValueResolver,
   formSchema,
   formVersionStatus,
+  initiatorCustomFieldsResolver,
   instanceSaveError,
   instanceState,
   latestReturnActivity,
@@ -18403,6 +18743,8 @@ function createServiceFixture({
   readonly decisionToken?: WorkflowTokenEntity;
   readonly formSchema?: FormDefinitionSchema;
   readonly formVersionStatus: FormDefinitionVersionStatusEnum;
+  // The host's initiator `customFields` resolver; unset means none registered.
+  readonly initiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver;
   // Makes the instance insert fail, the way the database would on a clash.
   readonly instanceSaveError?: Error;
   readonly instanceState?: ApprovalInstanceStateEnum;
@@ -19487,6 +19829,7 @@ function createServiceFixture({
       formDataSourceValueResolver,
       rootOptions,
       webhookDeliveryService,
+      initiatorCustomFieldsResolver,
     ),
     notificationService,
   };

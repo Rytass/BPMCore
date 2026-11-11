@@ -57,6 +57,7 @@ import {
   HttpException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
   Optional,
@@ -175,6 +176,10 @@ import {
   isExpressionDialect,
   readWorkflowExpressionDialect,
 } from '../condition/expression-dialect';
+import {
+  BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
+  BPMInitiatorCustomFieldsResolver,
+} from './initiator-custom-fields-resolver.token';
 import {
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
   BPMWorkflowServiceTaskDispatcher,
@@ -664,6 +669,9 @@ export class WorkflowEngineService {
     rootOptions?: BPMRootRuntimeOptions,
     @Optional()
     private readonly webhookDeliveryService?: WorkflowWebhookDeliveryService,
+    @Optional()
+    @Inject(BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER)
+    injectedInitiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver,
   ) {
     // A binding under the token wins: that is either the host's own provider
     // or `workflowServiceTaskDispatcherProvider`, both of them deliberate. The
@@ -679,12 +687,21 @@ export class WorkflowEngineService {
       injectedServiceTaskDispatcher ??
       rootOptions?.workflowServiceTaskDispatcher ??
       new DefaultWorkflowServiceTaskDispatcher();
+    // Resolved like the dispatcher above, for the same reason: a binding the
+    // host made under the token wins, then the runtime instance, and with
+    // neither the snapshot's `customFields` stays `{}`.
+    this.initiatorCustomFieldsResolver =
+      injectedInitiatorCustomFieldsResolver ??
+      rootOptions?.initiatorCustomFieldsResolver ??
+      null;
     this.organizationTimeZone = resolveBPMOrganizationTimeZone(
       rootOptions?.organizationTimeZone,
     );
   }
 
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
+
+  private readonly initiatorCustomFieldsResolver: BPMInitiatorCustomFieldsResolver | null;
 
   /** Webhooks each open engine transaction will send once it has committed. */
   private readonly deferredWebhookDispatches = new WeakMap<
@@ -859,9 +876,14 @@ export class WorkflowEngineService {
           input.initiatorMetadataSnapshotJson,
           'initiatorMetadataSnapshotJson',
         )
-      : await this.readDefaultInitiatorMetadataSnapshot(
-          input.initiatorMemberId,
-        );
+      : await this.buildSubmittedInitiatorMetadataSnapshot({
+          authContext:
+            authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
+          formData,
+          memberId: input.initiatorMemberId,
+          templateId: template.id,
+          templateVersionId: templateVersion.id,
+        });
 
     if (
       !this.conditionService.evaluateBoolean(
@@ -3307,6 +3329,10 @@ export class WorkflowEngineService {
       input.workflowDefinitionJson,
     );
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    // The snapshot here is the caller's own sample (the designer always sends
+    // one) or a bare `{ customFields: {}, memberId }`. It is not the one a real
+    // submission builds, and a dry run has no template version to hand the
+    // host's `customFields` resolver, so that resolver is not called.
     const initiatorMetadataSnapshot = input.initiatorMetadataSnapshotJson
       ? parseJsonObject(
           input.initiatorMetadataSnapshotJson,
@@ -4217,6 +4243,12 @@ export class WorkflowEngineService {
         ],
       ),
     );
+    // The engine's own snapshot, without the host's `customFields` resolver:
+    // it needs a form to work from and this list has none, and calling it for
+    // every template would put a host lookup behind every list request. An
+    // initiator policy that reads `initiator.customFields` is therefore judged
+    // here against `{}`, while a submission judges it against what the
+    // resolver returns.
     const initiatorMetadataSnapshot =
       await this.readDefaultInitiatorMetadataSnapshot(memberId);
 
@@ -4592,6 +4624,54 @@ export class WorkflowEngineService {
       positionId: primaryMembership?.positionId ?? null,
       positionIds,
       primaryOrgUnitId: primaryMembership?.orgUnitId ?? null,
+    };
+  }
+
+  /**
+   * The snapshot a submission stores when its caller did not pass one: what the
+   * engine knows of the initiator, with `customFields` filled by the host's
+   * resolver when there is one. Without a resolver this is exactly the default
+   * snapshot (`customFields` is `{}`).
+   *
+   * Only `customFields` comes from the host. The other keys are the engine's
+   * and are written back after the resolver returns, so nothing it does can
+   * change who the initiator is. The resolver sees copies for the same reason.
+   * It runs here, before the engine transaction, so a failure leaves no case
+   * behind and a slow lookup holds no lock.
+   */
+  private async buildSubmittedInitiatorMetadataSnapshot({
+    authContext,
+    formData,
+    memberId,
+    templateId,
+    templateVersionId,
+  }: {
+    readonly authContext: BPMAuthContext;
+    readonly formData: Readonly<Record<string, unknown>>;
+    readonly memberId: string;
+    readonly templateId: string;
+    readonly templateVersionId: string;
+  }): Promise<Readonly<Record<string, unknown>>> {
+    const defaultSnapshot =
+      await this.readDefaultInitiatorMetadataSnapshot(memberId);
+
+    if (!this.initiatorCustomFieldsResolver) {
+      return defaultSnapshot;
+    }
+
+    const customFields =
+      await this.initiatorCustomFieldsResolver.resolveCustomFields({
+        authContext,
+        defaultSnapshot: cloneJsonObject(defaultSnapshot),
+        formData: cloneJsonObject(formData),
+        memberId,
+        templateId,
+        templateVersionId,
+      });
+
+    return {
+      ...defaultSnapshot,
+      customFields: readResolvedInitiatorCustomFields(customFields),
     };
   }
 
@@ -8980,6 +9060,37 @@ function readDefaultInitiatorMetadataSnapshot(
     customFields: {},
     memberId,
   };
+}
+
+function cloneJsonObject(
+  value: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+/**
+ * What a host's initiator `customFields` resolver returned, as the object the
+ * snapshot keeps: a plain object that survives JSON, which is also how it is
+ * stored, so the policy evaluated at submit and the conditions evaluated later
+ * read the same values. Anything else is a bug in the host's resolver and fails
+ * the submission rather than being replaced by `{}`.
+ */
+function readResolvedInitiatorCustomFields(
+  value: unknown,
+): Readonly<Record<string, unknown>> {
+  if (Object.prototype.toString.call(value) !== '[object Object]') {
+    throw new InternalServerErrorException(
+      'Initiator customFields resolver must return a plain object',
+    );
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+  } catch {
+    throw new InternalServerErrorException(
+      'Initiator customFields resolver must return a JSON-serializable object',
+    );
+  }
 }
 
 function createWorkflowAuthContext(memberId: string): BPMAuthContext {

@@ -39,6 +39,7 @@ import { OrganizationModule } from '../organization/organization.module';
 import { SignatureModule } from '../signature/signature.module';
 import { TemplateModule } from '../template/template.module';
 import { WorkflowEngineModule } from '../workflow-engine/workflow-engine.module';
+import { BPMInitiatorCustomFieldsResolver } from '../workflow-engine/initiator-custom-fields-resolver.token';
 import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
 import {
   BPM_ROOT_OPTIONS,
@@ -114,6 +115,20 @@ interface BPMRootModuleWiringOptions extends Pick<ModuleMetadata, 'imports'> {
    * does; when neither is given, the catalog is empty.
    */
   readonly workflowWebhookRegistryProvider?: Provider<BPMWorkflowWebhookRegistry>;
+
+  /**
+   * Host-provided initiator `customFields` resolver, as a Nest provider for
+   * `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER`.
+   *
+   * Runtime twin: {@link BPMRootRuntimeOptions.initiatorCustomFieldsResolver}.
+   * When both are given this provider wins, as `workflowServiceTaskDispatcherProvider`
+   * does. Like that provider it is registered on the engine module BPM builds
+   * from this call only, and BPM builds another engine module copy for form
+   * option DataSources that does not see it; the runtime twin, or a binding in
+   * a `@Global()` host module, reaches every copy, so prefer one of those.
+   * When none is given, `customFields` of an engine-built snapshot is `{}`.
+   */
+  readonly initiatorCustomFieldsResolverProvider?: Provider<BPMInitiatorCustomFieldsResolver>;
 
   /**
    * Host-provided member resolver, as a Nest provider.
@@ -372,6 +387,8 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
     SignatureModule.forRootAsync({ inject, useFactory }),
     WorkflowEngineModule.forRoot({
       imports: wiring.imports,
+      initiatorCustomFieldsResolverProvider:
+        wiring.initiatorCustomFieldsResolverProvider,
       serviceTaskDispatcherProvider:
         wiring.workflowServiceTaskDispatcherProvider,
     }),
