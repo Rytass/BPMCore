@@ -7016,6 +7016,12 @@ export class WorkflowEngineService {
    * with the `NODE_ACTOR` rules ({@link readNodeActorMemberIds}) and the
    * results combined. A source reads only the most recent of its listed nodes;
    * an exclusion must cover every listed node, so it asks one node at a time.
+   *
+   * There is no round boundary here: a node's newest batch is what counts. The
+   * publish lint makes that the right batch, since every listed node runs and
+   * is signed by a person on every path to this node (a return to the start
+   * runs it again; a return to a stage below it leaves its earlier approval
+   * standing, and the exclusion with it).
    */
   private async readExcludedNodeActorMemberIds(
     manager: EntityManager,

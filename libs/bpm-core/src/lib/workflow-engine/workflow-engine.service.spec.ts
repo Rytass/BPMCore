@@ -7428,6 +7428,7 @@ describe('WorkflowEngineService', () => {
         };
         const exclusionFixture = ({
           activityLogs = [],
+          decisionPolicy = { type: 'PARALLEL_ANY' },
           decisions = aSignedAct3.decisions,
           delegationResolutionByMember,
           excludeInitiator,
@@ -7438,6 +7439,7 @@ describe('WorkflowEngineService', () => {
           tasks = aSignedAct3.tasks,
         }: {
           readonly activityLogs?: readonly ActivityLogEntity[];
+          readonly decisionPolicy?: DecisionPolicy;
           readonly decisions?: readonly TaskDecisionEntity[];
           readonly delegationResolutionByMember?: Readonly<
             Record<string, DelegationResolution>
@@ -7460,7 +7462,7 @@ describe('WorkflowEngineService', () => {
             processWorkflowSnapshot: (snapshot ?? ((linear) => linear))(
               createLinearUserTaskWorkflow({
                 approverResolver: resolver,
-                decisionPolicy: { type: 'PARALLEL_ANY' },
+                decisionPolicy,
                 excludeInitiator,
                 excludeNodeActors,
               }),
@@ -7765,6 +7767,30 @@ describe('WorkflowEngineService', () => {
             ).resolves.toEqual(['member-c']);
           });
 
+          it('keeps excluding the approver of a stage that is not run again when the return went to a later stage (FROM_RETURN_POINT)', async (): Promise<void> => {
+            // ACT3 (member-a) ran once; the case was returned to ACT4 below it
+            // and resubmitted from there, so ACT4 has a second round (tok-2)
+            // and ACT3 has none. The only round ACT3 has is still this case's
+            // valid approval, so this node keeps member-a out. ACT4 is not
+            // listed, so its approver (member-x) stays a candidate.
+            await expect(
+              candidatesAfterProcessing({
+                decisions: [
+                  approved('d3', 't3', 'member-a', 1),
+                  approved('d4-old', 't4-old', 'member-x', 11),
+                  approved('d4-new', 't4-new', 'member-x', 31),
+                ],
+                excludeNodeActors: nodeActors(['ACT3']),
+                resolver: directOf('member-a', 'member-x', 'member-b'),
+                tasks: [
+                  finished('t3', 'ACT3', 'tok-1', 0),
+                  finished('t4-old', 'ACT4', 'tok-1', 10),
+                  finished('t4-new', 'ACT4', 'tok-2', 30),
+                ],
+              }),
+            ).resolves.toEqual(['member-x', 'member-b']);
+          });
+
           it('does not exclude a person who only approved a node that is not listed', async (): Promise<void> => {
             await expect(
               candidatesAfterProcessing({
@@ -7772,6 +7798,46 @@ describe('WorkflowEngineService', () => {
                 resolver: directOf('member-a', 'member-b'),
               }),
             ).resolves.toEqual(['member-a', 'member-b']);
+          });
+        });
+
+        describe('ORG_MANAGER_CHAIN', (): void => {
+          // member-001 -> member-a (grade 30) -> member-m (50) -> member-gm (50);
+          // the walk ends at the first manager who reaches grade 50.
+          const chainOrg = createManagerChainOrg({
+            grades: { 'member-a': 30, 'member-gm': 50, 'member-m': 50 },
+            links: [
+              ['member-001', 'member-a'],
+              ['member-a', 'member-m'],
+              ['member-m', 'member-gm'],
+            ],
+          });
+          const chainResolver: ApproverResolver = {
+            minPositionLevel: 50,
+            type: 'ORG_MANAGER_CHAIN',
+          };
+
+          it('climbs past an earlier approver who is the manager that reaches the level', async (): Promise<void> => {
+            await expect(
+              candidatesAfterProcessing({
+                decisionPolicy: { type: 'SEQUENTIAL' },
+                decisions: [approved('d1', 't1', 'member-m', 1)],
+                excludeNodeActors: nodeActors(['ACT3']),
+                org: chainOrg,
+                resolver: chainResolver,
+              }),
+            ).resolves.toEqual(['member-a', 'member-gm']);
+          });
+
+          it('ends the chain at that manager when the setting is omitted (control)', async (): Promise<void> => {
+            await expect(
+              candidatesAfterProcessing({
+                decisionPolicy: { type: 'SEQUENTIAL' },
+                decisions: [approved('d1', 't1', 'member-m', 1)],
+                org: chainOrg,
+                resolver: chainResolver,
+              }),
+            ).resolves.toEqual(['member-a', 'member-m']);
           });
         });
 
@@ -18098,6 +18164,23 @@ describe('administrator task reassignment', (): void => {
       expect(writtenActivityLogs(fixture)).toEqual([]);
     },
   );
+
+  it('reassigns to a member who approved an earlier node when the node omits excludeNodeActors (control)', async (): Promise<void> => {
+    const { fixture } = createOpenTaskFixture({
+      assigneeMemberId: 'member-from',
+      earlierApproval: { memberId: 'member-earlier' },
+    });
+
+    await expect(
+      reassign(fixture, {
+        fromMemberId: 'member-from',
+        toMemberId: 'member-earlier',
+      }),
+    ).resolves.toMatchObject({
+      errorCode: null,
+      outcome: TaskReassignmentOutcomeEnum.REASSIGNED,
+    });
+  });
 
   it('reports what would happen under dryRun and writes nothing', async (): Promise<void> => {
     const { fixture } = createOpenTaskFixture({
