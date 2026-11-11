@@ -368,6 +368,8 @@ const TASK_REASSIGNMENT_MESSAGES: Readonly<
     '接手人已在此任務的待簽名單上',
   [TaskReassignmentErrorCodeEnum.TARGET_GRADE_TOO_LOW]:
     '接手人職等不足，不能取代此簽核位置',
+  [TaskReassignmentErrorCodeEnum.TARGET_IS_EXCLUDED_NODE_ACTOR]:
+    '此節點不允許與前面關卡的簽核者為同一人，接手人不能是前面關卡的簽核者',
   [TaskReassignmentErrorCodeEnum.TARGET_IS_INITIATOR]:
     '此節點不允許申請人自簽，接手人不能是申請人',
   [TaskReassignmentErrorCodeEnum.TARGET_IS_SUBMITTER]:
@@ -569,6 +571,20 @@ interface ResolvedRuntimeTaskCandidates {
   // Collected before the initiator filter and the dedupe, so a refusal on a row
   // those drop is still on record.
   readonly skippedDelegations: readonly SkippedDelegation[];
+}
+
+// A node whose approvers were all kept out and that is configured to be
+// skipped instead of failing: which of its two exclusion rules decided it.
+interface SkippedRuntimeTask {
+  readonly skippedBy: 'INITIATOR' | 'NODE_ACTORS';
+}
+
+// Everyone one node keeps out of its approvers, kept per rule because each
+// rule has its own `whenEmpty`.
+interface NodeExclusions {
+  readonly initiatorMemberIds: readonly string[];
+  readonly memberIds: readonly string[];
+  readonly nodeActorMemberIds: readonly string[];
 }
 
 type AdhocTargetValue = {
@@ -1396,6 +1412,25 @@ export class WorkflowEngineService {
           );
         }
 
+        // `excludeNodeActors`: the same carve-out, the same refusal. A human
+        // may not hand the seat to someone who signed one of the listed stages.
+        if (
+          input.action === TaskDecisionActionEnum.TRANSFERRED &&
+          options.transferReason === undefined &&
+          isNodeActorsExcluded(taskNode) &&
+          transferToMemberId !== null &&
+          (await this.isExcludedNodeActorTarget(
+            manager,
+            instance,
+            taskNode,
+            transferToMemberId,
+          ))
+        ) {
+          throw new ConflictException(
+            `簽核節點「${taskNode.data.label}」不允許與前面關卡的簽核者為同一人，不能將任務轉交給前面${readNodeActorNodeNames(instance, readExcludedNodeActorNodeIds(taskNode))}的簽核者`,
+          );
+        }
+
         // Same carve-out: a human picking the target on a manager-chain node
         // must pick someone at least as senior as the member being replaced.
         if (
@@ -2171,7 +2206,7 @@ export class WorkflowEngineService {
         // reached, against that node's own setting. This checks the target
         // against the node being decided now, as an early rejection for the
         // common case; it is not a guarantee about the node it attaches to.
-        if (isInitiatorExcluded(node)) {
+        if (hasSeatExclusion(node)) {
           await this.resolveAdhocTaskCandidates(
             manager,
             instance,
@@ -2663,13 +2698,14 @@ export class WorkflowEngineService {
     label: string,
     targetValue: AdhocTargetValue,
   ): Promise<readonly RuntimeTaskCandidate[]> {
+    const exclusions = await this.readNodeExclusions(manager, instance, node);
     const resolvedCandidates = await this.resolveApproverResolver(
       manager,
       instance,
       buildAdhocApproverResolver(targetValue),
       `${label}「${node.data.label}」`,
       '簽核人',
-      isInitiatorExcluded(node) ? readInitiatorAndSubmitter(instance) : [],
+      exclusions.memberIds,
     );
     // Ad-hoc approvers are picked by a person, not walked up a manager chain,
     // so the chain's grade rule does not apply to them.
@@ -2682,20 +2718,28 @@ export class WorkflowEngineService {
     );
     const candidates = selectNodeCandidates(
       delegatedCandidates,
-      isInitiatorExcluded(node),
-      readInitiatorAndSubmitter(instance),
+      hasSeatExclusion(node),
+      exclusions.memberIds,
     );
 
     if (candidates.length > 0) {
       return candidates;
     }
 
+    if (delegatedCandidates.length === 0) {
+      throw new ConflictException(
+        `${label}「${node.data.label}」 did not resolve to any member id`,
+      );
+    }
+
+    // The initiator rule runs first: only when it alone left somebody is the
+    // earlier-stage rule the one that emptied the list.
     throw new ConflictException(
-      delegatedCandidates.length > 0
+      isEmptiedByInitiatorRule(node, delegatedCandidates, exclusions)
         ? readDistinctSubmitterMemberId(instance) === null
           ? `${label}「${node.data.label}」 無法建立任務：指定對象只有申請人本人，此節點不允許申請人簽核。`
           : `${label}「${node.data.label}」 無法建立任務：指定對象只有申請人或代為送出此單的人，此節點不允許申請人或代送人簽核。`
-        : `${label}「${node.data.label}」 did not resolve to any member id`,
+        : `${label}「${node.data.label}」 無法建立任務：指定對象只有前面${readNodeActorNodeNames(instance, readExcludedNodeActorNodeIds(node))}的簽核者，此節點不允許與前面關卡的簽核者為同一人。`,
     );
   }
 
@@ -5052,10 +5096,17 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     token: WorkflowTokenEntity,
     node: WorkflowNode,
+    skippedBy: SkippedRuntimeTask['skippedBy'] = 'INITIATOR',
   ): Promise<void> {
-    await this.skipNode(manager, instance, token, node, {
-      skippedByInitiatorExclusion: true,
-    });
+    await this.skipNode(
+      manager,
+      instance,
+      token,
+      node,
+      skippedBy === 'NODE_ACTORS'
+        ? { skippedByNodeActorExclusion: true }
+        : { skippedByInitiatorExclusion: true },
+    );
   }
 
   private async skipNode(
@@ -5426,11 +5477,17 @@ export class WorkflowEngineService {
       node,
     );
 
-    // The initiator was the only approver and the node asks to be skipped in
-    // that case: no task, the token moves on. Pending countersign directives
-    // stay pending for the next user task that actually gets created.
-    if (resolvedCandidates === null) {
-      await this.skipNodeByInitiatorExclusion(manager, instance, token, node);
+    // Everyone left was kept out and the node asks to be skipped in that case:
+    // no task, the token moves on. Pending countersign directives stay
+    // pending for the next user task that actually gets created.
+    if ('skippedBy' in resolvedCandidates) {
+      await this.skipNodeByInitiatorExclusion(
+        manager,
+        instance,
+        token,
+        node,
+        resolvedCandidates.skippedBy,
+      );
 
       return;
     }
@@ -5461,7 +5518,7 @@ export class WorkflowEngineService {
             : TaskAssignmentTypeEnum.CANDIDATE_GROUP,
         completedAt: null,
         createdAt: now,
-        decisionPolicySnapshot: isInitiatorExcluded(node)
+        decisionPolicySnapshot: hasSeatExclusion(node)
           ? capDecisionPolicyToCandidateCount(
               decisionPolicy,
               candidates.length,
@@ -5610,7 +5667,9 @@ export class WorkflowEngineService {
       await this.resolveActivationDelegation({
         candidate: nextCandidate,
         candidates,
-        excludesInitiator: isInitiatorExcluded(node),
+        excludedMemberIds: (
+          await this.readNodeExclusions(manager, instance, node)
+        ).memberIds,
         gradeGated: isGradeGatedCandidate(node, nextCandidate.sourceType),
         instance,
         manager,
@@ -5678,15 +5737,16 @@ export class WorkflowEngineService {
    * Re-resolves the delegation of a candidate whose turn has come. When the
    * delegate already holds another candidate row on the task, the stored values
    * are kept: (task_id, member_id) is unique, and that member signs from the
-   * row they already have. On a node that excludes the initiator the stored
-   * values are kept as well when the new delegation path would run through the
-   * initiator or the submitter: creation already filtered such paths out, and a
-   * delegation added while the candidate waited must not bring them back.
+   * row they already have. On a node that keeps members out (the initiator and
+   * submitter, or the approvers of earlier stages) the stored values are kept
+   * as well when the new delegation path would run through one of them:
+   * creation already filtered such paths out, and a delegation added while the
+   * candidate waited must not bring them back.
    */
   private async resolveActivationDelegation({
     candidate,
     candidates,
-    excludesInitiator,
+    excludedMemberIds,
     gradeGated,
     instance,
     manager,
@@ -5694,7 +5754,7 @@ export class WorkflowEngineService {
   }: {
     readonly candidate: TaskCandidateEntity;
     readonly candidates: readonly TaskCandidateEntity[];
-    readonly excludesInitiator: boolean;
+    readonly excludedMemberIds: readonly string[];
     readonly gradeGated: boolean;
     readonly instance: ApprovalInstanceEntity;
     readonly manager: EntityManager;
@@ -5722,15 +5782,14 @@ export class WorkflowEngineService {
 
     if (
       collides ||
-      (excludesInitiator &&
-        isExcludedMemberOnCandidatePath(
-          {
-            delegationChain: resolution.delegationChain,
-            memberId: resolution.finalAssigneeMemberId,
-            originalMemberId: candidate.originalMemberId,
-          },
-          readInitiatorAndSubmitter(instance),
-        ))
+      isExcludedMemberOnCandidatePath(
+        {
+          delegationChain: resolution.delegationChain,
+          memberId: resolution.finalAssigneeMemberId,
+          originalMemberId: candidate.originalMemberId,
+        },
+        excludedMemberIds,
+      )
     ) {
       // The refusal happened even though the stored values are kept.
       return { ...stored, ...(skippedDelegation ? { skippedDelegation } : {}) };
@@ -6550,6 +6609,20 @@ export class WorkflowEngineService {
       }
     }
 
+    if (
+      isNodeActorsExcluded(node) &&
+      (await this.isExcludedNodeActorTarget(
+        manager,
+        instance,
+        node,
+        toMemberId,
+      ))
+    ) {
+      throw new TaskReassignmentRejectedError(
+        TaskReassignmentErrorCodeEnum.TARGET_IS_EXCLUDED_NODE_ACTOR,
+      );
+    }
+
     if (!task.isAdhoc && isOrgManagerChainNode(node)) {
       const requiredGrade = await this.readTransferTargetRequiredGrade(
         manager,
@@ -6872,24 +6945,30 @@ export class WorkflowEngineService {
   }
 
   /**
-   * Resolves who gets the node's task. `null` means the node asked to be
-   * skipped (`excludeInitiator.whenEmpty = SKIP_NODE`) because the initiator
-   * was the only approver — the sole caller creates no task and advances the
-   * token instead.
+   * Resolves who gets the node's task. A {@link SkippedRuntimeTask} means the
+   * node asked to be skipped (`excludeInitiator.whenEmpty` or
+   * `excludeNodeActors.whenEmpty` = SKIP_NODE) because everyone left was kept
+   * out: the sole caller creates no task and advances the token instead.
+   *
+   * With both exclusions set the initiator rule runs first. When it alone
+   * leaves nobody, `excludeInitiator.whenEmpty` decides; when it leaves
+   * somebody and the earlier-stage rule then removes them all,
+   * `excludeNodeActors.whenEmpty` decides.
    */
   private async resolveRuntimeTaskCandidates(
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
-  ): Promise<ResolvedRuntimeTaskCandidates | null> {
+  ): Promise<ResolvedRuntimeTaskCandidates | SkippedRuntimeTask> {
     const label = `簽核節點「${node.data.label}」`;
+    const exclusions = await this.readNodeExclusions(manager, instance, node);
     const resolvedCandidates = await this.resolveApproverResolver(
       manager,
       instance,
       node.data.approverResolver,
       label,
       '簽核人',
-      isInitiatorExcluded(node) ? readInitiatorAndSubmitter(instance) : [],
+      exclusions.memberIds,
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
       manager,
@@ -6898,12 +6977,12 @@ export class WorkflowEngineService {
       resolvedCandidates,
       isOrgManagerChainNode(node),
     );
-    const excludeInitiator = node.data.excludeInitiator;
+    const hasExclusion = hasSeatExclusion(node);
     const hasSubmitter = readDistinctSubmitterMemberId(instance) !== null;
     const uniqueCandidates = selectNodeCandidates(
       delegatedCandidates,
-      isInitiatorExcluded(node),
-      readInitiatorAndSubmitter(instance),
+      hasExclusion,
+      exclusions.memberIds,
     );
 
     if (uniqueCandidates.length > 0) {
@@ -6911,27 +6990,37 @@ export class WorkflowEngineService {
         candidates: uniqueCandidates,
         skippedDelegations: collectSkippedDelegations(
           delegatedCandidates,
-          isInitiatorExcluded(node),
-          readInitiatorAndSubmitter(instance),
+          hasExclusion,
+          exclusions.memberIds,
         ),
       };
     }
 
-    // Only the initiator was left — what the node does about it is configured.
-    // Nothing resolved to begin with is the ordinary failure below.
-    if (!excludeInitiator || delegatedCandidates.length === 0) {
+    // Only excluded people were left — what the node does about it is
+    // configured. Nothing resolved to begin with is the ordinary failure below.
+    if (!hasExclusion || delegatedCandidates.length === 0) {
       throw new ConflictException(`${label} did not resolve to any member id`);
     }
 
-    if (excludeInitiator.whenEmpty === 'SKIP_NODE') {
-      return null;
+    const emptiedByInitiator = isEmptiedByInitiatorRule(
+      node,
+      delegatedCandidates,
+      exclusions,
+    );
+    const whenEmpty = emptiedByInitiator
+      ? node.data.excludeInitiator?.whenEmpty
+      : node.data.excludeNodeActors?.whenEmpty;
+
+    if (whenEmpty === 'SKIP_NODE') {
+      return { skippedBy: emptiedByInitiator ? 'INITIATOR' : 'NODE_ACTORS' };
     }
 
-    if (excludeInitiator.whenEmpty === 'INITIATOR_MANAGER') {
+    if (whenEmpty === 'INITIATOR_MANAGER') {
       const managerCandidates = await this.resolveInitiatorManagerReplacements(
         manager,
         instance,
         node,
+        exclusions.memberIds,
       );
 
       if (managerCandidates.candidates.length > 0) {
@@ -6939,16 +7028,191 @@ export class WorkflowEngineService {
       }
 
       throw new ConflictException(
-        hasSubmitter
-          ? `${label} 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人，此節點不允許申請人或代送人簽核，且找不到申請人的主管可改派。`
-          : `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人，此節點不允許申請人自簽，且找不到申請人的主管可改派。`,
+        !emptiedByInitiator
+          ? `${label} 無法建立待簽任務：解析出的簽核人只剩前面${readNodeActorNodeNames(instance, readExcludedNodeActorNodeIds(node))}的簽核者，此節點不允許與前面關卡的簽核者為同一人，且找不到申請人的主管可改派。`
+          : hasSubmitter
+            ? `${label} 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人，此節點不允許申請人或代送人簽核，且找不到申請人的主管可改派。`
+            : `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人，此節點不允許申請人自簽，且找不到申請人的主管可改派。`,
       );
     }
 
     throw new ConflictException(
-      hasSubmitter
-        ? `${label} 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人（含委派後的代理人），且此節點不允許申請人或代送人簽核。`
-        : `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人（含委派後的代理人），且此節點不允許申請人自簽。`,
+      !emptiedByInitiator
+        ? `${label} 無法建立待簽任務：解析出的簽核人只剩前面${readNodeActorNodeNames(instance, readExcludedNodeActorNodeIds(node))}的簽核者（含委派後的代理人），此節點不允許與前面關卡的簽核者為同一人。`
+        : hasSubmitter
+          ? `${label} 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人（含委派後的代理人），且此節點不允許申請人或代送人簽核。`
+          : `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人（含委派後的代理人），且此節點不允許申請人自簽。`,
+    );
+  }
+
+  /**
+   * Everyone `node` keeps out of its approvers, per rule: the initiator and
+   * the submitter for `excludeInitiator`, and everyone who actually approved
+   * one of the listed earlier stages for `excludeNodeActors`. Read through
+   * `manager` so an approval written earlier in this transaction counts.
+   */
+  private async readNodeExclusions(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    node: UserTaskNode,
+  ): Promise<NodeExclusions> {
+    const initiatorMemberIds = isInitiatorExcluded(node)
+      ? readInitiatorAndSubmitter(instance)
+      : [];
+    const nodeActorMemberIds = isNodeActorsExcluded(node)
+      ? await this.readExcludedNodeActorMemberIds(
+          manager,
+          instance,
+          readExcludedNodeActorNodeIds(node),
+        )
+      : [];
+
+    return {
+      initiatorMemberIds,
+      memberIds: uniqueTexts([...initiatorMemberIds, ...nodeActorMemberIds]),
+      nodeActorMemberIds,
+    };
+  }
+
+  /**
+   * The people who approved any of `nodeIds`, each listed node read on its own
+   * with the `NODE_ACTOR` rules ({@link readNodeActorMemberIds}) and the
+   * results combined. A source reads only the most recent of its listed nodes;
+   * an exclusion must cover every listed node, so it asks one node at a time.
+   *
+   * There is no round boundary here: a node's newest batch is what counts. The
+   * publish lint makes that the right batch, since every listed node runs and
+   * is signed by a person on every path to this node (a return to the start
+   * runs it again; a return to a stage below it leaves its earlier approval
+   * standing, and the exclusion with it).
+   */
+  private async readExcludedNodeActorMemberIds(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    nodeIds: readonly string[],
+  ): Promise<readonly string[]> {
+    const groups = await Promise.all(
+      nodeIds.map(async (nodeId): Promise<readonly string[]> => {
+        const approvals = await this.readNodeActorApprovals(manager, instance, [
+          nodeId,
+        ]);
+        const principalMemberIds = await this.readApprovalPrincipalMemberIds(
+          manager,
+          approvals,
+        );
+
+        return [
+          ...approvals.map((decision) => decision.decidedByMemberId),
+          ...principalMemberIds,
+        ];
+      }),
+    );
+
+    return uniqueTexts(groups.flat());
+  }
+
+  /**
+   * Whether `targetMemberId` may not take a seat on `node` under
+   * `excludeNodeActors`, checked the way task creation checks a candidate: the
+   * target is one of the excluded members, or one end of a delegation between
+   * the target and an excluded member is on the path. A delegation is read in
+   * both directions, since the target may be the delegate of an excluded
+   * member, or delegate an excluded member's seat onward.
+   */
+  private async isExcludedNodeActorTarget(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    node: UserTaskNode,
+    targetMemberId: string,
+  ): Promise<boolean> {
+    const excludedMemberIds = await this.readExcludedNodeActorMemberIds(
+      manager,
+      instance,
+      readExcludedNodeActorNodeIds(node),
+    );
+
+    if (excludedMemberIds.includes(targetMemberId)) {
+      return true;
+    }
+
+    if (excludedMemberIds.length === 0) {
+      return false;
+    }
+
+    const context = this.buildDelegationContext(instance, node.id);
+    const gradeGated = isOrgManagerChainNode(node);
+    const ownDelegation = await this.resolveDelegation(
+      manager,
+      targetMemberId,
+      context,
+      gradeGated,
+    );
+
+    if (
+      isExcludedMemberOnCandidatePath(
+        {
+          delegationChain: ownDelegation.delegationChain,
+          memberId: ownDelegation.finalAssigneeMemberId,
+          originalMemberId: targetMemberId,
+        },
+        excludedMemberIds,
+      )
+    ) {
+      return true;
+    }
+
+    const excludedSeats = await Promise.all(
+      excludedMemberIds.map(async (memberId): Promise<boolean> => {
+        const delegation = await this.resolveDelegation(
+          manager,
+          memberId,
+          context,
+          gradeGated,
+        );
+
+        return isExcludedMemberOnCandidatePath(
+          {
+            delegationChain: delegation.delegationChain,
+            memberId: delegation.finalAssigneeMemberId,
+            originalMemberId: memberId,
+          },
+          [targetMemberId],
+        );
+      }),
+    );
+
+    return excludedSeats.some((routesToTarget) => routesToTarget);
+  }
+
+  /**
+   * The principals the approvals stand for: a delegate who approved counts as
+   * the member who delegated to them, read from the candidate row each approval
+   * was signed on (see {@link readRuleDelegatorMemberIds}).
+   */
+  private async readApprovalPrincipalMemberIds(
+    manager: EntityManager,
+    approvals: readonly TaskDecisionEntity[],
+  ): Promise<readonly string[]> {
+    if (approvals.length === 0) {
+      return [];
+    }
+
+    const candidates = await manager.getRepository(TaskCandidateEntity).find({
+      where: {
+        taskId: In(uniqueTexts(approvals.map((decision) => decision.taskId))),
+      },
+    });
+
+    return uniqueTexts(
+      approvals.flatMap((decision) =>
+        candidates
+          .filter(
+            (candidate) =>
+              candidate.taskId === decision.taskId &&
+              candidate.memberId === decision.decidedByMemberId,
+          )
+          .flatMap(readRuleDelegatorMemberIds),
+      ),
     );
   }
 
@@ -6956,7 +7220,15 @@ export class WorkflowEngineService {
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
+    excludedMemberIds: readonly string[],
   ): Promise<ResolvedRuntimeTaskCandidates> {
+    // Whoever the node keeps out is also kept out of the replacements: the
+    // initiator and the submitter always (even when only `excludeNodeActors`
+    // asked for this replacement), plus the earlier-stage approvers.
+    const replacementExcludedMemberIds = uniqueTexts([
+      ...readInitiatorAndSubmitter(instance),
+      ...excludedMemberIds,
+    ]);
     // The initiator's own direct manager: the closest org unit only. The
     // initiator himself (a unit head) and the member who submitted for him are
     // skipped before the tier is chosen, so resolution falls through to the
@@ -6966,7 +7238,7 @@ export class WorkflowEngineService {
       instance.initiatorMemberId,
       this.readOrganizationToday(),
       true,
-      readInitiatorAndSubmitter(instance),
+      replacementExcludedMemberIds,
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
       manager,
@@ -6983,12 +7255,12 @@ export class WorkflowEngineService {
       candidates: selectNodeCandidates(
         delegatedCandidates,
         true,
-        readInitiatorAndSubmitter(instance),
+        replacementExcludedMemberIds,
       ),
       skippedDelegations: collectSkippedDelegations(
         delegatedCandidates,
         true,
-        readInitiatorAndSubmitter(instance),
+        replacementExcludedMemberIds,
       ),
     };
   }
@@ -7508,6 +7780,25 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     nodeIds: readonly string[],
   ): Promise<readonly string[]> {
+    const approvals = await this.readNodeActorApprovals(
+      manager,
+      instance,
+      nodeIds,
+    );
+
+    return uniqueTexts(approvals.map((decision) => decision.decidedByMemberId));
+  }
+
+  /**
+   * The real approvals (earliest first) of the most recent batch among
+   * `nodeIds`: the rows {@link readNodeActorMemberIds} reads the approvers from.
+   * Kept as decisions so the exclusion can also reach each decision's task.
+   */
+  private async readNodeActorApprovals(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    nodeIds: readonly string[],
+  ): Promise<readonly TaskDecisionEntity[]> {
     const tasks = await manager.getRepository(TaskEntity).find({
       where: { instanceId: instance.id, isAdhoc: false, nodeId: In([...nodeIds]) },
     });
@@ -7555,15 +7846,12 @@ export class WorkflowEngineService {
         .map((log) => log.payload['decisionId']),
     );
 
-    return uniqueTexts(
-      [...decisions]
-        .filter((decision) => !automaticDecisionIds.has(decision.id))
-        .sort(
-          (first, second) =>
-            first.decidedAt.getTime() - second.decidedAt.getTime(),
-        )
-        .map((decision) => decision.decidedByMemberId),
-    );
+    return [...decisions]
+      .filter((decision) => !automaticDecisionIds.has(decision.id))
+      .sort(
+        (first, second) =>
+          first.decidedAt.getTime() - second.decidedAt.getTime(),
+      );
   }
 
   private async resolvePositionCandidates(
@@ -9913,6 +10201,38 @@ function isInitiatorExcluded(node: UserTaskNode): boolean {
   return Boolean(node.data.excludeInitiator);
 }
 
+// Same rule for the earlier-stage exclusion: an explicit `null` is absent.
+function isNodeActorsExcluded(node: UserTaskNode): boolean {
+  return Boolean(node.data.excludeNodeActors);
+}
+
+// Whether the node keeps anyone out of its approvers at all.
+function hasSeatExclusion(node: UserTaskNode): boolean {
+  return isInitiatorExcluded(node) || isNodeActorsExcluded(node);
+}
+
+function readExcludedNodeActorNodeIds(node: UserTaskNode): readonly string[] {
+  return node.data.excludeNodeActors?.nodeIds ?? [];
+}
+
+// With both rules set the initiator rule runs first, so the earlier-stage rule
+// is the one that emptied the list only when the initiator rule alone left
+// somebody. Without `excludeInitiator` the earlier-stage rule is always it.
+function isEmptiedByInitiatorRule(
+  node: UserTaskNode,
+  delegatedCandidates: readonly RuntimeTaskCandidate[],
+  exclusions: NodeExclusions,
+): boolean {
+  return (
+    isInitiatorExcluded(node) &&
+    selectNodeCandidates(
+      delegatedCandidates,
+      true,
+      exclusions.initiatorMemberIds,
+    ).length === 0
+  );
+}
+
 // Everyone a node that excludes the initiator keeps out of its approvers: the
 // applicant and, when someone filed the document for them, that person too
 // (authority rule: the creator must not approve what they created).
@@ -9979,6 +10299,33 @@ function collectSkippedDelegations(
 
     return [skipped];
   });
+}
+
+// The members a rule delegation stands for on a candidate row a person
+// approved: the delegators of the trailing run of rule steps (`ruleId` set).
+// A transfer step carries no rule and is not a delegation, so when one sits on
+// the chain the original assignee is not a delegator and is left out. A chain
+// of rule steps only also names the original assignee.
+function readRuleDelegatorMemberIds(
+  candidate: Pick<TaskCandidateEntity, 'delegationChain' | 'originalMemberId'>,
+): readonly string[] {
+  const steps = readDelegationSteps(candidate.delegationChain);
+  const trailingRuleCount = [...steps]
+    .reverse()
+    .findIndex((step) => step.ruleId === null);
+  const ruleSteps =
+    trailingRuleCount === -1
+      ? steps
+      : steps.slice(steps.length - trailingRuleCount);
+
+  if (ruleSteps.length === 0) {
+    return [];
+  }
+
+  return [
+    ...(trailingRuleCount === -1 ? [candidate.originalMemberId] : []),
+    ...ruleSteps.map((step) => step.from),
+  ];
 }
 
 // A delegate acting for the initiator is still the initiator approving their
