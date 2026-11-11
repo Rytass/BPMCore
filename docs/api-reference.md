@@ -1372,10 +1372,10 @@ Rules:
   `has(initiator.customFields.<key>)`.
 - What the resolver returns is stored with the case (`initiatorMetadataSnapshotJson`)
   and can be read by anyone who can read the case. Do not return secrets.
-- Like the dispatcher above, `initiatorCustomFieldsResolverProvider` configures only
-  the engine copy it is registered on. The `initiatorCustomFieldsResolver` runtime
-  value, or a binding of the token in a `@Global()` host module, reaches both
-  copies, so prefer one of those.
+- The `initiatorCustomFieldsResolverProvider` wiring option, the
+  `initiatorCustomFieldsResolver` runtime value and a binding of the token in a
+  `@Global()` host module all reach the one engine BPM builds; the provider wins
+  when more than one is given.
 
 A minimal resolver that adds the initiator's station:
 

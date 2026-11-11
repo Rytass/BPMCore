@@ -694,8 +694,7 @@ export class WorkflowEngineService {
     // keeps a host that binds the token from its own global module working —
     // a module-local default would shadow that binding, silently sending
     // WEBHOOK service tasks through the built-in `fetch` dispatcher instead of
-    // the host's signing or queueing one. It also reaches every copy of this
-    // service, which a provider registered on one module does not.
+    // the host's signing or queueing one.
     this.serviceTaskDispatcher =
       injectedServiceTaskDispatcher ??
       rootOptions?.workflowServiceTaskDispatcher ??

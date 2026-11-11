@@ -122,11 +122,8 @@ interface BPMRootModuleWiringOptions extends Pick<ModuleMetadata, 'imports'> {
    *
    * Runtime twin: {@link BPMRootRuntimeOptions.initiatorCustomFieldsResolver}.
    * When both are given this provider wins, as `workflowServiceTaskDispatcherProvider`
-   * does. Like that provider it is registered on the engine module BPM builds
-   * from this call only, and BPM builds another engine module copy for form
-   * option DataSources that does not see it; the runtime twin, or a binding in
-   * a `@Global()` host module, reaches every copy, so prefer one of those.
-   * When none is given, `customFields` of an engine-built snapshot is `{}`.
+   * does. BPM builds one engine, shared with form option DataSources, so the
+   * provider and the runtime twin reach the same place. When none is given, `customFields` of an engine-built snapshot is `{}`.
    */
   readonly initiatorCustomFieldsResolverProvider?: Provider<BPMInitiatorCustomFieldsResolver>;
 

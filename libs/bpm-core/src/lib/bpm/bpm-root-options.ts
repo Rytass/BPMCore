@@ -119,9 +119,8 @@ export interface BPMRootRuntimeOptions
    * is judged against `{}` instead of failing (a submission does fail). So its
    * answer must depend on the initiator only.
    *
-   * This is the form that reaches every engine copy; prefer it to
-   * `initiatorCustomFieldsResolverProvider`. When omitted, `customFields` is
-   * `{}`.
+   * `initiatorCustomFieldsResolverProvider` takes precedence when both are
+   * given. When omitted, `customFields` is `{}`.
    */
   readonly initiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver;
 
