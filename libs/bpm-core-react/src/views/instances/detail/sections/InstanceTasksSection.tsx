@@ -39,6 +39,8 @@ import {
   requestAdhocPreApproval,
   searchMembers,
 } from '@rytass/bpm-core-client/workflow';
+import { readFormDataIssues } from '@rytass/bpm-core-client';
+import type { FormDataIssue } from '@rytass/bpm-core-shared/form';
 import { formatDateTime } from '../../../../lib/format-date-time';
 import { readTaskNodeText } from '../../../../lib/task-node-label';
 import { BPMFormField } from '../../../../components/bpm-form-field';
@@ -150,7 +152,10 @@ export interface InstanceTasksSectionProps {
    * `true` means the container showed it (a conflict or field errors), so the
    * dialog closes instead of repeating it.
    */
-  readonly onFillApproveError?: (message: string) => boolean;
+  readonly onFillApproveError?: (
+    message: string,
+    formDataIssues?: readonly FormDataIssue[],
+  ) => boolean;
   /** All tasks for this instance. */
   readonly tasks: readonly TaskRecord[];
   /** Ad-hoc directives recorded on this instance. */
@@ -571,7 +576,10 @@ export const InstanceTasksSection = forwardRef<
       if (
         decisionFill !== null &&
         requestError instanceof Error &&
-        onFillApproveError?.(requestError.message) === true
+        onFillApproveError?.(
+          requestError.message,
+          readFormDataIssues(requestError),
+        ) === true
       ) {
         setApproveModalOpen(false);
 

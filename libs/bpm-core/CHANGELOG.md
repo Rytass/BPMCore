@@ -1,3 +1,44 @@
+## 0.21.0 (2026-11-11)
+
+### 🚀 Features
+
+- **bpm-core-react:** place refused fill values on their fields by path ([0f26687](https://github.com/Rytass/BPMCore/commit/0f26687))
+- **bpm-core-client:** expose refused form values on request errors ([3a5d406](https://github.com/Rytass/BPMCore/commit/3a5d406))
+- **bpm-core:** return structured form data errors ([27963b9](https://github.com/Rytass/BPMCore/commit/27963b9))
+- **shared:** add structured form data issue contract ([827e26d](https://github.com/Rytass/BPMCore/commit/827e26d))
+- **client:** add a filterable expense example list built on field filters ([3d624fb](https://github.com/Rytass/BPMCore/commit/3d624fb))
+- **react:** filterable toggle in the form builder and list field filters ([e8d58bf](https://github.com/Rytass/BPMCore/commit/e8d58bf))
+- **client:** pass field filters and sort to the approval-instance list ([bbfd789](https://github.com/Rytass/BPMCore/commit/bbfd789))
+- **workflow-engine:** filter and sort approval instances by form fields ([6e4a98f](https://github.com/Rytass/BPMCore/commit/6e4a98f))
+- **template:** refuse to enable a filterable field over conflicting history ([42628b4](https://github.com/Rytass/BPMCore/commit/42628b4))
+- **shared:** declare filterable form fields and the field filter contract ([166389e](https://github.com/Rytass/BPMCore/commit/166389e))
+- **api:** add a staging notify webhook showcase pushed over SSE ([0cb3ea5](https://github.com/Rytass/BPMCore/commit/0cb3ea5))
+
+### 🩹 Fixes
+
+- **workflow-engine:** keep the row index on a filterable issue whose row is not an object ([04bb60d](https://github.com/Rytass/BPMCore/commit/04bb60d))
+- **template:** check a draft update's status before parsing its workflow ([1b683d7](https://github.com/Rytass/BPMCore/commit/1b683d7))
+- **bpm-core:** keep filterable issue paths in the documented address form ([8502ef6](https://github.com/Rytass/BPMCore/commit/8502ef6))
+- **client:** read form data issues all or nothing ([c0e4281](https://github.com/Rytass/BPMCore/commit/c0e4281))
+- **template:** lock the template row before draft writes, forks and composes ([38b41a7](https://github.com/Rytass/BPMCore/commit/38b41a7))
+- **bpm-core:** re-check the template under the submit lock and type-check earlier ([5eb4d56](https://github.com/Rytass/BPMCore/commit/5eb4d56))
+- **template:** lock the template row before activation toggles and edits ([d4e0010](https://github.com/Rytass/BPMCore/commit/d4e0010))
+- **bpm-core:** word the submit-publish race refusal in Chinese ([ef4001a](https://github.com/Rytass/BPMCore/commit/ef4001a))
+- **instance-filter:** lock template row around filterable field checks ([05a7bfb](https://github.com/Rytass/BPMCore/commit/05a7bfb))
+- **bpm-core:** describe form data rejections by field label in Chinese ([34b0ebc](https://github.com/Rytass/BPMCore/commit/34b0ebc))
+- **shared:** name the table, not a column, for a malformed filterable table ([c4b0420](https://github.com/Rytass/BPMCore/commit/c4b0420))
+- **shared:** describe filterable value mismatches in Chinese ([afd27a7](https://github.com/Rytass/BPMCore/commit/afd27a7))
+- **client:** name data-source values in case titles from the option snapshot ([14ade77](https://github.com/Rytass/BPMCore/commit/14ade77))
+
+### 🔥 Performance
+
+- **template:** read the in-force schema only when a publish has filterable fields ([20fdcfb](https://github.com/Rytass/BPMCore/commit/20fdcfb))
+- **template:** scan instances only for fields a publish newly makes filterable ([b18dda2](https://github.com/Rytass/BPMCore/commit/b18dda2))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.20.1 (2026-11-10)
 
 ### 🩹 Fixes

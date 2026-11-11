@@ -37,11 +37,31 @@ const OPTIONAL_FILTER_CATEGORIES: readonly {
   { key: 'OPEX', label: '營運費用中心' },
 ];
 
+/**
+ * Vendor list for the filterable-expense demo (ADR 25). Declares no `plant`
+ * parameter, so its rows live under {@link UNSCOPED_DATA_SOURCE_PLANT}. The
+ * names are neutral placeholders, not real companies.
+ */
+export const VENDOR_DATA_SOURCE_KEY = 'demo.vendors';
+
+/** Scope under which a source without a `plant` parameter keeps its rows. */
+export const UNSCOPED_DATA_SOURCE_PLANT = 'ALL';
+
+export const DEMO_VENDOR_OPTIONS: readonly FormFieldOption[] = [
+  { label: '甲供應商', value: 'V-001' },
+  { label: '乙精密工業', value: 'V-002' },
+  { label: '丙包材行', value: 'V-003' },
+  { label: '丁運輸', value: 'V-004' },
+  { label: '戊化工材料', value: 'V-005' },
+  { label: '己電子零件', value: 'V-006' },
+];
+
 export const API_FORM_DATA_SOURCE_OPTION_SEEDS: readonly ApiFormDataSourceOptionSeed[] = [
   ...createCostCenterSeeds('demo.cost-centers', 1),
   ...createCostCenterSeeds('demo.cost-centers-complete', 1),
   ...createCostCenterSeeds('demo.cost-centers-always', 1),
   ...createOptionalFilterSeeds('demo.cost-centers-optional-filter', 1),
+  ...createVendorSeeds(VENDOR_DATA_SOURCE_KEY, 1),
 ];
 
 const PAGED_DESCRIPTOR: BPMFormDataSourceDescriptor = {
@@ -123,6 +143,22 @@ const OPTIONAL_FILTER_DESCRIPTOR: BPMFormDataSourceDescriptor = {
   version: 1,
 };
 
+const VENDOR_DESCRIPTOR: BPMFormDataSourceDescriptor = {
+  description: '示範用廠商清單，不分廠別；供可篩選的廠商欄位使用。',
+  key: VENDOR_DATA_SOURCE_KEY,
+  label: 'Demo 廠商（不分廠別）',
+  maximumResultCount: 50,
+  minimumSearchLength: 0,
+  pageSize: 10,
+  paginationMode: 'CURSOR',
+  parameters: [],
+  revalidationPolicy: 'WHEN_VALUE_OR_BINDINGS_CHANGE',
+  returnsCompleteList: false,
+  supportedControls: ['autocomplete', 'select'],
+  supportsSearch: true,
+  version: 1,
+};
+
 interface ApiFormDataSourceOptionRow {
   readonly label: string;
   readonly sort_order: number;
@@ -143,6 +179,7 @@ export class ApiFormDataSourceRegistry
       createHostDataSource(dataSource, COMPLETE_LIST_DESCRIPTOR),
       createHostDataSource(dataSource, ALWAYS_DESCRIPTOR),
       createHostDataSource(dataSource, OPTIONAL_FILTER_DESCRIPTOR),
+      createHostDataSource(dataSource, VENDOR_DESCRIPTOR),
     ];
   }
 
@@ -224,7 +261,7 @@ async function searchHostOptions(
   request: BPMFormDataSourceSearchRequest,
 ): Promise<BPMFormDataSourceSearchResult> {
   assertRequestIsActive(request.signal);
-  const plant = readPlantBinding(request.bindings);
+  const plant = readScopedPlant(descriptor, request.bindings);
   const category = readCategoryBinding(request.bindings);
   const offset = readCursor(request.cursor);
   const searchPattern = request.searchText
@@ -270,7 +307,7 @@ async function resolveHostOptions(
   request: BPMFormDataSourceResolveRequest,
 ): Promise<readonly FormFieldOption[]> {
   assertRequestIsActive(request.signal);
-  const plant = readPlantBinding(request.bindings);
+  const plant = readScopedPlant(descriptor, request.bindings);
   const category = readCategoryBinding(request.bindings);
   const rows = await dataSource.query<ApiFormDataSourceOptionRow[]>(
     `
@@ -348,6 +385,22 @@ function createCostCenterSeeds(
   ];
 }
 
+function createVendorSeeds(
+  dataSourceKey: string,
+  dataSourceVersion: number,
+): readonly ApiFormDataSourceOptionSeed[] {
+  return DEMO_VENDOR_OPTIONS.map((option, index) => ({
+    category: null,
+    dataSourceKey,
+    dataSourceVersion,
+    isActive: true,
+    label: option.label,
+    plant: UNSCOPED_DATA_SOURCE_PLANT,
+    sortOrder: index + 1,
+    value: option.value,
+  }));
+}
+
 function createSeed(
   dataSourceKey: string,
   dataSourceVersion: number,
@@ -409,6 +462,17 @@ function createOptionalFilterPlantSeeds(
   );
 }
 
+
+function readScopedPlant(
+  descriptor: BPMFormDataSourceDescriptor,
+  bindings: Readonly<Record<string, FormFieldValue>>,
+): string | null {
+  if (!descriptor.parameters.some((parameter) => parameter.key === 'plant')) {
+    return UNSCOPED_DATA_SOURCE_PLANT;
+  }
+
+  return readPlantBinding(bindings);
+}
 
 function readPlantBinding(
   bindings: Readonly<Record<string, FormFieldValue>>,
