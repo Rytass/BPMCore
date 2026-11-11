@@ -1524,9 +1524,9 @@ const EXCLUDE_NODE_ACTORS_STAGE_TEXTS: SourceStageTexts = {
     entryCondition: (stageLabel) =>
       `排除對象的前面關卡 ${stageLabel} 設有進入條件，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改用分流，把兩關放在同一條路線上。`,
     skipNode: (stageLabel) =>
-      `排除對象的前面關卡 ${stageLabel} 在排除發起人後沒人時會跳過此關，可能沒有人簽核，這一關就排除不到任何人。請改選其他處理方式。`,
+      `排除對象的前面關卡 ${stageLabel} 在排除發起人後沒人時會跳過此關，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改選其他處理方式。`,
     skipNodeByNodeActors: (stageLabel) =>
-      `排除對象的前面關卡 ${stageLabel} 在排除前面關卡的簽核者後沒人時會跳過此關，可能沒有人簽核，這一關就排除不到任何人。請改選其他處理方式。`,
+      `排除對象的前面關卡 ${stageLabel} 在排除前面關卡的簽核者後沒人時會跳過此關，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改選其他處理方式。`,
   },
 };
 
