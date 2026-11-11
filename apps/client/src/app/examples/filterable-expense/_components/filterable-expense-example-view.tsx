@@ -19,7 +19,10 @@ import {
   Typography,
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
-import { FormFieldLayout } from '@mezzanine-ui/core/form';
+import {
+  ControlFieldSlotLayout,
+  FormFieldLayout,
+} from '@mezzanine-ui/core/form';
 import { formatDatePickerValue } from '@rytass/bpm-core-client/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { useBPMRoutes, useRouterAdapter } from '@rytass/bpm-core-react';
@@ -325,314 +328,327 @@ export function FilterableExpenseExampleView(): ReactElement {
         />
       </PageHeader>
 
-      <FilterArea
-        onReset={handleReset}
-        onSubmit={handleSubmit}
-        resetText="清除條件"
-        size="main"
-        submitText="重新查詢"
-      >
-        <FilterLine>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="廠商"
-              name="vendor"
-            >
-              <Select
-                clearable
-                fullWidth
-                mode="multiple"
-                onChange={(options: readonly SelectChoice[]): void => {
-                  patch({ vendorIds: options.map((option) => option.id) });
-                }}
-                options={[...VENDOR_CHOICES]}
-                placeholder="全部廠商"
-                value={VENDOR_CHOICES.filter((choice) =>
-                  draft.vendorIds.includes(choice.id),
-                )}
-              />
-            </FormField>
-          </Filter>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="廠商名稱（包含）"
-              name="vendorName"
-            >
-              <Input
-                fullWidth
-                onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-                  patch({ vendorName: event.target.value });
-                }}
-                placeholder="輸入廠商名稱片段"
-                value={draft.vendorName}
-              />
-            </FormField>
-          </Filter>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="公司別"
-              name="companyCode"
-            >
-              <Select
-                clearable
-                fullWidth
-                onChange={(option: SelectChoice | null): void => {
-                  patch({ companyCode: option?.id ?? '' });
-                }}
-                options={[...COMPANY_CHOICES]}
-                placeholder="全部公司"
-                value={findChoice(COMPANY_OPTIONS, draft.companyCode)}
-              />
-            </FormField>
-          </Filter>
-        </FilterLine>
-
-        <FilterLine>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="金額最小值（TWD）"
-              name="amountFrom"
-            >
-              <Input
-                fullWidth
-                min={0}
-                onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-                  patch({ amountFrom: event.target.value });
-                }}
-                placeholder="例如 10000"
-                inputType="number"
-                value={draft.amountFrom}
-              />
-            </FormField>
-          </Filter>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="金額最大值（TWD）"
-              name="amountTo"
-            >
-              <Input
-                fullWidth
-                min={0}
-                onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-                  patch({ amountTo: event.target.value });
-                }}
-                placeholder="例如 500000"
-                inputType="number"
-                value={draft.amountTo}
-              />
-            </FormField>
-          </Filter>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="申請日區間"
-              name="applyDate"
-            >
-              <DateRangePicker
-                key={resetCount}
-                clearable
-                fullWidth
-                inputFromPlaceholder="起日"
-                inputToPlaceholder="迄日"
-                onChange={(target?: readonly (string | undefined)[]): void => {
-                  patch({
-                    applyDateFrom: formatDatePickerValue(target?.[0]) ?? '',
-                    applyDateTo: formatDatePickerValue(target?.[1]) ?? '',
-                  });
-                }}
-                value={
-                  draft.applyDateFrom && draft.applyDateTo
-                    ? [draft.applyDateFrom, draft.applyDateTo]
-                    : []
-                }
-              />
-            </FormField>
-          </Filter>
-        </FilterLine>
-
-        <FilterLine>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="請款類型"
-              name="requestType"
-            >
-              <Select
-                clearable
-                fullWidth
-                mode="multiple"
-                onChange={(options: readonly SelectChoice[]): void => {
-                  patch({
-                    requestTypes: options.map((option) => option.id),
-                  });
-                }}
-                options={[...REQUEST_TYPE_CHOICES]}
-                placeholder="全部類型"
-                value={REQUEST_TYPE_CHOICES.filter((choice) =>
-                  draft.requestTypes.includes(choice.id),
-                )}
-              />
-            </FormField>
-          </Filter>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="需求部門"
-              name="demandDept"
-            >
-              <Select
-                clearable
-                fullWidth
-                onChange={(option: SelectChoice | null): void => {
-                  patch({ departmentId: option?.id ?? '' });
-                }}
-                options={[...DEPARTMENT_CHOICES]}
-                placeholder="全部部門"
-                value={findChoice(DEPARTMENT_OPTIONS, draft.departmentId)}
-              />
-            </FormField>
-          </Filter>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="品項品號"
-              name="sku"
-            >
-              <Input
-                fullWidth
-                onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-                  patch({ sku: event.target.value });
-                }}
-                placeholder="例如 SKU-A"
-                value={draft.sku}
-              />
-            </FormField>
-          </Filter>
-        </FilterLine>
-
-        <FilterLine>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="品項數量最小值"
-              name="qtyFrom"
-            >
-              <Input
-                fullWidth
-                min={0}
-                onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-                  patch({ qtyFrom: event.target.value });
-                }}
-                placeholder="例如 1"
-                inputType="number"
-                value={draft.qtyFrom}
-              />
-            </FormField>
-          </Filter>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="品項數量最大值"
-              name="qtyTo"
-            >
-              <Input
-                fullWidth
-                min={0}
-                onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-                  patch({ qtyTo: event.target.value });
-                }}
-                placeholder="例如 20"
-                inputType="number"
-                value={draft.qtyTo}
-              />
-            </FormField>
-          </Filter>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="案件狀態"
-              name="state"
-            >
-              <Select
-                clearable
-                fullWidth
-                onChange={(option: SelectChoice | null): void => {
-                  patch({
-                    state: option ? (option.id as ApprovalInstanceState) : null,
-                  });
-                }}
-                options={[...STATE_CHOICES]}
-                placeholder="全部狀態"
-                value={
-                  draft.state
-                    ? { id: draft.state, name: STATE_BADGE[draft.state].label }
-                    : null
-                }
-              />
-            </FormField>
-          </Filter>
-        </FilterLine>
-
-        <FilterLine>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="排序欄位"
-              name="sortField"
-            >
-              <Select
-                fullWidth
-                onChange={(option: SelectChoice | null): void => {
-                  patch({ sortField: option?.id ?? DEFAULT_SORT_FIELD });
-                }}
-                options={[...SORT_FIELD_CHOICES]}
-                value={findChoice(SORT_FIELD_OPTIONS, draft.sortField)}
-              />
-            </FormField>
-          </Filter>
-          <Filter>
-            <FormField
-              fullWidth
-              layout={FormFieldLayout.VERTICAL}
-              label="排序方向"
-              name="sortDirection"
-            >
-              <RadioGroup
-                name="sortDirection"
-                onChange={(event: ChangeEvent<HTMLInputElement>): void => {
-                  patch({
-                    sortDirection:
-                      event.target.value === 'ASC' ? 'ASC' : 'DESC',
-                  });
-                }}
-                options={[...SORT_DIRECTION_OPTIONS]}
-                type="segment"
-                value={draft.sortDirection}
-              />
-            </FormField>
-          </Filter>
-        </FilterLine>
-      </FilterArea>
-
       <div className={styles.body}>
+        <FilterArea
+          onReset={handleReset}
+          onSubmit={handleSubmit}
+          resetText="清除條件"
+          rowAlign="end"
+          size="sub"
+          submitText="重新查詢"
+        >
+          <FilterLine>
+            <Filter span={2}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="廠商"
+                name="vendor"
+              >
+                <Select
+                  clearable
+                  fullWidth
+                  mode="multiple"
+                  onChange={(options: readonly SelectChoice[]): void => {
+                    patch({ vendorIds: options.map((option) => option.id) });
+                  }}
+                  options={[...VENDOR_CHOICES]}
+                  placeholder="全部廠商"
+                  value={VENDOR_CHOICES.filter((choice) =>
+                    draft.vendorIds.includes(choice.id),
+                  )}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={2}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="申請日區間"
+                name="applyDate"
+              >
+                <DateRangePicker
+                  key={resetCount}
+                  clearable
+                  fullWidth
+                  inputFromPlaceholder="起日"
+                  inputToPlaceholder="迄日"
+                  onChange={(
+                    target?: readonly (string | undefined)[],
+                  ): void => {
+                    patch({
+                      applyDateFrom: formatDatePickerValue(target?.[0]) ?? '',
+                      applyDateTo: formatDatePickerValue(target?.[1]) ?? '',
+                    });
+                  }}
+                  value={
+                    draft.applyDateFrom && draft.applyDateTo
+                      ? [draft.applyDateFrom, draft.applyDateTo]
+                      : []
+                  }
+                />
+              </FormField>
+            </Filter>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="公司別"
+                name="companyCode"
+              >
+                <Select
+                  clearable
+                  fullWidth
+                  onChange={(option: SelectChoice | null): void => {
+                    patch({ companyCode: option?.id ?? '' });
+                  }}
+                  options={[...COMPANY_CHOICES]}
+                  placeholder="全部公司"
+                  value={findChoice(COMPANY_OPTIONS, draft.companyCode)}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="案件狀態"
+                name="state"
+              >
+                <Select
+                  clearable
+                  fullWidth
+                  onChange={(option: SelectChoice | null): void => {
+                    patch({
+                      state: option
+                        ? (option.id as ApprovalInstanceState)
+                        : null,
+                    });
+                  }}
+                  options={[...STATE_CHOICES]}
+                  placeholder="全部狀態"
+                  value={
+                    draft.state
+                      ? {
+                          id: draft.state,
+                          name: STATE_BADGE[draft.state].label,
+                        }
+                      : null
+                  }
+                />
+              </FormField>
+            </Filter>
+          </FilterLine>
+          <FilterLine>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="廠商名稱"
+                name="vendorName"
+              >
+                <Input
+                  fullWidth
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+                    patch({ vendorName: event.target.value });
+                  }}
+                  placeholder="輸入廠商名稱片段"
+                  value={draft.vendorName}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={2}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="請款類型"
+                name="requestType"
+              >
+                <Select
+                  clearable
+                  fullWidth
+                  mode="multiple"
+                  onChange={(options: readonly SelectChoice[]): void => {
+                    patch({
+                      requestTypes: options.map((option) => option.id),
+                    });
+                  }}
+                  options={[...REQUEST_TYPE_CHOICES]}
+                  placeholder="全部類型"
+                  value={REQUEST_TYPE_CHOICES.filter((choice) =>
+                    draft.requestTypes.includes(choice.id),
+                  )}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="需求部門"
+                name="demandDept"
+              >
+                <Select
+                  clearable
+                  fullWidth
+                  onChange={(option: SelectChoice | null): void => {
+                    patch({ departmentId: option?.id ?? '' });
+                  }}
+                  options={[...DEPARTMENT_CHOICES]}
+                  placeholder="全部部門"
+                  value={findChoice(DEPARTMENT_OPTIONS, draft.departmentId)}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="金額下限"
+                name="amountFrom"
+              >
+                <Input
+                  fullWidth
+                  min={0}
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+                    patch({ amountFrom: event.target.value });
+                  }}
+                  placeholder="例如 10000"
+                  inputType="number"
+                  value={draft.amountFrom}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="金額上限"
+                name="amountTo"
+              >
+                <Input
+                  fullWidth
+                  min={0}
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+                    patch({ amountTo: event.target.value });
+                  }}
+                  placeholder="例如 500000"
+                  inputType="number"
+                  value={draft.amountTo}
+                />
+              </FormField>
+            </Filter>
+          </FilterLine>
+          <FilterLine>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="品號"
+                name="sku"
+              >
+                <Input
+                  fullWidth
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+                    patch({ sku: event.target.value });
+                  }}
+                  placeholder="例如 SKU-A"
+                  value={draft.sku}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="數量下限"
+                name="qtyFrom"
+              >
+                <Input
+                  fullWidth
+                  min={0}
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+                    patch({ qtyFrom: event.target.value });
+                  }}
+                  placeholder="例如 1"
+                  inputType="number"
+                  value={draft.qtyFrom}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="數量上限"
+                name="qtyTo"
+              >
+                <Input
+                  fullWidth
+                  min={0}
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+                    patch({ qtyTo: event.target.value });
+                  }}
+                  placeholder="例如 20"
+                  inputType="number"
+                  value={draft.qtyTo}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="排序欄位"
+                name="sortField"
+              >
+                <Select
+                  fullWidth
+                  onChange={(option: SelectChoice | null): void => {
+                    patch({ sortField: option?.id ?? DEFAULT_SORT_FIELD });
+                  }}
+                  options={[...SORT_FIELD_CHOICES]}
+                  value={findChoice(SORT_FIELD_OPTIONS, draft.sortField)}
+                />
+              </FormField>
+            </Filter>
+            <Filter span={1}>
+              <FormField
+                fullWidth
+                controlFieldSlotLayout={ControlFieldSlotLayout.SUB}
+                layout={FormFieldLayout.VERTICAL}
+                label="排序方向"
+                name="sortDirection"
+              >
+                <RadioGroup
+                  name="sortDirection"
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void => {
+                    patch({
+                      sortDirection:
+                        event.target.value === 'ASC' ? 'ASC' : 'DESC',
+                    });
+                  }}
+                  options={[...SORT_DIRECTION_OPTIONS]}
+                  type="segment"
+                  value={draft.sortDirection}
+                />
+              </FormField>
+            </Filter>
+          </FilterLine>
+        </FilterArea>
         {visibleError ? (
           <InlineMessage content={visibleError} severity="error" />
         ) : null}
