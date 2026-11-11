@@ -751,8 +751,8 @@ BPMRootModule.forRootAsync({
 });
 ```
 
-A template can then say `initiator.customFields.station == 'TPE'` in its
-initiator policy or an edge condition.
+A template can then say `initiator.customFields.station == 'TPE'` in an edge
+condition. Keep it out of `initiatorPolicyCel` for now: see the last bullet.
 
 - It runs once, when the case is submitted, with the member, the template and
   published version, the validated form data, the default snapshot and the
@@ -763,8 +763,10 @@ initiator policy or an edge condition.
 - It must return a plain, JSON-serializable object. Anything else, or a thrown
   error, fails the submission and creates no case; BPM does not fall back to `{}`.
 - The snapshot is fixed at submission. Resubmitting a returned case does not call
-  it again. The dry run and the launchable-template list do not call it either:
-  the list judges an initiator policy against `customFields: {}`.
+  it again. The dry run and the launchable-template list do not call it either.
+  The list judges an initiator policy against `customFields: {}`, and on cel-v2
+  reading an absent key is an error the list does not catch, so a policy that
+  reads `initiator.customFields` makes `launchableApprovalTemplates` fail.
 - Register it as the `initiatorCustomFieldsResolver` runtime value or bind the
   token in a `@Global()` host module. `initiatorCustomFieldsResolverProvider`
   configures only one of the two engine instances Nest builds (the same caveat as

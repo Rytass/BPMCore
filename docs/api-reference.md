@@ -1344,7 +1344,11 @@ Rules:
   (it has no form data, and would put a host lookup behind every list request).
   The list evaluates an initiator policy against the engine's snapshot with
   `customFields: {}`, so a policy that reads `initiator.customFields` is judged
-  differently there than at submission.
+  differently there than at submission. Reading a key that is absent is an
+  error on cel-v2 (`EXPRESSION_MISSING_KEY`), and the list does not catch an
+  evaluation error, so such a policy fails `launchableApprovalTemplates` itself.
+  Until that is settled, keep `initiator.customFields` out of `initiatorPolicyCel`
+  and use it in conditions and approver expressions.
 - Like the dispatcher above, `initiatorCustomFieldsResolverProvider` configures only
   the engine copy it is registered on. The `initiatorCustomFieldsResolver` runtime
   value, or a binding of the token in a `@Global()` host module, reaches both
@@ -1375,8 +1379,8 @@ class StationCustomFieldsResolver implements BPMInitiatorCustomFieldsResolver {
 // }), inject: [HrDirectory] })
 ```
 
-A template can then say `initiator.customFields.station == 'TPE'` in an initiator
-policy or an edge condition. A host that computes the approvers itself can return
+A template can then say `initiator.customFields.station == 'TPE'` in an edge
+condition (see the list caveat above before using it in an initiator policy). A host that computes the approvers itself can return
 them in `customFields` (say `approverIds`) and name them with an `EXPRESSION`
 approver, `initiator.customFields.approverIds`: an expression approver is evaluated
 against the stored snapshot like any other expression.

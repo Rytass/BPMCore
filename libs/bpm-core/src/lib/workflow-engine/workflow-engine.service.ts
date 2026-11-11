@@ -4248,7 +4248,8 @@ export class WorkflowEngineService {
     // every template would put a host lookup behind every list request. An
     // initiator policy that reads `initiator.customFields` is therefore judged
     // here against `{}`, while a submission judges it against what the
-    // resolver returns.
+    // resolver returns. On cel-v2 that read of an absent key throws, and the
+    // filter below does not catch it.
     const initiatorMetadataSnapshot =
       await this.readDefaultInitiatorMetadataSnapshot(memberId);
 
