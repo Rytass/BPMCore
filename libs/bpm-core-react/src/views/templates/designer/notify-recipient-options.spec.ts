@@ -514,6 +514,16 @@ describe('notify recipient readiness', () => {
     );
   });
 
+  it('reports a 指定組織主管 saved without any orgUnitId instead of throwing', () => {
+    const node = notifyNode({
+      type: 'ORG_UNIT_MANAGER',
+    } as unknown as ApproverResolver);
+
+    expect(readNotifyRecipientsDesignerIssue(node)).toBe(
+      '知會節點需要指定組織。',
+    );
+  });
+
   it('lets each source through once its target is chosen', () => {
     const complete: readonly ApproverResolver[] = [
       { positionId: 'p1', type: 'POSITION' },

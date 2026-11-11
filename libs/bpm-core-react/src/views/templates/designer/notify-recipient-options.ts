@@ -307,8 +307,9 @@ export function readNotifyRecipientsDesignerIssue(
 
   const recipients = action.recipients;
 
+  // Hand-written or AI-written JSON may carry no `orgUnitId` at all.
   return recipients?.type === 'ORG_UNIT_MANAGER' &&
-    !recipients.orgUnitId.trim()
+    (typeof recipients.orgUnitId !== 'string' || !recipients.orgUnitId.trim())
     ? '知會節點需要指定組織。'
     : null;
 }

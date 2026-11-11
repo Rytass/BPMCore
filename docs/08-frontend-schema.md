@@ -453,9 +453,9 @@ interface NotifyWebhookTarget {
 - `CONTEXT` 路徑：`instance.id`、`instance.title`、`instance.templateId`、
   `instance.templateVersionId`、`initiator.memberId`、`node.id`、`node.label`，一律為字串。
 - 知會對象可為空（`DIRECT` 且 `memberIds: []`），前提是至少有一個 webhook。
-- 設計器的「知會對象來源」只編輯上述六種來源；`ORG_MANAGER`（發起人主管）、
+- 設計器的「知會對象來源」只編輯六種來源（指定會員、指定職位、組織任一人、組織特定職位、指定組織主管、依表單欄位指定）；`ORG_MANAGER`（發起人主管）、
   `ORG_MANAGER_CHAIN`（主管鏈）、`EXPRESSION`（運算式）雖然引擎接受，設計器只讀：
-  顯示成目前值、開面板或改 Webhook 都不會改到 `recipients`，要在來源下拉主動改選才會覆寫。
+  顯示成目前值（並附上目前的設定摘要）、開面板或改 Webhook 都不會改到 `recipients`，要在來源下拉主動改選才會覆寫。
   引擎不允許知會用的來源（`FORM_MEMBER_MANAGER`、`FORM_ORG_UNIT_MANAGER`、`NODE_ACTOR`、
   `NODE_ACTOR_MANAGER`）顯示成「不支援的知會來源」，儲存前必須改選。換來源只改 `recipients`，
   `channels`、`template`、`webhooks` 都保留。

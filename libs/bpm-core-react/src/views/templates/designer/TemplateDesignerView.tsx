@@ -4069,6 +4069,18 @@ export function TemplateDesignerView({
     const action = node.data.action;
     const recipients = readNotifyRecipients(action);
     const sourceChoice = readNotifyRecipientSourceChoice(recipients);
+    // A source this panel does not edit shows what it currently resolves to,
+    // so the author can read it without opening the template JSON.
+    const sourceHint =
+      sourceChoice.readOnly && sourceChoice.hint
+        ? `目前知會對象為「${readApproverResolverSummary(
+            recipients,
+            memberOptions,
+            orgUnits,
+            positions,
+            webhookFormSchema,
+          )}${recipients.type === 'EXPRESSION' ? `：${recipients.expression}` : ''}」。${sourceChoice.hint}`
+        : sourceChoice.hint;
     const selectedMembers = readServiceTaskMemberIds(action).map((memberId) =>
       readMemberSelectOption(memberOptions, memberId),
     );
@@ -4189,7 +4201,7 @@ export function TemplateDesignerView({
       <>
         {actionTypePicker}
         <BPMFormField
-          hintText={sourceChoice.hint ?? undefined}
+          hintText={sourceHint ?? undefined}
           label="知會對象來源"
           name="notifyRecipientType"
         >
@@ -4286,7 +4298,7 @@ export function TemplateDesignerView({
           <BPMFormField
             hintText={
               recipients.type === 'ORG_UNIT_MANAGER'
-                ? '依指定組織或其上層的主管解析規則決定知會對象。'
+                ? '依指定組織或其上層的主管解析規則決定知會對象；組織沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
                 : '依指定組織目前有效會員歸屬決定知會對象。'
             }
             label="組織"
