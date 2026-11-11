@@ -40,7 +40,9 @@ describe('readSubmittedOrgUnitValueErrors', () => {
   ])('rejects %s', (_kind, bad): void => {
     expect(
       readSubmittedOrgUnitValueErrors([UNIT], { ownerUnit: bad }),
-    ).toEqual(['formData.ownerUnit must be an organization unit id']);
+    ).toEqual([
+      { message: '欄位「負責部門」必須是組織單位 ID', path: 'ownerUnit', reason: 'TYPE' },
+    ]);
   });
 
   it('only looks at org_unit fields (反向控制)', (): void => {

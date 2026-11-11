@@ -26,6 +26,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  NotFoundException,
   Logger,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
@@ -846,7 +847,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('Form data is missing required fields: 事由');
+    ).rejects.toThrow('缺少必填欄位：事由');
   });
 
   describe('text length and format on submit', (): void => {
@@ -910,19 +911,19 @@ describe('WorkflowEngineService', () => {
     it('rejects a value the format does not match', async (): Promise<void> => {
       await expect(
         submit(createFixture(), { invoiceNo: 'ab12345678' }),
-      ).rejects.toThrow('formData.invoiceNo does not match the required format');
+      ).rejects.toThrow('欄位「發票號碼」格式不正確');
     });
 
     it('rejects a value over the length limit before checking its format', async (): Promise<void> => {
       await expect(
         submit(createFixture(), { invoiceNo: 'AB123456789' }),
-      ).rejects.toThrow('formData.invoiceNo must be at most 10 characters');
+      ).rejects.toThrow('欄位「發票號碼」最多 10 個字');
     });
 
     it('rejects a table text cell over its length limit', async (): Promise<void> => {
       await expect(
         submit(createFixture(), { items: [{ note: '高鐵車票' }] }),
-      ).rejects.toThrow('formData.items[0].note must be at most 3 characters');
+      ).rejects.toThrow('「明細」第 1 列的「說明」最多 3 個字');
     });
 
     // Every rule above reads a string; a number or an array would slip past
@@ -930,13 +931,13 @@ describe('WorkflowEngineService', () => {
     it('rejects a value that is not text, for a field and a table cell', async (): Promise<void> => {
       await expect(
         submit(createFixture(), { invoiceNo: 123456789012345 }),
-      ).rejects.toThrow('formData.invoiceNo must be text');
+      ).rejects.toThrow('欄位「發票號碼」必須是文字');
       await expect(
         submit(createFixture(), { invoiceNo: ['AB12345678'] }),
-      ).rejects.toThrow('formData.invoiceNo must be text');
+      ).rejects.toThrow('欄位「發票號碼」必須是文字');
       await expect(
         submit(createFixture(), { items: [{ note: 123456 }] }),
-      ).rejects.toThrow('formData.items[0].note must be text');
+      ).rejects.toThrow('「明細」第 1 列的「說明」必須是文字');
     });
 
     describe('a pattern that cannot be checked in time', (): void => {
@@ -991,7 +992,7 @@ describe('WorkflowEngineService', () => {
         await expect(
           submit(createSlowPatternFixture(), { code: 'a'.repeat(500) }),
         ).rejects.toThrow(
-          'formData.code could not be checked against the required format in time',
+          '欄位「代碼」無法在時限內完成格式檢查',
         );
         expect(Date.now() - startedAt).toBeLessThan(2000);
       });
@@ -1004,7 +1005,7 @@ describe('WorkflowEngineService', () => {
 
         await expect(
           submit(createSlowPatternFixture(), { rows }),
-        ).rejects.toThrow('could not be checked against the required format in time');
+        ).rejects.toThrow('無法在時限內完成格式檢查');
         expect(Date.now() - startedAt).toBeLessThan(500);
       });
 
@@ -1101,7 +1102,7 @@ describe('WorkflowEngineService', () => {
           submit(createFixture(), {
             rows: Array.from({ length: 20000 }, () => ({ code: 'a' })),
           }),
-        ).rejects.toThrow('formData.rows must include at most 100 row(s)');
+        ).rejects.toThrow('欄位「明細」最多 100 列');
         expect(runPattern).not.toHaveBeenCalled();
       } finally {
         createTest.mockRestore();
@@ -1132,7 +1133,7 @@ describe('WorkflowEngineService', () => {
 
       await expect(
         submit(createHiddenFixture(), { sourceDocId: 123 }),
-      ).rejects.toThrow('formData.sourceDocId must be text');
+      ).rejects.toThrow('欄位「來源單據」必須是文字');
       // Nobody fills a hidden field in, so its length and format are not held.
       await expect(
         submit(createHiddenFixture(), { sourceDocId: 'po-12345' }),
@@ -1169,7 +1170,7 @@ describe('WorkflowEngineService', () => {
 
       await expect(
         submit(createConditionalFixture(), { kind: 'A', note: 123 }),
-      ).rejects.toThrow('formData.note must be text');
+      ).rejects.toThrow('欄位「備註」必須是文字');
       // The applicant cannot see the field, so its length and format wait
       // until it is shown.
       await expect(
@@ -1177,7 +1178,7 @@ describe('WorkflowEngineService', () => {
       ).resolves.toMatchObject({ id: 'instance-1' });
       await expect(
         submit(createConditionalFixture(), { kind: 'B', note: 'ab' }),
-      ).rejects.toThrow('formData.note must be at least 8 characters');
+      ).rejects.toThrow('欄位「備註」至少需要 8 個字');
     });
   });
 
@@ -1207,7 +1208,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('Form data is missing required fields: 附件');
+    ).rejects.toThrow('缺少必填欄位：附件');
   });
 
   it('does not require a hidden field and keeps its submitted value', async (): Promise<void> => {
@@ -1358,7 +1359,7 @@ describe('WorkflowEngineService', () => {
     it('still rejects a malformed approver-filled table on a host prefill', async (): Promise<void> => {
       await expect(
         submit('{"amount":10,"financeItems":"oops"}'),
-      ).rejects.toThrow('formData.financeItems must be an array of rows');
+      ).rejects.toThrow('欄位「財務明細」必須是表格列的清單');
     });
 
     it('restores stored approver-filled values on an end-user resubmit', async (): Promise<void> => {
@@ -1491,7 +1492,7 @@ describe('WorkflowEngineService', () => {
           },
           workflow,
         }),
-      ).rejects.toThrow('Form data is missing required fields: 事由');
+      ).rejects.toThrow('缺少必填欄位：事由');
     });
 
     it('keeps submit and resubmit unchanged on a workflow without fieldAccess', async (): Promise<void> => {
@@ -1644,9 +1645,60 @@ describe('WorkflowEngineService', () => {
             '{"reviewScore":"ten","financeItems":[{"seq":1,"taxAmount":5}]}',
         }),
         BadRequestException,
-        '可篩選欄位的值型別不正確：formData.reviewScore must be number',
+        '可篩選欄位的值型別不正確：欄位「評分」必須是數字',
       );
       expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('W2 decideTask takes the instance lock before FOR SHARE on the template, and checks inside the decision transaction', async (): Promise<void> => {
+      const baseSchema = createFinanceTableFormSchema();
+      const formSchema: FormDefinitionSchema = {
+        ...baseSchema,
+        fields: [
+          ...baseSchema.fields,
+          {
+            fieldKey: 'reviewScore',
+            filterable: true,
+            label: '評分',
+            required: false,
+            type: 'number',
+          },
+        ],
+      };
+      const fixture = createDecideFixture({
+        formData: { amount: 10 },
+        formSchema,
+        workflow: createFieldAccessWorkflow({
+          financeFieldAccess: [
+            { display: 'SHOW', fieldKey: 'financeItems', fill: 'REQUIRED' },
+            { display: 'SHOW', fieldKey: 'reviewScore', fill: 'OPTIONAL' },
+          ],
+        }),
+      });
+
+      await expectRejection(
+        decide(fixture, {
+          formDataJson:
+            '{"reviewScore":"ten","financeItems":[{"seq":1,"taxAmount":5}]}',
+        }),
+        BadRequestException,
+        '可篩選欄位的值型別不正確：欄位「評分」必須是數字',
+      );
+
+      const advisoryOrder = fixture.managerQuery.mock.invocationCallOrder[
+        fixture.managerQuery.mock.calls.findIndex(([sql]) =>
+          String(sql).includes('pg_advisory_xact_lock'),
+        )
+      ];
+      const templateLockOrder = fixture.templateFindOne.mock.invocationCallOrder[
+        fixture.templateFindOne.mock.calls.findIndex(([options]) =>
+          JSON.stringify(options).includes('pessimistic_read'),
+        )
+      ];
+
+      expect(advisoryOrder).toBeDefined();
+      expect(templateLockOrder).toBeDefined();
+      expect(advisoryOrder).toBeLessThan(templateLockOrder as number);
     });
 
     it('stores filled values when the filling node approves', async (): Promise<void> => {
@@ -2055,7 +2107,7 @@ describe('WorkflowEngineService', () => {
         await expectRejection(
           decide(fixture),
           BadRequestException,
-          'formData.financeItems must include at least 1 row(s)',
+          '欄位「財務明細」至少需要 1 列',
         );
         expect(fixture.savedInstance).toBeNull();
       });
@@ -2066,7 +2118,7 @@ describe('WorkflowEngineService', () => {
         await expectRejection(
           decide(fixture),
           BadRequestException,
-          'formData.financeItems[0].taxAmount is required',
+          '「財務明細」第 1 列的「稅額」為必填',
         );
         expect(fixture.savedInstance).toBeNull();
       });
@@ -2099,7 +2151,7 @@ describe('WorkflowEngineService', () => {
         await expectRejection(
           decide(fixture, { formDataJson: '{"invoiceNo":"12345678"}' }),
           BadRequestException,
-          'formData.invoiceNo does not match the required format',
+          '欄位「發票號碼」格式不正確',
         );
         expect(fixture.savedInstance).toBeNull();
       });
@@ -2117,7 +2169,7 @@ describe('WorkflowEngineService', () => {
         await expectRejection(
           decide(fixture),
           BadRequestException,
-          'Form data is missing required fields: 發票類型',
+          '缺少必填欄位：發票類型',
         );
         expect(fixture.savedInstance).toBeNull();
       });
@@ -2134,7 +2186,7 @@ describe('WorkflowEngineService', () => {
             formDataJson: '{"financeItems":[{"seq":2,"taxAmount":7}]}',
           }),
           BadRequestException,
-          'Form data is missing required fields: 發票類型',
+          '缺少必填欄位：發票類型',
         );
         expect(fixture.savedInstance).toBeNull();
       });
@@ -2170,7 +2222,7 @@ describe('WorkflowEngineService', () => {
         await expectRejection(
           decide(fixture),
           BadRequestException,
-          'Form data is missing required fields: 發票類型',
+          '缺少必填欄位：發票類型',
         );
       });
 
@@ -2188,7 +2240,7 @@ describe('WorkflowEngineService', () => {
         await expectRejection(
           decide(fixture),
           BadRequestException,
-          'formData.reviewer must be a member id',
+          '欄位「覆核人」必須是成員 ID',
         );
       });
 
@@ -2239,7 +2291,7 @@ describe('WorkflowEngineService', () => {
           await expectRejection(
             decide(fixture, { formDataJson: JSON.stringify({ ownerUnit: bad }) }),
             BadRequestException,
-            'formData.ownerUnit must be an organization unit id',
+            '欄位「負責單位」必須是組織單位 ID',
           );
           expect(fixture.savedInstance).toBeNull();
         });
@@ -2269,7 +2321,7 @@ describe('WorkflowEngineService', () => {
           await expectRejection(
             decide(fixture),
             BadRequestException,
-            'Form data is missing required fields: 負責單位',
+            '缺少必填欄位：負責單位',
           );
         });
       });
@@ -2296,7 +2348,7 @@ describe('WorkflowEngineService', () => {
         await expectRejection(
           decideSequentially(fixture),
           BadRequestException,
-          'formData.financeItems must include at least 1 row(s)',
+          '欄位「財務明細」至少需要 1 列',
         );
         expect(fixture.savedInstance).toBeNull();
       });
@@ -2307,7 +2359,7 @@ describe('WorkflowEngineService', () => {
         await expectRejection(
           decideSequentially(fixture, { decidedByMemberId: 'member-b' }),
           BadRequestException,
-          'formData.financeItems must include at least 1 row(s)',
+          '欄位「財務明細」至少需要 1 列',
         );
         expect(fixture.savedInstance).toBeNull();
       });
@@ -2418,19 +2470,19 @@ describe('WorkflowEngineService', () => {
           createTableFormSchema({ hidden: true }),
           '{"items":{"name":"Bolt"}}',
         ),
-      ).rejects.toThrow('formData.items must be an array of rows');
+      ).rejects.toThrow('欄位「請購明細」必須是表格列的清單');
     });
 
     it('still rejects a malformed row and rows over maxRows', async (): Promise<void> => {
       await expect(
         submit(createTableFormSchema({ hidden: true }), '{"items":["junk"]}'),
-      ).rejects.toThrow('formData.items[0] must be an object');
+      ).rejects.toThrow('「請購明細」第 1 列必須是物件');
       await expect(
         submit(
           createTableFormSchema({ hidden: true, maxRows: 1 }),
           '{"items":[{"name":"a","qty":1},{"name":"b","qty":2}]}',
         ),
-      ).rejects.toThrow('formData.items must include at most 1 row(s)');
+      ).rejects.toThrow('欄位「請購明細」最多 1 列');
     });
 
     it('is not required even when declared required', async (): Promise<void> => {
@@ -2487,13 +2539,13 @@ describe('WorkflowEngineService', () => {
 
       await expect(
         submit(schema, '{"needsItems":false,"items":{"name":"Bolt"}}'),
-      ).rejects.toThrow('formData.items must be an array of rows');
+      ).rejects.toThrow('欄位「請購明細」必須是表格列的清單');
       await expect(
         submit(
           schema,
           '{"needsItems":false,"items":[{"name":"a","qty":1},{"name":"b","qty":2}]}',
         ),
-      ).rejects.toThrow('formData.items must include at most 1 row(s)');
+      ).rejects.toThrow('欄位「請購明細」最多 1 列');
       await expect(
         submit(schema, '{"needsItems":false}'),
       ).resolves.toMatchObject({ id: 'instance-1' });
@@ -2531,16 +2583,16 @@ describe('WorkflowEngineService', () => {
       });
 
     await expect(submit({ owner: '', reviewers: ['m2'] })).rejects.toThrow(
-      'Form data is missing required fields: 負責人',
+      '缺少必填欄位：負責人',
     );
     await expect(submit({ owner: '  ', reviewers: ['m2'] })).rejects.toThrow(
-      'Form data is missing required fields: 負責人',
+      '缺少必填欄位：負責人',
     );
     await expect(submit({ owner: 'm1', reviewers: [] })).rejects.toThrow(
-      'Form data is missing required fields: 審閱者',
+      '缺少必填欄位：審閱者',
     );
     await expect(submit({ owner: 'm1', reviewers: [''] })).rejects.toThrow(
-      'formData.reviewers must be an array of member ids',
+      '欄位「審閱者」必須是成員 ID 清單',
     );
     await expect(
       submit({ owner: 'm1', reviewers: ['m2'] }),
@@ -2581,11 +2633,11 @@ describe('WorkflowEngineService', () => {
       });
 
     await expect(submit({ owner: ['member-002'] })).rejects.toThrow(
-      'formData.owner must be a member id',
+      '欄位「負責人」必須是成員 ID',
     );
     await expect(
       submit({ owner: 'member-002', reviewers: ['member-003', 7] }),
-    ).rejects.toThrow('formData.reviewers must be an array of member ids');
+    ).rejects.toThrow('欄位「審閱者」必須是成員 ID 清單');
     await expect(
       submit({ owner: 'member-002', reviewers: ['member-003', 'member-004'] }),
     ).resolves.toMatchObject({ id: 'instance-1' });
@@ -2620,20 +2672,20 @@ describe('WorkflowEngineService', () => {
       });
 
     await expect(submit({ unit: [unitId] })).rejects.toThrow(
-      'formData.unit must be an organization unit id',
+      '欄位「部門」必須是組織單位 ID',
     );
     await expect(submit({ unit: 7 })).rejects.toThrow(
-      'formData.unit must be an organization unit id',
+      '欄位「部門」必須是組織單位 ID',
     );
     await expect(submit({ unit: 'dept-1' })).rejects.toThrow(
-      'formData.unit must be an organization unit id',
+      '欄位「部門」必須是組織單位 ID',
     );
     await expect(submit({ unit: unitId, backupUnit: [unitId] })).rejects.toThrow(
-      'formData.backupUnit must be an organization unit id',
+      '欄位「備援部門」必須是組織單位 ID',
     );
     // A blank required value is the required check's, not a shape error.
     await expect(submit({ unit: '  ' })).rejects.toThrow(
-      'Form data is missing required fields: 部門',
+      '缺少必填欄位：部門',
     );
     await expect(
       submit({ unit: unitId, backupUnit: unitId }),
@@ -2671,15 +2723,15 @@ describe('WorkflowEngineService', () => {
 
     // Exact messages: the later group must not be appended to the first.
     await expect(submit({ owner: [7], unit: [7] })).rejects.toMatchObject({
-      message: 'formData.owner must be a member id',
+      message: '欄位「負責人」必須是成員 ID',
     });
     await expect(submit({ unit: [7], items: 'x' })).rejects.toMatchObject({
-      message: 'formData.unit must be an organization unit id',
+      message: '欄位「部門」必須是組織單位 ID',
     });
     // Reverse control: with the org unit well-formed the table error shows.
     await expect(
       submit({ unit: '3f2b8c1e-5d4a-4b7e-9c0a-1d2e3f4a5b6c', items: 'x' }),
-    ).rejects.toMatchObject({ message: 'formData.items must be an array of rows' });
+    ).rejects.toMatchObject({ message: '欄位「明細」必須是表格列的清單' });
   });
 
   it('shape-checks a hidden member field that still holds a value', async (): Promise<void> => {
@@ -2717,7 +2769,7 @@ describe('WorkflowEngineService', () => {
 
     await expect(
       submit({ needsReviewer: false, reviewer: 7 }),
-    ).rejects.toThrow('formData.reviewer must be a member id');
+    ).rejects.toThrow('欄位「審核人」必須是成員 ID');
     // A hidden field that is blank / absent is not required and not checked.
     await expect(
       submit({ needsReviewer: false, reviewer: '' }),
@@ -2741,7 +2793,7 @@ describe('WorkflowEngineService', () => {
         instanceId: 'instance-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('Form data is missing required fields: 事由');
+    ).rejects.toThrow('缺少必填欄位：事由');
   });
 
   it('accepts a table submission that satisfies shape, row bounds and per-row required columns', async (): Promise<void> => {
@@ -2785,7 +2837,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items must be an array of rows');
+    ).rejects.toThrow('欄位「請購明細」必須是表格列的清單');
   });
 
   it('rejects a table row that is not an object', async (): Promise<void> => {
@@ -2804,7 +2856,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items[1] must be an object');
+    ).rejects.toThrow('「請購明細」第 2 列必須是物件');
   });
 
   it('rejects a table row carrying a key that is not a column', async (): Promise<void> => {
@@ -2823,7 +2875,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items[0].secret is not a table column');
+    ).rejects.toThrow('「請購明細」第 1 列含有不屬於此表格的欄位「secret」');
   });
 
   it('rejects a cell value that is not a primitive', async (): Promise<void> => {
@@ -2842,7 +2894,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items[0].name is not a valid cell value');
+    ).rejects.toThrow('「請購明細」第 1 列的「品項」不是有效的值');
   });
 
   it('names the row and column of a missing required cell', async (): Promise<void> => {
@@ -2861,7 +2913,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items[1].qty is required');
+    ).rejects.toThrow('「請購明細」第 2 列的「數量」為必填');
   });
 
   // `constructor` and `toString` satisfy the column key identifier rule, so a
@@ -2907,7 +2959,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items[0].constructor is required');
+    ).rejects.toThrow('「明細」第 1 列的「建構」為必填');
   });
 
   it('rejects a required table submitted with no rows', async (): Promise<void> => {
@@ -2926,7 +2978,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items must include at least 1 row(s)');
+    ).rejects.toThrow('欄位「請購明細」至少需要 1 列');
   });
 
   it('rejects a required table that is absent from the submitted data', async (): Promise<void> => {
@@ -2945,7 +2997,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items must include at least 1 row(s)');
+    ).rejects.toThrow('欄位「請購明細」至少需要 1 列');
   });
 
   it('enforces minRows even when the table itself is optional', async (): Promise<void> => {
@@ -2964,7 +3016,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items must include at least 2 row(s)');
+    ).rejects.toThrow('欄位「請購明細」至少需要 2 列');
   });
 
   it('rejects a table submitted with more rows than maxRows', async (): Promise<void> => {
@@ -2984,7 +3036,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items must include at most 2 row(s)');
+    ).rejects.toThrow('欄位「請購明細」最多 2 列');
   });
 
   it('caps rows at the hard ceiling when the table declares no maxRows', async (): Promise<void> => {
@@ -3007,7 +3059,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items must include at most 100 row(s)');
+    ).rejects.toThrow('欄位「請購明細」最多 100 列');
   });
 
   it('skips table validation for a table hidden by its visibility condition', async (): Promise<void> => {
@@ -3036,7 +3088,7 @@ describe('WorkflowEngineService', () => {
         templateId: 'template-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items must include at least 1 row(s)');
+    ).rejects.toThrow('欄位「請購明細」至少需要 1 列');
   });
 
   it('validates table form data on resubmit as well', async (): Promise<void> => {
@@ -3056,7 +3108,7 @@ describe('WorkflowEngineService', () => {
         instanceId: 'instance-1',
         title: 'Request',
       }),
-    ).rejects.toThrow('formData.items[0].qty is required');
+    ).rejects.toThrow('「請購明細」第 1 列的「數量」為必填');
   });
 
   it('leaves a table untouched when a set-form-field task addresses a cell path', async (): Promise<void> => {
@@ -3431,10 +3483,23 @@ describe('WorkflowEngineService', () => {
         update: (): Promise<void> => Promise.resolve(),
       };
       const manager = {
-        getRepository: (target: unknown): ObjectLiteral =>
-          target === ApprovalTemplateEntity
-            ? { ...passThrough, findOne: () => Promise.resolve(template) }
-            : passThrough,
+        // The publish re-reads the template, its draft and its form version
+        // inside the transaction (ADR 25 §15), so each repository answers.
+        getRepository: (target: unknown): ObjectLiteral => ({
+          ...passThrough,
+          findOne: ({
+            where,
+          }: {
+            readonly where: { readonly id: string };
+          }): Promise<ObjectLiteral> =>
+            Promise.resolve(
+              target === ApprovalTemplateEntity
+                ? template
+                : where.id === formVersion.id
+                  ? formVersion
+                  : version,
+            ),
+        }),
       } as unknown as EntityManager;
       const service = new TemplateService(
         {
@@ -4897,6 +4962,183 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  describe('filterable field checks inside the write transactions (ADR 25 §6, §15)', () => {
+    const amountFilterableSchema = (): FormDefinitionSchema => {
+      const levelSchema = createApprovalLevelFormSchema({});
+
+      return {
+        ...levelSchema,
+        fields: levelSchema.fields.map((field) =>
+          field.fieldKey === 'amount' ? { ...field, filterable: true } : field,
+        ),
+      };
+    };
+    const sharedLock = { lock: { mode: 'pessimistic_read' } };
+
+    const submitW1 = (
+      fixture: ReturnType<typeof createServiceFixture>,
+      formDataJson: string,
+    ): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson,
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: '{"memberId":"member-001","roles":[]}',
+        templateId: 'template-1',
+        title: null,
+      });
+    const createW1Fixture = (): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: amountFilterableSchema(),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    // What the template row reads as once the submit holds FOR SHARE: the
+    // state a deactivation, deletion or publish committed in the meantime.
+    const changeTemplateUnderLock = (
+      fixture: ReturnType<typeof createServiceFixture>,
+      change: (template: ApprovalTemplateEntity) => ApprovalTemplateEntity | null,
+    ): void => {
+      const read = fixture.templateFindOne.getMockImplementation() as (
+        ...args: readonly unknown[]
+      ) => Promise<ApprovalTemplateEntity>;
+
+      fixture.templateFindOne.mockImplementation(
+        async (options?: { readonly lock?: unknown }): Promise<ApprovalTemplateEntity | null> => {
+          const template = await read(options);
+
+          return options?.lock ? change(template) : template;
+        },
+      );
+    };
+
+    it('W1 submit: refuses a wrong-typed filterable value before calling a data source or opening the write transaction', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      await expect(submitW1(fixture, '{"amount":"很多"}')).rejects.toThrow(
+        /欄位「金額」必須是數字/u,
+      );
+
+      expect(fixture.templateFindOne).not.toHaveBeenCalledWith(
+        expect.objectContaining(sharedLock),
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('W1 submit: takes FOR SHARE on the live template row before inserting', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      await submitW1(fixture, '{"amount":10}');
+
+      expect(fixture.templateFindOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ...sharedLock,
+          where: expect.objectContaining({
+            deletedAt: expect.any(Object),
+            id: 'template-1',
+          }),
+        }),
+      );
+      expect(fixture.savedInstance).not.toBeNull();
+    });
+
+    it('W1 submit: refuses when the template was deactivated while the submit was in flight', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      changeTemplateUnderLock(fixture, (template) => ({
+        ...template,
+        isActive: false,
+      }));
+
+      await expect(submitW1(fixture, '{"amount":10}')).rejects.toThrow(
+        'Approval template is deactivated',
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('W1 submit: refuses with not found when the template was deleted while the submit was in flight', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      changeTemplateUnderLock(fixture, () => null);
+
+      await expect(submitW1(fixture, '{"amount":10}')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('W1 submit: refuses when another version was published while the submit was in flight', async (): Promise<void> => {
+      const fixture = createW1Fixture();
+
+      changeTemplateUnderLock(fixture, (template) => ({
+        ...template,
+        currentVersionId: 'template-version-2',
+      }));
+
+      await expect(submitW1(fixture, '{"amount":10}')).rejects.toThrow(
+        /範本在送出期間發布了新版本/u,
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('W3 resubmit: refuses a wrong-typed filterable value under a FOR SHARE lock on the template', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: amountFilterableSchema(),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processFormData: { amount: 1000 },
+        processFormDefinitionSnapshot: { schema: amountFilterableSchema() },
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await expect(
+        fixture.service.resubmitApprovalInstance({
+          formDataJson: '{"amount":"很多"}',
+          initiatorMemberId: 'member-001',
+          instanceId: 'instance-1',
+          title: null,
+        }),
+      ).rejects.toThrow(/欄位「金額」必須是數字/u);
+
+      expect(fixture.templateFindOne).toHaveBeenCalledWith(
+        expect.objectContaining(sharedLock),
+      );
+    });
+
+    it('W4 SET_FORM_FIELD: takes the instance lock first, then FOR SHARE on the template, before it writes', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: amountFilterableSchema(),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: { amount: 1200 },
+        processFormDefinitionSnapshot: { schema: amountFilterableSchema() },
+        processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+          fieldPath: 'form.amount',
+          value: '1500',
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      const advisoryOrder = fixture.managerQuery.mock.invocationCallOrder[
+        fixture.managerQuery.mock.calls.findIndex(([sql]) =>
+          String(sql).includes('pg_advisory_xact_lock'),
+        )
+      ];
+      const templateLockOrder = fixture.templateFindOne.mock.invocationCallOrder[
+        fixture.templateFindOne.mock.calls.findIndex(([options]) =>
+          JSON.stringify(options).includes('pessimistic_read'),
+        )
+      ];
+
+      expect(advisoryOrder).toBeDefined();
+      expect(templateLockOrder).toBeDefined();
+      expect(advisoryOrder).toBeLessThan(templateLockOrder as number);
+    });
+  });
+
   it('refuses a set-form-field value of the wrong type for a filterable field', async (): Promise<void> => {
     const levelSchema = createApprovalLevelFormSchema({});
     const filterableSchema: FormDefinitionSchema = {
@@ -4921,7 +5163,7 @@ describe('WorkflowEngineService', () => {
     await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
       new BadRequestException(
         '系統節點「設定簽核層級」要寫入的表單值不符合可篩選欄位的型別' +
-          '（formData.amount must be number），' +
+          '（欄位「金額」必須是數字），' +
           '這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值',
       ),
     );
@@ -4946,8 +5188,8 @@ describe('WorkflowEngineService', () => {
 
     await expect(fixture.service.processInstance('instance-1')).rejects.toThrow(
       new BadRequestException(
-        '系統節點「設定簽核層級」要寫入欄位「簽核層級」的值不符合該欄位的規則' +
-          '（formData.approvalLevel does not match the required format），' +
+        '系統節點「設定簽核層級」要寫入的值不符合欄位規則' +
+          '（欄位「簽核層級」格式不正確），' +
           '這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值',
       ),
     );
@@ -4956,6 +5198,77 @@ describe('WorkflowEngineService', () => {
         payload: expect.objectContaining({ action: 'SET_FORM_FIELD' }),
       }),
     );
+  });
+
+  it('refuses a set-form-field value whose shape a member field cannot hold', async (): Promise<void> => {
+    const schema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
+        { fieldKey: 'reviewer', label: '覆核人', required: false, type: 'member' },
+      ],
+      schemaVersion: 1,
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: schema,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processFormDefinitionSnapshot: { schema },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.reviewer',
+        value: '["member-101", "member-102"]',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    const error: unknown = await fixture.service
+      .processInstance('instance-1')
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as BadRequestException).message).toBe(
+      '系統節點「設定簽核層級」要寫入的值不符合欄位規則' +
+        '（欄位「覆核人」必須是成員 ID），' +
+        '這次操作沒有生效；請聯絡流程管理者修正此節點的寫入值',
+    );
+    expect((error as BadRequestException).getResponse()).toMatchObject({
+      formDataErrors: [
+        expect.objectContaining({ path: 'reviewer', reason: 'TYPE' }),
+      ],
+    });
+    expect(fixture.savedSingleActivityLogs).not.toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ action: 'SET_FORM_FIELD' }),
+      }),
+    );
+  });
+
+  it('writes a single member id into a member field', async (): Promise<void> => {
+    const schema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
+        { fieldKey: 'reviewer', label: '覆核人', required: false, type: 'member' },
+      ],
+      schemaVersion: 1,
+    };
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: schema,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: { amount: 1200 },
+      processFormDefinitionSnapshot: { schema },
+      processWorkflowSnapshot: createSetFormFieldServiceTaskWorkflow({
+        fieldPath: 'form.reviewer',
+        value: '"member-101"',
+      }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    expect(fixture.savedInstance).toMatchObject({
+      formData: { amount: 1200, reviewer: 'member-101' },
+    });
   });
 
   it('writes a set-form-field value that meets the text field rules', async (): Promise<void> => {
@@ -11576,7 +11889,7 @@ describe('WorkflowEngineService', () => {
         taskId: 'task-1',
       }),
     ).rejects.toThrow(
-      'Return decision comment is required by workflow node task_finance',
+      '此節點要求退回時填寫意見，請輸入意見後再退回。',
     );
   });
 
@@ -11892,6 +12205,255 @@ describe('WorkflowEngineService', () => {
 
     expect(decision.action).toBe(TaskDecisionActionEnum.RETURNED);
     expect(decision.comment).toBeNull();
+  });
+
+  describe('requiring a comment when a person approves (requireApprovalComment)', (): void => {
+    function createApprovalCommentFixture({
+      decisionTask = createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      snapshotRequires,
+      templateRequires,
+    }: {
+      readonly decisionTask?: TaskEntity;
+      readonly snapshotRequires?: boolean;
+      readonly templateRequires?: boolean;
+    }): ReturnType<typeof createServiceFixture> {
+      return createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask,
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          requireApprovalComment: snapshotRequires,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        ...(templateRequires === undefined
+          ? {}
+          : {
+              templateWorkflowDefinition: createLinearUserTaskWorkflow({
+                requireApprovalComment: templateRequires,
+              }),
+            }),
+      });
+    }
+
+    it.each([null, undefined, '', '   '])(
+      'refuses an approval whose comment is %j when the node requires one',
+      async (comment: string | null | undefined): Promise<void> => {
+        const fixture = createApprovalCommentFixture({
+          snapshotRequires: true,
+        });
+
+        await expect(
+          fixture.service.decideTask({
+            action: TaskDecisionActionEnum.APPROVED,
+            comment,
+            decidedByMemberId: 'member-finance',
+            taskId: 'task-1',
+          }),
+        ).rejects.toThrow(
+          '此節點要求同意時填寫意見，請輸入意見後再同意。',
+        );
+      },
+    );
+
+    it('refuses with a 400 BadRequestException, not a conflict', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({ snapshotRequires: true });
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('accepts an approval that carries a comment when the node requires one', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({ snapshotRequires: true });
+
+      const decision = await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: '  金額已核對  ',
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+      });
+
+      expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+      expect(decision.comment).toBe('金額已核對');
+    });
+
+    it.each([undefined, false])(
+      'still accepts an approval without a comment when requireApprovalComment is %j',
+      async (snapshotRequires: boolean | undefined): Promise<void> => {
+        const fixture = createApprovalCommentFixture({ snapshotRequires });
+
+        const decision = await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        });
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        expect(decision.comment).toBeNull();
+      },
+    );
+
+    it('reads the instance snapshot, so a template that opts in later does not block a running case', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({
+        snapshotRequires: undefined,
+        templateRequires: true,
+      });
+
+      const decision = await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        comment: null,
+        decidedByMemberId: 'member-finance',
+        taskId: 'task-1',
+      });
+
+      expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+    });
+
+    it('keeps holding a running case to the snapshot when the template later opts out', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({
+        snapshotRequires: true,
+        templateRequires: false,
+      });
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow(
+        '此節點要求同意時填寫意見，請輸入意見後再同意。',
+      );
+    });
+
+    it('holds a person approving an ad-hoc task to the main node setting', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({
+        decisionTask: createTask({
+          adhocType: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+          isAdhoc: true,
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        snapshotRequires: true,
+      });
+
+      await expect(
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow(
+        '此節點要求同意時填寫意見，請輸入意見後再同意。',
+      );
+    });
+
+    it('lets the SLA timeout auto-approve a node that requires a comment', async (): Promise<void> => {
+      const fixture = createApprovalCommentFixture({ snapshotRequires: true });
+
+      const decision = await fixture.service.decideTask(
+        {
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        },
+        { automatic: 'SLA_AUTO_APPROVE' },
+      );
+
+      expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+    });
+
+    it('does not ask for an approval comment when a person rejects, returns or transfers', async (): Promise<void> => {
+      const rejected = createApprovalCommentFixture({ snapshotRequires: true });
+
+      await expect(
+        rejected.service.decideTask({
+          action: TaskDecisionActionEnum.REJECTED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        }),
+      ).rejects.toThrow('Reject decision comment is required');
+
+      const returned = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          requireApprovalComment: true,
+          returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      expect(
+        (
+          await returned.service.decideTask({
+            action: TaskDecisionActionEnum.RETURNED,
+            comment: null,
+            decidedByMemberId: 'member-finance',
+            taskId: 'task-1',
+          })
+        ).action,
+      ).toBe(TaskDecisionActionEnum.RETURNED);
+
+      const transferred = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          assigneeMemberId: 'member-finance',
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          requireApprovalComment: true,
+        }),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      expect(
+        (
+          await transferred.service.decideTask({
+            action: TaskDecisionActionEnum.TRANSFERRED,
+            comment: null,
+            decidedByMemberId: 'member-finance',
+            taskId: 'task-1',
+            transferToMemberId: 'member-manager',
+          })
+        ).action,
+      ).toBe(TaskDecisionActionEnum.TRANSFERRED);
+    });
   });
 
   it('stamps a manual transfer reason on the delegation chain', async (): Promise<void> => {
@@ -21536,6 +22098,7 @@ function createLinearUserTaskWorkflow({
   excludeInitiator,
   excludeNodeActors,
   fieldAccess,
+  requireApprovalComment,
   returnBehavior = {
     allowReturn: false,
     allowedTargets: 'PREVIOUS',
@@ -21550,6 +22113,7 @@ function createLinearUserTaskWorkflow({
   readonly excludeInitiator?: ExcludeInitiatorConfig;
   readonly excludeNodeActors?: ExcludeNodeActorsConfig;
   readonly fieldAccess?: readonly FieldAccessEntry[];
+  readonly requireApprovalComment?: boolean;
   readonly returnBehavior?: ReturnBehavior;
   readonly slaDuration?: string | null;
 } = {}): WorkflowDefinition {
@@ -21590,6 +22154,9 @@ function createLinearUserTaskWorkflow({
           ...(excludeInitiator ? { excludeInitiator } : {}),
           ...(excludeNodeActors ? { excludeNodeActors } : {}),
           ...(fieldAccess ? { fieldAccess } : {}),
+          ...(requireApprovalComment !== undefined
+            ? { requireApprovalComment }
+            : {}),
           ...(slaDuration
             ? {
                 sla: {

@@ -306,6 +306,69 @@ describe('SLA and return-comment tools', () => {
     );
   });
 
+  it('exposes the approval comment tool as a mutation', () => {
+    expect(
+      WORKFLOW_TOOLSET.find(
+        (tool) => tool.name === 'set_user_task_require_approval_comment',
+      )?.kind,
+    ).toBe('mutation');
+  });
+
+  it('turns on the approval comment requirement and leaves the return one alone', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const before = readUserTaskData(state);
+    const next = await runTool(
+      state,
+      'set_user_task_require_approval_comment',
+      { nodeId, requireApprovalComment: true },
+    );
+
+    expect(readUserTaskData(next)).toEqual({
+      ...before,
+      requireApprovalComment: true,
+    });
+  });
+
+  it('removes the approval comment requirement when it is turned off', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const on = await runTool(
+      state,
+      'set_user_task_require_approval_comment',
+      { nodeId, requireApprovalComment: true },
+    );
+    const off = await runTool(
+      on,
+      'set_user_task_require_approval_comment',
+      { nodeId, requireApprovalComment: false },
+    );
+
+    expect(readUserTaskData(off)).not.toHaveProperty('requireApprovalComment');
+  });
+
+  it('reads the approval comment requirement back in the node summary only when it is on', async () => {
+    const state = await stateWithUserTask();
+    const nodeId = String(
+      state.definition.nodes.find((node) => node.type === 'userTask')?.id,
+    );
+    const on = await runTool(
+      state,
+      'set_user_task_require_approval_comment',
+      { nodeId, requireApprovalComment: true },
+    );
+    const summaryOf = (target: WorkflowDesignerState): string =>
+      readWorkflowSnapshot(target).nodes.find((node) => node.id === nodeId)
+        ?.summary ?? '';
+
+    expect(summaryOf(on)).toContain('核准必填意見');
+    expect(summaryOf(state)).not.toContain('核准必填意見');
+  });
+
   it('composes a business-day SLA from a value and unit', async () => {
     const state = await stateWithUserTask();
     const nodeId = String(

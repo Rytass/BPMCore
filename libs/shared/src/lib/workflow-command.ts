@@ -104,6 +104,15 @@ export type WorkflowCommand =
       readonly requireComment: boolean;
     }
   | {
+      /**
+       * Requires a comment whenever a person approves at this node. `false`
+       * removes the key, which is the "unchanged behaviour" default.
+       */
+      readonly type: 'setUserTaskRequireApprovalComment';
+      readonly nodeId: string;
+      readonly requireApprovalComment: boolean;
+    }
+  | {
       /** Replaces the node SLA outright; `null` removes the SLA entirely. */
       readonly type: 'setUserTaskSla';
       readonly nodeId: string;
@@ -313,6 +322,8 @@ export function applyWorkflowCommand(
       return applySetUserTaskReturnResubmitStrategy(state, command);
     case 'setUserTaskReturnRequireComment':
       return applySetUserTaskReturnRequireComment(state, command);
+    case 'setUserTaskRequireApprovalComment':
+      return applySetUserTaskRequireApprovalComment(state, command);
     case 'setUserTaskSla':
       return applySetUserTaskSla(state, command);
     case 'setUserTaskExcludeInitiator':
@@ -712,6 +723,39 @@ function applySetUserTaskReturnRequireComment(
             },
           }
         : node,
+    'userTask',
+  );
+}
+
+function applySetUserTaskRequireApprovalComment(
+  state: WorkflowDesignerState,
+  command: Extract<
+    WorkflowCommand,
+    { type: 'setUserTaskRequireApprovalComment' }
+  >,
+): WorkflowCommandResult {
+  return mapNode(
+    state,
+    command.nodeId,
+    (node) => {
+      if (node.type !== 'userTask') {
+        return node;
+      }
+
+      // Off drops the key entirely: an absent field is the "unchanged
+      // behaviour" definition, and the saved JSON stays clean.
+      if (!command.requireApprovalComment) {
+        return {
+          ...node,
+          data: omitKey(node.data, 'requireApprovalComment'),
+        };
+      }
+
+      return {
+        ...node,
+        data: { ...node.data, requireApprovalComment: true },
+      };
+    },
     'userTask',
   );
 }

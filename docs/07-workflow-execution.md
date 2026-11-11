@@ -841,6 +841,13 @@ async function handleApproval(task) {
 - `AND`：所有 incoming predecessor node 都完成後才啟動。
 - `OR`：任一 incoming predecessor node 完成即可啟動。
 
+節點也可設定 `requireApprovalComment: true`（designer：核准時意見必填），此時**人**按同意時
+必須帶非空白意見，否則引擎回 `BadRequestException`
+（「此節點要求同意時填寫意見，請輸入意見後再同意。」）。同樣讀 instance 的
+workflow snapshot，模板事後才打開不影響在途案件；省略等同 `false`。加簽任務（臨時會簽、
+臨時加簽）掛在主節點上，簽核人同樣受此限制；SLA 逾時自動同意（`AUTO_APPROVE`）是系統動作，
+不要求意見。
+
 ### 5.2 拒絕
 
 - 拒絕決策必須附非空白的 comment，否則丟 `BadRequestException`（`Reject decision comment is required`）。
