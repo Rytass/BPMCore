@@ -1,4 +1,8 @@
 import {
+  isFormDataIssue,
+  type FormDataIssue,
+} from '@rytass/bpm-core-shared/form';
+import {
   readBPMClientConfig,
   readBPMConfiguredHeaders,
   resolveBPMFetch,
@@ -9,6 +13,58 @@ const SAME_ORIGIN_GRAPHQL_ENDPOINT = '/graphql';
 
 interface GraphQlError {
   readonly message: string;
+  readonly extensions?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * A GraphQL operation the host refused. `message` is the host's message, as
+ * it has always been. `formDataIssues` lists the form values the host refused,
+ * one per value, with `path` addressing the field, row or cell; it is empty
+ * when the refusal was not about form data.
+ */
+export class BPMGraphQLRequestError extends Error {
+  readonly formDataIssues: readonly FormDataIssue[];
+
+  constructor(message: string, formDataIssues: readonly FormDataIssue[]) {
+    super(message);
+    this.name = 'BPMGraphQLRequestError';
+    this.formDataIssues = formDataIssues;
+  }
+}
+
+/**
+ * The form data issues a failed request carries, or `[]` when it carries none.
+ * Duck-typed on `formDataIssues`, so an error from another copy of this
+ * package still reads.
+ */
+export function readFormDataIssues(error: unknown): readonly FormDataIssue[] {
+  if (typeof error !== 'object' || error === null) {
+    return [];
+  }
+
+  const issues = (error as Readonly<{ formDataIssues?: unknown }>)
+    .formDataIssues;
+
+  return Array.isArray(issues)
+    ? (issues as readonly unknown[]).filter(isFormDataIssue)
+    : [];
+}
+
+/** The host's `extensions.originalError.formDataErrors`, across all errors. */
+function readGraphQlFormDataIssues(
+  errors: readonly GraphQlError[],
+): readonly FormDataIssue[] {
+  return errors.flatMap((error): readonly FormDataIssue[] => {
+    const original = error.extensions?.['originalError'];
+    const issues =
+      typeof original === 'object' && original !== null
+        ? (original as Readonly<Record<string, unknown>>)['formDataErrors']
+        : undefined;
+
+    return Array.isArray(issues)
+      ? (issues as readonly unknown[]).filter(isFormDataIssue)
+      : [];
+  });
 }
 
 /**
@@ -74,7 +130,10 @@ export async function requestGraphQl<TData>(
   const payload = (await response.json()) as GraphQlResponse<TData>;
 
   if (payload.errors?.length) {
-    throw new Error(payload.errors.map((error) => error.message).join('; '));
+    throw new BPMGraphQLRequestError(
+      payload.errors.map((error) => error.message).join('; '),
+      readGraphQlFormDataIssues(payload.errors),
+    );
   }
 
   if (!payload.data) {
