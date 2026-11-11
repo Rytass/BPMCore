@@ -342,6 +342,14 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
   const inject: readonly InjectionToken[] = [BPM_ROOT_OPTIONS];
   const useFactory = (options: BPMRootRuntimeOptions): BPMRootRuntimeOptions =>
     options;
+  // Built once and imported by both this graph and `FormDataSourceModule`, so
+  // Nest makes a single engine that holds the host's providers.
+  const workflowEngineModule: DynamicModule = WorkflowEngineModule.forRoot({
+    imports: wiring.imports,
+    initiatorCustomFieldsResolverProvider:
+      wiring.initiatorCustomFieldsResolverProvider,
+    serviceTaskDispatcherProvider: wiring.workflowServiceTaskDispatcherProvider,
+  });
 
   return [
     wiring.optionsModule,
@@ -380,18 +388,13 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
     FormDataSourceModule.forRoot({
       imports: wiring.imports,
       registryProvider: wiring.formDataSourceRegistryProvider,
+      workflowEngineModule,
     } satisfies FormDataSourceModuleOptions),
     TemplateModule,
     DelegationModule,
     NotificationModule,
     SignatureModule.forRootAsync({ inject, useFactory }),
-    WorkflowEngineModule.forRoot({
-      imports: wiring.imports,
-      initiatorCustomFieldsResolverProvider:
-        wiring.initiatorCustomFieldsResolverProvider,
-      serviceTaskDispatcherProvider:
-        wiring.workflowServiceTaskDispatcherProvider,
-    }),
+    workflowEngineModule,
     WorkflowWebhookModule.forRoot({
       imports: wiring.imports,
       registryProvider: wiring.workflowWebhookRegistryProvider,

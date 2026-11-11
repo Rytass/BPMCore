@@ -1062,7 +1062,7 @@ Versioned host registry and guarded runtime boundary for dynamic form options.
 | Requests | `BPMFormDataSourceSearchRequest`, `BPMFormDataSourceResolveRequest`, `BPMFormDataSourceSearchResult`, `BPMFormDataSourceResolveFieldInput` (optional `rowValues` for a table cell), `BPMFormDataSourceSnapshotResolutionInput` |
 | Registry | `BPMFormDataSourceRegistry`, `BPM_FORM_DATA_SOURCE_REGISTRY`, `EmptyBPMFormDataSourceRegistry`, `StaticBPMFormDataSourceRegistry`, `defaultFormDataSourceRegistryProvider` (prefers a `formDataSourceRegistry` instance from `BPM_ROOT_OPTIONS`, else an empty catalog) |
 | Snapshot resolver | `BPMFormDataSourceValueResolver`, `BPM_FORM_DATA_SOURCE_VALUE_RESOLVER` |
-| Module | `FormDataSourceModule`, `FormDataSourceModuleOptions` |
+| Module | `FormDataSourceModule`, `FormDataSourceModuleOptions` (PR #145, not yet released: optional `workflowEngineModule`, the engine `DynamicModule` to import instead of the plain `WorkflowEngineModule`) |
 | Service | `FormDataSourceService`, `BPMFormDataSourceOptionResult`, `BPMFormDataSourceResolveResult`. Phase 23 P4／P5 integration, not yet released: `FormDataSourceService.searchFormFieldOptions` takes `position: FormDataSourceBindingPosition` (`TOP_LEVEL_BINDING_POSITION` or `createTableColumnBindingPosition(rowValues)`) in place of the optional `rowValues` (breaking), so its two queries evaluate a table column as a column, from the schema, even when no row was sent; the three are re-exported from `form-data-source.service.ts`. `FormDataSourceValueResolverService.resolveFormFieldOptions` keeps its input and still reads the position from `rowValues` (its input carries no schema), so a table-column expression that reads `row` without row values fails closed as `INVALID_BINDING` |
 | Service inputs | `BPMFormDataSourcePreviewInput`, `BPMFormDataSourceRuntimeInput`, `BPMFormDataSourcePreviewResolveInput`, `BPMFormDataSourceRuntimeResolveInput` — all four accept an optional `rowValuesJson`, and their `fieldKey` accepts a `<tableKey>.<columnKey>` schema path |
 | Errors | `BPM_FORM_DATA_SOURCE_ERROR_CODES`, `BPMFormDataSourceErrorCode`, `BPMFormDataSourceException`, `BPMFormDataSourceForbiddenException` |
@@ -1298,13 +1298,14 @@ the host passes no provider — a module-local default would shadow a token the
 host bound from its own global module, silently sending WEBHOOK service tasks
 through `fetch` instead of the host's signing or queueing dispatcher.
 
-Note that Nest builds **two** `WorkflowEngineService` instances:
-`FormDataSourceModule` imports the plain `WorkflowEngineModule` class while
-`BPMRootModule` imports `WorkflowEngineModule.forRoot(...)`, and a dynamic
-module gets its own instance. `workflowServiceTaskDispatcherProvider` therefore
-configures only the copy it is registered on; the `workflowServiceTaskDispatcher`
-runtime value reaches both, because the service resolves it from the global
-`BPM_ROOT_OPTIONS`.
+Nest builds **one** `WorkflowEngineService` (PR #145, not yet released):
+`BPMRootModule` builds `WorkflowEngineModule.forRoot(...)` once and hands the
+same dynamic module to `FormDataSourceModule.forRoot` through its new
+`workflowEngineModule` option. Before, `FormDataSourceModule` imported the plain
+class, so a second engine that did not hold `workflowServiceTaskDispatcherProvider`
+or `initiatorCustomFieldsResolverProvider` ran the form option DataSources'
+launchable-template check. `FormDataSourceModule.forRoot` used on its own still
+falls back to the plain class.
 
 ### Initiator `customFields` resolver
 
