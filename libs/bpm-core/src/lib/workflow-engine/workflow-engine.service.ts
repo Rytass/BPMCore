@@ -9154,9 +9154,19 @@ function readFilterableProblemLocation(
     (candidate) => candidate.fieldKey === problem.path,
   );
 
-  return field
-    ? readFieldIssueLocation(field)
-    : { path: problem.path, ref: `欄位「${problem.path}」` };
+  if (field) {
+    return readFieldIssueLocation(field);
+  }
+
+  // Not in the schema (the check and this lookup read the same schema, so
+  // this is defensive): still address it the way FormDataIssue.path promises,
+  // `table[i].col` for a row value rather than the dotted filter path.
+  const path =
+    problem.rowIndex !== null && columnKey !== undefined
+      ? `${tableKey}[${problem.rowIndex}].${columnKey}`
+      : problem.path;
+
+  return { path, ref: `欄位「${path}」` };
 }
 
 /**
@@ -10919,8 +10929,10 @@ function validateFilledFormFields(
  * over a malformed member value, which wins over a malformed org unit value,
  * which wins over a table problem, and the later checks are only evaluated
  * when the earlier ones pass. The refusal carries every issue of the winning
- * check, and its message is those issues' sentences joined, so the list and
- * the sentence cannot disagree.
+ * check. Its message is those issues' sentences joined, except for missing
+ * required fields, which keep the one-line summary `缺少必填欄位：A, B` that
+ * submitters read; each issue there still says `欄位「A」為必填`. A client
+ * that places errors on fields reads the issues, not the message.
  */
 function throwFirstFormDataFieldError({
   missingFields,
