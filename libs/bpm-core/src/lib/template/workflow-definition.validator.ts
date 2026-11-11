@@ -2,6 +2,7 @@ import {
   ApproverResolver,
   ExcludeInitiatorConfig,
   ExcludeInitiatorWhenEmpty,
+  ExcludeNodeActorsConfig,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -314,6 +315,7 @@ function lintUserTaskNodes(nodes: readonly WorkflowNode[]): readonly string[] {
               `workflow.nodes.${node.id}.requireApprovalComment must be a boolean`,
             ]),
         ...lintExcludeInitiator(data.excludeInitiator, node.id),
+        ...lintExcludeNodeActors(data.excludeNodeActors, node.id, nodes),
         ...lintSlaConfig(data.sla, node.id),
         ...readNodeFieldAccessIssues(node).map((issue) => issue.message),
       ];
@@ -331,6 +333,63 @@ function lintExcludeInitiator(
   return EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.includes(config?.whenEmpty)
     ? []
     : [`workflow.nodes.${nodeId}.excludeInitiator.whenEmpty is invalid`];
+}
+
+/**
+ * The local half of the `excludeNodeActors` checks: shape, and that the ids
+ * exist and name user tasks. Whether each listed node is upstream and settled
+ * before this node starts needs the whole graph, so `TemplateService` runs the
+ * shared `readExcludeNodeActorsIssues` once the definition passed this lint.
+ */
+function lintExcludeNodeActors(
+  config: ExcludeNodeActorsConfig | undefined,
+  nodeId: string,
+  nodes: readonly WorkflowNode[],
+): readonly string[] {
+  if (config === undefined) {
+    return [];
+  }
+
+  const path = `workflow.nodes.${nodeId}.excludeNodeActors`;
+  const rawNodeIds: unknown = config?.nodeIds;
+  const nodeIds: readonly unknown[] = Array.isArray(rawNodeIds)
+    ? rawNodeIds
+    : [];
+
+  if (nodeIds.length === 0) {
+    return [`${path}.nodeIds is required`];
+  }
+
+  if (
+    nodeIds.some((id) => typeof id !== 'string' || id.trim() === '') ||
+    new Set(nodeIds).size !== nodeIds.length
+  ) {
+    return [`${path}.nodeIds must be unique non-empty strings`];
+  }
+
+  const ids = nodeIds as readonly string[];
+
+  if (!EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.includes(config.whenEmpty)) {
+    return [`${path}.whenEmpty is invalid`];
+  }
+
+  if (ids.includes(nodeId)) {
+    return [`${path}.nodeIds must not include the node itself`];
+  }
+
+  const typeOf = (id: string): WorkflowNode['type'] | undefined =>
+    nodes.find((node) => node.id === id)?.type;
+  const missingId = ids.find((id) => typeOf(id) === undefined);
+
+  if (missingId !== undefined) {
+    return [`${path}.nodeIds references a missing node: ${missingId}`];
+  }
+
+  const notUserTaskIds = ids.filter((id) => typeOf(id) !== 'userTask');
+
+  return notUserTaskIds.length
+    ? [`${path}.nodeIds must reference userTask nodes: ${notUserTaskIds.join(', ')}`]
+    : [];
 }
 
 function lintSlaConfig(

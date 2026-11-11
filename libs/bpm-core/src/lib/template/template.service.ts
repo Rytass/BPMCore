@@ -34,6 +34,7 @@ import {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  readExcludeNodeActorsIssues,
   readNodeActorSourceIssues,
   WORKFLOW_EXPRESSION_LABELS,
   WORKFLOW_LINT_MESSAGES,
@@ -1210,6 +1211,9 @@ export class TemplateService {
     const nodeActorSourceErrors = workflowResult.valid
       ? lintWorkflowNodeActorSources(version.workflowDefinition)
       : [];
+    const excludeNodeActorsErrors = workflowResult.valid
+      ? lintWorkflowExcludeNodeActors(version.workflowDefinition)
+      : [];
     const approverFilledFieldErrors = readFormFieldAccessIssues(
       version.workflowDefinition,
       formVersion.schema,
@@ -1230,6 +1234,7 @@ export class TemplateService {
       ...memberReferenceErrors,
       ...orgUnitReferenceErrors,
       ...nodeActorSourceErrors,
+      ...excludeNodeActorsErrors,
       ...approverFilledFieldErrors,
       ...approverFilledReadErrors,
       ...webhookErrors,
@@ -1928,6 +1933,29 @@ function lintWorkflowNodeActorSources(
       (issue) => `workflow.nodes.${node.id}.approverResolver.nodeIds: ${issue}`,
     );
   });
+}
+
+/**
+ * The graph checks behind `excludeNodeActors` (shared with the designer): every
+ * listed node, on its own, is an upstream user task that is on every path to
+ * the node and always has a person sign (the `NODE_ACTOR` source rules, worded
+ * for the exclusion). Runs after the structural lint, like the `NODE_ACTOR`
+ * checks.
+ */
+function lintWorkflowExcludeNodeActors(
+  definition: WorkflowDefinition,
+): readonly string[] {
+  return definition.nodes.flatMap((node): readonly string[] =>
+    node.type === 'userTask'
+      ? readExcludeNodeActorsIssues(
+          definition,
+          node.id,
+          node.data.excludeNodeActors,
+        ).map(
+          (issue) => `workflow.nodes.${node.id}.excludeNodeActors: ${issue}`,
+        )
+      : [],
+  );
 }
 
 /**

@@ -1736,13 +1736,15 @@ The rules that differ from the holder's own transfer:
   delegation chain gets an `ADMIN_REASSIGN` step carrying `actorMemberId` and
   the typed `comment`, and the activity log records `TASK_REASSIGNED`.
 - The target is not run through delegation rules. The initiator / submitter
-  exclusions and the ORG_MANAGER_CHAIN grade check still apply.
+  and `excludeNodeActors` exclusions and the ORG_MANAGER_CHAIN grade check still apply.
 - The node's `allowTransfer` is not consulted. It governs what a holder may do
   with their own task; an administrator override exists for holders who are
   gone, and a node that forbids transfers must not strand its tasks on them.
 - A refusal is reported as `REJECTED` with an `errorCode`
   (`SOURCE_NOT_ON_TASK`, `TARGET_SAME_AS_SOURCE`, `TARGET_ALREADY_ON_TASK`,
   `TARGET_ALREADY_DECIDED`, `TARGET_IS_INITIATOR`, `TARGET_IS_SUBMITTER`,
+  `TARGET_IS_EXCLUDED_NODE_ACTOR` (the node's `excludeNodeActors` keeps the
+  target out),
   `TARGET_GRADE_TOO_LOW`, `TASK_NOT_OPEN`, `INSTANCE_NOT_RUNNING`,
   `REASON_REQUIRED`, `UNEXPECTED_ERROR`). `UNEXPECTED_ERROR` is reported by
   `reassignMemberTasks` for the one task that failed, and the other tasks are still
