@@ -574,8 +574,9 @@ export interface ListApprovalInstancesOptions {
 - **舊資料無法修正**：§5.4 拒絕後唯一出路是改用新 key；若之後新增「寫回表單值」的 API（§13 第 2 點），可再提供修正路徑。
 - **發布與寫入的併發（已處理）**：原本啟用檢查（§5.4）與寫入檢查（§6）之間沒有鎖。發布交易讀完舊資料、尚未 commit 時，若另一個請求用舊版本送出案件，且某欄位在舊版本不是可篩選，就會寫入一筆新版本認定為型別錯誤的值；此後這筆案件在該欄位的篩選中被視為沒有值，且不再受檢。影響是單筆案件被篩選漏掉、不會報錯。現行做法：
   - **發布、compose、回滾**：在交易內先對 `approval_templates` 該列取 `FOR UPDATE`（TypeORM `pessimistic_write`），啟用檢查在取鎖之後、同一交易內執行；發布在取鎖後才重讀草稿版本與其表單綁定，檢查的是提交 commit 時的內容。
-  - **W1–W4**：在各自的寫入交易內對同一列取 `FOR SHARE`（`pessimistic_read`），並以取鎖後的範本目前版本 schema 檢查。W1 的檢查已從交易外移入寫入交易，取鎖後若範本目前版本已不是送出時綁定的版本，回 `ConflictException` 請重送。
+  - **W1–W4**：在各自的寫入交易內對同一列取 `FOR SHARE`（`pessimistic_read`），並以取鎖後的範本目前版本 schema 檢查。W1 的型別檢查在交易外、呼叫資料來源之前，依綁定版本的 schema 執行（錯誤值不必先查外部資料就被拒）；寫入交易取鎖後再確認範本未被刪除、仍啟用，且目前版本仍是綁定的版本，否則拒絕（版本已換時回 `ConflictException` 請重送）。這三項在鎖下成立，交易外依綁定版本做的型別檢查才等同於依目前版本檢查。
+  - **草稿的編輯、分岔與 compose**：一律先取範本列 `FOR UPDATE`，再讀寫草稿版本列。編輯草稿在取鎖後重讀並確認仍是草稿；否則發布若在讀與存之間 commit，存回會把舊的 `DRAFT` 狀態與空的發布欄位寫回已發布的版本。compose 在交易一開始就鎖既有範本：若等到 `publishVersion` 才鎖，compose 已先寫了草稿列，與「先鎖範本、再寫草稿」的獨立發布鎖序相反，兩者同時發布同一草稿會死結。
   - **範本的啟用、停用與基本資料編輯**：同樣在交易內先取 `FOR UPDATE`，取鎖後才讀整筆範本並存回。這幾條路徑會把讀到的整個 entity 存回；若在鎖外讀取，發布在讀與存之間 commit 時，TypeORM 會把讀到的舊 `currentVersionId` 當成變更寫回，蓋掉剛發布的版本。取鎖後讀到的是最新已 commit 的列，發布則等編輯結束。
   - **選列鎖、不選 advisory lock**：範本列鎖直接表達「範本的版本狀態」，且不與實例的 `pg_advisory_xact_lock(hashtext(instanceId))` 共用鍵空間（hashtext 可能碰撞）。
   - **鎖順序**：實例 advisory lock → 範本列鎖。發布、compose、回滾只取範本列鎖、不取實例鎖；W 路徑從不寫 `approval_templates`，因此不會出現 `FOR SHARE` 升級成 `FOR UPDATE` 的死鎖，也不會與發布形成環狀等待。
-  - **驗證**：單元測試以 mock 斷言鎖的模式與「鎖先於檢查」的順序（`template.service.spec.ts`、`workflow-engine.service.spec.ts`）。repo 沒有整合測試基礎設施，另於 develop DB 手動驗證（2026-11-11）：以 psql 持有範本列 `FOR UPDATE` 數秒，同時送件（W1）或停用範本，兩者都等到鎖釋放才繼續，之後依取鎖後的狀態處理。
+  - **驗證**：單元測試以 mock 斷言鎖的模式與「鎖先於檢查」的順序（`template.service.spec.ts`、`workflow-engine.service.spec.ts`）。repo 沒有整合測試基礎設施，另於 develop DB 手動驗證（2026-11-11）：以 psql 持有範本列 `FOR UPDATE` 數秒，同時送件（W1）或停用範本，兩者都等到鎖釋放才繼續，之後依取鎖後的狀態處理；以 psql 在未 commit 的交易中停用範本，同時送出合法申請，送件等到 commit 後回「範本已停用」，未建立案件。
