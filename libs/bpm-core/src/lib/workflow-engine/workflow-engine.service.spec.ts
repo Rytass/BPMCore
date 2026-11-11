@@ -4686,6 +4686,44 @@ describe('WorkflowEngineService', () => {
         ]);
       });
 
+      // The list judges a policy against the engine's default snapshot, which
+      // has no `customFields`. The real engines throw `EXPRESSION_MISSING_KEY`
+      // for that read; the template must be left out and the list must still
+      // answer (the stub stands in for the real engine, see the note above).
+      it('answers the list and leaves the template out when its policy throws on a missing key', async (): Promise<void> => {
+        const warn = jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockReturnValue(undefined);
+        const conditionService = new ConditionService();
+
+        jest
+          .spyOn(conditionService, 'evaluateBoolean')
+          .mockImplementation(() => {
+            throw new ExpressionRuntimeError(
+              'EXPRESSION_MISSING_KEY',
+              'initiatorPolicyCel',
+            );
+          });
+        const fixture = createServiceFixture({
+          conditionService,
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          templateInitiatorPolicyCel:
+            'initiator.customFields.station == "TPE"',
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await expect(
+          fixture.service.listLaunchableApprovalTemplates('member-001'),
+        ).resolves.toEqual([]);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('EXPRESSION_MISSING_KEY'),
+        );
+        expect(warn).not.toHaveBeenCalledWith(
+          expect.stringContaining('member-001'),
+        );
+      });
+
       // Fail closed for that template only: one hand-edited version must not
       // break the list for every member.
       it('leaves out only that template when its initiator policy cannot be evaluated', async (): Promise<void> => {

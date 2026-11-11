@@ -4280,18 +4280,32 @@ export class WorkflowEngineService {
       }
 
       // Each template is its own operation, so one slow template cannot use
-      // up the allowance of the rest of the list.
-      return runExpressionOperation(() =>
-        this.conditionService.evaluateBoolean(
-          currentVersion.initiatorPolicyCel,
-          buildInitiatorPolicyContext(initiatorMetadataSnapshot),
-          'initiatorPolicyCel',
-          readExpressionDialectOptions(
+      // up the allowance of the rest of the list. A policy that throws (for
+      // example a missing `initiator.customFields.*` key, which this list
+      // judges against `{}`) is also only that template's problem: it is left
+      // out, and the error code is logged, never the values.
+      try {
+        return runExpressionOperation(() =>
+          this.conditionService.evaluateBoolean(
             currentVersion.initiatorPolicyCel,
-            currentVersion.workflowDefinition,
+            buildInitiatorPolicyContext(initiatorMetadataSnapshot),
+            'initiatorPolicyCel',
+            readExpressionDialectOptions(
+              currentVersion.initiatorPolicyCel,
+              currentVersion.workflowDefinition,
+            ),
           ),
-        ),
-      );
+        );
+      } catch (error: unknown) {
+        const reason =
+          error instanceof ExpressionRuntimeError ? error.code : 'UNEXPECTED';
+
+        this.logger.warn(
+          `template=${template.id} version=${currentVersion.id} left out of launchable templates: initiatorPolicyCel failed (${reason})`,
+        );
+
+        return false;
+      }
     });
   }
 
