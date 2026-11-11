@@ -21,7 +21,9 @@ import {
   defaultBusinessCalendarProvider,
 } from '../calendar';
 import {
+  BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
+  BPMInitiatorCustomFieldsResolver,
   BPMWorkflowWebhookDispatchInput,
   BPMWorkflowWebhookDispatchResult,
   BPMWorkflowServiceTaskDispatcher,
@@ -152,6 +154,38 @@ describe('BPMRootModule', () => {
           'providers' in importedModule &&
           importedModule.providers?.includes(
             workflowServiceTaskDispatcherProvider,
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it('passes a host initiator customFields resolver provider to the workflow engine module', (): void => {
+    const initiatorCustomFieldsResolverProvider: Provider<BPMInitiatorCustomFieldsResolver> =
+      {
+        inject: [HOST_INTEGRATION_BUS],
+        provide: BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
+        useFactory: (): BPMInitiatorCustomFieldsResolver => ({
+          resolveCustomFields: jest.fn(),
+        }),
+      };
+
+    const module = BPMRootModule.forRoot({
+      imports: [HostWorkflowIntegrationModule],
+      initiatorCustomFieldsResolverProvider,
+      memberResolverProvider: {
+        provide: BPM_MEMBER_RESOLVER,
+        useExisting: 'HOST_MEMBER_RESOLVER',
+      },
+    });
+
+    expect(
+      (module.imports ?? []).some(
+        (importedModule) =>
+          typeof importedModule === 'object' &&
+          importedModule !== null &&
+          'providers' in importedModule &&
+          importedModule.providers?.includes(
+            initiatorCustomFieldsResolverProvider,
           ),
       ),
     ).toBe(true);

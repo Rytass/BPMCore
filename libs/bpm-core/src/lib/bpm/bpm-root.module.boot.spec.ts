@@ -22,6 +22,10 @@ import {
 import { OrganizationService } from '../organization/organization.service';
 import { BPMRootModule } from './bpm-root.module';
 import { TemplateService } from '../template/template.service';
+import {
+  BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
+  BPMInitiatorCustomFieldsResolver,
+} from '../workflow-engine/initiator-custom-fields-resolver.token';
 import { WorkflowEngineService } from '../workflow-engine/workflow-engine.service';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
 import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
@@ -97,9 +101,11 @@ describe('BPMRootModule bootstrap', (): void => {
       resolve: jest.fn(),
       resolveMany: jest.fn(),
     };
-    const useFactory = jest.fn((): { readonly memberResolver: BPMMemberResolver } => ({
-      memberResolver,
-    }));
+    const useFactory = jest.fn(
+      (): { readonly memberResolver: BPMMemberResolver } => ({
+        memberResolver,
+      }),
+    );
     const moduleRef = await Test.createTestingModule({
       imports: [
         FakeDataSourceModule,
@@ -281,22 +287,39 @@ describe('BPMRootModule bootstrap', (): void => {
     }
   });
 
-  it('hands every WorkflowEngineService copy the same webhook delivery service', async (): Promise<void> => {
+  it('builds one WorkflowEngineService, and it holds the host initiator customFields resolver', async (): Promise<void> => {
+    const resolver: BPMInitiatorCustomFieldsResolver = {
+      resolveCustomFields: (): Promise<Readonly<Record<string, unknown>>> =>
+        Promise.resolve({}),
+    };
     const moduleRef = await Test.createTestingModule({
-      imports: [FakeDataSourceModule, BPMRootModule.forRoot()],
+      imports: [
+        FakeDataSourceModule,
+        BPMRootModule.forRoot({
+          initiatorCustomFieldsResolverProvider: {
+            provide: BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
+            useValue: resolver,
+          },
+        }),
+      ],
     }).compile();
 
     try {
-      // Nest builds more than one engine (FormDataSourceModule imports the
-      // plain class, BPMRootModule the dynamic module). Each must enqueue into
-      // the one delivery service, or a NOTIFY node reached through the other
-      // copy would silently queue nothing.
+      // FormDataSourceModule runs the launchable-template check through the
+      // engine. A second engine built from the plain module class would not
+      // see this resolver and would judge `customFields` as `{}`, so the list
+      // and the form-data source would disagree about the same template.
       const container = (
         moduleRef as unknown as {
           readonly container: {
             getModules(): Map<
               string,
-              { readonly providers: Map<unknown, { readonly instance: unknown }> }
+              {
+                readonly providers: Map<
+                  unknown,
+                  { readonly instance: unknown }
+                >;
+              }
             >;
           };
         }
@@ -306,16 +329,23 @@ describe('BPMRootModule bootstrap', (): void => {
 
         return wrapper?.instance ? [wrapper.instance] : [];
       });
+      const formDataSourceService = moduleRef.get(FormDataSourceService, {
+        strict: false,
+      });
       const deliveryService = moduleRef.get(WorkflowWebhookDeliveryService, {
         strict: false,
       });
 
-      expect(engines.length).toBeGreaterThanOrEqual(2);
-      engines.forEach((engine) => {
-        expect(Reflect.get(engine as object, 'webhookDeliveryService')).toBe(
-          deliveryService,
-        );
-      });
+      expect(engines).toHaveLength(1);
+      expect(
+        Reflect.get(engines[0] as object, 'initiatorCustomFieldsResolver'),
+      ).toBe(resolver);
+      expect(Reflect.get(engines[0] as object, 'webhookDeliveryService')).toBe(
+        deliveryService,
+      );
+      expect(
+        Object.values(formDataSourceService as object).includes(engines[0]),
+      ).toBe(true);
     } finally {
       await moduleRef.close();
     }

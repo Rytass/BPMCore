@@ -61,6 +61,17 @@
 - `env` 只有 `now`（ISO 8601 字串）。
 - `initiator` 是發起當下的 member snapshot，並展開 `memberId`；`initiator.roles`、`initiator.org.code` 等取決於宿主提供的內容。
   `subject` 只在發起權限提供，內容與 `initiator` 相同。發起權限在案件建立前評估，沒有 `form`、`formData`、`instance`。
+  `initiator.customFields` 預設是 `{}`；宿主要放東西（例如申請人的站別、職等，或先算好的主管名單）有兩條路：
+  自己呼叫 `submitApprovalInstance` 時帶完整快照，或註冊 `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER`，讓從 BPM 頁（GraphQL）開的單也有。
+  後者的快照在送單那一刻定下，重送不重算；送單時評估的發起權限（`initiatorPolicyCel`）讀的是同一份。
+  「可發起範本」列表每次請求也呼叫它一次（`purpose: 'LAUNCHABLE_TEMPLATES'`，沒有範本與表單，`templateId`、`templateVersionId`、`formData` 為 `null`），
+  用同一份 `customFields` 評估每個範本的發起權限，所以 resolver 的結果只能依發起人決定，送單與列表要回一樣的值。
+  列表呼叫失敗或逾時（10 秒）時不讓整份列表失敗，改用 `customFields: {}` 評估並記 warning：讀到 `initiator.customFields` 的範本會因缺鍵被排除，其他範本照常列出。
+  送單則不降級：resolver 失敗、逾時或回傳格式不對，送單一律失敗、不建立案件（見 `docs/api-reference.md` 的 workflow-engine 段）。
+  試跑不呼叫它。
+  設計器試跑送的範例快照 `customFields` 是 `{}`，讀 `initiator.customFields` 的條件在試跑時的結果會跟實際送單不同。
+  resolver 要對範本會讀的每個鍵都給值（值是 `undefined` 的鍵存進去時會被丟掉，之後讀它會丟 `EXPRESSION_MISSING_KEY`），或範本用 `has(initiator.customFields.<key>)` 保護。
+  回傳值會存進案件，能讀案件的人都看得到，不要放機密。
 - `form` 與 `formData` 相同，是案件的表單資料。
 - `instance`：`id`、`state`、`templateId`、`templateVersionId`、`title`；委派條件另有 `nodeId`（被委派任務所在的節點）。
 - `principal`：`{ memberId }`，即被代理的人。委派條件沒有 `subject`、`task`、`template`，要用模板請寫 `instance.templateId`。
