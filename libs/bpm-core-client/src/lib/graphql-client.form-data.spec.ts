@@ -61,7 +61,7 @@ describe('requestGraphQl form data issues', (): void => {
     ]);
   });
 
-  it('drops malformed entries instead of trusting them', async (): Promise<void> => {
+  it('drops every entry when one is not understood, so the caller falls back to the message', async (): Promise<void> => {
     mockGraphQlResponse({
       errors: [
         {
@@ -82,9 +82,16 @@ describe('requestGraphQl form data issues', (): void => {
       (caught: unknown) => caught,
     );
 
-    expect(readFormDataIssues(error)).toEqual([
-      { message: '為必填', path: 'note', reason: 'REQUIRED' },
-    ]);
+    // Placing only the understood one would hide the other field's error.
+    expect(readFormDataIssues(error)).toEqual([]);
+    expect(
+      readFormDataIssues({
+        formDataIssues: [
+          { message: '為必填', path: 'note', reason: 'REQUIRED' },
+          { message: 'x', path: 'other', reason: 'NOT_A_REASON' },
+        ],
+      }),
+    ).toEqual([]);
   });
 
   it('answers an empty list for errors that carry no form data', async (): Promise<void> => {

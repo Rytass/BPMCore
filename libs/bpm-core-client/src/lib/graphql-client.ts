@@ -45,26 +45,33 @@ export function readFormDataIssues(error: unknown): readonly FormDataIssue[] {
   const issues = (error as Readonly<{ formDataIssues?: unknown }>)
     .formDataIssues;
 
-  return Array.isArray(issues)
-    ? (issues as readonly unknown[]).filter(isFormDataIssue)
+  // All or nothing, as in readGraphQlFormDataIssues below.
+  return Array.isArray(issues) &&
+    (issues as readonly unknown[]).every(isFormDataIssue)
+    ? (issues as readonly FormDataIssue[])
     : [];
 }
 
-/** The host's `extensions.originalError.formDataErrors`, across all errors. */
+/**
+ * The host's `extensions.originalError.formDataErrors`, across all errors.
+ * All or nothing: when any entry is not an issue this client understands (a
+ * newer host's reason, say), none are returned, so a caller falls back to the
+ * message instead of placing some errors and silently dropping the rest.
+ */
 function readGraphQlFormDataIssues(
   errors: readonly GraphQlError[],
 ): readonly FormDataIssue[] {
-  return errors.flatMap((error): readonly FormDataIssue[] => {
+  const entries = errors.flatMap((error): readonly unknown[] => {
     const original = error.extensions?.['originalError'];
     const issues =
       typeof original === 'object' && original !== null
         ? (original as Readonly<Record<string, unknown>>)['formDataErrors']
         : undefined;
 
-    return Array.isArray(issues)
-      ? (issues as readonly unknown[]).filter(isFormDataIssue)
-      : [];
+    return Array.isArray(issues) ? (issues as readonly unknown[]) : [];
   });
+
+  return entries.every(isFormDataIssue) ? entries : [];
 }
 
 /**

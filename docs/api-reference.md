@@ -610,7 +610,7 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 | `requestGraphQl<T>(query, variables?, options?)` | async function | Generic GraphQL POST, returns typed data |
 | `GraphQlRequestOptions` | interface | Per-request transport options; currently `signal?: AbortSignal` |
 | `BPMGraphQLRequestError` | class | The `Error` `requestGraphQl` throws when the host answers with GraphQL errors. `message` joins the host messages with `; ` as before. `formDataIssues` (`readonly FormDataIssue[]`, `[]` when none) lists the refused form values, read from `extensions.originalError.formDataErrors` of each error. Not yet released |
-| `readFormDataIssues(error)` | function | The `formDataIssues` of an error from `requestGraphQl`, or `[]`. Duck-typed, so it also reads an error from another copy of this package. Not yet released |
+| `readFormDataIssues(error)` | function | The `formDataIssues` of an error from `requestGraphQl`, or `[]`. Duck-typed, so it also reads an error from another copy of this package. All or nothing: when any entry has a reason this client does not know, it answers `[]`, so the caller falls back to the message rather than placing only some errors. Not yet released |
 | `readGraphQlEndpoint()` | function | Resolve current GraphQL endpoint URL |
 | `resolveDefaultGraphQlEndpoint(hostname)` | function | Pure helper to derive endpoint from hostname |
 | `readApiBaseUrl()` | function | Resolve REST auth base URL |
