@@ -12,6 +12,7 @@ import {
   DecisionPolicy,
   ExcludeInitiatorConfig,
   ExcludeInitiatorWhenEmpty,
+  ExcludeNodeActorsConfig,
   NotifyWebhookBindingSource,
   NotifyWebhookContextPath,
   NotifyWebhookEndpointReference,
@@ -31,6 +32,7 @@ import {
   isNotifyRecipientResolverType,
   readUnsupportedApproverResolverType,
 } from './workflow';
+import { readNodeFillableFieldKeys } from './field-access';
 import {
   isOnOwnParallelBranch,
   readReachableWorkflowNodeIds,
@@ -1042,6 +1044,16 @@ export function readWorkflowDefinitionIssue(
       node.type === 'userTask' &&
       Boolean(readExcludeInitiatorIssue(node.data.excludeInitiator)),
   );
+  // Shape only: whether the stages sit upstream is a publish-time graph rule
+  // (`readExcludeNodeActorsIssues`), so a draft can be saved unfinished.
+  const excludeNodeActorsIssue =
+    definition.nodes
+      .map((node) =>
+        node.type === 'userTask'
+          ? readExcludeNodeActorsShapeIssue(node.data.excludeNodeActors)
+          : null,
+      )
+      .find((issue): issue is string => issue !== null) ?? null;
   const notifyNodeIssue =
     definition.nodes
       .map((node) => readNotifyServiceTaskIssue(node))
@@ -1102,6 +1114,10 @@ export function readWorkflowDefinitionIssue(
     return readExcludeInitiatorIssue(
       excludeInitiatorNode.data.excludeInitiator,
     );
+  }
+
+  if (excludeNodeActorsIssue) {
+    return excludeNodeActorsIssue;
   }
 
   if (notifyNodeIssue) {
@@ -1166,6 +1182,178 @@ export function readExcludeInitiatorIssue(
   return EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.includes(config?.whenEmpty)
     ? null
     : '簽核節點的「申請人不可簽核自己的單」需要指定沒有其他簽核人時的處理方式。';
+}
+
+/**
+ * The shape problem of a node's `excludeNodeActors` setting, or `null` when it
+ * is absent or well-formed: at least one id, text only, no repeats, and a
+ * known `whenEmpty`. Needs no graph, so it can block saving a draft the way
+ * {@link readExcludeInitiatorIssue} does; the graph rules are
+ * {@link readExcludeNodeActorsIssues}.
+ */
+export function readExcludeNodeActorsShapeIssue(
+  config: ExcludeNodeActorsConfig | undefined,
+): string | null {
+  if (config === undefined) {
+    return null;
+  }
+
+  // Raw JSON that has not been linted yet can carry anything here.
+  const rawNodeIds: unknown = config?.nodeIds;
+  const nodeIds: readonly unknown[] = Array.isArray(rawNodeIds)
+    ? rawNodeIds
+    : [];
+
+  if (nodeIds.length === 0) {
+    return '簽核節點的「不可與前面關卡同一人」需要指定前面的簽核關卡。';
+  }
+
+  if (
+    nodeIds.some((id) => typeof id !== 'string' || id.trim() === '') ||
+    new Set(nodeIds).size !== nodeIds.length
+  ) {
+    return '「不可與前面關卡同一人」所選的前面關卡不可重複，也不可留白。';
+  }
+
+  return EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.includes(config.whenEmpty)
+    ? null
+    : '簽核節點的「不可與前面關卡同一人」需要指定沒有其他簽核人時的處理方式。';
+}
+
+/**
+ * The designer-facing issues for a node's `excludeNodeActors` setting ("this
+ * stage's approver cannot be the person who approved an earlier stage");
+ * `[]` when it is absent or sound. `nodeId` is the node that carries the
+ * setting. The setting is checked in this order and stops at the first group
+ * that fails:
+ *
+ * 1. shape ({@link readExcludeNodeActorsShapeIssue}) and never the node itself;
+ * 2. every listed node exists and is a `userTask`;
+ * 3. every listed node is upstream of `nodeId`: some path leads from it to the
+ *    node, otherwise its approver cannot be known when this node starts;
+ * 4. no listed node can still be open when this node starts: a listed node
+ *    that sits on a parallel branch of its own and reaches `nodeId` through a
+ *    node that fires on the first arriving branch (`triggerMode: 'OR'`) is
+ *    refused, because the exclusion would read an approval that has not
+ *    happened yet;
+ * 5. `whenEmpty: 'SKIP_NODE'` is refused on a node whose approver fills
+ *    fields in, for the same reason `excludeInitiator` is.
+ *
+ * Unlike the `NODE_ACTOR` source ({@link readNodeActorSourceIssues}) a listed
+ * node may carry an entry condition, `SKIP_NODE` or an SLA auto-approval, and
+ * need not be on every path to `nodeId`: a node that did not run or that
+ * nobody approved has no signer, so it excludes nobody and the node proceeds
+ * as it would without the setting. The same holds for the "every path passes
+ * a source" and "two sources on different branches" rules: they protect a
+ * source that has to name a person, and an exclusion does not.
+ */
+export function readExcludeNodeActorsIssues(
+  definition: WorkflowDefinition,
+  nodeId: string,
+  config: ExcludeNodeActorsConfig | undefined,
+): readonly string[] {
+  if (config === undefined) {
+    return [];
+  }
+
+  const shapeIssue = readExcludeNodeActorsShapeIssue(config);
+
+  if (shapeIssue !== null) {
+    return [shapeIssue];
+  }
+
+  const sourceNodeIds = config.nodeIds;
+
+  if (sourceNodeIds.includes(nodeId)) {
+    return ['「不可與前面關卡同一人」所選的前面關卡不可以是自己。'];
+  }
+
+  const labelOf = (id: string): string => {
+    const node = definition.nodes.find((candidate) => candidate.id === id);
+
+    return node?.data.label ? `「${node.data.label}」` : `「${id}」`;
+  };
+  const sourceNodes = sourceNodeIds.map((id) =>
+    definition.nodes.find((candidate) => candidate.id === id),
+  );
+  const missingId = sourceNodeIds.find(
+    (id, index) => sourceNodes[index] === undefined,
+  );
+
+  if (missingId !== undefined) {
+    return [`「不可與前面關卡同一人」所選的前面關卡「${missingId}」不存在。`];
+  }
+
+  const notUserTaskId = sourceNodeIds.find(
+    (id, index) => sourceNodes[index]?.type !== 'userTask',
+  );
+
+  if (notUserTaskId !== undefined) {
+    return [
+      `「不可與前面關卡同一人」所選的前面關卡 ${labelOf(notUserTaskId)} 不是簽核關卡。`,
+    ];
+  }
+
+  const notUpstreamIds = sourceNodeIds.filter(
+    (id) => !readReachableWorkflowNodeIds(definition.edges, [id]).has(nodeId),
+  );
+
+  if (notUpstreamIds.length > 0) {
+    return notUpstreamIds.map(
+      (id) =>
+        `前面關卡 ${labelOf(id)} 不在 ${labelOf(nodeId)} 的上游，走不到這個節點，無法排除該關的簽核者。`,
+    );
+  }
+
+  const parallelBranches = readWorkflowParallelBranchSets(definition);
+  const incomingEdgeCount = (id: string): number =>
+    definition.edges.filter((edge) => edge.target === id).length;
+  const concurrentIds = sourceNodeIds.filter((id) => {
+    const isOnOwnBranch = parallelBranches.some((branches) =>
+      branches.some(
+        (branch, index) =>
+          branch.has(id) &&
+          branches.some(
+            (other, otherIndex) => otherIndex !== index && !other.has(id),
+          ),
+      ),
+    );
+
+    if (!isOnOwnBranch) {
+      return false;
+    }
+
+    const downstream = readReachableWorkflowNodeIds(definition.edges, [id]);
+
+    return definition.nodes.some(
+      (node) =>
+        node.id !== id &&
+        node.data.triggerMode === 'OR' &&
+        incomingEdgeCount(node.id) >= 2 &&
+        downstream.has(node.id) &&
+        (node.id === nodeId ||
+          readReachableWorkflowNodeIds(definition.edges, [node.id]).has(
+            nodeId,
+          )),
+    );
+  });
+
+  if (concurrentIds.length > 0) {
+    return concurrentIds.map(
+      (id) =>
+        `前面關卡 ${labelOf(id)} 在平行分支上，到 ${labelOf(nodeId)} 之間有「任一分支到達即觸發」的節點，本關開始時該關可能還沒簽完，無法排除該關的簽核者。`,
+    );
+  }
+
+  const self = definition.nodes.find((node) => node.id === nodeId);
+
+  return config.whenEmpty === 'SKIP_NODE' &&
+    self?.type === 'userTask' &&
+    readNodeFillableFieldKeys(self).size > 0
+    ? [
+        `簽核節點 ${labelOf(nodeId)} 有可由簽核人填寫的欄位，「不可與前面關卡同一人」不能選擇略過此節點。`,
+      ]
+    : [];
 }
 
 /**
@@ -1286,6 +1474,8 @@ export function readApproverResolverIssue(
  * - `entryCondition`: the node can be skipped outright;
  * - `skipNode`: `excludeInitiator.whenEmpty: 'SKIP_NODE'` skips it when
  *   removing the initiator leaves nobody;
+ * - `skipNodeByNodeActors`: `excludeNodeActors.whenEmpty: 'SKIP_NODE'` skips
+ *   it when removing an earlier stage's approvers leaves nobody;
  * - `autoApprove`: `sla.onTimeout: 'AUTO_APPROVE'` lets the timeout approve
  *   it, and the engine does not count an SLA approval as anyone's signature.
  *
@@ -1296,7 +1486,8 @@ export function readApproverResolverIssue(
 export type NodeActorSourceSkipReason =
   | 'autoApprove'
   | 'entryCondition'
-  | 'skipNode';
+  | 'skipNode'
+  | 'skipNodeByNodeActors';
 
 export function readNodeActorSourceSkipReasons(
   node: UserTaskNode,
@@ -1305,6 +1496,9 @@ export function readNodeActorSourceSkipReasons(
     ...(node.data.entryCondition?.trim() ? (['entryCondition'] as const) : []),
     ...(node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
       ? (['skipNode'] as const)
+      : []),
+    ...(node.data.excludeNodeActors?.whenEmpty === 'SKIP_NODE'
+      ? (['skipNodeByNodeActors'] as const)
       : []),
     ...(node.data.sla?.onTimeout === 'AUTO_APPROVE'
       ? (['autoApprove'] as const)
@@ -1321,6 +1515,8 @@ const NODE_ACTOR_SOURCE_SKIP_ISSUES: Readonly<
     `簽核來源的前面關卡 ${label} 設有進入條件，可能被跳過、沒有人簽核。`,
   skipNode: (label) =>
     `簽核來源的前面關卡 ${label} 在排除發起人後沒人時會跳過此關，可能沒有人簽核。`,
+  skipNodeByNodeActors: (label) =>
+    `簽核來源的前面關卡 ${label} 在排除前面關卡的簽核者後沒人時會跳過此關，可能沒有人簽核。`,
 };
 
 /**

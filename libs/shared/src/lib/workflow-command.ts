@@ -4,6 +4,7 @@ import {
   ApproverResolver,
   DecisionPolicy,
   ExcludeInitiatorConfig,
+  ExcludeNodeActorsConfig,
   FieldAccessEntry,
   ReturnBehavior,
   ReturnResubmitStrategy,
@@ -122,6 +123,16 @@ export type WorkflowCommand =
       readonly type: 'setUserTaskExcludeInitiator';
       readonly nodeId: string;
       readonly excludeInitiator: ExcludeInitiatorConfig | null;
+    }
+  | {
+      /**
+       * Separation of duties between stages: keeps the people who approved the
+       * listed earlier user tasks out of this node's approvers. `null` removes
+       * the setting entirely.
+       */
+      readonly type: 'setUserTaskExcludeNodeActors';
+      readonly nodeId: string;
+      readonly excludeNodeActors: ExcludeNodeActorsConfig | null;
     }
   | {
       readonly type: 'setUserTaskOptions';
@@ -306,6 +317,8 @@ export function applyWorkflowCommand(
       return applySetUserTaskSla(state, command);
     case 'setUserTaskExcludeInitiator':
       return applySetUserTaskExcludeInitiator(state, command);
+    case 'setUserTaskExcludeNodeActors':
+      return applySetUserTaskExcludeNodeActors(state, command);
     case 'setUserTaskDecisionPolicy':
       return applySetUserTaskDecisionPolicy(state, command);
     case 'setUserTaskOptions':
@@ -769,6 +782,33 @@ function applySetUserTaskExcludeInitiator(
       return {
         ...node,
         data: { ...node.data, excludeInitiator: command.excludeInitiator },
+      };
+    },
+    'userTask',
+  );
+}
+
+function applySetUserTaskExcludeNodeActors(
+  state: WorkflowDesignerState,
+  command: Extract<WorkflowCommand, { type: 'setUserTaskExcludeNodeActors' }>,
+): WorkflowCommandResult {
+  return mapNode(
+    state,
+    command.nodeId,
+    (node) => {
+      if (node.type !== 'userTask') {
+        return node;
+      }
+
+      // Off drops the key entirely, like `excludeInitiator`: an absent field is
+      // the "unchanged behaviour" definition.
+      if (!command.excludeNodeActors) {
+        return { ...node, data: omitKey(node.data, 'excludeNodeActors') };
+      }
+
+      return {
+        ...node,
+        data: { ...node.data, excludeNodeActors: command.excludeNodeActors },
       };
     },
     'userTask',

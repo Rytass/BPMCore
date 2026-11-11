@@ -71,6 +71,7 @@ export interface UserTaskNodeData extends BaseNodeData {
   readonly description?: string;
   readonly entryCondition?: string;
   readonly excludeInitiator?: ExcludeInitiatorConfig;
+  readonly excludeNodeActors?: ExcludeNodeActorsConfig;
   readonly fieldAccess?: readonly FieldAccessEntry[];
   /**
    * @deprecated Never enforced and never read: use `fieldAccess`. A draft that
@@ -96,6 +97,29 @@ export type ExcludeInitiatorWhenEmpty =
   | 'FAIL'
   | 'INITIATOR_MANAGER'
   | 'SKIP_NODE';
+
+/**
+ * Separation of duties between stages: when present, nobody who actually
+ * approved one of `nodeIds` earlier in this instance may be one of this
+ * node's approvers (a delegate acting for them counts as them, in either
+ * direction). Absent keeps today's behaviour.
+ *
+ * "Who approved" is read the way `NODE_ACTOR` reads it: the most recent round
+ * of each listed node, only real approvals (not an ad-hoc countersign and not
+ * an SLA auto-approval), the delegate who actually approved rather than the
+ * person the task was meant for, and the receiver of a transfer. Each listed
+ * node is read on its own and the results are combined.
+ *
+ * A listed node that did not run (its entry condition was false, or it was
+ * skipped by `SKIP_NODE`) or that nobody has approved has no signer, so it
+ * excludes nobody: this node then behaves as if the setting were absent.
+ */
+export interface ExcludeNodeActorsConfig {
+  /** The earlier user task nodes whose approvers are kept out of this node. */
+  readonly nodeIds: readonly string[];
+  /** What happens when no approver is left after the exclusion. */
+  readonly whenEmpty: ExcludeInitiatorWhenEmpty;
+}
 
 export type ApproverResolver =
   | { readonly memberIds: readonly string[]; readonly type: 'DIRECT' }

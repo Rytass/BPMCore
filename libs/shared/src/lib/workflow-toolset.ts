@@ -9,6 +9,7 @@ import {
   ApproverResolverFallback,
   DecisionPolicy,
   ExcludeInitiatorConfig,
+  ExcludeNodeActorsConfig,
   ReturnResubmitStrategy,
   ServiceAction,
   SlaCalendarMode,
@@ -319,6 +320,26 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
       {
         nodeId: { type: 'string' },
         enabled: { type: 'boolean' },
+        whenEmpty: {
+          enum: [...EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES],
+          type: 'string',
+        },
+      },
+      ['nodeId', 'enabled'],
+    ),
+    kind: 'mutation',
+  },
+  {
+    name: 'set_user_task_exclude_node_actors',
+    description:
+      '設定簽核節點的「不可與前面關卡同一人」（關卡之間的職責分離，例如信管審核與會計審核不能是同一人）。enabled=true 時，實際簽核過 nodeIds 所列前面關卡的人（含其代理人）不會成為此關的簽核人，也不能被轉簽或加簽到此關；enabled=false 會移除此設定。' +
+      'nodeIds 為前面的簽核節點 id（必須走得到本節點，且不可是本節點自己）；前面關卡沒有執行或沒人簽過時，不排除任何人。' +
+      'whenEmpty 為排除後沒有任何簽核人時的處理：FAIL=停止流程並提示（預設）；INITIATOR_MANAGER=改由申請人的直屬主管簽核；SKIP_NODE=跳過此關。',
+    inputSchema: objectSchema(
+      {
+        nodeId: { type: 'string' },
+        enabled: { type: 'boolean' },
+        nodeIds: { items: { type: 'string' }, type: 'array' },
         whenEmpty: {
           enum: [...EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES],
           type: 'string',
@@ -642,6 +663,9 @@ function readNodeSummary(node: WorkflowNode): string {
       // set_user_task_exclude_initiator wrote; absent means "not excluded".
       (node.data.excludeInitiator
         ? `；申請人不可簽核自己的單=${node.data.excludeInitiator.whenEmpty}`
+        : '') +
+      (node.data.excludeNodeActors
+        ? `；不可與前面關卡同一人=${node.data.excludeNodeActors.nodeIds.join('、')}（${node.data.excludeNodeActors.whenEmpty}）`
         : '') +
       readFieldAccessSummary(node) +
       (node.data.fieldPermissions === undefined ? '' : '；含舊欄位權限設定')
@@ -1082,6 +1106,12 @@ function buildPrimitiveCommand(
         nodeId: readString(input, 'nodeId'),
         type: 'setUserTaskExcludeInitiator',
       };
+    case 'set_user_task_exclude_node_actors':
+      return {
+        excludeNodeActors: parseExcludeNodeActors(input),
+        nodeId: readString(input, 'nodeId'),
+        type: 'setUserTaskExcludeNodeActors',
+      };
     case 'set_service_action':
       return {
         action: parseServiceAction(input['action']),
@@ -1176,7 +1206,7 @@ function readNodeTypeCatalog(): unknown {
       {
         dataShape:
           'label, approverResolver, decisionPolicy, returnBehavior(allowReturn, allowedTargets, requireComment?, resubmitStrategy?), ' +
-          'allowReject, allowTransfer, allowAddSigner, excludeInitiator?(whenEmpty), triggerMode, ' +
+          'allowReject, allowTransfer, allowAddSigner, excludeInitiator?(whenEmpty), excludeNodeActors?(nodeIds, whenEmpty), triggerMode, ' +
           'sla?(duration, calendar?, onTimeout, escalateLevelsUp?, warningAt?), notification?',
         label: WORKFLOW_NODE_TYPE_LABELS.userTask,
         type: 'userTask',
@@ -1566,6 +1596,31 @@ function parseExcludeInitiator(
   );
 
   return { whenEmpty: whenEmpty ?? 'INITIATOR_MANAGER' };
+}
+
+/**
+ * Builds the node's `excludeNodeActors` setting from the flat tool input,
+ * **never throwing**. `enabled: false` removes it (`null`). When enabled, an
+ * absent or unrecognised `whenEmpty` falls back to `FAIL` (the designer's
+ * default too: stop loudly rather than hand the seat to someone else), and a
+ * missing `nodeIds` stays empty, which the readiness check refuses rather than
+ * the tool silently dropping the setting.
+ */
+function parseExcludeNodeActors(
+  input: Readonly<Record<string, unknown>>,
+): ExcludeNodeActorsConfig | null {
+  if (input['enabled'] === false) {
+    return null;
+  }
+
+  const whenEmpty = EXCLUDE_INITIATOR_WHEN_EMPTY_VALUES.find(
+    (candidate) => candidate === input['whenEmpty'],
+  );
+
+  return {
+    nodeIds: readStringArray(input['nodeIds']),
+    whenEmpty: whenEmpty ?? 'FAIL',
+  };
 }
 
 /** Coerce an LLM-supplied service action, **never throwing** (defaults to NOTIFY). */
