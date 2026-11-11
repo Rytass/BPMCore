@@ -634,6 +634,113 @@ describe('administrator reassignment in the timeline', () => {
       } as unknown as ActivityLogRecord),
     ).toBe(true);
   });
+
+  const profiles = new Map<string, MemberProfileRecord>([
+    ['member-left', { email: '', memberId: 'member-left', name: '王小明' } as MemberProfileRecord],
+    ['member-new', { email: '', memberId: 'member-new', name: '李大華' } as MemberProfileRecord],
+  ]);
+
+  function reassignedParts(
+    payload: Readonly<Record<string, unknown>>,
+  ): readonly ReturnType<typeof readActivityDetailParts>[number][] {
+    return readActivityDetailParts(
+      {
+        ...createDecisionActivityLog(),
+        actorMemberId: 'admin-001',
+        eventType: 'TASK_REASSIGNED',
+        payloadJson: JSON.stringify(payload),
+      } as ActivityLogRecord,
+      payload,
+      null,
+      new Map(),
+      new Map(),
+      null,
+      profiles,
+    );
+  }
+
+  it('says whose task it was, who it moved to and why', () => {
+    expect(
+      reassignedParts({
+        fromMemberId: 'member-left',
+        reason: '原簽核人已離職',
+        toMemberId: 'member-new',
+      }),
+    ).toContainEqual({
+      text: '原簽核人：王小明 → 改派給：李大華 · 原因：原簽核人已離職',
+      type: 'text',
+    });
+  });
+
+  it('keeps the original approver visible by id when their profile is gone', () => {
+    expect(
+      reassignedParts({ fromMemberId: 'member-gone', toMemberId: 'member-new' }),
+    ).toContainEqual({
+      text: '原簽核人：member-gone → 改派給：李大華',
+      type: 'text',
+    });
+  });
+
+  it('adds no reassignment text when the payload names nobody', () => {
+    expect(
+      reassignedParts({}).filter(
+        (part) => part.type === 'text' && part.text.includes('改派'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  function pendingTask(overrides: Partial<TaskRecord>): TaskRecord {
+    return {
+      assigneeMemberId: 'member-new',
+      candidateMemberIds: ['member-new'],
+      createdAt: '2026-10-15T10:00:00.000Z',
+      delegationChainJson: JSON.stringify([
+        { from: 'member-left', reason: 'ADMIN_REASSIGN', ruleId: null, to: 'member-new' },
+      ]),
+      id: 'task-1',
+      nodeId: 'task_finance',
+      originalAssigneeMemberId: 'member-left',
+      status: 'PENDING',
+      ...overrides,
+    } as TaskRecord;
+  }
+
+  function pendingStep(
+    task: TaskRecord,
+  ): ReturnType<typeof readActivityStepRecords>[number] | undefined {
+    return readActivityStepRecords(
+      [],
+      [task],
+      [],
+      null,
+      'RUNNING' as never,
+      profiles,
+      new Map(),
+      new Map(),
+      null,
+    ).find((step) => step.id === `pending-task-${task.id}`);
+  }
+
+  it('names the original approver on a waiting task that was moved', () => {
+    expect(pendingStep(pendingTask({}))?.descriptionParts).toContainEqual({
+      email: '',
+      label: '王小明',
+      memberId: 'member-left',
+      prefix: '原簽核人',
+      type: 'member',
+    });
+  });
+
+  it.each([
+    ['nothing moved it', { delegationChainJson: '[]' }],
+    ['it never left its first approver', { originalAssigneeMemberId: 'member-new' }],
+  ])('does not add an original approver when %s', (_label, overrides) => {
+    expect(
+      pendingStep(pendingTask(overrides))?.descriptionParts.filter(
+        (part) => part.type === 'member' && part.prefix === '原簽核人',
+      ),
+    ).toHaveLength(0);
+  });
 });
 
 describe('how an instance ended', (): void => {

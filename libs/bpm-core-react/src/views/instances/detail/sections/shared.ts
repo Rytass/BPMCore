@@ -522,6 +522,35 @@ export function readMemberDescriptionPart(
   };
 }
 
+/**
+ * Who a pending task was first meant for, when it has since moved to someone
+ * else (administrator reassignment or delegation). Same rule as
+ * {@link readTaskAssigneeLabel}'s 「（原：…）」, so the timeline and the tasks
+ * section agree. Falls back to the raw id so the person is never silently
+ * dropped when their profile cannot be resolved.
+ */
+export function readOriginalAssigneeDescriptionPart(
+  task: TaskRecord,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
+): ActivityStepDescriptionPart | null {
+  const originalMemberId = task.originalAssigneeMemberId;
+
+  if (
+    !originalMemberId ||
+    originalMemberId === task.assigneeMemberId ||
+    readDelegationChain(task.delegationChainJson).length === 0
+  ) {
+    return null;
+  }
+
+  return readMemberDescriptionPart(
+    '原簽核人',
+    originalMemberId,
+    memberProfilesById,
+    originalMemberId,
+  );
+}
+
 export function isActivityDescriptionPart(
   part: ActivityStepDescriptionPart | null,
 ): part is ActivityStepDescriptionPart {
@@ -701,6 +730,27 @@ export function formatActivityDateTime(value: string): string {
   return formatDateTime(value);
 }
 
+function readTaskReassignedLabel(
+  payload: Readonly<Record<string, unknown>>,
+  memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
+): string | null {
+  const fromMemberId = readStringField(payload, 'fromMemberId');
+  const toMemberId = readStringField(payload, 'toMemberId');
+  const reason = readStringField(payload, 'reason');
+  const moveLabel =
+    fromMemberId || toMemberId
+      ? `原簽核人：${readMemberDisplayText(
+          fromMemberId,
+          memberProfilesById,
+        )} → 改派給：${readMemberDisplayText(toMemberId, memberProfilesById)}`
+      : null;
+  const label = [moveLabel, reason?.trim() ? `原因：${reason.trim()}` : null]
+    .filter(isPresentText)
+    .join(' · ');
+
+  return label || null;
+}
+
 function readActivityDetail(
   activityLog: ActivityLogRecord,
   payload: Readonly<Record<string, unknown>>,
@@ -717,6 +767,14 @@ function readActivityDetail(
       },
       memberProfilesById,
     );
+  }
+
+  if (activityLog.eventType === 'TASK_REASSIGNED') {
+    // The actor is the administrator; the payload says whose seat moved to
+    // whom and why. Without this the entry only showed the node and the
+    // administrator, so a reassigned case no longer said who it had been
+    // waiting on (usually someone who has left).
+    return readTaskReassignedLabel(payload, memberProfilesById);
   }
 
   if (activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED') {
@@ -1337,6 +1395,7 @@ export function readActivityStepRecords(
           memberProfilesById,
           '未指定',
         ),
+        readOriginalAssigneeDescriptionPart(task, memberProfilesById),
         readTextDescriptionPart(
           `建立時間：${formatActivityDateTime(task.createdAt)}`,
         ),
