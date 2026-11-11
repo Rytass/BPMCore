@@ -435,7 +435,12 @@ async function resolveApprovers(
   必須是整數且不可高於 `minPositionLevel`；`startFrom` 的類型要認得、`FORM_MEMBER` 要有 `formPath`、
   `NODE_ACTOR` 要有 `nodeIds`；`FORM_MEMBER` 指到的欄位必須是**必填、永遠顯示、單選的人員欄位**
   （規則同 `FORM_MEMBER_MANAGER`）；`NODE_ACTOR` 指到的關卡必須存在、是簽核關卡、在這個節點的上游、
-  不能被跳過、不在平行分支的不同路線上（規則同 `NODE_ACTOR`，用同一個 `readNodeActorSourceIssues`）。
+  不能被跳過、不在平行分支的不同路線上（規則同 `NODE_ACTOR`，用同一個 `readNodeActorSourceIssues`）；
+  另外 `NODE_ACTOR` 起點指到的每個關卡都必須只會有一位實際簽核人：`decisionPolicy` 是 `PARALLEL_ALL`、
+  `SEQUENTIAL`、`COUNT` 門檻大於 1 的 `QUORUM` 或任何百分比門檻的 `QUORUM` 就擋（除非該關卡只列了一位
+  `DIRECT` 成員），因為最後一位簽核人按同意時引擎無法決定從誰起算，而那個 `ConflictException` 會丟在
+  他自己的同意交易裡，使那次同意永遠無法 commit，範本改了也救不了進行中的案件。`NODE_ACTOR`／
+  `NODE_ACTOR_MANAGER` 本身不受這條限制（它們取所有簽核人）。引擎執行時的 Conflict 保留給繞過 publish 檢查的舊資料。
 - **代理人與轉簽對象的職等**：主管鏈解析完之後，代理與轉簽都不會再檢查職等，所以主管鏈節點多一條規則——
   **接手的人職等必須 `>=` 被他取代的那位成員**（不是固定門檻：鏈上本來就會有低於 `minPositionLevel`
   的主管，固定門檻會讓他們完全不能代理）。職等一律在動作當下用上面的〈職等來源〉現算；
