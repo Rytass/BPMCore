@@ -1728,4 +1728,32 @@ describe('set_user_task_exclude_node_actors', () => {
 
     expect(summary).toContain('不可與前面關卡同一人=task_a（FAIL）');
   });
+
+  it('still reads a snapshot whose raw nodeIds is not a list', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    // Raw JSON that was never linted: nodeIds is a string, not an array.
+    const broken = {
+      ...state,
+      definition: {
+        ...state.definition,
+        nodes: state.definition.nodes.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  excludeNodeActors: { nodeIds: 'task_a', whenEmpty: 'FAIL' },
+                },
+              }
+            : node,
+        ),
+      },
+    } as unknown as WorkflowDesignerState;
+
+    expect(() => readWorkflowSnapshot(broken)).not.toThrow();
+    expect(
+      readWorkflowSnapshot(broken).nodes.find((node) => node.id === nodeId)
+        ?.summary,
+    ).toContain('不可與前面關卡同一人=（FAIL）');
+  });
 });

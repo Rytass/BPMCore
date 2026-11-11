@@ -333,7 +333,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
     name: 'set_user_task_exclude_node_actors',
     description:
       '設定簽核節點的「不可與前面關卡同一人」（關卡之間的職責分離，例如信管審核與會計審核不能是同一人）。enabled=true 時，實際簽核過 nodeIds 所列前面關卡的人（含其代理人）不會成為此關的簽核人，也不能被轉簽或加簽到此關；enabled=false 會移除此設定。' +
-      'nodeIds 為前面的簽核節點 id（必須走得到本節點，且不可是本節點自己）；前面關卡沒有執行或沒人簽過時，不排除任何人。' +
+      'nodeIds 為前面的簽核節點 id，不可是本節點自己；每一個都必須是每條路徑都會經過、而且一定有人實際簽核的關卡（沒有進入條件、不可略過、沒有逾時自動核准），發布時會檢查；條件式的前面關卡這一版不支援，要改用分流把兩關放在同一條路線上。' +
       'whenEmpty 為排除後沒有任何簽核人時的處理：FAIL=停止流程並提示（預設）；INITIATOR_MANAGER=改由申請人的直屬主管簽核；SKIP_NODE=跳過此關。',
     inputSchema: objectSchema(
       {
@@ -653,6 +653,16 @@ function readFieldAccessSummary(node: UserTaskNode): string {
     : '';
 }
 
+// Raw JSON that was never linted can carry a `nodeIds` that is not a list; a
+// snapshot must still be readable then, so the summary shows nothing for it.
+function readExcludeNodeActorsNodeIdsSummary(
+  config: ExcludeNodeActorsConfig,
+): string {
+  const rawNodeIds: unknown = config.nodeIds;
+
+  return Array.isArray(rawNodeIds) ? rawNodeIds.join('、') : '';
+}
+
 function readNodeSummary(node: WorkflowNode): string {
   if (node.type === 'userTask') {
     return (
@@ -665,7 +675,7 @@ function readNodeSummary(node: WorkflowNode): string {
         ? `；申請人不可簽核自己的單=${node.data.excludeInitiator.whenEmpty}`
         : '') +
       (node.data.excludeNodeActors
-        ? `；不可與前面關卡同一人=${node.data.excludeNodeActors.nodeIds.join('、')}（${node.data.excludeNodeActors.whenEmpty}）`
+        ? `；不可與前面關卡同一人=${readExcludeNodeActorsNodeIdsSummary(node.data.excludeNodeActors)}（${node.data.excludeNodeActors.whenEmpty}）`
         : '') +
       readFieldAccessSummary(node) +
       (node.data.fieldPermissions === undefined ? '' : '；含舊欄位權限設定')
