@@ -276,6 +276,14 @@ export function readNodeDisplayLabel(
   );
 }
 
+// A blank name falls back to the id, so a member label is never empty.
+function readMemberName(
+  profile: MemberProfileRecord,
+  fallbackLabel: string,
+): string {
+  return profile.name.trim() ? profile.name : fallbackLabel;
+}
+
 export function readMemberDisplayText(
   memberId: string | null,
   memberProfilesById: ReadonlyMap<string, MemberProfileRecord>,
@@ -286,9 +294,15 @@ export function readMemberDisplayText(
 
   const profile = memberProfilesById.get(memberId);
 
-  return profile
-    ? formatMemberLabel(profile.name, profile.email, 'fullwidth')
-    : memberId;
+  if (!profile) {
+    return memberId;
+  }
+
+  return formatMemberLabel(
+    readMemberName(profile, memberId),
+    profile.email,
+    'fullwidth',
+  );
 }
 
 /**
@@ -523,12 +537,10 @@ function readMemberDescriptionPart(
   fallbackLabel: string,
 ): ActivityStepDescriptionPart {
   const profile = memberId ? memberProfilesById.get(memberId) : null;
-  const name = profile?.name ?? '';
 
   return {
     email: profile?.email ?? null,
-    // An empty name falls back to the id too, so the label is never blank.
-    label: name.trim() ? name : fallbackLabel,
+    label: profile ? readMemberName(profile, fallbackLabel) : fallbackLabel,
     memberId,
     prefix,
     type: 'member',
@@ -750,22 +762,24 @@ function readTaskReassignedLabel(
   // assignee alone, so the seat's holder was not the 原簽核人. Payloads from
   // before assigneeChanged existed keep the original wording.
   const fromLabel = payload.assigneeChanged === false ? '原座位' : '原簽核人';
-  const moveLabel =
+  const trimmedReason = reason?.trim();
+  const parts = [
+    fromMemberId
+      ? `${fromLabel}：${readMemberDisplayText(fromMemberId, memberProfilesById)}`
+      : null,
+    toMemberId
+      ? `改派給：${readMemberDisplayText(toMemberId, memberProfilesById)}`
+      : null,
+  ];
+
+  return (
     [
-      fromMemberId
-        ? `${fromLabel}：${readMemberDisplayText(fromMemberId, memberProfilesById)}`
-        : null,
-      toMemberId
-        ? `改派給：${readMemberDisplayText(toMemberId, memberProfilesById)}`
-        : null,
+      parts.filter(isPresentText).join(' → '),
+      trimmedReason ? `原因：${trimmedReason}` : null,
     ]
       .filter(isPresentText)
-      .join(' → ') || null;
-  const label = [moveLabel, reason?.trim() ? `原因：${reason.trim()}` : null]
-    .filter(isPresentText)
-    .join(' · ');
-
-  return label || null;
+      .join(' · ') || null
+  );
 }
 
 function readActivityDetail(
