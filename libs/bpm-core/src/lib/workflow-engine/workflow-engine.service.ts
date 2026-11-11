@@ -9161,10 +9161,13 @@ function readFilterableProblemLocation(
   // Not in the schema (the check and this lookup read the same schema, so
   // this is defensive): still address it the way FormDataIssue.path promises,
   // `table[i].col` for a row value rather than the dotted filter path.
+  const row = `${tableKey}[${problem.rowIndex}]`;
   const path =
-    problem.rowIndex !== null && columnKey !== undefined
-      ? `${tableKey}[${problem.rowIndex}].${columnKey}`
-      : problem.path;
+    problem.rowIndex === null
+      ? problem.path
+      : columnKey === undefined
+        ? row
+        : `${row}.${columnKey}`;
 
   return { path, ref: `欄位「${path}」` };
 }
