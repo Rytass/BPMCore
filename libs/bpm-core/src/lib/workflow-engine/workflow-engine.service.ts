@@ -4248,7 +4248,7 @@ export class WorkflowEngineService {
     // every template would put a host lookup behind every list request. An
     // initiator policy that reads `initiator.customFields` is therefore judged
     // here against `{}`, while a submission judges it against what the
-    // resolver returns. On cel-v2 that read of an absent key throws, and the
+    // resolver returns. Reading an absent key throws in either dialect, and the
     // filter below does not catch it.
     const initiatorMetadataSnapshot =
       await this.readDefaultInitiatorMetadataSnapshot(memberId);
@@ -4636,7 +4636,9 @@ export class WorkflowEngineService {
    *
    * Only `customFields` comes from the host. The other keys are the engine's
    * and are written back after the resolver returns, so nothing it does can
-   * change who the initiator is. The resolver sees copies for the same reason.
+   * change who the initiator is. The resolver gets copies of the snapshot and
+   * of the form data for the same reason; `authContext` is the caller's own
+   * object, as every other host hook receives it.
    * It runs here, before the engine transaction, so a failure leaves no case
    * behind and a slow lookup holds no lock.
    */
@@ -9075,23 +9077,44 @@ function cloneJsonObject(
  * stored, so the policy evaluated at submit and the conditions evaluated later
  * read the same values. Anything else is a bug in the host's resolver and fails
  * the submission rather than being replaced by `{}`.
+ *
+ * The check runs on the round-tripped value too, because an object's `toJSON`
+ * can turn it into something that is not an object. A key whose value is
+ * `undefined` does not survive the round trip either, so it is not in the
+ * stored snapshot.
  */
 function readResolvedInitiatorCustomFields(
   value: unknown,
 ): Readonly<Record<string, unknown>> {
-  if (Object.prototype.toString.call(value) !== '[object Object]') {
+  if (!isPlainObjectValue(value)) {
     throw new InternalServerErrorException(
       'Initiator customFields resolver must return a plain object',
     );
   }
 
-  try {
-    return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-  } catch {
+  const roundTripped = ((): unknown => {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      throw new InternalServerErrorException(
+        'Initiator customFields resolver must return a JSON-serializable object',
+      );
+    }
+  })();
+
+  if (!isPlainObjectValue(roundTripped)) {
     throw new InternalServerErrorException(
-      'Initiator customFields resolver must return a JSON-serializable object',
+      'Initiator customFields resolver must return a plain object',
     );
   }
+
+  return roundTripped;
+}
+
+function isPlainObjectValue(
+  value: unknown,
+): value is Readonly<Record<string, unknown>> {
+  return Object.prototype.toString.call(value) === '[object Object]';
 }
 
 function createWorkflowAuthContext(memberId: string): BPMAuthContext {

@@ -4,7 +4,9 @@ import { BPMAuthContext } from '../bpm-auth';
 /**
  * What the engine tells the host while it builds an initiator snapshot.
  *
- * Everything here is a copy: changing it changes nothing the engine keeps.
+ * `defaultSnapshot` and `formData` are copies: changing them changes nothing
+ * the engine keeps. `authContext` is the caller's own object, as it is for the
+ * other host hooks, so treat it as read-only too.
  */
 export interface BPMInitiatorCustomFieldsInput {
   /** Who is signed in when the case is started through the engine. */
@@ -18,8 +20,9 @@ export interface BPMInitiatorCustomFieldsInput {
   readonly defaultSnapshot: Readonly<Record<string, unknown>>;
 
   /**
-   * The form data being submitted, after the fields an approver fills in were
-   * dropped (the same data the case is created with).
+   * The form data being submitted, which is the same data the case is created
+   * with. When the submission comes from an end user (the GraphQL mutation),
+   * the fields an approver fills in have already been dropped from it.
    */
   readonly formData: Readonly<Record<string, unknown>>;
 
@@ -51,6 +54,13 @@ export interface BPMInitiatorCustomFieldsInput {
  * The snapshot is fixed at the moment the case is submitted. Resubmitting a
  * returned case does not call this again, and the dry run and the launchable
  * template list do not call it either.
+ *
+ * One limit follows from that: the launchable template list judges an
+ * initiator policy against `{}` for `customFields`. Reading an absent key
+ * throws in either dialect, so a policy that reads `initiator.customFields`
+ * fails that whole list. Keep `initiator.customFields` out of
+ * `initiatorPolicyCel` for now and use it in edge conditions and expression
+ * approvers.
  */
 export interface BPMInitiatorCustomFieldsResolver {
   /**
@@ -59,6 +69,12 @@ export interface BPMInitiatorCustomFieldsResolver {
    * Must return a plain, JSON-serializable object (`{}` for none). A return
    * value of any other shape, or a thrown error, fails the submission and no
    * case is created; the engine never falls back to `{}`.
+   *
+   * Return a value for every key a template reads: a key whose value is
+   * `undefined` is dropped, and a condition that reads it then throws unless
+   * the template guards the read with `has()`. What is returned is stored with
+   * the case and can be read by anyone who can read the case, so it must not
+   * hold secrets.
    *
    * Runs before the case is created and outside the engine transaction, so a
    * slow lookup does not hold a case lock.

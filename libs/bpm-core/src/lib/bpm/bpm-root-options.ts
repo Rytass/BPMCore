@@ -110,9 +110,14 @@ export interface BPMRootRuntimeOptions
    * Fills `customFields` of the initiator snapshot the engine builds when a
    * case is submitted without one (every submission from the GraphQL
    * `submitApprovalInstance` mutation), as a ready instance. The values are
-   * then readable as `initiator.customFields.*` by initiator policies,
-   * conditions and expression approvers. A snapshot passed in by a host
-   * calling the service is never touched.
+   * then readable as `initiator.customFields.*` by the initiator policy at
+   * submit, by conditions and by expression approvers. A snapshot passed in by
+   * a host calling the service is never touched.
+   *
+   * One exception: the launchable template list does not call it and judges an
+   * initiator policy against `{}`, so a policy that reads
+   * `initiator.customFields` fails that whole list in either dialect. Keep it
+   * out of `initiatorPolicyCel` for now.
    *
    * This is the form that reaches every engine copy; prefer it to
    * `initiatorCustomFieldsResolverProvider`. When omitted, `customFields` is

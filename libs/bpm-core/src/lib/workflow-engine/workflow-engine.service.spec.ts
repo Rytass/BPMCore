@@ -528,7 +528,8 @@ describe('WorkflowEngineService', () => {
       primaryOrgUnitId: 'org-sales',
     };
     const STATION_POLICY = 'initiator.customFields.station == "TPE"';
-    const NOT_ALLOWED = 'Current member is not allowed to start this approval template';
+    const NOT_ALLOWED =
+      'Current member is not allowed to start this approval template';
     const createFixture = (
       options: Partial<Parameters<typeof createServiceFixture>[0]> = {},
     ): ServiceFixture =>
@@ -610,7 +611,9 @@ describe('WorkflowEngineService', () => {
         nested: { codes: ['a', 'b'] },
         station: 'TPE',
       });
-      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
       const authContext: BPMAuthContext = {
         memberId: 'member-001',
         metadata: { site: 'TPE' },
@@ -641,7 +644,9 @@ describe('WorkflowEngineService', () => {
 
     it('gives a host that called the service without an auth context one for the initiator', async (): Promise<void> => {
       const { resolver, resolveCustomFields } = createResolver({});
-      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
 
       await submit(fixture);
 
@@ -674,7 +679,9 @@ describe('WorkflowEngineService', () => {
           });
         },
       );
-      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
 
       await submit(fixture);
 
@@ -690,7 +697,9 @@ describe('WorkflowEngineService', () => {
       const { resolver, resolveCustomFields } = createResolver({
         station: 'TPE',
       });
-      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
 
       await submit(fixture, {
         initiatorMetadataSnapshotJson:
@@ -717,12 +726,18 @@ describe('WorkflowEngineService', () => {
         templateInitiatorPolicyCel: STATION_POLICY,
       });
 
-      await expect(submit(allowed)).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(submit(allowed)).resolves.toMatchObject({
+        id: 'instance-1',
+      });
       await expect(submit(refused)).rejects.toThrow(NOT_ALLOWED);
       expect(refused.savedInstance).toBeNull();
     });
 
-    it('still refuses a policy that reads customFields when no resolver is registered', async (): Promise<void> => {
+    // Under jest `cel-js` is a shim that reads an absent key as `undefined`,
+    // so this policy is simply false. The real engines throw
+    // `EXPRESSION_MISSING_KEY` for the same read in either dialect, so a case
+    // does not start there either, but with that error instead of this one.
+    it('does not start a case whose policy reads customFields when no resolver is registered', async (): Promise<void> => {
       const fixture = createFixture({
         templateInitiatorPolicyCel: STATION_POLICY,
       });
@@ -731,23 +746,41 @@ describe('WorkflowEngineService', () => {
       expect(fixture.savedInstance).toBeNull();
     });
 
+    // Two steps, because this fixture does not process a case inside
+    // `submitApprovalInstance`: the token the submit saves reaches
+    // `processTokens` only when the fixture holds a workflow snapshot, and then
+    // it also holds a second start token. So the snapshot the submit stored is
+    // handed to a fixture that processes an existing case, built the way the
+    // other exclusive gateway tests are (`processWorkflowSnapshot` and
+    // `processInstance`); only the stored snapshot differs.
     it.each([
       ['TPE', 'task_high'],
       ['KHH', 'task_default'],
     ])(
-      'routes a case on customFields.station %s to %s',
+      'routes a case on the customFields.station %s the resolver returned to %s',
       async (station: string, expectedNodeId: string): Promise<void> => {
-        const fixture = createFixture({
+        const submitted = createFixture({
           initiatorCustomFieldsResolver: createResolver({ station }).resolver,
-          templateWorkflowDefinition: createExclusiveGatewayWorkflow({
+        });
+
+        await submit(submitted);
+        expect(submitted.savedInstance).not.toBeNull();
+
+        const processed = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processInitiatorMetadataSnapshot:
+            submitted.savedInstance?.initiatorMetadataSnapshot ?? {},
+          processWorkflowSnapshot: createExclusiveGatewayWorkflow({
             highCondition: STATION_POLICY,
             includeStructuredCondition: false,
           }),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
         });
 
-        await submit(fixture);
+        await processed.service.processInstance('instance-1');
 
-        expect(fixture.savedTasks.map((task) => task.nodeId)).toEqual([
+        expect(processed.savedTasks.map((task) => task.nodeId)).toEqual([
           expectedNodeId,
         ]);
       },
@@ -757,7 +790,9 @@ describe('WorkflowEngineService', () => {
       const { resolver, resolveCustomFields } = createResolver({});
 
       resolveCustomFields.mockRejectedValue(new Error('host lookup is down'));
-      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
 
       await expect(submit(fixture)).rejects.toThrow('host lookup is down');
       expect(fixture.savedInstance).toBeNull();
@@ -771,6 +806,11 @@ describe('WorkflowEngineService', () => {
       ['a string', 'TPE'],
       ['a number', 7],
       ['a Date', new Date('2026-01-01T00:00:00.000Z')],
+      // Looks like a plain object, but JSON turns it into a string.
+      [
+        'an object whose toJSON returns a string',
+        { toJSON: (): string => 'TPE' },
+      ],
     ])(
       'fails the submission when the resolver returns %s',
       async (_label: string, returned: unknown): Promise<void> => {
@@ -808,6 +848,10 @@ describe('WorkflowEngineService', () => {
       const { resolver, resolveCustomFields } = createResolver({
         station: 'TPE',
       });
+      const storedSnapshot = {
+        customFields: { station: 'KHH' },
+        memberId: 'member-001',
+      };
       const formSchema = createFinanceTableFormSchema();
       const fixture = createFixture({
         formSchema,
@@ -815,6 +859,7 @@ describe('WorkflowEngineService', () => {
         instanceState: ApprovalInstanceStateEnum.RETURNED,
         processFormData: { amount: 10 },
         processFormDefinitionSnapshot: { schema: formSchema },
+        processInitiatorMetadataSnapshot: storedSnapshot,
         processWorkflowSnapshot: createFieldAccessWorkflow(),
       });
 
@@ -828,7 +873,7 @@ describe('WorkflowEngineService', () => {
 
       expect(resolveCustomFields).not.toHaveBeenCalled();
       expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual(
-        createApprovalInstance().initiatorMetadataSnapshot,
+        storedSnapshot,
       );
     });
 
@@ -836,7 +881,9 @@ describe('WorkflowEngineService', () => {
       const { resolver, resolveCustomFields } = createResolver({
         station: 'TPE',
       });
-      const fixture = createFixture({ initiatorCustomFieldsResolver: resolver });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
 
       const dryRun = fixture.service.dryRunApprovalWorkflow({
         formDataJson: '{}',
@@ -18711,6 +18758,7 @@ function createServiceFixture({
   processTaskDecisions = [],
   processFormData,
   processFormDefinitionSnapshot,
+  processInitiatorMetadataSnapshot,
   processOptionSnapshot,
   processManagerResolutions = [],
   processMemberships = [],
@@ -18759,6 +18807,9 @@ function createServiceFixture({
   readonly processTaskDecisions?: readonly TaskDecisionEntity[];
   readonly processFormData?: Readonly<Record<string, unknown>>;
   readonly processFormDefinitionSnapshot?: Readonly<Record<string, unknown>>;
+  // The initiator snapshot the processed instance already carries; unset reads
+  // like the default `{}`.
+  readonly processInitiatorMetadataSnapshot?: Readonly<Record<string, unknown>>;
   readonly processManagerResolutions?: readonly ManagerResolutionEntity[];
   readonly processMemberships?: readonly MembershipEntity[];
   readonly processNotifications?: readonly NotificationEntity[];
@@ -18846,6 +18897,7 @@ function createServiceFixture({
         formData: processFormData,
         formDataOptionSnapshot: processOptionSnapshot,
         formDefinitionSnapshot: processFormDefinitionSnapshot,
+        initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
         state: instanceState,
         submittedByMemberId,
         updatedAt: rootInstanceUpdatedAt,
@@ -19165,6 +19217,7 @@ function createServiceFixture({
                 formData: processFormData,
                 formDataOptionSnapshot: processOptionSnapshot,
                 formDefinitionSnapshot: processFormDefinitionSnapshot,
+                initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
                 state: instanceState,
                 submittedByMemberId,
                 updatedAt: transactionalInstanceUpdatedAt,
@@ -20400,6 +20453,7 @@ function createApprovalInstance({
   formData,
   id,
   initiatorMemberId,
+  initiatorMetadataSnapshot,
   state,
   submittedByMemberId,
   title,
@@ -20412,6 +20466,7 @@ function createApprovalInstance({
   readonly formData?: Readonly<Record<string, unknown>>;
   readonly id?: string;
   readonly initiatorMemberId?: string;
+  readonly initiatorMetadataSnapshot?: Readonly<Record<string, unknown>>;
   readonly state?: ApprovalInstanceStateEnum;
   readonly submittedByMemberId?: string | null;
   readonly title?: string;
@@ -20432,7 +20487,7 @@ function createApprovalInstance({
     },
     id: id ?? 'instance-1',
     initiatorMemberId: initiatorMemberId ?? 'member-001',
-    initiatorMetadataSnapshot: {},
+    initiatorMetadataSnapshot: initiatorMetadataSnapshot ?? {},
     startedAt: new Date('2026-05-04T09:00:00.000Z'),
     state: state ?? ApprovalInstanceStateEnum.RUNNING,
     submittedByMemberId: submittedByMemberId ?? null,
