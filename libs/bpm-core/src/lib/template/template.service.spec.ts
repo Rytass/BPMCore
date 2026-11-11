@@ -1079,6 +1079,164 @@ describe('TemplateService', () => {
     });
   });
 
+  describe('ORG_MANAGER_CHAIN start settings', (): void => {
+    const schema: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'boss', label: '主管', required: true, type: 'member' },
+        {
+          fieldKey: 'bosses',
+          label: '多位主管',
+          multiple: true,
+          required: true,
+          type: 'member',
+        },
+        { fieldKey: 'optionalBoss', label: '選填', required: false, type: 'member' },
+        {
+          fieldKey: 'shownBoss',
+          label: '條件顯示',
+          required: true,
+          type: 'member',
+          visibleWhen: 'form.note == "x"',
+        },
+        {
+          fieldKey: 'storedBoss',
+          hidden: true,
+          label: '外部',
+          required: false,
+          type: 'member',
+        },
+        { fieldKey: 'unit', label: '部門', required: true, type: 'org_unit' },
+        { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+      ],
+      schemaVersion: 1,
+    };
+    // A chain needs every manager to sign, so the node signs in order.
+    const withChain = (
+      definition: WorkflowDefinition,
+      nodeId: string,
+      resolver: Readonly<Record<string, unknown>>,
+    ): WorkflowDefinition =>
+      ({
+        ...definition,
+        nodes: definition.nodes.map((node) =>
+          node.id === nodeId && node.type === 'userTask'
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  approverResolver: {
+                    minPositionLevel: 30,
+                    type: 'ORG_MANAGER_CHAIN',
+                    ...resolver,
+                  },
+                  decisionPolicy: { type: 'SEQUENTIAL' },
+                },
+              }
+            : node,
+        ),
+      }) as WorkflowDefinition;
+    const publishFormStart = (formPath: string): Promise<unknown> =>
+      createTableConditionPublishService({
+        schema,
+        workflowDefinition: withChain(
+          VALID_WORKFLOW_DEFINITION as unknown as WorkflowDefinition,
+          'task_manager',
+          { startFrom: { formPath, type: 'FORM_MEMBER' } },
+        ),
+      }).publishApprovalTemplateVersion('template-version-1');
+    const path = 'workflow.nodes.task_manager.approverResolver.startFrom.formPath';
+
+    it('publishes a chain that sets neither setting (control: today\'s templates)', async (): Promise<void> => {
+      await expect(
+        createTableConditionPublishService({
+          schema,
+          workflowDefinition: withChain(
+            VALID_WORKFLOW_DEFINITION as unknown as WorkflowDefinition,
+            'task_manager',
+            {},
+          ),
+        }).publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('publishes a form start on a required, single, always-visible member field', async (): Promise<void> => {
+      await expect(publishFormStart('boss')).resolves.toMatchObject({
+        id: 'template-version-1',
+      });
+    });
+
+    it.each(['missing', 'note', 'unit'])(
+      'rejects a form start on %s, which is not a member field',
+      async (formPath): Promise<void> => {
+        await expect(publishFormStart(formPath)).rejects.toThrow(
+          `${path} must reference a member (人員選擇) field of the bound form: ${formPath}`,
+        );
+      },
+    );
+
+    it('rejects a form start on a multiple member field', async (): Promise<void> => {
+      await expect(publishFormStart('bosses')).rejects.toThrow(
+        `${path} must reference a single-person member field, not a multiple one: bosses`,
+      );
+    });
+
+    it.each(['optionalBoss', 'shownBoss', 'storedBoss'])(
+      'rejects a form start on %s, which can be left empty',
+      async (formPath): Promise<void> => {
+        await expect(publishFormStart(formPath)).rejects.toThrow(
+          `${path} must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+        );
+      },
+    );
+
+    describe('a stage start', (): void => {
+      // task_1 runs before task_2; the chain sits on the node under test.
+      const publishStageStart = (
+        nodeId: string,
+        nodeIds: readonly string[],
+        firstNodeData: Readonly<Record<string, unknown>> = {},
+      ): Promise<unknown> => {
+        const base = createFieldAccessWorkflow([[], []]);
+        const withFirstData = {
+          ...base,
+          nodes: base.nodes.map((node) =>
+            node.id === 'task_1' && node.type === 'userTask'
+              ? { ...node, data: { ...node.data, ...firstNodeData } }
+              : node,
+          ),
+        } as WorkflowDefinition;
+
+        return createTableConditionPublishService({
+          workflowDefinition: withChain(withFirstData, nodeId, {
+            startFrom: { nodeIds, type: 'NODE_ACTOR' },
+          }),
+        }).publishApprovalTemplateVersion('template-version-1');
+      };
+
+      it('publishes when the earlier node is unskippable and upstream', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_2', ['task_1']),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      });
+
+      it('rejects an earlier node that an entry condition can skip, naming the start key', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_2', ['task_1'], {
+            entryCondition: 'form.amount > 10',
+          }),
+        ).rejects.toThrow(
+          /workflow\.nodes\.task_2\.approverResolver\.startFrom\.nodeIds: .*設有進入條件，可能被跳過/,
+        );
+      });
+
+      it('rejects a source that is not upstream of the chain node', async (): Promise<void> => {
+        await expect(
+          publishStageStart('task_1', ['task_2']),
+        ).rejects.toThrow(/不在 .* 的上游/);
+      });
+    });
+  });
+
   describe('approver-filled fields against the bound form', (): void => {
     const dataSource = { bindings: [], key: 'invoice_kinds', version: 1 };
     const fillSchema: FormDefinitionSchema = {

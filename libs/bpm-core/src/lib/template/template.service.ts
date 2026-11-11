@@ -1611,7 +1611,8 @@ function lintWorkflowTableReferences(
  * which then can never commit. So the field must also be one the submit
  * validation guarantees a value for: required, with no `visibleWhen` that can
  * hide it and not a store-only `hidden` field. `FORM_MEMBER_MANAGER` looks one
- * person's manager up, so its field must not be `multiple` either.
+ * person's manager up, so its field must not be `multiple` either; so does an
+ * `ORG_MANAGER_CHAIN` whose `startFrom` is a `FORM_MEMBER`.
  */
 function lintWorkflowMemberReferences(
   definition: WorkflowDefinition,
@@ -1635,6 +1636,22 @@ function lintWorkflowMemberReferences(
             formPath: node.data.approverResolver.formPath,
             label: `workflow.nodes.${node.id}.approverResolver.formPath`,
             single: node.data.approverResolver.type === 'FORM_MEMBER_MANAGER',
+          },
+        ];
+      }
+
+      // A manager chain that starts from a form pick reads one person there,
+      // the same as FORM_MEMBER_MANAGER.
+      if (
+        node.type === 'userTask' &&
+        node.data.approverResolver?.type === 'ORG_MANAGER_CHAIN' &&
+        node.data.approverResolver.startFrom?.type === 'FORM_MEMBER'
+      ) {
+        return [
+          {
+            formPath: node.data.approverResolver.startFrom.formPath,
+            label: `workflow.nodes.${node.id}.approverResolver.startFrom.formPath`,
+            single: true,
           },
         ];
       }
@@ -1732,15 +1749,32 @@ function lintWorkflowOrgUnitReferences(
 }
 
 /**
- * The graph checks behind `NODE_ACTOR` / `NODE_ACTOR_MANAGER` nodes (shared
- * with the designer): every source is an unskippable, upstream, non-parallel
- * user task and every path to the node passes one.
+ * The graph checks behind `NODE_ACTOR` / `NODE_ACTOR_MANAGER` nodes, and the
+ * `NODE_ACTOR` start of an `ORG_MANAGER_CHAIN` (shared with the designer):
+ * every source is an unskippable, upstream, non-parallel user task and every
+ * path to the node passes one.
  */
 function lintWorkflowNodeActorSources(
   definition: WorkflowDefinition,
 ): readonly string[] {
   return definition.nodes.flatMap((node): readonly string[] => {
     const resolver = node.type === 'userTask' ? node.data.approverResolver : null;
+
+    // A manager chain that starts from an earlier stage reads that stage's
+    // signer the way NODE_ACTOR does, so it meets the same graph rules.
+    if (
+      resolver?.type === 'ORG_MANAGER_CHAIN' &&
+      resolver.startFrom?.type === 'NODE_ACTOR'
+    ) {
+      return readNodeActorSourceIssues(
+        definition,
+        node.id,
+        resolver.startFrom.nodeIds,
+      ).map(
+        (issue) =>
+          `workflow.nodes.${node.id}.approverResolver.startFrom.nodeIds: ${issue}`,
+      );
+    }
 
     if (resolver?.type !== 'NODE_ACTOR' && resolver?.type !== 'NODE_ACTOR_MANAGER') {
       return [];

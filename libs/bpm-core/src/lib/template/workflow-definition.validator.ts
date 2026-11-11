@@ -27,6 +27,7 @@ import {
   readDesignTimeApproverCount,
   isOrgManagerChainDecisionPolicyInvalid,
   readNotifyWebhookStructureIssues,
+  readOrgManagerChainIssue,
   readNotifyWebhookTargets,
   WORKFLOW_LINT_MESSAGES,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -449,6 +450,20 @@ function lintApproverResolver(
     ];
   }
 
+  if (resolver.type === 'ORG_MANAGER_CHAIN') {
+    const chainErrors = lintOrgManagerChain(
+      resolver,
+      `workflow.nodes.${nodeId}.approverResolver`,
+      nodeId,
+      nodes,
+      '簽核節點',
+    );
+
+    if (chainErrors.length) {
+      return chainErrors;
+    }
+  }
+
   if (
     (resolver.type === 'FORM_MEMBER_MANAGER' ||
       resolver.type === 'FORM_ORG_UNIT_MANAGER') &&
@@ -509,6 +524,40 @@ function lintApproverResolver(
 }
 
 /**
+ * The two optional settings of an `ORG_MANAGER_CHAIN` (`startFrom`,
+ * `startPositionLevel`). The shape and range checks are the designer's own
+ * (`readOrgManagerChainIssue`), so the two cannot disagree; what only the
+ * definition can tell, that the stages a start names exist and are approval
+ * nodes, is checked here. Whether the form field fits and the earlier stage
+ * always signs needs the form schema and the whole graph, so `TemplateService`
+ * runs those once the definition has passed this lint.
+ */
+function lintOrgManagerChain(
+  resolver: Extract<ApproverResolver, { readonly type: 'ORG_MANAGER_CHAIN' }>,
+  path: string,
+  nodeId: string,
+  nodes: readonly WorkflowNode[],
+  subject: '簽核節點' | '知會節點',
+): readonly string[] {
+  const issue = readOrgManagerChainIssue(resolver, subject);
+
+  if (issue !== null) {
+    return [`${path}: ${issue}`];
+  }
+
+  const startFrom = resolver.startFrom;
+
+  return startFrom?.type === 'NODE_ACTOR'
+    ? lintNodeActorNodeIds(
+        startFrom.nodeIds,
+        nodeId,
+        nodes,
+        `${path}.startFrom.nodeIds`,
+      )
+    : [];
+}
+
+/**
  * The local half of the NODE_ACTOR / NODE_ACTOR_MANAGER source checks: the ids
  * exist and name user tasks. Whether the earlier signer is actually upstream,
  * unskippable and unique needs the whole graph, so `TemplateService` runs the
@@ -519,9 +568,8 @@ function lintNodeActorNodeIds(
   nodeIds: readonly string[],
   nodeId: string,
   nodes: readonly WorkflowNode[],
+  path = `workflow.nodes.${nodeId}.approverResolver.nodeIds`,
 ): readonly string[] {
-  const path = `workflow.nodes.${nodeId}.approverResolver.nodeIds`;
-
   if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
     return [`${path} is required`];
   }
@@ -681,6 +729,22 @@ function lintNotifyRecipients(
   // on a NOTIFY node (and an unknown type has no resolver at all).
   if (!isNotifyRecipientResolverType(recipients.type)) {
     return [`workflow.nodes.${nodeId}.action.recipients.type is not supported`];
+  }
+
+  if (recipients.type === 'ORG_MANAGER_CHAIN') {
+    // A notify chain may only start at the initiator, so there is no stage
+    // list to look up and no node list is passed.
+    const chainErrors = lintOrgManagerChain(
+      recipients,
+      `workflow.nodes.${nodeId}.action.recipients`,
+      nodeId,
+      [],
+      '知會節點',
+    );
+
+    if (chainErrors.length) {
+      return chainErrors;
+    }
   }
 
   if (recipients.type === 'DYNAMIC_FORM' && !recipients.formPath.trim()) {
