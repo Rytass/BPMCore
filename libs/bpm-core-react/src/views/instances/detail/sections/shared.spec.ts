@@ -636,8 +636,22 @@ describe('administrator reassignment in the timeline', () => {
   });
 
   const profiles = new Map<string, MemberProfileRecord>([
-    ['member-left', { email: '', memberId: 'member-left', name: '王小明' } as MemberProfileRecord],
-    ['member-new', { email: '', memberId: 'member-new', name: '李大華' } as MemberProfileRecord],
+    [
+      'member-left',
+      {
+        email: '',
+        memberId: 'member-left',
+        name: '王小明',
+      } as MemberProfileRecord,
+    ],
+    [
+      'member-new',
+      {
+        email: '',
+        memberId: 'member-new',
+        name: '李大華',
+      } as MemberProfileRecord,
+    ],
   ]);
 
   function reassignedParts(
@@ -674,7 +688,10 @@ describe('administrator reassignment in the timeline', () => {
 
   it('keeps the original approver visible by id when their profile is gone', () => {
     expect(
-      reassignedParts({ fromMemberId: 'member-gone', toMemberId: 'member-new' }),
+      reassignedParts({
+        fromMemberId: 'member-gone',
+        toMemberId: 'member-new',
+      }),
     ).toContainEqual({
       text: '原簽核人：member-gone → 改派給：李大華',
       type: 'text',
@@ -695,7 +712,12 @@ describe('administrator reassignment in the timeline', () => {
       candidateMemberIds: ['member-new'],
       createdAt: '2026-10-15T10:00:00.000Z',
       delegationChainJson: JSON.stringify([
-        { from: 'member-left', reason: 'ADMIN_REASSIGN', ruleId: null, to: 'member-new' },
+        {
+          from: 'member-left',
+          reason: 'ADMIN_REASSIGN',
+          ruleId: null,
+          to: 'member-new',
+        },
       ]),
       id: 'task-1',
       nodeId: 'task_finance',
@@ -733,7 +755,10 @@ describe('administrator reassignment in the timeline', () => {
 
   it.each([
     ['nothing moved it', { delegationChainJson: '[]' }],
-    ['it never left its first approver', { originalAssigneeMemberId: 'member-new' }],
+    [
+      'it never left its first approver',
+      { originalAssigneeMemberId: 'member-new' },
+    ],
   ])('does not add an original approver when %s', (_label, overrides) => {
     expect(
       pendingStep(pendingTask(overrides))?.descriptionParts.filter(
