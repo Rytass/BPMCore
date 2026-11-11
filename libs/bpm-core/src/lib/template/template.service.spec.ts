@@ -1114,12 +1114,14 @@ describe('TemplateService', () => {
       ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
-    it('still publishes when the earlier node has an entry condition (it excludes nobody when skipped)', async (): Promise<void> => {
+    it('still publishes when the earlier node can be skipped (it excludes nobody when skipped)', async (): Promise<void> => {
+      // The same node is refused as a NODE_ACTOR source: it may end with
+      // nobody having approved it, which an exclusion does not mind.
       await expect(
         publish(
           withExclusion(
             { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
-            { entryCondition: 'form.amount > 10' },
+            { excludeInitiator: { whenEmpty: 'SKIP_NODE' } },
           ),
         ),
       ).resolves.toMatchObject({ id: 'template-version-1' });
