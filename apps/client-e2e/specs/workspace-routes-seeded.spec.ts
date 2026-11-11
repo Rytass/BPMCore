@@ -12,6 +12,7 @@ interface GraphQlResponse<TData> {
 
 interface ApprovalInstanceRecord {
   readonly formDataJson: string;
+  readonly formDataOptionSnapshotJson: string;
   readonly formDefinitionSnapshotJson: string;
   readonly id: string;
   readonly title: string;
@@ -142,6 +143,7 @@ async function readApprovalInstances(
     `query SeededWorkspaceApprovalInstances($view: ApprovalInstanceListView!) {
       approvalInstances(view: $view, page: 1, pageSize: 1) {
         formDataJson
+        formDataOptionSnapshotJson
         formDefinitionSnapshotJson
         id
         title
@@ -190,6 +192,11 @@ function readApprovalInstanceCaseTitle(
   const snapshot = JSON.parse(
     instance.formDefinitionSnapshotJson,
   ) as FormDefinitionSnapshotRecord;
+  const optionSnapshots = JSON.parse(
+    instance.formDataOptionSnapshotJson,
+  ) as Readonly<
+    Record<string, { readonly options?: readonly SelectOptionRecord[] }>
+  >;
   const firstField = readFirstCaseTitleField(snapshot);
 
   if (!firstField) {
@@ -199,6 +206,7 @@ function readApprovalInstanceCaseTitle(
   const valueLabel = readFieldValueLabel(
     firstField,
     formData[firstField.fieldKey],
+    optionSnapshots[firstField.fieldKey]?.options,
   );
 
   return valueLabel
@@ -226,13 +234,18 @@ function readFirstCaseTitleField(
 function readFieldValueLabel(
   field: FormFieldRecord,
   value: FormFieldValue | undefined,
+  snapshotOptions: readonly SelectOptionRecord[] | undefined,
 ): string | null {
+  // A data-source field has no static options; its names live in the case's
+  // option snapshot, as in the lib's readFormDataCaseTitle.
+  const options = field.options ?? snapshotOptions ?? [];
+
   if (typeof value === 'undefined' || value === null) {
     return null;
   }
 
   if (Array.isArray(value)) {
-    const labels = value.map((item) => readSelectOptionLabel(field, item));
+    const labels = value.map((item) => readOptionLabel(options, item));
     const label = labels.filter((item) => item.trim()).join('、');
 
     return label || null;
@@ -243,14 +256,17 @@ function readFieldValueLabel(
   }
 
   if (typeof value === 'string') {
-    return readSelectOptionLabel(field, value) || null;
+    return readOptionLabel(options, value) || null;
   }
 
   return String(value).trim() || null;
 }
 
-function readSelectOptionLabel(field: FormFieldRecord, value: string): string {
+function readOptionLabel(
+  options: readonly SelectOptionRecord[],
+  value: string,
+): string {
   return (
-    field.options?.find((option) => option.value === value)?.label ?? value
+    options.find((option) => option.value === value)?.label ?? value
   ).trim();
 }

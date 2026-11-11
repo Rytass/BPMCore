@@ -853,8 +853,8 @@ Task notification payloads (`TASK_ASSIGNED`, `TASK_TRANSFERRED`) carry `hasFilla
 
 | Name | Purpose |
 |---|---|
-| `readApprovalInstanceCaseTitle(instance)` | Display title from an instance |
-| `readFormDataCaseTitle({ ... })` | Display title from form data before submission; skips table, member (人員選擇) and org unit (組織選擇) fields and labels a table value as `N 列` |
+| `readApprovalInstanceCaseTitle(instance)` | Display title from an instance; names data-source values from its option snapshot |
+| `readFormDataCaseTitle({ ... })` | Display title from form data before submission; skips table, member (人員選擇) and org unit (組織選擇) fields and labels a table value as `N 列`. Optional `optionSnapshots` (an instance's `formDataOptionSnapshot`) names a data-source value; without it the stored value is shown |
 
 ---
 
