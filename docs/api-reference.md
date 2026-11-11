@@ -445,7 +445,7 @@ Form-schema definitions.
 | `isFormIdentifierKey()` | function | Whether a key is a plain identifier (required for table and column keys) |
 | `readFormFieldSelectionMode()` | function | Normalized control selection mode |
 | `normalizeFormDefinitionSchema()` | function | Additive legacy-schema normalization, recursing into table columns |
-| `FORM_DATA_ISSUE_REASONS` | const | Reasons a submitted form value is refused, for exhaustive handling: `REQUIRED`, `TYPE`, `MIN_LENGTH`, `MAX_LENGTH`, `PATTERN`, `PATTERN_TIMEOUT`, `MIN_ROWS`, `MAX_ROWS`, `UNKNOWN_COLUMN`. Released in v0.21.0 |
+| `FORM_DATA_ISSUE_REASONS` | const | Reasons a submitted form value is refused, for exhaustive handling: `REQUIRED`, `TYPE`, `MIN_LENGTH`, `MAX_LENGTH`, `PATTERN`, `PATTERN_TIMEOUT`, `MIN_ROWS`, `MAX_ROWS`, `UNKNOWN_COLUMN` (released in v0.21.0); `MAX_FILES` (a `file_upload` value holding more files than its `maxFiles`, counting each distinct id once, as the attachment binding attaches it; submit and resubmit check every `file_upload` field, shown or not; not yet released) |
 | `FormDataIssueReason` | type | `(typeof FORM_DATA_ISSUE_REASONS)[number]`. Released in v0.21.0 |
 | `FormDataIssue` | interface | `{ path, reason, message, limit? }` for one refused value. `path` addresses it: a top-level `fieldKey`, a table row `table[i]` (0-based), or a cell `table[i].col`. `message` is the sentence the host shows. `limit` is set for `MIN_LENGTH`, `MAX_LENGTH`, `MIN_ROWS` and `MAX_ROWS`. Released in v0.21.0 |
 | `isFormDataIssue(value)` | function | Type guard for a `FormDataIssue`, for values read from a response. Released in v0.21.0 |

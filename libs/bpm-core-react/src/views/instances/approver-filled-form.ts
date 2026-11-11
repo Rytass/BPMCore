@@ -247,6 +247,8 @@ function readFillIssueText(
       return `至少需要 ${limit ?? 0} 列。`;
     case 'MAX_ROWS':
       return `最多 ${limit ?? 0} 列。`;
+    case 'MAX_FILES':
+      return `最多 ${limit ?? 0} 個檔案。`;
     case 'PATTERN': {
       const message =
         target.settings &&
@@ -273,6 +275,7 @@ function readFillReasonFromSentence(sentence: string): {
   const atMostRows = /^最多 (\d+) 列$/.exec(sentence);
   const shortest = /^至少需要 (\d+) 個字$/.exec(sentence);
   const longest = /^最多 (\d+) 個字$/.exec(sentence);
+  const mostFiles = /^最多 (\d+) 個檔案$/.exec(sentence);
 
   if (sentence === '為必填') {
     return { reason: 'REQUIRED' };
@@ -292,6 +295,10 @@ function readFillReasonFromSentence(sentence: string): {
 
   if (longest) {
     return { limit: Number(longest[1]), reason: 'MAX_LENGTH' };
+  }
+
+  if (mostFiles) {
+    return { limit: Number(mostFiles[1]), reason: 'MAX_FILES' };
   }
 
   if (sentence === '格式不正確') {

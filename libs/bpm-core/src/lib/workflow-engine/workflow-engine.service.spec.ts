@@ -3060,6 +3060,230 @@ describe('WorkflowEngineService', () => {
     ).rejects.toThrow('欄位「請購明細」最多 100 列');
   });
 
+  describe('file_upload maxFiles', (): void => {
+    const submitFiles = (
+      fixture: ServiceFixture,
+      formData: Readonly<Record<string, unknown>>,
+    ): Promise<unknown> =>
+      fixture.service.submitApprovalInstance({
+        formDataJson: JSON.stringify(formData),
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: 'Request',
+      });
+    const createFilesFixture = (
+      overrides: Partial<Parameters<typeof createServiceFixture>[0]> = {},
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formSchema: createMaxFilesFormSchema(),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        ...overrides,
+      });
+
+    it('accepts a file_upload value holding exactly maxFiles files', async (): Promise<void> => {
+      const fixture = createFilesFixture();
+
+      await expect(
+        submitFiles(fixture, { files: ['file-a', 'file-b'] }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      expect(fixture.bindFormDataAttachmentsToInstance).toHaveBeenCalledTimes(
+        1,
+      );
+    });
+
+    it('refuses a submit whose file_upload value holds more than maxFiles files, before binding any', async (): Promise<void> => {
+      const fixture = createFilesFixture();
+      const refusal = await submitFiles(fixture, {
+        files: ['file-a', 'file-b', 'file-c'],
+      }).catch((error: unknown): unknown => error);
+
+      expect(refusal).toBeInstanceOf(BadRequestException);
+      expect((refusal as BadRequestException).getResponse()).toMatchObject({
+        formDataErrors: [
+          {
+            limit: 2,
+            message: '欄位「附件」最多 2 個檔案',
+            path: 'files',
+            reason: 'MAX_FILES',
+          },
+        ],
+        message: '欄位「附件」最多 2 個檔案',
+      });
+      expect(fixture.bindFormDataAttachmentsToInstance).not.toHaveBeenCalled();
+    });
+
+    it('counts a single id as one file and skips empty ids', async (): Promise<void> => {
+      const fixture = createFilesFixture({
+        formSchema: createMaxFilesFormSchema({ maxFiles: 1 }),
+      });
+
+      await expect(
+        submitFiles(fixture, { files: ['file-a', '', ''] }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(
+        submitFiles(fixture, { files: 'file-a' }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    // The binding attaches an id once however often it repeats, so the count
+    // collapses repeats too: three entries of one id are one file.
+    it('counts a repeated id once, as the attachment binding attaches it', async (): Promise<void> => {
+      const fixture = createFilesFixture();
+
+      await expect(
+        submitFiles(fixture, { files: ['file-a', 'file-a', 'file-a'] }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      expect(fixture.bindFormDataAttachmentsToInstance).toHaveBeenCalledTimes(
+        1,
+      );
+    });
+
+    it('still refuses distinct ids past maxFiles when a repeat is among them', async (): Promise<void> => {
+      const fixture = createFilesFixture();
+
+      await expect(
+        submitFiles(fixture, {
+          files: ['file-a', 'file-a', 'file-b', 'file-c'],
+        }),
+      ).rejects.toThrow('欄位「附件」最多 2 個檔案');
+      expect(fixture.bindFormDataAttachmentsToInstance).not.toHaveBeenCalled();
+    });
+
+    it('leaves the file count open when the field sets no maxFiles', async (): Promise<void> => {
+      const fixture = createFilesFixture({
+        formSchema: createMaxFilesFormSchema({ maxFiles: null }),
+      });
+
+      await expect(
+        submitFiles(fixture, {
+          files: ['file-a', 'file-b', 'file-c', 'file-d'],
+        }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    // The end-user overlay restores the stored value of a key the submit left
+    // out, but only for an approver-filled key. A published template cannot
+    // make a file_upload one (the workflow lint refuses it), so this fixture
+    // builds that combination on purpose: the restored value must count.
+    describe('an end-user resubmit that leaves out the files key', (): void => {
+      const resubmitWithoutFiles = (
+        maxFiles: number,
+      ): Promise<unknown> => {
+        const formSchema = createMaxFilesFormSchema({ maxFiles });
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formSchema,
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          instanceState: ApprovalInstanceStateEnum.RETURNED,
+          processFormData: { files: ['file-a', 'file-b'] },
+          processFormDefinitionSnapshot: { schema: formSchema },
+          processWorkflowSnapshot: createFieldAccessWorkflow({
+            financeFieldAccess: [
+              { display: 'SHOW', fieldKey: 'files', fill: 'OPTIONAL' },
+            ],
+          }),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        return fixture.service.resubmitApprovalInstance({
+          endUserSubmission: true,
+          formDataJson: '{}',
+          initiatorMemberId: 'member-001',
+          instanceId: 'instance-1',
+          title: null,
+        });
+      };
+
+      it('accepts the restored files when they fit within maxFiles', async (): Promise<void> => {
+        await expect(resubmitWithoutFiles(2)).resolves.toBeDefined();
+      });
+
+      it('refuses the restored files when they exceed maxFiles', async (): Promise<void> => {
+        await expect(resubmitWithoutFiles(1)).rejects.toThrow(
+          '欄位「附件」最多 1 個檔案',
+        );
+      });
+    });
+
+    it('does not cap id-shaped values of a field that is not a file_upload', async (): Promise<void> => {
+      const fixture = createFilesFixture();
+
+      await expect(
+        submitFiles(fixture, {
+          files: ['file-a'],
+          tags: ['tag-a', 'tag-b', 'tag-c', 'tag-d'],
+        }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('caps a file_upload field that is hidden or whose visibility condition is false', async (): Promise<void> => {
+      const hidden = createFilesFixture({
+        formSchema: createMaxFilesFormSchema({ hidden: true }),
+      });
+      const conditional = createFilesFixture({
+        formSchema: createMaxFilesFormSchema({
+          visibleWhen: 'form.showFiles == true',
+        }),
+      });
+
+      await expect(
+        submitFiles(hidden, { files: ['file-a', 'file-b', 'file-c'] }),
+      ).rejects.toThrow('欄位「附件」最多 2 個檔案');
+      await expect(
+        submitFiles(conditional, {
+          files: ['file-a', 'file-b', 'file-c'],
+          showFiles: false,
+        }),
+      ).rejects.toThrow('欄位「附件」最多 2 個檔案');
+    });
+
+    it('counts the files kept from the returned case together with new ones on resubmit', async (): Promise<void> => {
+      const formSchema = createMaxFilesFormSchema();
+      const fixture = createFilesFixture({
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processFormData: { files: ['kept-a', 'kept-b'] },
+        processFormDefinitionSnapshot: { schema: formSchema },
+      });
+
+      await expect(
+        fixture.service.resubmitApprovalInstance({
+          formDataJson: JSON.stringify({
+            files: ['kept-a', 'kept-b', 'new-c'],
+          }),
+          initiatorMemberId: 'member-001',
+          instanceId: 'instance-1',
+          title: 'Request',
+        }),
+      ).rejects.toThrow('欄位「附件」最多 2 個檔案');
+      expect(fixture.bindFormDataAttachmentsToInstance).not.toHaveBeenCalled();
+      expect(fixture.releaseUnreferencedFormAttachments).not.toHaveBeenCalled();
+    });
+
+    it('accepts a resubmit that drops a kept file to make room for a new one', async (): Promise<void> => {
+      const formSchema = createMaxFilesFormSchema();
+      const fixture = createFilesFixture({
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processFormData: { files: ['kept-a', 'kept-b'] },
+        processFormDefinitionSnapshot: { schema: formSchema },
+      });
+
+      await expect(
+        fixture.service.resubmitApprovalInstance({
+          formDataJson: JSON.stringify({ files: ['kept-b', 'new-c'] }),
+          initiatorMemberId: 'member-001',
+          instanceId: 'instance-1',
+          title: 'Request',
+        }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      expect(fixture.bindFormDataAttachmentsToInstance).toHaveBeenCalledTimes(
+        1,
+      );
+    });
+  });
+
   it('skips table validation for a table hidden by its visibility condition', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -18847,6 +19071,8 @@ interface ServiceFixture {
   readonly transactionalActivityLogFindOne: import('typeorm').Repository<ActivityLogEntity>['findOne'];
   // `AttachmentService.releaseUnreferencedFormAttachments`, one call per release.
   readonly releaseUnreferencedFormAttachments: jest.Mock;
+  // `AttachmentService.bindFormDataAttachmentsToInstance`, one call per bind.
+  readonly bindFormDataAttachmentsToInstance: jest.Mock;
   // `formData` as `signTaskDecision` saw it, one entry per call: the signature
   // covers whatever the instance held at that moment.
   readonly signTaskDecisionFormDataSnapshots: readonly Readonly<
@@ -19982,6 +20208,8 @@ function createServiceFixture({
     transactionalActivityLogFindOne: transactionalActivityRepository.findOne,
     releaseUnreferencedFormAttachments:
       attachmentService.releaseUnreferencedFormAttachments as jest.Mock,
+    bindFormDataAttachmentsToInstance:
+      attachmentService.bindFormDataAttachmentsToInstance as jest.Mock,
     get signTaskDecisionFormDataSnapshots(): readonly Readonly<
       Record<string, unknown>
     >[] {
@@ -20585,6 +20813,48 @@ function createConditionalTableFormSchema(): FormDefinitionSchema {
         required: true,
         type: 'table',
         visibleWhen: 'form.needsItems == true',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
+function createMaxFilesFormSchema({
+  hidden,
+  maxFiles = 2,
+  visibleWhen,
+}: {
+  readonly hidden?: boolean;
+  // `null` leaves `maxFiles` off the field.
+  readonly maxFiles?: number | null;
+  readonly visibleWhen?: string;
+} = {}): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        fieldKey: 'showFiles',
+        label: '顯示附件',
+        required: false,
+        type: 'boolean',
+      },
+      {
+        fieldKey: 'tags',
+        label: '標籤',
+        mode: 'multiple',
+        options: ['tag-a', 'tag-b', 'tag-c', 'tag-d'].map(
+          (value): FormFieldOption => ({ label: value, value }),
+        ),
+        required: false,
+        type: 'select',
+      },
+      {
+        fieldKey: 'files',
+        label: '附件',
+        required: false,
+        type: 'file_upload',
+        ...(hidden === undefined ? {} : { hidden }),
+        ...(maxFiles === null ? {} : { maxFiles }),
+        ...(visibleWhen === undefined ? {} : { visibleWhen }),
       },
     ],
     schemaVersion: 1,
