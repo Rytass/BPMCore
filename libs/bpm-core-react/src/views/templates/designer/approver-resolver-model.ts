@@ -1204,10 +1204,7 @@ export function readOrgManagerChainStartLevelChoice(
 ): OrgManagerChainStartLevelChoice {
   const level = readValidOrgManagerChainStartLevel(resolver);
   const stored: unknown = resolver.startPositionLevel;
-  const levelOptions = readMinPositionLevelOptions(
-    positions,
-    level ?? resolver.minPositionLevel,
-  )
+  const levelOptions = readMinPositionLevelOptions(positions, level)
     .filter(
       (option) =>
         option.value <= resolver.minPositionLevel || option.value === level,

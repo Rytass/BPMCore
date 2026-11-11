@@ -1580,6 +1580,16 @@ describe('readOrgManagerChainStartLevelChoice / readOrgManagerChainStartLevelPic
     ).toEqual([NO_START_POSITION_LEVEL_OPTION_ID, '3']);
   });
 
+  it('offers no level that no position has when no start level is stored', () => {
+    // 簽到職等 is 4 and no position sits on level 4: it must not appear as an option.
+    expect(
+      readOrgManagerChainStartLevelChoice(
+        { ...CHAIN, minPositionLevel: 4 },
+        POSITIONS,
+      ).options.map((option) => option.id),
+    ).toEqual([NO_START_POSITION_LEVEL_OPTION_ID, '3']);
+  });
+
   it('keeps a stored level the directory has no position for, and one above 簽到職等', () => {
     const missing = readOrgManagerChainStartLevelChoice(
       { ...CHAIN, startPositionLevel: 4 },

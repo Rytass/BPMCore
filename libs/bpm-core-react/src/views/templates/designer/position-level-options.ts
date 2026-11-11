@@ -13,15 +13,18 @@ type PositionLevelSource = Pick<PositionRecord, 'level' | 'name'>;
  * labelled with the positions sitting on that level. A saved level that no
  * position carries (positions deleted or not loaded yet) is still offered so
  * the select never renders blank and the stored value is not silently changed.
+ * `currentLevel` is that saved level; `null` offers only the directory's own
+ * levels, for a field that has no value yet.
  */
 export function readMinPositionLevelOptions(
   positions: readonly PositionLevelSource[],
-  currentLevel: number,
+  currentLevel: number | null,
 ): readonly PositionLevelOption[] {
   const levels = [...new Set(positions.map((position) => position.level))];
-  const allLevels = levels.includes(currentLevel)
-    ? levels
-    : [...levels, currentLevel];
+  const allLevels =
+    currentLevel === null || levels.includes(currentLevel)
+      ? levels
+      : [...levels, currentLevel];
 
   return [...allLevels]
     .sort((left, right) => right - left)
