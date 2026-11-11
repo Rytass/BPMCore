@@ -4078,7 +4078,7 @@ export function TemplateDesignerView({
           </BPMFormField>
         ) : null}
         <BPMFormField
-          hintText="開啟後，實際簽核過所選前面關卡的人（含其代理人）不會成為此關的簽核人，也不能被轉簽或加簽到此關。例：信管審核與會計審核不能是同一人。"
+          hintText="開啟後，實際簽核過所選前面關卡的人（含其代理人）不會成為此關的簽核人，也不能被轉簽或加簽到此關。例：信管審核與會計審核不能是同一人。臨時加簽、會簽的同意者不在此限。"
           label="不可與前面關卡同一人"
           name="excludeNodeActors"
         >
