@@ -1348,8 +1348,24 @@ const DYNAMIC_OPTIONS_WORKFLOW = createWorkflowDefinition({
   ],
 });
 
+/**
+ * `BPM_RESET_DB_HOST` replaces the Vault `DB_HOST` for this run only. The
+ * staging secret points at the database's private VPC address, which a
+ * workstation cannot reach; the same instance also answers on its public
+ * address, so `staging:reset` can be run from outside the cluster with it.
+ */
+function applyHostOverride(
+  options: DataSourceOptions,
+  host: string | undefined,
+): DataSourceOptions {
+  return host && options.type === 'postgres' ? { ...options, host } : options;
+}
+
 async function main(): Promise<void> {
-  const options = await buildDataSourceOptionsFromVaultEnv(process.env);
+  const options = applyHostOverride(
+    await buildDataSourceOptionsFromVaultEnv(process.env),
+    process.env.BPM_RESET_DB_HOST?.trim(),
+  );
   const dataSource = new DataSource(options);
 
   await dataSource.initialize();
