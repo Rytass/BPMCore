@@ -131,19 +131,21 @@ export function readNodeActorGraphIssues(
 
 /** The hint under the 不可與前面關卡同一人 picker while it has no problem to report. */
 export const EXCLUDE_NODE_ACTORS_STAGE_HINT =
-  '此關的簽核人不會是你選的前面關卡實際簽核的人（含其代理人），也不能被轉簽或加簽到此關；可複選，每個關卡都會排除。前面關卡沒有執行或沒人簽過時，不排除任何人。';
+  '此關的簽核人不會是你選的前面關卡實際簽核的人（含其代理人），也不能被轉簽或加簽到此關；可複選，每個關卡都會排除。只能選每條路徑都會經過、而且一定有人實際簽核的關卡（沒有進入條件、沒設跳過此關、沒設逾時自動核准）；條件式的關卡請改用分流，把兩關放在同一條路線上。';
 
 /** Shown when no earlier stage can be picked. */
 export const NO_EXCLUDABLE_STAGE_HINT =
-  '這個節點前面沒有可以選的簽核關卡，請先在它前面加入簽核節點';
+  '這個節點前面沒有可以選的簽核關卡，請先在它前面加入簽核節點（每條路徑都會經過、沒有進入條件、沒設跳過此關，也沒設逾時自動核准）';
 
 /**
- * The 不可與前面關卡同一人 picker: every user task upstream of `nodeId`. Unlike
- * the `NODE_ACTOR` stage picker nothing is filtered by entry condition, 跳過此關
- * or 逾時自動核准: a stage that did not run, or that nobody approved, simply
- * excludes nobody. A stored stage that is gone or no longer upstream stays in
- * the list, marked, so the stored choice stays visible until the author fixes
- * it.
+ * The 不可與前面關卡同一人 picker: the user tasks that pass the publish
+ * check on their own (`readExcludeNodeActorsIssues` with just that stage
+ * listed: upstream of `nodeId`, on every path to it, not skippable, a real
+ * signer every time). Each listed stage has to pass alone, so unlike the
+ * `NODE_ACTOR` picker nothing is left to the selection as a whole. A stored
+ * stage that does not qualify (gone, no longer upstream, or skippable) stays in
+ * the list, marked, and the selection's `problems` say why, so the stored
+ * choice is never dropped silently.
  */
 export function readExcludeNodeActorStageChoice(
   definition: WorkflowDefinition,
@@ -156,7 +158,10 @@ export function readExcludeNodeActorStageChoice(
     .filter(
       (node) =>
         node.id !== nodeId &&
-        readReachableWorkflowNodeIds(definition.edges, [node.id]).has(nodeId),
+        readExcludeNodeActorsIssues(definition, nodeId, {
+          nodeIds: [node.id],
+          whenEmpty: 'FAIL',
+        }).length === 0,
     )
     .map((node) => ({ id: node.id, name: readNodeName(node) }));
   const stale: readonly NodeActorOption[] = selectedIds

@@ -399,21 +399,27 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
     expect(ids).not.toContain('side');
   });
 
-  it('still offers a stage that has an entry condition, SKIP_NODE or an SLA auto-approval (unlike the NODE_ACTOR picker)', () => {
+  it.each([
+    ['an entry condition', { entryCondition: 'form.x > 1' }],
+    ['excludeInitiator SKIP_NODE', { excludeInitiator: { whenEmpty: 'SKIP_NODE' } }],
+    [
+      'excludeNodeActors SKIP_NODE',
+      { excludeNodeActors: { nodeIds: ['x'], whenEmpty: 'SKIP_NODE' } },
+    ],
+    ['an SLA auto-approval', { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } }],
+  ])('does not offer a stage with %s (it may run without a signer)', (_name, data) => {
     const definition = graph(
       [
         plainNode('start', 'startEvent'),
-        taskNode('a', { entryCondition: 'form.x > 1' }),
-        taskNode('b', { excludeInitiator: { whenEmpty: 'SKIP_NODE' } }),
-        taskNode('c', { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } }),
+        taskNode('ok'),
+        taskNode('risky', data),
         taskNode('me'),
         plainNode('end', 'endEvent'),
       ],
       [
-        link('start', 'a'),
-        link('a', 'b'),
-        link('b', 'c'),
-        link('c', 'me'),
+        link('start', 'ok'),
+        link('ok', 'risky'),
+        link('risky', 'me'),
         link('me', 'end'),
       ],
     );
@@ -422,10 +428,62 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
       readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options.map(
         (option) => option.id,
       ),
-    ).toEqual(['a', 'b', 'c']);
+    ).toEqual(['ok']);
+  });
+
+  it('does not offer a stage that only one branch passes, and offers the stage both branches share', () => {
+    // start -> split -> (only | other) -> merge -> shared -> me
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        plainNode('split', 'exclusiveGateway'),
+        taskNode('only'),
+        taskNode('other'),
+        plainNode('merge', 'exclusiveGateway'),
+        taskNode('shared'),
+        taskNode('me'),
+        plainNode('end', 'endEvent'),
+      ],
+      [
+        link('start', 'split'),
+        link('split', 'only'),
+        link('split', 'other'),
+        link('only', 'merge'),
+        link('other', 'merge'),
+        link('merge', 'shared'),
+        link('shared', 'me'),
+        link('me', 'end'),
+      ],
+    );
+
     expect(
-      readNodeActorStageChoice(definition, 'me', []).options,
-    ).toEqual([]);
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options.map(
+        (option) => option.id,
+      ),
+    ).toEqual(['shared']);
+  });
+
+  it('keeps a stored stage that no longer qualifies, marked, and says why', () => {
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        taskNode('cond', { entryCondition: 'form.x > 1' }),
+        taskNode('me'),
+        plainNode('end', 'endEvent'),
+      ],
+      [link('start', 'cond'), link('cond', 'me'), link('me', 'end')],
+    );
+    const choice = readExcludeNodeActorStageChoice(
+      definition,
+      'me',
+      ['cond'],
+      'FAIL',
+    );
+
+    expect(choice.selected.map((option) => option.name)).toEqual([
+      '關卡 cond（無法使用）',
+    ]);
+    expect(choice.problems).toEqual([expect.stringContaining('設有進入條件')]);
   });
 
   it('shows the hint that nothing can be picked when no stage is upstream', () => {
@@ -517,7 +575,9 @@ describe('readExcludeNodeActorsGraphIssues', () => {
       ),
     } as WorkflowDefinition;
 
+    // A stage after the node is also on no path to it, so coverage reports too.
     expect(readExcludeNodeActorsGraphIssues(definition)).toEqual([
+      expect.stringMatching(/^簽核節點「關卡 me」：.*不會經過/),
       expect.stringMatching(/^簽核節點「關卡 me」：.*不在 .* 的上游/),
     ]);
   });

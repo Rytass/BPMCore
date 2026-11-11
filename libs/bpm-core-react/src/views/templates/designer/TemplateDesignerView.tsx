@@ -1316,8 +1316,8 @@ export function TemplateDesignerView({
       readNodeActorGraphIssues(workflowDefinition)[0] ?? null,
     [workflowDefinition],
   );
-  // Publish-only as well: the stages of 不可與前面關卡同一人 must sit upstream
-  // and cannot still be open when the node starts.
+  // Publish-only as well: every stage of 不可與前面關卡同一人 must sit upstream,
+  // be on every path to the node and always have a person sign.
   const excludeNodeActorsPublishIssue = useMemo(
     (): string | null =>
       readExcludeNodeActorsGraphIssues(workflowDefinition)[0] ?? null,
