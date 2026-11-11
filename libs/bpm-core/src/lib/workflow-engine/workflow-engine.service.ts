@@ -808,6 +808,9 @@ export class WorkflowEngineService {
     input: SubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
+    const submitAuthContext =
+      authContext ?? createWorkflowAuthContext(input.initiatorMemberId);
+
     if (
       input.submittedByMemberId !== undefined &&
       input.submittedByMemberId !== null &&
@@ -866,7 +869,7 @@ export class WorkflowEngineService {
     assertFilterableFormDataValues(formDefinitionVersion.schema, formData);
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
-        authContext: authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
+        authContext: submitAuthContext,
         formData,
         revalidateAll: true,
         schema: formDefinitionVersion.schema,
@@ -877,8 +880,7 @@ export class WorkflowEngineService {
           'initiatorMetadataSnapshotJson',
         )
       : await this.buildSubmittedInitiatorMetadataSnapshot({
-          authContext:
-            authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
+          authContext: submitAuthContext,
           formData,
           memberId: input.initiatorMemberId,
           templateId: template.id,
