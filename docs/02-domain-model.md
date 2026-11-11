@@ -11,7 +11,7 @@
 | 實體                                                    | 職責                                                                   |
 | ------------------------------------------------------- | ---------------------------------------------------------------------- |
 | **Member**                                              | 僅儲存 member_id（外部來源），與系統內各表的 FK                        |
-| initiator snapshot（`approval_instances.initiator_metadata_snapshot`，JSON 欄位） | Instance 發起時記錄 initiator metadata（防止外部資料變動影響歷史紀錄）；非獨立實體 |
+| initiator snapshot（`approval_instances.initiator_metadata_snapshot`，JSON 欄位） | Instance 發起時記錄 initiator metadata（防止外部資料變動影響歷史紀錄）；非獨立實體。`customFields` 可由 host 的 `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER` 在送單時填入；可發起範本列表也用它評估發起權限（見 05） |
 | **BPMMemberResolver**（host 實作，`BPM_MEMBER_RESOLVER`） | Adapter interface，呼叫外部系統取得即時 metadata                       |
 | `member_metadata_cache` 表（`MemberMetadataCacheEntity`） | PostgreSQL-backed resolver 快取，避免每次列表或簽核都打外部系統        |
 

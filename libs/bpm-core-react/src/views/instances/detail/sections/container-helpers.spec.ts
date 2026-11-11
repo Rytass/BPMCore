@@ -1,6 +1,7 @@
 import type {
   ActivityLogRecord,
   MemberProfileRecord,
+  TaskRecord,
 } from '@rytass/bpm-core-client/workflow';
 import { resolveMemberProfiles } from '@rytass/bpm-core-client/workflow';
 
@@ -61,6 +62,40 @@ describe('readMemberProfilesForTimeline', () => {
 
     expect([...(resolve.mock.calls[0][0] as readonly string[])].sort()).toEqual(
       ['member-applicant', 'member-assistant'],
+    );
+  });
+
+  it('loads the previous seat holder of a group-node reassignment that never reached the task delegation chain', async () => {
+    const resolve = jest.mocked(resolveMemberProfiles);
+
+    resolve.mockClear();
+    resolve.mockResolvedValue([] as readonly MemberProfileRecord[]);
+
+    await readMemberProfilesForTimeline({
+      activityLogs: [
+        {
+          actorMemberId: 'member-admin',
+          eventType: 'TASK_REASSIGNED',
+          payloadJson: JSON.stringify({
+            actorMemberId: 'member-admin',
+            assigneeChanged: false,
+            fromMemberId: 'member-old-seat',
+            toMemberId: 'member-new-seat',
+          }),
+        },
+      ] as unknown as readonly ActivityLogRecord[],
+      tasks: [
+        {
+          assigneeMemberId: null,
+          candidateMemberIds: ['member-new-seat'],
+          delegationChainJson: '[]',
+          originalAssigneeMemberId: null,
+        },
+      ] as unknown as readonly TaskRecord[],
+    });
+
+    expect([...(resolve.mock.calls[0][0] as readonly string[])].sort()).toEqual(
+      ['member-admin', 'member-new-seat', 'member-old-seat'],
     );
   });
 });

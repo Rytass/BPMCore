@@ -482,9 +482,11 @@ type ServiceAction =
 Shared schema 與後端 validator 支援 `NOTIFY`、`WEBHOOK`、`SET_FORM_FIELD`。
 workflow runtime 會執行這三種 service task：`WEBHOOK` 預設以 JSON `POST`
 dispatch，且可由宿主透過 `BPM_WORKFLOW_SERVICE_TASK_DISPATCHER` 替換成 signing、
-queue 或 integration bus。Designer 目前只建立 `NOTIFY` + `DIRECT` members，
-channel 固定為 `IN_APP`；`WEBHOOK` 與 `SET_FORM_FIELD` 目前仍屬於 schema/API
-能力，尚未提供 designer 表單介面。
+queue 或 integration bus。Designer 建立 `NOTIFY`，channel 固定為 `IN_APP`，知會對象的
+來源可選指定會員（`DIRECT`）、指定職位（`POSITION`）、組織任一人（`ORG_UNIT_MEMBER`）、
+組織特定職位（`ORG_UNIT_POSITION`）、指定組織主管（`ORG_UNIT_MANAGER`，只開固定組織）、
+依表單欄位指定（`DYNAMIC_FORM`，只取欄位裡的人）；`WEBHOOK` 與 `SET_FORM_FIELD` 目前仍屬於
+schema/API 能力，尚未提供 designer 表單介面。
 
 `SET_FORM_FIELD` 寫入頂層文字欄位時，套用與填寫者相同的長度與格式規則（`minLength`、
 `maxLength`、`pattern`，格式比對同樣有 50 ms 時間預算）。不符合時拋 `400`，觸發這一步的送出或
@@ -508,6 +510,17 @@ interface NotifyWebhookTarget {
 - `CONTEXT` 路徑：`instance.id`、`instance.title`、`instance.templateId`、
   `instance.templateVersionId`、`initiator.memberId`、`node.id`、`node.label`，一律為字串。
 - 知會對象可為空（`DIRECT` 且 `memberIds: []`），前提是至少有一個 webhook。
+- 設計器的「知會對象來源」只編輯六種來源（指定會員、指定職位、組織任一人、組織特定職位、指定組織主管、依表單欄位指定）；`ORG_MANAGER`（發起人主管）、
+  `ORG_MANAGER_CHAIN`（主管鏈）、`EXPRESSION`（運算式）雖然引擎接受，設計器只讀：
+  顯示成目前值（並附上目前的設定摘要）、開面板或改 Webhook 都不會改到 `recipients`，要在來源下拉主動改選才會覆寫。
+  引擎不允許知會用的來源（`FORM_MEMBER_MANAGER`、`FORM_ORG_UNIT_MANAGER`、`NODE_ACTOR`、
+  `NODE_ACTOR_MANAGER`）顯示成「不支援的知會來源」，儲存前必須改選。換來源只改 `recipients`，
+  `channels`、`template`、`webhooks` 都保留。
+- 「依表單欄位指定」的欄位與簽核節點同一套選單：列出表單所有人員選擇欄位，非必填、可能被條件隱藏或
+  隱藏欄位會標警告；欄位空白時引擎會拋「找不到通知對象」並回滾送出，所以發布檢查
+  （`lintWorkflowMemberReferences`）只放行必填、不會被藏起來的人員欄位。
+- 「指定組織主管」未選組織時，shared 的 `readNotifyRecipientsIssue`、設計器儲存前檢查與後端發布 lint
+  （`lintNotifyRecipients`）都會擋，三處規則相同。
 - 設計器：知會節點面板的「Webhook」區塊從 `workflowWebhookEndpoints` catalog 選端點，
   每個宣告的參數一列，來源可選表單欄位（只列型別相容者）、固定值、案件資訊；已停用或
   已下架的端點會保留並警告。卡片顯示「Webhook N 個」，試跑會列出將送出的 webhook。

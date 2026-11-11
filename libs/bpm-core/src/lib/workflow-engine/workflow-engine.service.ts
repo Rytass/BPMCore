@@ -62,6 +62,7 @@ import {
   HttpException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
   Optional,
@@ -192,6 +193,11 @@ import {
   readWorkflowExpressionDialect,
 } from '../condition/expression-dialect';
 import {
+  BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
+  BPMInitiatorCustomFieldsInput,
+  BPMInitiatorCustomFieldsResolver,
+} from './initiator-custom-fields-resolver.token';
+import {
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
   BPMWorkflowServiceTaskDispatcher,
   BPMWorkflowWebhookDispatchResult,
@@ -250,6 +256,18 @@ const APPROVAL_INSTANCE_BUSINESS_KEY_INDEX =
 const ORG_MANAGER_CHAIN_MAX_HOPS = 20;
 const DEFAULT_APPROVAL_HISTORY_TASK_LIMIT = 50;
 const SYSTEM_DRY_RUN_INSTANCE_ID = 'dry-run-instance';
+// How long a submission waits for the host's initiator `customFields`
+// resolver. The case is not created when it runs out (the snapshot never falls
+// back to `{}`), so this bounds how long a member stares at a spinner when the
+// host's lookup hangs; it is shorter than the 30 s webhook budget because a
+// person is waiting on this one.
+const INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS = 10_000;
+const INITIATOR_CUSTOM_FIELDS_TIMEOUT_MESSAGE =
+  '無法取得發起人的自訂欄位（逾時），這次申請沒有送出；請稍後再試或聯絡系統管理者';
+const INITIATOR_CUSTOM_FIELDS_FAILED_MESSAGE =
+  '無法取得發起人的自訂欄位，這次申請沒有送出；請稍後再試或聯絡系統管理者';
+const INITIATOR_CUSTOM_FIELDS_INVALID_MESSAGE =
+  '無法取得發起人的自訂欄位（回傳格式不正確），這次申請沒有送出；請聯絡系統管理者';
 // The dry run checks each expression against the roots its use point may read,
 // as publish does. Keep these in step with `WORKFLOW_EXPRESSION_ROOT_IDENTIFIERS`
 // in template.service.ts; P2 moves both to one place.
@@ -696,6 +714,9 @@ export class WorkflowEngineService {
     rootOptions?: BPMRootRuntimeOptions,
     @Optional()
     private readonly webhookDeliveryService?: WorkflowWebhookDeliveryService,
+    @Optional()
+    @Inject(BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER)
+    injectedInitiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver,
   ) {
     // A binding under the token wins: that is either the host's own provider
     // or `workflowServiceTaskDispatcherProvider`, both of them deliberate. The
@@ -705,18 +726,26 @@ export class WorkflowEngineService {
     // keeps a host that binds the token from its own global module working —
     // a module-local default would shadow that binding, silently sending
     // WEBHOOK service tasks through the built-in `fetch` dispatcher instead of
-    // the host's signing or queueing one. It also reaches every copy of this
-    // service, which a provider registered on one module does not.
+    // the host's signing or queueing one.
     this.serviceTaskDispatcher =
       injectedServiceTaskDispatcher ??
       rootOptions?.workflowServiceTaskDispatcher ??
       new DefaultWorkflowServiceTaskDispatcher();
+    // Resolved like the dispatcher above, for the same reason: a binding the
+    // host made under the token wins, then the runtime instance, and with
+    // neither the snapshot's `customFields` stays `{}`.
+    this.initiatorCustomFieldsResolver =
+      injectedInitiatorCustomFieldsResolver ??
+      rootOptions?.initiatorCustomFieldsResolver ??
+      null;
     this.organizationTimeZone = resolveBPMOrganizationTimeZone(
       rootOptions?.organizationTimeZone,
     );
   }
 
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
+
+  private readonly initiatorCustomFieldsResolver: BPMInitiatorCustomFieldsResolver | null;
 
   /** Webhooks each open engine transaction will send once it has committed. */
   private readonly deferredWebhookDispatches = new WeakMap<
@@ -823,6 +852,9 @@ export class WorkflowEngineService {
     input: SubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
+    const submitAuthContext =
+      authContext ?? createWorkflowAuthContext(input.initiatorMemberId);
+
     if (
       input.submittedByMemberId !== undefined &&
       input.submittedByMemberId !== null &&
@@ -883,7 +915,7 @@ export class WorkflowEngineService {
     assertFilterableFormDataValues(formDefinitionVersion.schema, formData);
     const formDataOptionSnapshot =
       await this.resolveFormDataOptionSnapshots({
-        authContext: authContext ?? createWorkflowAuthContext(input.initiatorMemberId),
+        authContext: submitAuthContext,
         formData,
         revalidateAll: true,
         schema: formDefinitionVersion.schema,
@@ -893,9 +925,15 @@ export class WorkflowEngineService {
           input.initiatorMetadataSnapshotJson,
           'initiatorMetadataSnapshotJson',
         )
-      : await this.readDefaultInitiatorMetadataSnapshot(
-          input.initiatorMemberId,
-        );
+      : await this.buildInitiatorMetadataSnapshot({
+          authContext: submitAuthContext,
+          memberId: input.initiatorMemberId,
+          submission: {
+            formData,
+            templateId: template.id,
+            templateVersionId: templateVersion.id,
+          },
+        });
 
     if (
       !this.conditionService.evaluateBoolean(
@@ -3413,6 +3451,10 @@ export class WorkflowEngineService {
       input.workflowDefinitionJson,
     );
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    // The snapshot here is the caller's own sample (the designer always sends
+    // one) or a bare `{ customFields: {}, memberId }`. It is not the one a real
+    // submission builds, and a dry run has no template version to hand the
+    // host's `customFields` resolver, so that resolver is not called.
     const initiatorMetadataSnapshot = input.initiatorMetadataSnapshotJson
       ? parseJsonObject(
           input.initiatorMetadataSnapshotJson,
@@ -4318,8 +4360,14 @@ export class WorkflowEngineService {
     });
   }
 
+  /**
+   * The active templates `memberId` may start now. `authContext` is handed to
+   * the host's initiator `customFields` resolver; a host calling this without
+   * one gets a bare context for the member, as a submission does.
+   */
   async listLaunchableApprovalTemplates(
     memberId: string,
+    authContext?: BPMAuthContext,
   ): Promise<readonly ApprovalTemplateEntity[]> {
     const templates = await this.approvalTemplateRepository.find({
       order: { updatedAt: 'DESC' },
@@ -4347,8 +4395,19 @@ export class WorkflowEngineService {
         ],
       ),
     );
-    const initiatorMetadataSnapshot =
-      await this.readDefaultInitiatorMetadataSnapshot(memberId);
+    // Built like a submission's, so a policy that reads
+    // `initiator.customFields` is judged here against what the host's resolver
+    // returns for this member. The resolver depends on the initiator only, so
+    // it is called once for the whole list, not once per template. When it
+    // fails, the list is judged against `customFields: {}` instead of failing
+    // (see `buildInitiatorMetadataSnapshot`).
+    const initiatorMetadataSnapshot = await this.buildInitiatorMetadataSnapshot(
+      {
+        authContext: authContext ?? createWorkflowAuthContext(memberId),
+        memberId,
+        submission: null,
+      },
+    );
 
     return templates.filter((template) => {
       const currentVersion = template.currentVersionId
@@ -4375,18 +4434,33 @@ export class WorkflowEngineService {
       }
 
       // Each template is its own operation, so one slow template cannot use
-      // up the allowance of the rest of the list.
-      return runExpressionOperation(() =>
-        this.conditionService.evaluateBoolean(
-          currentVersion.initiatorPolicyCel,
-          buildInitiatorPolicyContext(initiatorMetadataSnapshot),
-          'initiatorPolicyCel',
-          readExpressionDialectOptions(
+      // up the allowance of the rest of the list. A policy that throws (for
+      // example a missing `initiator.customFields.*` key, because the resolver
+      // did not return it, or failed and the list fell back to `{}`) is also
+      // only that template's problem: it is left out, and the error code is
+      // logged, never the values.
+      try {
+        return runExpressionOperation(() =>
+          this.conditionService.evaluateBoolean(
             currentVersion.initiatorPolicyCel,
-            currentVersion.workflowDefinition,
+            buildInitiatorPolicyContext(initiatorMetadataSnapshot),
+            'initiatorPolicyCel',
+            readExpressionDialectOptions(
+              currentVersion.initiatorPolicyCel,
+              currentVersion.workflowDefinition,
+            ),
           ),
-        ),
-      );
+        );
+      } catch (error: unknown) {
+        const reason =
+          error instanceof ExpressionRuntimeError ? error.code : 'UNEXPECTED';
+
+        this.logger.warn(
+          `template=${template.id} version=${currentVersion.id} left out of launchable templates: initiatorPolicyCel failed (${reason})`,
+        );
+
+        return false;
+      }
     });
   }
 
@@ -4723,6 +4797,175 @@ export class WorkflowEngineService {
       positionIds,
       primaryOrgUnitId: primaryMembership?.orgUnitId ?? null,
     };
+  }
+
+  /**
+   * The initiator snapshot the engine builds itself: what it knows of the
+   * initiator, with `customFields` filled by the host's resolver when there is
+   * one. Without a resolver this is exactly the default snapshot
+   * (`customFields` is `{}`). A submission (`submission` set) stores it and
+   * judges the initiator policy with it; the launchable template list
+   * (`submission: null`) only judges the policies with it, so both see the same
+   * `customFields` for the same member.
+   *
+   * Only `customFields` comes from the host. The other keys are the engine's
+   * and are written back after the resolver returns, so nothing it does can
+   * change who the initiator is. The resolver gets copies of the snapshot and
+   * of the form data for the same reason; `authContext` is the caller's own
+   * object, as every other host hook receives it.
+   *
+   * The two callers treat a resolver failure (an error, a bad value, the
+   * timeout) differently, on purpose:
+   *
+   * - A submission fails, and no case is created. Its snapshot is stored and
+   *   routes the case from then on, so carrying on with `{}` would start a
+   *   case on data the host never gave. It runs before the engine
+   *   transaction, so a failure leaves nothing behind and a slow lookup holds
+   *   no lock.
+   * - The list carries on with `customFields: {}` and logs a warning: one
+   *   failing lookup must not take the whole list away. That fails closed: a
+   *   policy that reads `initiator.customFields` then throws on the missing key
+   *   and the list's per-template catch leaves that template out, while a
+   *   template whose policy does not read it is listed as usual. Submitting is
+   *   still judged against the resolver's real answer.
+   */
+  private async buildInitiatorMetadataSnapshot({
+    authContext,
+    memberId,
+    submission,
+  }: {
+    readonly authContext: BPMAuthContext;
+    readonly memberId: string;
+    readonly submission: {
+      readonly formData: Readonly<Record<string, unknown>>;
+      readonly templateId: string;
+      readonly templateVersionId: string;
+    } | null;
+  }): Promise<Readonly<Record<string, unknown>>> {
+    const defaultSnapshot =
+      await this.readDefaultInitiatorMetadataSnapshot(memberId);
+
+    if (!this.initiatorCustomFieldsResolver) {
+      return defaultSnapshot;
+    }
+
+    const input: BPMInitiatorCustomFieldsInput = {
+      authContext,
+      defaultSnapshot: cloneJsonObject(defaultSnapshot),
+      formData: submission ? cloneJsonObject(submission.formData) : null,
+      memberId,
+      purpose: submission ? 'SUBMISSION' : 'LAUNCHABLE_TEMPLATES',
+      templateId: submission?.templateId ?? null,
+      templateVersionId: submission?.templateVersionId ?? null,
+    };
+
+    if (submission) {
+      return {
+        ...defaultSnapshot,
+        customFields: await this.resolveInitiatorCustomFields(
+          this.initiatorCustomFieldsResolver,
+          input,
+        ),
+      };
+    }
+
+    try {
+      return {
+        ...defaultSnapshot,
+        customFields: await this.resolveInitiatorCustomFields(
+          this.initiatorCustomFieldsResolver,
+          input,
+        ),
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Launchable templates judged with customFields {}: the initiator customFields resolver failed (${
+          error instanceof HttpException ? error.getStatus() : 'UNEXPECTED'
+        })`,
+      );
+
+      return defaultSnapshot;
+    }
+  }
+
+  /**
+   * Calls the host's initiator `customFields` resolver within
+   * {@link INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS} and returns what it
+   * gave as the object the snapshot keeps.
+   *
+   * Every failure becomes an `InternalServerErrorException` with a message
+   * meant for the member, and the cause goes to the log only, so nothing of
+   * the host's lookup reaches the client: running out of time, an error that
+   * is not an `HttpException`, and a value that is not a plain JSON object. An
+   * `HttpException` the resolver throws is passed on as it is, because the
+   * host chose that answer for the member.
+   *
+   * A resolver that settles after the time has run out is not waited for; what
+   * it settles with is logged and dropped, so a late rejection is never left
+   * unhandled.
+   */
+  private async resolveInitiatorCustomFields(
+    resolver: BPMInitiatorCustomFieldsResolver,
+    input: BPMInitiatorCustomFieldsInput,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    const subject =
+      input.purpose === 'SUBMISSION'
+        ? `template=${input.templateId} version=${input.templateVersionId}`
+        : 'launchable templates';
+    const outcome = await settleWithin(
+      new Promise<unknown>((resolve: (value: unknown) => void): void => {
+        resolve(resolver.resolveCustomFields(input));
+      }),
+      INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS,
+      (late: SettledOutcome): void => {
+        this.logger.warn(
+          `Initiator customFields resolver settled after the ${INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS} ms timeout (${subject}); ${
+            late.status === 'fulfilled'
+              ? 'its value was dropped'
+              : `its error was dropped: ${describeRejection(late.reason)}`
+          }`,
+        );
+      },
+    );
+
+    if (outcome.status === 'timeout') {
+      this.logger.error(
+        `Initiator customFields resolver timed out after ${INITIATOR_CUSTOM_FIELDS_RESOLVER_TIMEOUT_MS} ms (${subject})`,
+      );
+
+      throw new InternalServerErrorException(
+        INITIATOR_CUSTOM_FIELDS_TIMEOUT_MESSAGE,
+      );
+    }
+
+    if (outcome.status === 'rejected') {
+      if (outcome.reason instanceof HttpException) {
+        throw outcome.reason;
+      }
+
+      this.logger.error(
+        `Initiator customFields resolver failed (${subject}): ${describeRejection(outcome.reason)}`,
+        outcome.reason instanceof Error ? outcome.reason.stack : undefined,
+      );
+
+      throw new InternalServerErrorException(
+        INITIATOR_CUSTOM_FIELDS_FAILED_MESSAGE,
+      );
+    }
+
+    const customFields = readResolvedInitiatorCustomFields(outcome.value);
+
+    if (!customFields.ok) {
+      this.logger.error(
+        `Initiator customFields resolver returned an unusable value (${subject}): ${customFields.problem}`,
+      );
+
+      throw new InternalServerErrorException(
+        INITIATOR_CUSTOM_FIELDS_INVALID_MESSAGE,
+      );
+    }
+
+    return customFields.value;
   }
 
   async listActivityLogs(
@@ -9484,6 +9727,110 @@ function readDefaultInitiatorMetadataSnapshot(
     customFields: {},
     memberId,
   };
+}
+
+function cloneJsonObject(
+  value: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+/**
+ * What a host's initiator `customFields` resolver returned, as the object the
+ * snapshot keeps: a plain object that survives JSON, which is also how it is
+ * stored, so the policy evaluated at submit and the conditions evaluated later
+ * read the same values. Anything else is a bug in the host's resolver; the
+ * caller fails the submission with it rather than replacing it by `{}`, and
+ * `problem` is for the log only.
+ *
+ * The check runs on the round-tripped value too, because an object's `toJSON`
+ * can turn it into something that is not an object. A key whose value is
+ * `undefined` does not survive the round trip either, so it is not in the
+ * stored snapshot.
+ */
+function readResolvedInitiatorCustomFields(
+  value: unknown,
+):
+  | { readonly ok: true; readonly value: Readonly<Record<string, unknown>> }
+  | { readonly ok: false; readonly problem: string } {
+  if (!isPlainObjectValue(value)) {
+    return { ok: false, problem: 'not a plain object' };
+  }
+
+  const roundTripped = ((): unknown => {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return undefined;
+    }
+  })();
+
+  if (roundTripped === undefined) {
+    return { ok: false, problem: 'not JSON-serializable' };
+  }
+
+  if (!isPlainObjectValue(roundTripped)) {
+    return { ok: false, problem: 'not a plain object once serialized' };
+  }
+
+  return { ok: true, value: roundTripped };
+}
+
+type SettledOutcome =
+  | { readonly status: 'fulfilled'; readonly value: unknown }
+  | { readonly status: 'rejected'; readonly reason: unknown };
+
+/**
+ * Waits for `promise` at most `timeoutMs`. The timer is cleared as soon as
+ * either side wins. Once the time has run out, whatever `promise` settles with
+ * later goes to `onLateSettle` and nowhere else, so a late rejection is
+ * handled rather than left to surface as an unhandled rejection.
+ */
+function settleWithin(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+  onLateSettle: (outcome: SettledOutcome) => void,
+): Promise<SettledOutcome | { readonly status: 'timeout' }> {
+  return new Promise(
+    (
+      resolve: (
+        outcome: SettledOutcome | { readonly status: 'timeout' },
+      ) => void,
+    ): void => {
+      const state = { timedOut: false };
+      const timer = setTimeout((): void => {
+        state.timedOut = true;
+        resolve({ status: 'timeout' });
+      }, timeoutMs);
+      const settle = (outcome: SettledOutcome): void => {
+        if (state.timedOut) {
+          onLateSettle(outcome);
+
+          return;
+        }
+
+        clearTimeout(timer);
+        resolve(outcome);
+      };
+
+      promise.then(
+        (value: unknown): void => settle({ status: 'fulfilled', value }),
+        (reason: unknown): void => settle({ status: 'rejected', reason }),
+      );
+    },
+  );
+}
+
+function describeRejection(reason: unknown): string {
+  return reason instanceof Error
+    ? `${reason.name}: ${reason.message}`
+    : String(reason);
+}
+
+function isPlainObjectValue(
+  value: unknown,
+): value is Readonly<Record<string, unknown>> {
+  return Object.prototype.toString.call(value) === '[object Object]';
 }
 
 function createWorkflowAuthContext(memberId: string): BPMAuthContext {

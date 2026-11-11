@@ -492,6 +492,9 @@ BPMRootModule.forRoot({ organizationTimeZone: 'UTC' });
 - 沒設定的 host：`OrganizationService` 行為不變，簽核引擎從 UTC 改為 `Asia/Taipei`。
 - 只影響「今天」怎麼算；不改變已存的生效日，也不影響 `startAt`／`endAt`／`createdAt` 這類時間戳的比較。
 - 與 `notificationSlaBusinessCalendarTimeZone`（SLA 工作日，預設 `UTC`）是兩個獨立設定，可以設成同一個值。
+- 前端設計器（職位選單、試跑）也要用同一天判斷：有設這個值時，把同一個值傳給 react 的
+  `<BPMNextProviders organizationTimeZone="UTC">`（或 `<Providers>`）；不設就兩邊都用 `Asia/Taipei`。
+  前端遇到不存在的時區不會報錯，而是退回 `Asia/Taipei` 並在 console 警告一次。
 
 ### 3. Bootstrap（**不要** 用 `setGlobalPrefix`）
 

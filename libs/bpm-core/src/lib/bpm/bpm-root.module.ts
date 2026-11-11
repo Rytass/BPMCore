@@ -39,6 +39,7 @@ import { OrganizationModule } from '../organization/organization.module';
 import { SignatureModule } from '../signature/signature.module';
 import { TemplateModule } from '../template/template.module';
 import { WorkflowEngineModule } from '../workflow-engine/workflow-engine.module';
+import { BPMInitiatorCustomFieldsResolver } from '../workflow-engine/initiator-custom-fields-resolver.token';
 import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
 import {
   BPM_ROOT_OPTIONS,
@@ -114,6 +115,17 @@ interface BPMRootModuleWiringOptions extends Pick<ModuleMetadata, 'imports'> {
    * does; when neither is given, the catalog is empty.
    */
   readonly workflowWebhookRegistryProvider?: Provider<BPMWorkflowWebhookRegistry>;
+
+  /**
+   * Host-provided initiator `customFields` resolver, as a Nest provider for
+   * `BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER`.
+   *
+   * Runtime twin: {@link BPMRootRuntimeOptions.initiatorCustomFieldsResolver}.
+   * When both are given this provider wins, as `workflowServiceTaskDispatcherProvider`
+   * does. BPM builds one engine, shared with form option DataSources, so the
+   * provider and the runtime twin reach the same place. When none is given, `customFields` of an engine-built snapshot is `{}`.
+   */
+  readonly initiatorCustomFieldsResolverProvider?: Provider<BPMInitiatorCustomFieldsResolver>;
 
   /**
    * Host-provided member resolver, as a Nest provider.
@@ -327,6 +339,14 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
   const inject: readonly InjectionToken[] = [BPM_ROOT_OPTIONS];
   const useFactory = (options: BPMRootRuntimeOptions): BPMRootRuntimeOptions =>
     options;
+  // Built once and imported by both this graph and `FormDataSourceModule`, so
+  // Nest makes a single engine that holds the host's providers.
+  const workflowEngineModule: DynamicModule = WorkflowEngineModule.forRoot({
+    imports: wiring.imports,
+    initiatorCustomFieldsResolverProvider:
+      wiring.initiatorCustomFieldsResolverProvider,
+    serviceTaskDispatcherProvider: wiring.workflowServiceTaskDispatcherProvider,
+  });
 
   return [
     wiring.optionsModule,
@@ -365,16 +385,13 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
     FormDataSourceModule.forRoot({
       imports: wiring.imports,
       registryProvider: wiring.formDataSourceRegistryProvider,
+      workflowEngineModule,
     } satisfies FormDataSourceModuleOptions),
     TemplateModule,
     DelegationModule,
     NotificationModule,
     SignatureModule.forRootAsync({ inject, useFactory }),
-    WorkflowEngineModule.forRoot({
-      imports: wiring.imports,
-      serviceTaskDispatcherProvider:
-        wiring.workflowServiceTaskDispatcherProvider,
-    }),
+    workflowEngineModule,
     WorkflowWebhookModule.forRoot({
       imports: wiring.imports,
       registryProvider: wiring.workflowWebhookRegistryProvider,

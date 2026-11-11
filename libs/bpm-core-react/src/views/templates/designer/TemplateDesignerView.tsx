@@ -154,6 +154,17 @@ import {
 } from './node-actor-resolver-options';
 import { readMinPositionLevelOptions } from './position-level-options';
 import {
+  isMembershipActiveOn,
+  readActivePositionIds,
+  readOrgPositionPickerState,
+  readOrgScopedPositions,
+  readOrgUnitScopeIds,
+  useOrganizationTodayDateOnlyString,
+} from './position-scope';
+
+const ORG_POSITION_INACTIVE_HINT =
+  '這個組織範圍內目前沒有擁有此職位的有效會員，請改選其他職位。';
+import {
   OrgUnitRecord,
   MembershipRecord,
   PositionRecord,
@@ -223,6 +234,16 @@ import {
   withPreferClosestOrgUnit,
 } from './approver-resolver-model';
 import { readDryRunSampleFormData } from './dry-run-sample-data';
+import {
+  readNotifyRecipients,
+  readNotifyRecipientSourceChoice,
+  readNotifyRecipientSourcePick,
+  withNotifyFormPath,
+  withNotifyIncludeDescendants,
+  withNotifyOrgUnit,
+  withNotifyPosition,
+  withNotifyRecipients,
+} from './notify-recipient-options';
 import { DialectUpgradeModal } from './expression/DialectUpgradeModal';
 import { ExpressionField } from './expression/ExpressionField';
 import { useWorkflowExpressionReferences } from './expression/use-workflow-expression-references';
@@ -815,6 +836,9 @@ export function TemplateDesignerView({
   const router = useRouterAdapter();
   const routes = useBPMRoutes();
   const language = useBPMLanguage();
+  // "Today" in the host's organizationTimeZone, the day the engine judges
+  // membership effective dates on; pickers and the dry run share it.
+  const organizationToday = useOrganizationTodayDateOnlyString();
   const [record, setRecord] = useState<TemplateDesignerRecord | null>(null);
   const [draft, setDraft] = useState<ApprovalTemplateVersionRecord | null>(
     null,
@@ -1735,6 +1759,7 @@ export function TemplateDesignerView({
         initiatorMetadataSnapshot: readDryRunInitiatorMetadataSnapshot(
           DRY_RUN_MEMBER_ID,
           memberships,
+          organizationToday,
         ),
         workflowDefinition,
       });
@@ -2799,6 +2824,7 @@ export function TemplateDesignerView({
     const initiatorScopedPositions =
       initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION'
         ? readOrgScopedPositions({
+            date: organizationToday,
             includeDescendants: Boolean(
               initiatorPolicyDraft.includeDescendants,
             ),
@@ -2808,6 +2834,12 @@ export function TemplateDesignerView({
             positions,
           })
         : [];
+    const initiatorPositionPicker = readOrgPositionPickerState({
+      orgUnitId: initiatorPolicyDraft.orgUnitId ?? '',
+      positionId: initiatorPolicyDraft.positionId ?? '',
+      positions,
+      scopedPositions: initiatorScopedPositions,
+    });
 
     return (
       <>
@@ -2899,7 +2931,16 @@ export function TemplateDesignerView({
           </BPMFormField>
         ) : null}
         {initiatorPolicyDraft.mode === 'ORG_UNIT_POSITION' ? (
-          <BPMFormField label="職位" name="initiatorPositionId" required>
+          <BPMFormField
+            hintText={
+              initiatorPositionPicker.isInactive
+                ? ORG_POSITION_INACTIVE_HINT
+                : undefined
+            }
+            label="職位"
+            name="initiatorPositionId"
+            required
+          >
             <PositionPicker
               disabled={!initiatorPolicyDraft.orgUnitId?.trim()}
               name="initiatorPositionId"
@@ -2914,7 +2955,7 @@ export function TemplateDesignerView({
                   ? '選擇職位'
                   : '請先選擇組織'
               }
-              positions={initiatorScopedPositions}
+              positions={initiatorPositionPicker.options}
               value={selectedInitiatorPosition}
             />
           </BPMFormField>
@@ -2995,6 +3036,7 @@ export function TemplateDesignerView({
     const orgScopedPositions =
       resolver.type === 'ORG_UNIT_POSITION'
         ? readOrgScopedPositions({
+            date: organizationToday,
             includeDescendants: Boolean(resolver.includeDescendants),
             memberships,
             orgUnitId: resolver.orgUnitId,
@@ -3002,6 +3044,14 @@ export function TemplateDesignerView({
             positions,
           })
         : [];
+    const orgPositionPicker = readOrgPositionPickerState({
+      orgUnitId:
+        resolver.type === 'ORG_UNIT_POSITION' ? resolver.orgUnitId : '',
+      positionId:
+        resolver.type === 'ORG_UNIT_POSITION' ? resolver.positionId : '',
+      positions,
+      scopedPositions: orgScopedPositions,
+    });
     const dynamicFormChoice =
       editorState.mode === 'DYNAMIC_FORM'
         ? editorState.levelsUp === null
@@ -3841,7 +3891,11 @@ export function TemplateDesignerView({
         ) : null}
         {resolver.type === 'ORG_UNIT_POSITION' ? (
           <BPMFormField
-            hintText="只納入指定組織範圍內擁有此職位的有效會員。"
+            hintText={
+              orgPositionPicker.isInactive
+                ? ORG_POSITION_INACTIVE_HINT
+                : '只納入指定組織範圍內擁有此職位的有效會員。'
+            }
             label="職位"
             name="orgUnitPositionId"
             required
@@ -3860,7 +3914,7 @@ export function TemplateDesignerView({
               placeholder={
                 resolver.orgUnitId.trim() ? '選擇職位' : '請先選擇組織'
               }
-              positions={orgScopedPositions}
+              positions={orgPositionPicker.options}
               value={selectedPosition}
             />
           </BPMFormField>
@@ -4362,33 +4416,77 @@ export function TemplateDesignerView({
     node: Extract<WorkflowNode, { type: 'serviceTask' }>,
   ): ReactElement {
     const action = node.data.action;
-    const selectedMembers = readServiceTaskMemberIds(action).map((memberId) =>
-      readMemberSelectOption(memberOptions, memberId),
-    );
-    const runtimeRecipients =
-      action.type === 'NOTIFY' && action.recipients.type !== 'DIRECT'
-        ? readApproverResolverSummary(
-            action.recipients,
+    const recipients = readNotifyRecipients(action);
+    const sourceChoice = readNotifyRecipientSourceChoice(recipients);
+    // A source this panel does not edit shows what it currently resolves to,
+    // so the author can read it without opening the template JSON.
+    const sourceHint =
+      sourceChoice.readOnly && sourceChoice.hint
+        ? `目前知會對象為「${readApproverResolverSummary(
+            recipients,
             memberOptions,
             orgUnits,
             positions,
             webhookFormSchema,
-          )
+          )}${recipients.type === 'EXPRESSION' ? `：${recipients.expression}` : ''}」。${sourceChoice.hint}`
+        : sourceChoice.hint;
+    const selectedMembers = readServiceTaskMemberIds(action).map((memberId) =>
+      readMemberSelectOption(memberOptions, memberId),
+    );
+    const selectedRecipientOrgUnit =
+      recipients.type === 'ORG_UNIT_MEMBER' ||
+      recipients.type === 'ORG_UNIT_POSITION' ||
+      recipients.type === 'ORG_UNIT_MANAGER'
+        ? readSelectedOrgUnitOption(orgUnits, recipients.orgUnitId)
+        : null;
+    const selectedRecipientPosition =
+      recipients.type === 'POSITION' || recipients.type === 'ORG_UNIT_POSITION'
+        ? readSelectedPositionOption(positions, recipients.positionId)
+        : null;
+    // The picker offers only positions someone holds through an effective
+    // membership, the same set the engine can resolve. A stored position that
+    // is no longer held stays selected, with a warning, so the author sees it.
+    const activeRecipientPositionIds = readActivePositionIds(
+      memberships,
+      organizationToday,
+    );
+    const isRecipientPositionInactive =
+      recipients.type === 'POSITION' &&
+      Boolean(recipients.positionId) &&
+      !activeRecipientPositionIds.has(recipients.positionId);
+    const recipientPositionOptions = positions.filter(
+      (position) =>
+        activeRecipientPositionIds.has(position.id) ||
+        (isRecipientPositionInactive && position.id === recipients.positionId),
+    );
+    const recipientOrgScopedPositions =
+      recipients.type === 'ORG_UNIT_POSITION'
+        ? readOrgScopedPositions({
+            date: organizationToday,
+            includeDescendants: Boolean(recipients.includeDescendants),
+            memberships,
+            orgUnitId: recipients.orgUnitId,
+            orgUnits,
+            positions,
+          })
+        : [];
+    const recipientOrgPositionPicker = readOrgPositionPickerState({
+      orgUnitId:
+        recipients.type === 'ORG_UNIT_POSITION' ? recipients.orgUnitId : '',
+      positionId:
+        recipients.type === 'ORG_UNIT_POSITION' ? recipients.positionId : '',
+      positions,
+      scopedPositions: recipientOrgScopedPositions,
+    });
+    const recipientFormChoice =
+      recipients.type === 'DYNAMIC_FORM'
+        ? readDynamicFormFieldChoice(webhookFormSchema, recipients.formPath)
         : null;
 
-    function updateNotifyRecipients(memberIds: readonly string[]): void {
-      const recipients: ApproverResolver = {
-        memberIds: [...memberIds],
-        type: 'DIRECT',
-      };
-
-      // Only the recipients change: channels, template and webhooks belong
-      // to the same action and must survive a member being added or removed.
-      updateServiceAction(
-        action.type === 'NOTIFY'
-          ? { ...action, recipients }
-          : { channels: ['IN_APP'], recipients, type: 'NOTIFY' },
-      );
+    // Only the recipients change: channels, template and webhooks belong to
+    // the same action and must survive a source or target being edited.
+    function updateNotifyRecipients(next: ApproverResolver): void {
+      updateServiceAction(withNotifyRecipients(action, next));
     }
 
     function updateNotifyWebhooks(
@@ -4477,47 +4575,194 @@ export function TemplateDesignerView({
       <>
         {actionTypePicker}
         <BPMFormField
-          hintText={
-            runtimeRecipients
-              ? `目前知會對象為「${runtimeRecipients}」；在此選擇成員會改為指定成員。`
-              : action.type === 'NOTIFY'
-                ? '可只設定 Webhook，不指定知會對象。'
-                : undefined
-          }
-          label="知會對象"
-          name="notifyMemberIds"
+          hintText={sourceHint ?? undefined}
+          label="知會對象來源"
+          name="notifyRecipientType"
         >
-          <AutoComplete
-            asyncData
-            disabledOptionsFilter
-            emptyText="沒有符合的成員"
-            loading={memberLoading}
-            loadingText="搜尋成員中..."
-            mode="multiple"
-            onChange={(options): void =>
-              updateNotifyRecipients(options.map((option) => option.id))
-            }
-            onSearch={handleSearchMembers}
-            onVisibilityChange={(open): void => {
-              if (open) {
-                // Clear synchronously so the window between opening and the
-                // fetch landing never shows a different node's stale results.
-                setMemberSearchResults([]);
-                void handleSearchMembers('');
+          <Select
+            clearable={false}
+            onChange={(option): void => {
+              // Re-picking the source already stored, or the read-only entry
+              // of a source this panel does not edit, writes nothing.
+              const next = readNotifyRecipientSourcePick(
+                recipients,
+                option?.id ?? null,
+                positions,
+              );
+
+              if (next) {
+                updateNotifyRecipients(next);
               }
             }}
-            // As in the approver picker: merged so an already-picked member can
-            // still be unticked from the dropdown, which AutoComplete resolves
-            // through `options`.
-            options={[
-              ...mergeMemberOptions(selectedMembers, memberSearchResults),
-            ]}
-            overflowStrategy="wrap"
-            placeholder="搜尋姓名或信箱"
-            searchDebounceTime={300}
-            value={[...selectedMembers]}
+            options={[...sourceChoice.options]}
+            value={sourceChoice.selected}
           />
         </BPMFormField>
+        {recipients.type === 'DIRECT' ? (
+          <BPMFormField
+            hintText={
+              action.type === 'NOTIFY'
+                ? '可只設定 Webhook，不指定知會對象。'
+                : undefined
+            }
+            label="知會對象"
+            name="notifyMemberIds"
+          >
+            <AutoComplete
+              asyncData
+              disabledOptionsFilter
+              emptyText="沒有符合的成員"
+              loading={memberLoading}
+              loadingText="搜尋成員中..."
+              mode="multiple"
+              onChange={(options): void =>
+                updateNotifyRecipients({
+                  memberIds: options.map((option) => option.id),
+                  type: 'DIRECT',
+                })
+              }
+              onSearch={handleSearchMembers}
+              onVisibilityChange={(open): void => {
+                if (open) {
+                  // Clear synchronously so the window between opening and the
+                  // fetch landing never shows a different node's stale results.
+                  setMemberSearchResults([]);
+                  void handleSearchMembers('');
+                }
+              }}
+              // As in the approver picker: merged so an already-picked member can
+              // still be unticked from the dropdown, which AutoComplete resolves
+              // through `options`.
+              options={[
+                ...mergeMemberOptions(selectedMembers, memberSearchResults),
+              ]}
+              overflowStrategy="wrap"
+              placeholder="搜尋姓名或信箱"
+              searchDebounceTime={300}
+              value={[...selectedMembers]}
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'DYNAMIC_FORM' ? (
+          <BPMFormField
+            hintText={
+              recipientFormChoice?.problem ??
+              '知會對象取自申請人送出表單時在該欄位選的人員。'
+            }
+            label="表單欄位"
+            name="notifyFormPath"
+            required
+          >
+            <Select
+              clearable={false}
+              onChange={(option): void =>
+                updateNotifyRecipients(
+                  withNotifyFormPath(recipients, option?.id ?? ''),
+                )
+              }
+              options={[...(recipientFormChoice?.options ?? [])]}
+              placeholder="選擇人員選擇欄位"
+              value={recipientFormChoice?.selected ?? undefined}
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'ORG_UNIT_MEMBER' ||
+        recipients.type === 'ORG_UNIT_POSITION' ||
+        recipients.type === 'ORG_UNIT_MANAGER' ? (
+          <BPMFormField
+            hintText={
+              recipients.type === 'ORG_UNIT_MANAGER'
+                ? '依指定組織或其上層的主管解析規則決定知會對象；組織沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
+                : '依指定組織目前有效會員歸屬決定知會對象。'
+            }
+            label="組織"
+            name="notifyOrgUnitId"
+            required
+          >
+            <OrgUnitPicker
+              name="notifyOrgUnitId"
+              onChange={(option): void =>
+                updateNotifyRecipients(
+                  withNotifyOrgUnit(recipients, option?.id ?? ''),
+                )
+              }
+              orgUnits={orgUnits}
+              placeholder="選擇組織"
+              value={selectedRecipientOrgUnit}
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'ORG_UNIT_MEMBER' ||
+        recipients.type === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField label="包含下層" name="notifyIncludeDescendants">
+            <Toggle
+              checked={Boolean(recipients.includeDescendants)}
+              inputProps={{
+                id: 'notifyIncludeDescendants',
+                name: 'notifyIncludeDescendants',
+              }}
+              onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                updateNotifyRecipients(
+                  withNotifyIncludeDescendants(
+                    recipients,
+                    event.target.checked,
+                  ),
+                )
+              }
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'POSITION' ? (
+          <BPMFormField
+            hintText={
+              isRecipientPositionInactive
+                ? '這個職位目前沒有任何有效歸屬的會員，送出時會找不到收件人，請改選其他職位。'
+                : '通知目前有效歸屬中擁有此職位的會員。'
+            }
+            label="職位"
+            name="notifyPositionId"
+            required
+          >
+            <PositionPicker
+              name="notifyPositionId"
+              onChange={(option): void =>
+                updateNotifyRecipients(
+                  withNotifyPosition(recipients, option?.id ?? ''),
+                )
+              }
+              placeholder="選擇職位"
+              positions={recipientPositionOptions}
+              value={selectedRecipientPosition}
+            />
+          </BPMFormField>
+        ) : null}
+        {recipients.type === 'ORG_UNIT_POSITION' ? (
+          <BPMFormField
+            hintText={
+              recipientOrgPositionPicker.isInactive
+                ? ORG_POSITION_INACTIVE_HINT
+                : '只通知指定組織範圍內擁有此職位的有效會員。'
+            }
+            label="職位"
+            name="notifyOrgUnitPositionId"
+            required
+          >
+            <PositionPicker
+              disabled={!recipients.orgUnitId.trim()}
+              name="notifyOrgUnitPositionId"
+              onChange={(option): void =>
+                updateNotifyRecipients(
+                  withNotifyPosition(recipients, option?.id ?? ''),
+                )
+              }
+              placeholder={
+                recipients.orgUnitId.trim() ? '選擇職位' : '請先選擇組織'
+              }
+              positions={recipientOrgPositionPicker.options}
+              value={selectedRecipientPosition}
+            />
+          </BPMFormField>
+        ) : null}
         {action.type === 'NOTIFY' &&
         !isNotifyWebhookListEditable(action.webhooks) ? (
           <div style={FORM_STACK_STYLE}>
@@ -5932,8 +6177,8 @@ function readMemberSelectOptions(
 function readDryRunInitiatorMetadataSnapshot(
   memberId: string,
   memberships: readonly MembershipRecord[],
+  today: string,
 ): Readonly<Record<string, unknown>> {
-  const today = readTodayDateOnlyString();
   const activeMemberships = memberships.filter(
     (membership) =>
       membership.memberId === memberId &&
@@ -5964,20 +6209,6 @@ function readDryRunInitiatorMetadataSnapshot(
   };
 }
 
-function readTodayDateOnlyString(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function isMembershipActiveOn(
-  membership: MembershipRecord,
-  date: string,
-): boolean {
-  return (
-    membership.effectiveFrom <= date &&
-    (!membership.effectiveTo || membership.effectiveTo >= date)
-  );
-}
-
 function compareMembershipRecord(
   left: MembershipRecord,
   right: MembershipRecord,
@@ -5999,56 +6230,6 @@ function readUniqueTexts(
         : currentValues,
     [],
   );
-}
-
-function readOrgScopedPositions({
-  includeDescendants,
-  memberships,
-  orgUnitId,
-  orgUnits,
-  positions,
-}: {
-  readonly includeDescendants: boolean;
-  readonly memberships: readonly MembershipRecord[];
-  readonly orgUnitId: string;
-  readonly orgUnits: readonly OrgUnitRecord[];
-  readonly positions: readonly PositionRecord[];
-}): readonly PositionRecord[] {
-  const orgUnitIds = new Set(
-    readOrgUnitScopeIds(orgUnits, orgUnitId, includeDescendants),
-  );
-  const positionIds = new Set(
-    memberships
-      .filter((membership) => orgUnitIds.has(membership.orgUnitId))
-      .map((membership) => membership.positionId)
-      .filter((positionId): positionId is string => Boolean(positionId)),
-  );
-
-  return positions.filter((position) => positionIds.has(position.id));
-}
-
-function readOrgUnitScopeIds(
-  orgUnits: readonly OrgUnitRecord[],
-  orgUnitId: string,
-  includeDescendants: boolean,
-): readonly string[] {
-  const orgUnit = orgUnits.find((candidate) => candidate.id === orgUnitId);
-
-  if (!orgUnit) {
-    return orgUnitId.trim() ? [orgUnitId] : [];
-  }
-
-  if (!includeDescendants) {
-    return [orgUnit.id];
-  }
-
-  return orgUnits
-    .filter(
-      (candidate) =>
-        candidate.id === orgUnit.id ||
-        candidate.path.startsWith(`${orgUnit.path}.`),
-    )
-    .map((candidate) => candidate.id);
 }
 
 /**
