@@ -47,8 +47,8 @@ interface FormDefinitionTemplateRow {
  * Issues that block a template from using `schema`. Empty when the schema has
  * no filterable field, which skips every query.
  *
- * `inForceSchema`, when given, is the form schema of the template's current
- * version, read under the template row lock a publish or rollback holds. Its
+ * `readInForceSchema`, when given, reads the form schema of the template's
+ * current version (called only when `schema` has a filterable field), under the template row lock a publish or rollback holds. Its
  * filterable fields are already guaranteed by the stored data: each was
  * checked against every instance when it became filterable, and every write
  * since has been checked against it under the same lock (ADR 25 §6, §15). So
@@ -60,7 +60,7 @@ export async function readTemplateFilterableFieldIssues(
   manager: EntityManager,
   templateId: string,
   schema: FormDefinitionSchema | null | undefined,
-  inForceSchema?: FormDefinitionSchema | null,
+  readInForceSchema?: () => Promise<FormDefinitionSchema | null>,
 ): Promise<readonly FilterableFieldIssueReport[]> {
   const paths = readFilterableFieldPaths(schema);
 
@@ -69,9 +69,9 @@ export async function readTemplateFilterableFieldIssues(
   }
 
   const scannedPaths =
-    inForceSchema === undefined
+    readInForceSchema === undefined
       ? paths
-      : readNewlyFilterablePaths(paths, inForceSchema);
+      : readNewlyFilterablePaths(paths, await readInForceSchema());
   const history = await readHistoryFormVersions(manager, templateId);
   const instances =
     scannedPaths.length === 0
@@ -100,21 +100,22 @@ export async function readTemplateFilterableFieldIssues(
 }
 
 /**
- * Throws a conflict that lists every blocking issue, one per line. Pass the
- * current version's schema as `inForceSchema` (null when the template has no
- * published version) to scan only what this change makes filterable.
+ * Throws a conflict that lists every blocking issue, one per line. Pass a
+ * reader of the current version's schema as `readInForceSchema` (resolving to
+ * null when the template has no published version) to scan only what this
+ * change makes filterable.
  */
 export async function assertTemplateFilterableFieldsEnabled(
   manager: EntityManager,
   templateId: string,
   schema: FormDefinitionSchema | null | undefined,
-  inForceSchema?: FormDefinitionSchema | null,
+  readInForceSchema?: () => Promise<FormDefinitionSchema | null>,
 ): Promise<void> {
   const reports = await readTemplateFilterableFieldIssues(
     manager,
     templateId,
     schema,
-    inForceSchema,
+    readInForceSchema,
   );
 
   if (reports.length > 0) {

@@ -373,6 +373,23 @@ describe('filterable field guard (ADR 25 §5.4)', () => {
       type: 'text',
     };
 
+    it('does not read the in-force schema when the new one has no filterable field', async (): Promise<void> => {
+      const { manager, query } = createFakeManager({});
+      const readInForceSchema = jest.fn(
+        async (): Promise<FormDefinitionSchema | null> => TEXT_NOTE_V1,
+      );
+
+      await assertTemplateFilterableFieldsEnabled(
+        manager,
+        'template-1',
+        TEXT_NOTE_V1,
+        readInForceSchema,
+      );
+
+      expect(readInForceSchema).not.toHaveBeenCalled();
+      expect(query).not.toHaveBeenCalled();
+    });
+
     it('reads no instance when the publish makes nothing newly filterable', async (): Promise<void> => {
       // The stored value is dirty, but the field was already filterable with
       // this type: the guard at enable time and on every write keeps it clean,
@@ -391,7 +408,7 @@ describe('filterable field guard (ADR 25 §5.4)', () => {
           manager,
           'template-1',
           next,
-          inForce,
+          async (): Promise<FormDefinitionSchema | null> => inForce,
         ),
       ).resolves.toBeUndefined();
       expect(
@@ -415,7 +432,7 @@ describe('filterable field guard (ADR 25 §5.4)', () => {
         manager,
         'template-1',
         next,
-        inForce,
+        async (): Promise<FormDefinitionSchema | null> => inForce,
       );
       const instanceCall = query.mock.calls.find(([sql]) =>
         String(sql).includes('jsonb_object_agg'),
@@ -437,7 +454,7 @@ describe('filterable field guard (ADR 25 §5.4)', () => {
         manager,
         'template-1',
         next,
-        inForce,
+        async (): Promise<FormDefinitionSchema | null> => inForce,
       );
       const instanceCall = query.mock.calls.find(([sql]) =>
         String(sql).includes('jsonb_object_agg'),
@@ -458,7 +475,7 @@ describe('filterable field guard (ADR 25 §5.4)', () => {
         manager,
         'template-1',
         schemaOf([TEXT_VENDOR, MONEY_AMOUNT]),
-        null,
+        async (): Promise<FormDefinitionSchema | null> => null,
       );
       const instanceCall = query.mock.calls.find(([sql]) =>
         String(sql).includes('jsonb_object_agg'),

@@ -958,7 +958,8 @@ export class TemplateService {
       manager,
       template.id,
       formSchema,
-      await this.readInForceFormSchema(manager, template),
+      (): Promise<FormDefinitionSchema | null> =>
+        this.readInForceFormSchema(manager, template),
     );
 
     const previousVersionId = template.currentVersionId;
@@ -1057,7 +1058,8 @@ export class TemplateService {
             manager,
             target.formDefinitionVersionId,
           ),
-          await this.readInForceFormSchema(manager, template),
+          (): Promise<FormDefinitionSchema | null> =>
+            this.readInForceFormSchema(manager, template),
         );
 
         const previousVersionId = template.currentVersionId;
