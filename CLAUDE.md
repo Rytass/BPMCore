@@ -396,8 +396,8 @@ remains (re-checked in the 2026-11-12 round) is moderate `uuid`
 parent does not accept, and a low `deepmerge` (`jest-config`) with no patched
 version at all — the reason the gate stops above `moderate`. The same round
 had to override `@graphql-tools/*` (see `pnpm-workspace.yaml`): a patch of
-`@apollo/server` capped them back onto a `high` version. Nothing is suppressed into an allowlist; the
-outstanding findings stay visible in the log.
+`@apollo/server` capped them back onto a `high` version. Nothing is
+suppressed into an allowlist; the outstanding findings stay visible in the log.
 
 A `high` advisory with no published fix would turn every run red. Fix it with
 an override if a patched version exists; otherwise lower the gate to
