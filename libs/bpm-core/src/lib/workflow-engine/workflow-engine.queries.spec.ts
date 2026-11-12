@@ -3,8 +3,10 @@ import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-
 import { MemberMetadata } from '@rytass/bpm-core-shared';
 import { IdentityService } from '../identity/identity.service';
 import { WorkflowEngineQueries } from './workflow-engine.queries';
+import { StuckApprovalInstanceKindEnum } from './workflow-engine.enums';
 import {
   InactiveMemberOpenTasksRecord,
+  StuckApprovalInstanceRecord,
   WorkflowEngineService,
 } from './workflow-engine.service';
 
@@ -94,5 +96,39 @@ describe('WorkflowEngineQueries.inactiveMembersWithOpenTasks', () => {
     await expect(queries.inactiveMembersWithOpenTasks()).rejects.toThrow(
       'IdentityService failed to construct',
     );
+  });
+});
+
+describe('WorkflowEngineQueries.stuckApprovalInstances', () => {
+  it('hands back what the engine lists, untouched', async (): Promise<void> => {
+    const rows: readonly StuckApprovalInstanceRecord[] = [
+      {
+        automatic: null,
+        failedActorMemberId: 'member-001',
+        failedAt: new Date('2026-05-04T09:00:00.000Z'),
+        initiatorMemberId: 'member-002',
+        instanceId: 'instance-1',
+        instanceTitle: '費用申請',
+        kind: StuckApprovalInstanceKindEnum.DECISION,
+        message: '簽核節點「下一關」 找不到簽核人',
+        nodeId: 'task_finance',
+        nodeLabel: '財務簽核',
+        pendingActorMemberIds: ['member-001'],
+        taskId: 'task-1',
+        templateId: 'template-1',
+        templateName: '費用申請',
+      },
+    ];
+    const listStuckApprovalInstances = jest.fn(
+      (): Promise<readonly StuckApprovalInstanceRecord[]> =>
+        Promise.resolve(rows),
+    );
+    const queries = new WorkflowEngineQueries(
+      { listStuckApprovalInstances } as unknown as WorkflowEngineService,
+      {} as unknown as ModuleRef,
+    );
+
+    await expect(queries.stuckApprovalInstances()).resolves.toBe(rows);
+    expect(listStuckApprovalInstances).toHaveBeenCalledTimes(1);
   });
 });

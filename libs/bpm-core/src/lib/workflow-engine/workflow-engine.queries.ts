@@ -14,9 +14,11 @@ import {
   InactiveMemberWithOpenTasksObject,
   MemberOpenTaskObject,
 } from './task-reassignment.object';
+import { StuckApprovalInstanceObject } from './stuck-approval-instance.object';
 import {
   InactiveMemberOpenTasksRecord,
   MemberOpenTaskRecord,
+  StuckApprovalInstanceRecord,
 } from './workflow-engine.service';
 import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
@@ -265,6 +267,19 @@ export class WorkflowEngineQueries {
       (memberIds): Promise<readonly MemberMetadata[]> =>
         identityService.resolveInactiveMembers(memberIds),
     );
+  }
+
+  @Query(() => [StuckApprovalInstanceObject], {
+    description:
+      'Administrator: the RUNNING or RETURNED instances that could not move ' +
+      'on to their next stage and still cannot, newest failure first, one ' +
+      'row each. Each row says who has to press again now.',
+  })
+  @BPMAdminOnly()
+  async stuckApprovalInstances(): Promise<
+    readonly StuckApprovalInstanceRecord[]
+  > {
+    return this.workflowEngineService.listStuckApprovalInstances();
   }
 
   @Query(() => [ApprovalTemplateEntity])

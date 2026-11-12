@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { validateSync } from 'class-validator';
 import {
   SlaConfig,
@@ -21,6 +22,7 @@ import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
+import { BPM_WORKFLOW_ENGINE_SERVICE } from '../workflow-engine/workflow-engine.tokens';
 import {
   ActivityLogEventTypeEnum,
   TaskCandidateStatusEnum,
@@ -1668,6 +1670,95 @@ describe('NotificationService', () => {
     });
   });
 
+  describe('a task whose automatic approval failed and was then reassigned', (): void => {
+    const overdueAt = new Date('2026-05-10T09:01:00.000Z');
+    const nextScanAt = new Date('2026-05-10T09:31:00.000Z');
+
+    // The first scan fails in the engine (nothing to ask at the next stage);
+    // the administrator then moves the seat; the next scan finds a holder who
+    // never received the overdue notice, so the timeout action runs again.
+    // What `reassignTask` leaves behind is pinned by the engine spec ("moves a
+    // SINGLE task from its assignee in place" and "moves a non-assignee
+    // candidate seat and leaves the assignee alone").
+    it('approves again in the name of the new holder when the task has an assignee', async (): Promise<void> => {
+      const fixture = createReassignmentFixture({
+        assigneeMemberId: 'member-a',
+        candidates: [],
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(fixture.decideTask).toHaveBeenCalledTimes(1);
+
+      // A second scan changes nothing: the overdue notice already exists.
+      await expect(fixture.service.runSlaScan(overdueAt)).resolves.toEqual({
+        overdueCount: 0,
+        warningCount: 0,
+      });
+      expect(fixture.decideTask).toHaveBeenCalledTimes(1);
+
+      fixture.reassign({ assigneeMemberId: 'member-new' });
+
+      await expect(fixture.service.runSlaScan(nextScanAt)).resolves.toEqual({
+        overdueCount: 1,
+        warningCount: 0,
+      });
+      expect(fixture.decideTask).toHaveBeenCalledTimes(2);
+      expect(fixture.decideTask).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-new',
+        }),
+        { automatic: 'SLA_AUTO_APPROVE' },
+      );
+    });
+
+    it('asks the engine to approve as the seat that was replaced when the task has no assignee', async (): Promise<void> => {
+      const fixture = createReassignmentFixture({
+        assigneeMemberId: null,
+        candidates: [createTaskCandidate('seat-old', 'member-a')],
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(fixture.decideTask).toHaveBeenLastCalledWith(
+        expect.objectContaining({ decidedByMemberId: 'member-a' }),
+        { automatic: 'SLA_AUTO_APPROVE' },
+      );
+
+      // The group task is reassigned: the old seat is closed, a new one opens
+      // later, and the task still has no assignee.
+      fixture.reassign({
+        candidates: [
+          Object.assign(createTaskCandidate('seat-old', 'member-a'), {
+            status: TaskCandidateStatusEnum.TRANSFERRED,
+          }),
+          Object.assign(createTaskCandidate('seat-new', 'member-new'), {
+            createdAt: new Date('2026-05-10T09:10:00.000Z'),
+          }),
+        ],
+      });
+
+      // The engine refuses that member (see "refuses the old holder of a
+      // reassigned group task" in the engine spec), and the refusal ends the
+      // scan with an error.
+      fixture.decideTask.mockRejectedValueOnce(
+        new ConflictException('Task was already decided by this member'),
+      );
+
+      await expect(fixture.service.runSlaScan(nextScanAt)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(fixture.decideTask).toHaveBeenCalledTimes(2);
+      expect(fixture.decideTask).toHaveBeenLastCalledWith(
+        expect.objectContaining({ decidedByMemberId: 'member-a' }),
+        { automatic: 'SLA_AUTO_APPROVE' },
+      );
+    });
+  });
+
   it('expires the instance instead of cancelling it in the initiator name', async (): Promise<void> => {
     const fixture = createEscalationFixture({
       delegationChain: [],
@@ -1794,6 +1885,129 @@ function createEscalationFixture({
   );
 
   return { cancelApprovalInstance, decideTask, expireApprovalInstance, service };
+}
+
+/**
+ * One overdue AUTO_APPROVE task whose first approval fails in the engine, with
+ * the notification and seat rows kept between scans so a later scan sees what
+ * an earlier one wrote and what `reassign` changed.
+ */
+function createReassignmentFixture({
+  assigneeMemberId,
+  candidates,
+}: {
+  readonly assigneeMemberId: string | null;
+  readonly candidates: readonly TaskCandidateEntity[];
+}): {
+  readonly decideTask: jest.Mock;
+  readonly reassign: (change: {
+    readonly assigneeMemberId?: string | null;
+    readonly candidates?: readonly TaskCandidateEntity[];
+  }) => void;
+  readonly service: NotificationService;
+} {
+  const decideTask = jest
+    .fn((): Promise<Record<string, unknown>> => Promise.resolve({}))
+    .mockRejectedValueOnce(
+      new ConflictException('did not resolve to any member id'),
+    );
+  const baseTask = Object.assign(new TaskEntity(), {
+    createdAt: new Date('2026-05-10T08:00:00.000Z'),
+    delegationChain: [],
+    id: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+    instanceId: 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2',
+    nodeId: 'task_review',
+    slaDueAt: new Date('2026-05-10T09:00:00.000Z'),
+    status: TaskStatusEnum.PENDING,
+  });
+  let task = Object.assign(new TaskEntity(), baseTask, { assigneeMemberId });
+  let seats = candidates;
+  let notifications: readonly NotificationEntity[] = [];
+  const service = new NotificationService(
+    {
+      create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+        Object.assign(new NotificationEntity(), entity),
+      findOne: ({
+        where,
+      }: {
+        readonly where: Readonly<Record<string, unknown>>;
+      }): Promise<NotificationEntity | null> =>
+        Promise.resolve(
+          notifications.find(
+            (notification): boolean =>
+              notification.recipientMemberId === where['recipientMemberId'] &&
+              notification.taskId === where['taskId'] &&
+              notification.type === where['type'],
+          ) ?? null,
+        ),
+      save: (
+        rows: readonly NotificationEntity[],
+      ): Promise<readonly NotificationEntity[]> => {
+        notifications = [...notifications, ...rows];
+
+        return Promise.resolve(rows);
+      },
+    } as unknown as Repository<NotificationEntity>,
+    {
+      findOne: (): Promise<NotificationPreferenceEntity | null> =>
+        Promise.resolve(null),
+    } as unknown as Repository<NotificationPreferenceEntity>,
+    {
+      find: (): Promise<readonly TaskEntity[]> => Promise.resolve([task]),
+    } as unknown as Repository<TaskEntity>,
+    {
+      find: (): Promise<readonly TaskCandidateEntity[]> =>
+        Promise.resolve(sortByCreatedAt(seats)),
+      findOne: (): Promise<TaskCandidateEntity | null> =>
+        Promise.resolve(sortByCreatedAt(seats)[0] ?? null),
+    } as unknown as Repository<TaskCandidateEntity>,
+    {
+      findOne: (): Promise<ApprovalInstanceEntity> =>
+        Promise.resolve(createApprovalInstance('AUTO_APPROVE')),
+    } as unknown as Repository<ApprovalInstanceEntity>,
+    {
+      create: (entity: Partial<ActivityLogEntity>): ActivityLogEntity =>
+        Object.assign(new ActivityLogEntity(), entity),
+      save: (entity: ActivityLogEntity): Promise<ActivityLogEntity> =>
+        Promise.resolve(entity),
+    } as unknown as Repository<ActivityLogEntity>,
+    createDeliveryService(),
+    {
+      get: (token: unknown): unknown => {
+        if (token === BPM_WORKFLOW_ENGINE_SERVICE) {
+          return { decideTask };
+        }
+
+        throw new Error('Unexpected ModuleRef lookup');
+      },
+    } as unknown as ModuleRef,
+    {
+      ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
+      slaTimeoutAutoApproveEnabled: true,
+    },
+  );
+
+  return {
+    decideTask,
+    reassign: (change): void => {
+      task =
+        change.assigneeMemberId === undefined
+          ? task
+          : Object.assign(new TaskEntity(), task, {
+              assigneeMemberId: change.assigneeMemberId,
+            });
+      seats = change.candidates ?? seats;
+    },
+    service,
+  };
+}
+
+function sortByCreatedAt(
+  seats: readonly TaskCandidateEntity[],
+): readonly TaskCandidateEntity[] {
+  return [...seats].sort(
+    (left, right): number => left.createdAt.getTime() - right.createdAt.getTime(),
+  );
 }
 
 function createNotification(id: string): NotificationEntity {

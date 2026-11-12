@@ -113,6 +113,7 @@ import {
   ApprovalInstanceListViewEnum,
   ApprovalInstanceStateEnum,
   MemberTaskRoleEnum,
+  StuckApprovalInstanceKindEnum,
   TaskAssignmentTypeEnum,
   TaskCandidateStatusEnum,
   TaskDecisionActionEnum,
@@ -123,6 +124,7 @@ import {
 } from './workflow-engine.enums';
 import {
   ADMIN_REASSIGN_DELEGATION_REASON,
+  StuckApprovalInstanceRecord,
   TaskReassignmentResult,
   WorkflowEngineService,
 } from './workflow-engine.service';
@@ -20135,8 +20137,12 @@ describe('WorkflowEngineService', () => {
     // the decision was written, and the whole transaction rolls back.
     const createApprovalFixture = (
       options: {
+        readonly additionalProcessInstances?: readonly ApprovalInstanceEntity[];
+        readonly additionalProcessTasks?: readonly TaskEntity[];
+        readonly instanceState?: ApprovalInstanceStateEnum;
         readonly nextStageHasApprover?: boolean;
         readonly processActivityLogs?: readonly ActivityLogEntity[];
+        readonly processTaskCandidates?: readonly TaskCandidateEntity[];
         readonly task?: Partial<TaskEntity>;
       } = {},
     ): ServiceFixture => {
@@ -20155,7 +20161,11 @@ describe('WorkflowEngineService', () => {
           status: WorkflowTokenStatusEnum.WAITING,
         }),
         formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: options.instanceState,
+        additionalProcessInstances: options.additionalProcessInstances,
+        additionalProcessTasks: options.additionalProcessTasks,
         processActivityLogs: options.processActivityLogs,
+        processTaskCandidates: options.processTaskCandidates,
         processWorkflowSnapshot:
           options.nextStageHasApprover === true
             ? workflow
@@ -20195,11 +20205,14 @@ describe('WorkflowEngineService', () => {
 
     // A returned instance whose first stage has nobody to ask, so resubmitting
     // fails in `processRunningInstance`.
-    const createResubmitFixture = (): ServiceFixture =>
+    const createResubmitFixture = (
+      processActivityLogs: readonly ActivityLogEntity[] = [],
+    ): ServiceFixture =>
       createServiceFixture({
         currentVersionId: 'template-version-1',
         formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
         instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processActivityLogs,
         processWorkflowSnapshot: createLinearUserTaskWorkflow({
           approverResolver: NOBODY,
         }),
@@ -20258,25 +20271,53 @@ describe('WorkflowEngineService', () => {
     // A failure recorded earlier, still describing task-1.
     const createLoggedFailure = ({
       actorMemberId = 'member-finance',
+      automatic = null,
+      createdAt,
+      id = 'logged-failure',
+      instanceId,
       message = NO_NEXT_APPROVER,
+      taskId = 'task-1',
     }: {
       readonly actorMemberId?: string;
+      readonly automatic?: 'SLA_AUTO_APPROVE' | null;
+      readonly createdAt?: Date;
+      readonly id?: string;
+      readonly instanceId?: string;
       readonly message?: string;
+      readonly taskId?: string;
     } = {}): ActivityLogEntity =>
       createActivityLog({
         actorMemberId,
+        createdAt,
         eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
-        id: 'logged-failure',
+        id,
+        instanceId,
         nodeId: 'task_finance',
         payload: {
           action: 'APPROVED',
-          automatic: null,
+          automatic,
           kind: 'DECISION',
           message,
           nodeId: 'task_finance',
-          taskId: 'task-1',
+          taskId,
         },
-        taskId: 'task-1',
+        taskId,
+      });
+
+    // A failed resubmission recorded earlier.
+    const createLoggedResubmitFailure = (): ActivityLogEntity =>
+      createActivityLog({
+        actorMemberId: 'member-001',
+        eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+        id: 'logged-resubmit-failure',
+        payload: {
+          action: null,
+          automatic: null,
+          kind: 'RESUBMIT',
+          message: NO_RETURN_APPROVER,
+          nodeId: null,
+          taskId: null,
+        },
       });
 
     it('records a failed approval and throws the error the caller always got', async (): Promise<void> => {
@@ -20614,6 +20655,434 @@ describe('WorkflowEngineService', () => {
         expect(rejection).toBeInstanceOf(ConflictException);
         expect(rejection).not.toBeInstanceOf(InstanceAdvanceFailure);
         expect(readAdvanceFailures(fixture)).toHaveLength(0);
+      });
+    });
+
+    describe('the list of stuck instances (stuckApprovalInstances)', (): void => {
+      const EARLIER = new Date('2026-05-04T09:00:00.000Z');
+      const LATER = new Date('2026-05-04T10:00:00.000Z');
+
+      const listStuck = (
+        fixture: ServiceFixture,
+      ): Promise<readonly StuckApprovalInstanceRecord[]> =>
+        fixture.service.listStuckApprovalInstances();
+
+      it('lists nothing when no instance ever failed to move on', async (): Promise<void> => {
+        await expect(listStuck(createApprovalFixture())).resolves.toEqual([]);
+      });
+
+      it('lists an instance whose approval could not move on, and who has to press again', async (): Promise<void> => {
+        const fixture = createApprovalFixture();
+
+        await readRejection(approve(fixture));
+
+        // The decision rolled back: the task is still open, still the holder's.
+        await expect(listStuck(fixture)).resolves.toEqual([
+          {
+            automatic: null,
+            failedActorMemberId: 'member-finance',
+            failedAt: expect.any(Date),
+            initiatorMemberId: 'member-001',
+            instanceId: 'instance-1',
+            instanceTitle: '費用申請',
+            kind: StuckApprovalInstanceKindEnum.DECISION,
+            message: NO_NEXT_APPROVER,
+            nodeId: 'task_finance',
+            nodeLabel: '財務簽核',
+            pendingActorMemberIds: ['member-finance'],
+            taskId: 'task-1',
+            templateId: 'template-1',
+            templateName: '費用申請',
+          },
+        ]);
+      });
+
+      it('names the system, not a person, when the SLA timeout was the one approving', async (): Promise<void> => {
+        const fixture = createApprovalFixture();
+
+        await readRejection(approve(fixture, { automatic: 'SLA_AUTO_APPROVE' }));
+
+        const [row] = await listStuck(fixture);
+
+        expect(row?.automatic).toBe('SLA_AUTO_APPROVE');
+        expect(row?.failedActorMemberId).toBe('member-finance');
+      });
+
+      describe('who has to press again', (): void => {
+        it('lists the PENDING and CLAIMED seats, and neither a WAITING seat nor one that has left', async (): Promise<void> => {
+          const fixture = createApprovalFixture({
+            processActivityLogs: [createLoggedFailure()],
+            processTaskCandidates: [
+              createTaskCandidate({ id: 'seat-a', memberId: 'member-a' }),
+              createTaskCandidate({
+                id: 'seat-b',
+                memberId: 'member-b',
+                status: TaskCandidateStatusEnum.CLAIMED,
+              }),
+              createTaskCandidate({
+                id: 'seat-c',
+                memberId: 'member-c',
+                status: TaskCandidateStatusEnum.WAITING,
+              }),
+              createTaskCandidate({
+                id: 'seat-d',
+                memberId: 'member-d',
+                status: TaskCandidateStatusEnum.TRANSFERRED,
+              }),
+              createTaskCandidate({
+                id: 'seat-e',
+                memberId: 'member-e',
+                status: TaskCandidateStatusEnum.COMPLETED,
+              }),
+            ],
+          });
+
+          const [row] = await listStuck(fixture);
+
+          // Not the assignee either: a task with candidate rows is held by them.
+          expect(row?.pendingActorMemberIds).toEqual(['member-a', 'member-b']);
+        });
+
+        it('lists nobody when the only open seat is not yet anyone turn', async (): Promise<void> => {
+          const fixture = createApprovalFixture({
+            processActivityLogs: [createLoggedFailure()],
+            processTaskCandidates: [
+              createTaskCandidate({
+                id: 'seat-c',
+                memberId: 'member-c',
+                status: TaskCandidateStatusEnum.WAITING,
+              }),
+            ],
+          });
+
+          const [row] = await listStuck(fixture);
+
+          expect(row?.pendingActorMemberIds).toEqual([]);
+        });
+
+        it('follows a reassignment made after the failure', async (): Promise<void> => {
+          const fixture = createApprovalFixture({
+            processActivityLogs: [createLoggedFailure()],
+            task: { assigneeMemberId: 'member-delegate' },
+          });
+
+          const [row] = await listStuck(fixture);
+
+          expect(row?.failedActorMemberId).toBe('member-finance');
+          expect(row?.pendingActorMemberIds).toEqual(['member-delegate']);
+        });
+
+        it('is the initiator, with no task or node, for a failed resubmission', async (): Promise<void> => {
+          const fixture = createResubmitFixture();
+
+          await readRejection(resubmit(fixture));
+
+          await expect(listStuck(fixture)).resolves.toEqual([
+            {
+              automatic: null,
+              failedActorMemberId: 'member-001',
+              failedAt: expect.any(Date),
+              initiatorMemberId: 'member-001',
+              instanceId: 'instance-1',
+              instanceTitle: '費用申請',
+              kind: StuckApprovalInstanceKindEnum.RESUBMIT,
+              message: NO_RETURN_APPROVER,
+              nodeId: null,
+              nodeLabel: null,
+              pendingActorMemberIds: ['member-001'],
+              taskId: null,
+              templateId: 'template-1',
+              templateName: '費用申請',
+            },
+          ]);
+        });
+      });
+
+      describe('one row per instance, newest failure first', (): void => {
+        it('shows the latest unresolved failure when several voters failed', async (): Promise<void> => {
+          const fixture = createApprovalFixture({
+            processActivityLogs: [
+              createLoggedFailure({ actorMemberId: 'member-a', id: 'f-old' }),
+              createLoggedFailure({ actorMemberId: 'member-b', id: 'f-new' }),
+            ],
+          });
+
+          const rows = await listStuck(fixture);
+
+          expect(rows).toHaveLength(1);
+          expect(rows[0]?.failedActorMemberId).toBe('member-b');
+        });
+
+        it.each([
+          [
+            'instance-2 failed later',
+            EARLIER,
+            LATER,
+            ['instance-2', 'instance-1'],
+          ],
+          [
+            'instance-1 failed later',
+            LATER,
+            EARLIER,
+            ['instance-1', 'instance-2'],
+          ],
+        ] as const)(
+          'puts the instance that failed last first (%s)',
+          async (
+            _label,
+            instanceOneFailedAt,
+            instanceTwoFailedAt,
+            expectedOrder,
+          ): Promise<void> => {
+            const fixture = createApprovalFixture({
+              additionalProcessInstances: [
+                createApprovalInstance({
+                  id: 'instance-2',
+                  title: '第二張',
+                  workflowSnapshot: appendNextUserTask(
+                    createLinearUserTaskWorkflow(),
+                  ),
+                }),
+              ],
+              additionalProcessTasks: [
+                createTask({
+                  id: 'task-2',
+                  instanceId: 'instance-2',
+                  tokenId: 'token-2',
+                }),
+              ],
+              processActivityLogs: [
+                createLoggedFailure({
+                  createdAt: instanceOneFailedAt,
+                  id: 'f-one',
+                }),
+                createLoggedFailure({
+                  createdAt: instanceTwoFailedAt,
+                  id: 'f-two',
+                  instanceId: 'instance-2',
+                  taskId: 'task-2',
+                }),
+              ],
+            });
+
+            const rows = await listStuck(fixture);
+
+            expect(rows.map((row): string => row.instanceId)).toEqual(
+              expectedOrder,
+            );
+            expect(rows[0]?.failedAt).toEqual(LATER);
+          },
+        );
+      });
+
+      it('still lists a countersign whose last vote failed, though an earlier voter decided', async (): Promise<void> => {
+        // The earlier voter's TASK_DECIDED stays on file. It says nothing about
+        // this failure: the task is still open, and it is the last vote that
+        // cannot move the case on.
+        const fixture = createApprovalFixture({
+          processActivityLogs: [
+            createActivityLog({
+              actorMemberId: 'member-a',
+              eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+              id: 'decided-by-a',
+              nodeId: 'task_finance',
+              payload: { action: 'APPROVED' },
+              taskId: 'task-1',
+            }),
+            createLoggedFailure({ actorMemberId: 'member-b' }),
+          ],
+          processTaskCandidates: [
+            createTaskCandidate({
+              id: 'seat-a',
+              memberId: 'member-a',
+              status: TaskCandidateStatusEnum.COMPLETED,
+            }),
+            createTaskCandidate({ id: 'seat-b', memberId: 'member-b' }),
+          ],
+          task: { decisionPolicySnapshot: { type: 'PARALLEL_ALL' } },
+        });
+
+        const [row] = await listStuck(fixture);
+
+        expect(row?.instanceId).toBe('instance-1');
+        expect(row?.failedActorMemberId).toBe('member-b');
+        expect(row?.pendingActorMemberIds).toEqual(['member-b']);
+      });
+
+      describe('an instance that has moved on is not listed', (): void => {
+        const taskNoLongerOpen: [string, TaskStatusEnum][] = [
+          ['the task was completed', TaskStatusEnum.COMPLETED],
+          [
+            'the case was returned to an earlier stage',
+            TaskStatusEnum.CANCELLED,
+          ],
+          ['the task was transferred', TaskStatusEnum.TRANSFERRED],
+        ];
+
+        it.each(taskNoLongerOpen)(
+          'once %s, though the instance is still running',
+          async (_reason: string, status: TaskStatusEnum): Promise<void> => {
+            const fixture = createApprovalFixture({
+              processActivityLogs: [createLoggedFailure()],
+              task: { status },
+            });
+
+            await expect(listStuck(fixture)).resolves.toEqual([]);
+          },
+        );
+
+        it.each([
+          ApprovalInstanceStateEnum.CANCELLED,
+          ApprovalInstanceStateEnum.APPROVED,
+          ApprovalInstanceStateEnum.EXPIRED,
+        ])(
+          'once the instance ended as %s',
+          async (instanceState: ApprovalInstanceStateEnum): Promise<void> => {
+            // The task is left open: it is the instance state that decides.
+            const fixture = createApprovalFixture({
+              instanceState,
+              processActivityLogs: [createLoggedFailure()],
+            });
+
+            await expect(listStuck(fixture)).resolves.toEqual([]);
+          },
+        );
+
+        it('once the initiator cancelled the instance', async (): Promise<void> => {
+          const fixture = createApprovalFixture();
+
+          await readRejection(approve(fixture));
+          await expect(listStuck(fixture)).resolves.toHaveLength(1);
+
+          await fixture.service.cancelApprovalInstance({
+            cancelledByMemberId: 'member-001',
+            comment: null,
+            instanceId: 'instance-1',
+          });
+
+          await expect(listStuck(fixture)).resolves.toEqual([]);
+        });
+      });
+
+      it('drops a task that was transferred, and lists it again when the new holder fails too', async (): Promise<void> => {
+        const fixture = createApprovalFixture();
+
+        await readRejection(approve(fixture));
+        await expect(listStuck(fixture)).resolves.toHaveLength(1);
+
+        await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.TRANSFERRED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+          transferToMemberId: 'member-delegate',
+        });
+
+        // The transfer moved nothing forward, yet task-1 is closed.
+        await expect(listStuck(fixture)).resolves.toEqual([]);
+
+        const transferred = fixture.savedTasks.find(
+          (task): boolean => task.assigneeMemberId === 'member-delegate',
+        );
+
+        expect(transferred).toBeDefined();
+
+        const rejection = await readRejection(
+          fixture.service.decideTask({
+            action: TaskDecisionActionEnum.APPROVED,
+            comment: null,
+            decidedByMemberId: 'member-delegate',
+            taskId: transferred?.id ?? '',
+          }),
+        );
+
+        expect(rejection).toBeInstanceOf(ConflictException);
+
+        const [row, ...rest] = await listStuck(fixture);
+
+        expect(rest).toHaveLength(0);
+        expect(row).toMatchObject({
+          failedActorMemberId: 'member-delegate',
+          pendingActorMemberIds: ['member-delegate'],
+          taskId: transferred?.id,
+        });
+      });
+
+      describe('a failed resubmission', (): void => {
+        it('is not listed once the instance was resubmitted after it', async (): Promise<void> => {
+          // Returned a second time since, so the instance state alone would
+          // still say RETURNED: the later resubmission is what resolves it.
+          const fixture = createResubmitFixture([
+            createLoggedResubmitFailure(),
+            createActivityLog({
+              actorMemberId: 'member-001',
+              eventType: ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+              id: 'resubmitted',
+            }),
+          ]);
+
+          await expect(listStuck(fixture)).resolves.toEqual([]);
+        });
+
+        it('is still listed when the resubmission on file came before it', async (): Promise<void> => {
+          const fixture = createResubmitFixture([
+            createActivityLog({
+              actorMemberId: 'member-001',
+              eventType: ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+              id: 'resubmitted',
+            }),
+            createLoggedResubmitFailure(),
+          ]);
+
+          const [row] = await listStuck(fixture);
+
+          expect(row?.kind).toBe(StuckApprovalInstanceKindEnum.RESUBMIT);
+        });
+
+        it('is not listed once the initiator cancelled the instance instead', async (): Promise<void> => {
+          const fixture = createResubmitFixture();
+
+          await readRejection(resubmit(fixture));
+          await expect(listStuck(fixture)).resolves.toHaveLength(1);
+
+          await fixture.service.cancelApprovalInstance({
+            cancelledByMemberId: 'member-001',
+            comment: null,
+            instanceId: 'instance-1',
+          });
+
+          await expect(listStuck(fixture)).resolves.toEqual([]);
+        });
+      });
+
+      it('refuses the old holder of a reassigned group task, and records nothing', async (): Promise<void> => {
+        // What `reassignTask` leaves on a group task: the old seat TRANSFERRED,
+        // a new one PENDING, and still no assignee. The SLA scan picks the
+        // earliest candidate row, which is now the old seat (see the
+        // notification spec), so its automatic approval is refused here before
+        // anything is attempted: no failure on file, nothing in the list.
+        const fixture = createApprovalFixture({
+          processTaskCandidates: [
+            createTaskCandidate({
+              id: 'seat-old',
+              memberId: 'member-finance',
+              status: TaskCandidateStatusEnum.TRANSFERRED,
+            }),
+            createTaskCandidate({ id: 'seat-new', memberId: 'member-new' }),
+          ],
+          task: {
+            assigneeMemberId: null,
+            assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+          },
+        });
+
+        const rejection = await readRejection(
+          approve(fixture, { automatic: 'SLA_AUTO_APPROVE' }),
+        );
+
+        expect(rejection).toBeInstanceOf(ConflictException);
+        expect(readAdvanceFailures(fixture)).toHaveLength(0);
+        await expect(listStuck(fixture)).resolves.toEqual([]);
       });
     });
   });
@@ -22397,6 +22866,7 @@ interface OrgUnitQueryBuilderMock {
 }
 
 function createServiceFixture({
+  additionalProcessInstances = [],
   additionalProcessTasks = [],
   conditionService = new ConditionService(),
   currentVersionId,
@@ -22438,6 +22908,8 @@ function createServiceFixture({
   transactionalInstanceUpdatedAt,
   webhookDeliveryService,
 }: {
+  // Other instances the transaction can read, besides the one under test.
+  readonly additionalProcessInstances?: readonly ApprovalInstanceEntity[];
   readonly additionalProcessTasks?: readonly TaskEntity[];
   // Defaults to the built-ins-only service; a test hands in one built with a
   // function registry, as `ConditionModule` injects it.
@@ -22866,31 +23338,49 @@ function createServiceFixture({
   const formVersionRepository = createRepository<FormDefinitionVersionEntity>({
     findOne: jest.fn(() => Promise.resolve(formVersion)),
   });
+  // A row read back from the database is an entity whatever shape the caller
+  // last handed to `save`, so it is rehydrated here. Only `save` reports the
+  // shape it was actually given.
+  const readInstanceUnderTest = (): ApprovalInstanceEntity =>
+    savedInstance
+      ? Object.assign(createApprovalInstance(), savedInstance)
+      : createApprovalInstance({
+          businessKey: processBusinessKey,
+          formData: processFormData,
+          formDataOptionSnapshot: processOptionSnapshot,
+          formDefinitionSnapshot: processFormDefinitionSnapshot,
+          initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
+          state: instanceState,
+          submittedByMemberId,
+          updatedAt: transactionalInstanceUpdatedAt,
+          workflowSnapshot: processWorkflowSnapshot,
+        });
   const transactionalInstanceRepository =
     createRepository<ApprovalInstanceEntity>({
       create: jest.fn(
         (entity: Partial<ApprovalInstanceEntity>): ApprovalInstanceEntity =>
           Object.assign(createApprovalInstance(), entity),
       ),
-      findOne: jest.fn(() =>
-        Promise.resolve(
-          // A row read back from the database is an entity whatever shape the
-          // caller last handed to `save`, so it is rehydrated here. Only
-          // `save` reports the shape it was actually given.
-          savedInstance
-            ? Object.assign(createApprovalInstance(), savedInstance)
-            : createApprovalInstance({
-                businessKey: processBusinessKey,
-                formData: processFormData,
-                formDataOptionSnapshot: processOptionSnapshot,
-                formDefinitionSnapshot: processFormDefinitionSnapshot,
-                initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
-                state: instanceState,
-                submittedByMemberId,
-                updatedAt: transactionalInstanceUpdatedAt,
-                workflowSnapshot: processWorkflowSnapshot,
-              }),
-        ),
+      // The instance under test, then any `additionalProcessInstances`: a row
+      // is found by its id, and the instance under test answers every other
+      // lookup, as it always has.
+      find: jest.fn(
+        (
+          options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+        ): Promise<readonly ApprovalInstanceEntity[]> =>
+          Promise.resolve(
+            [readInstanceUnderTest(), ...additionalProcessInstances].filter(
+              (instance) => matchesFindWhere(instance, options?.where),
+            ),
+          ),
+      ),
+      findOne: jest.fn(
+        (options?: Readonly<{ where?: Readonly<{ id?: string }> }>) =>
+          Promise.resolve(
+            additionalProcessInstances.find(
+              (instance) => instance.id === options?.where?.id,
+            ) ?? readInstanceUnderTest(),
+          ),
       ),
       save: jest.fn((entity: ApprovalInstanceEntity) => {
         if (instanceSaveError) {

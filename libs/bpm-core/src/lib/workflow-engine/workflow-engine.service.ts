@@ -175,6 +175,7 @@ import {
   ApprovalInstanceListViewEnum,
   ApprovalInstanceStateEnum,
   MemberTaskRoleEnum,
+  StuckApprovalInstanceKindEnum,
   TaskAssignmentTypeEnum,
   TaskCandidateStatusEnum,
   TaskDecisionActionEnum,
@@ -493,6 +494,26 @@ export interface MemberOpenTaskRecord {
   readonly nodeLabel: string | null;
   readonly slaDueAt: Date | null;
   readonly taskId: string;
+  readonly templateId: string;
+  readonly templateName: string | null;
+}
+
+/** An instance that could not move on, as the administrator's stuck list reads it. */
+export interface StuckApprovalInstanceRecord {
+  /** `'SLA_AUTO_APPROVE'` when the failed attempt was the timeout approving. */
+  readonly automatic: 'SLA_AUTO_APPROVE' | null;
+  readonly failedActorMemberId: string | null;
+  readonly failedAt: Date;
+  readonly initiatorMemberId: string;
+  readonly instanceId: string;
+  readonly instanceTitle: string;
+  readonly kind: StuckApprovalInstanceKindEnum;
+  readonly message: string;
+  readonly nodeId: string | null;
+  readonly nodeLabel: string | null;
+  /** Who has to press again now; read when the list is loaded. */
+  readonly pendingActorMemberIds: readonly string[];
+  readonly taskId: string | null;
   readonly templateId: string;
   readonly templateName: string | null;
 }
@@ -6748,6 +6769,129 @@ export class WorkflowEngineService {
   }
 
   /**
+   * The instances that could not move on and still cannot, newest failure
+   * first, one row each, described by their latest unresolved `ADVANCE_FAILED`.
+   *
+   * Which failures are unresolved is decided by
+   * {@link readUnresolvedAdvanceFailures}, the same rule the duplicate check
+   * uses; this only picks the candidates (an instance that is RUNNING or
+   * RETURNED and has an `ADVANCE_FAILED` at all) and decorates the result.
+   *
+   * Who has to press again is read now, not copied from the failure: a task
+   * the administrator has reassigned since shows its new holder.
+   * - `DECISION`: the candidates whose seat is PENDING or CLAIMED. A WAITING
+   *   seat of a sequential task is not that member's turn yet. A task without
+   *   a single candidate row is a direct task, held by its assignee.
+   * - `RESUBMIT`: the initiator.
+   */
+  async listStuckApprovalInstances(): Promise<
+    readonly StuckApprovalInstanceRecord[]
+  > {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<readonly StuckApprovalInstanceRecord[]> => {
+        const failedInstanceIds = [
+          ...new Set(
+            (
+              await manager.getRepository(ActivityLogEntity).find({
+                select: { instanceId: true },
+                where: {
+                  eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+                },
+              })
+            ).map((log): string => log.instanceId),
+          ),
+        ];
+
+        if (failedInstanceIds.length === 0) {
+          return [];
+        }
+
+        const instances = await manager
+          .getRepository(ApprovalInstanceEntity)
+          .find({
+            where: {
+              id: In(failedInstanceIds),
+              state: In([
+                ApprovalInstanceStateEnum.RUNNING,
+                ApprovalInstanceStateEnum.RETURNED,
+              ]),
+            },
+          });
+        // One after another: they share the transaction's one connection.
+        const found = await instances.reduce<Promise<StuckCandidates>>(
+          async (previous, instance): Promise<StuckCandidates> => {
+            const soFar = await previous;
+            const unresolved = await this.readUnresolvedAdvanceFailures(
+              manager,
+              instance.id,
+            );
+            const latest = unresolved[unresolved.length - 1];
+
+            return latest
+              ? [...soFar, { failure: latest, instance }]
+              : soFar;
+          },
+          Promise.resolve([]),
+        );
+        const stuck = [...found].sort((left, right): number =>
+          compareFailuresNewestFirst(left.failure, right.failure),
+        );
+
+        if (stuck.length === 0) {
+          return [];
+        }
+
+        const taskIds = [
+          ...new Set(
+            stuck.flatMap(({ failure }): readonly string[] =>
+              failure.taskId ? [failure.taskId] : [],
+            ),
+          ),
+        ];
+        const tasks = taskIds.length
+          ? await manager
+              .getRepository(TaskEntity)
+              .find({ where: { id: In(taskIds) } })
+          : [];
+        const candidates = taskIds.length
+          ? await manager.getRepository(TaskCandidateEntity).find({
+              order: {
+                sequence: { direction: 'ASC', nulls: 'LAST' },
+                createdAt: 'ASC',
+                id: 'ASC',
+              },
+              where: { taskId: In(taskIds) },
+            })
+          : [];
+        const templates = await manager
+          .getRepository(ApprovalTemplateEntity)
+          .find({
+            where: {
+              id: In([
+                ...new Set(stuck.map(({ instance }) => instance.templateId)),
+              ]),
+            },
+          });
+        const templateNameById = new Map(
+          templates.map((template): readonly [string, string] => [
+            template.id,
+            template.name,
+          ]),
+        );
+
+        return stuck.map(
+          (candidate): StuckApprovalInstanceRecord =>
+            toStuckApprovalInstanceRecord(candidate, {
+              candidates,
+              tasks,
+              templateNameById,
+            }),
+        );
+      },
+    );
+  }
+
+  /**
    * Deactivated members who still hold open tasks, so an administrator can find
    * them: a deactivated member no longer shows up in the member search.
    *
@@ -10790,6 +10934,111 @@ async function runInstanceAdvanceStep<TResult>(
 
     throw error;
   }
+}
+
+/** An instance with the failure that describes how it is stuck. */
+interface StuckInstanceCandidate {
+  readonly failure: ActivityLogEntity;
+  readonly instance: ApprovalInstanceEntity;
+}
+
+type StuckCandidates = readonly StuckInstanceCandidate[];
+
+function toStuckApprovalInstanceRecord(
+  { failure, instance }: StuckInstanceCandidate,
+  lookup: {
+    readonly candidates: readonly TaskCandidateEntity[];
+    readonly tasks: readonly TaskEntity[];
+    readonly templateNameById: ReadonlyMap<string, string>;
+  },
+): StuckApprovalInstanceRecord {
+  const isResubmit =
+    readStringPayloadValue(failure.payload, 'kind') === 'RESUBMIT';
+  const taskId = isResubmit ? null : failure.taskId;
+  const nodeId = isResubmit ? null : failure.nodeId;
+  const message = failure.payload['message'];
+
+  return {
+    automatic:
+      failure.payload['automatic'] === SLA_AUTO_APPROVE_MARK
+        ? SLA_AUTO_APPROVE_MARK
+        : null,
+    failedActorMemberId: failure.actorMemberId,
+    failedAt: failure.createdAt,
+    initiatorMemberId: instance.initiatorMemberId,
+    instanceId: instance.id,
+    instanceTitle: instance.title,
+    kind: isResubmit
+      ? StuckApprovalInstanceKindEnum.RESUBMIT
+      : StuckApprovalInstanceKindEnum.DECISION,
+    message: typeof message === 'string' ? message : '',
+    nodeId,
+    nodeLabel: nodeId
+      ? readWorkflowNodeLabel(instance.workflowSnapshot, nodeId)
+      : null,
+    pendingActorMemberIds:
+      taskId === null
+        ? [instance.initiatorMemberId]
+        : readTaskHolderMemberIds(
+            lookup.tasks.find((task): boolean => task.id === taskId) ?? null,
+            lookup.candidates.filter(
+              (candidate): boolean => candidate.taskId === taskId,
+            ),
+          ),
+    taskId,
+    templateId: instance.templateId,
+    templateName: lookup.templateNameById.get(instance.templateId) ?? null,
+  };
+}
+
+/**
+ * The members who can press a task's button now: a PENDING or CLAIMED seat,
+ * each member once. A WAITING seat of a sequential task is not that member's
+ * turn yet. A task with no candidate row at all is a direct task, held by its
+ * assignee, as the reassignment check reads it.
+ */
+function readTaskHolderMemberIds(
+  task: TaskEntity | null,
+  candidates: readonly TaskCandidateEntity[],
+): readonly string[] {
+  if (candidates.length === 0) {
+    return task?.assigneeMemberId ? [task.assigneeMemberId] : [];
+  }
+
+  return [
+    ...new Set(
+      candidates
+        .filter(
+          (candidate): boolean =>
+            candidate.status === TaskCandidateStatusEnum.PENDING ||
+            candidate.status === TaskCandidateStatusEnum.CLAIMED,
+        )
+        .map((candidate): string => candidate.memberId),
+    ),
+  ];
+}
+
+/**
+ * Newest first. `created_at` is the transaction start time, so rows written by
+ * one transaction tie on it; `seq` is the write order and breaks the tie.
+ */
+function compareFailuresNewestFirst(
+  left: ActivityLogEntity,
+  right: ActivityLogEntity,
+): number {
+  const byTime = right.createdAt.getTime() - left.createdAt.getTime();
+
+  if (byTime !== 0) {
+    return byTime;
+  }
+
+  const bySeq = BigInt(right.seq ?? '0') - BigInt(left.seq ?? '0');
+
+  if (bySeq !== BigInt(0)) {
+    return bySeq > BigInt(0) ? 1 : -1;
+  }
+
+  return left.instanceId.localeCompare(right.instanceId);
 }
 
 function readStringPayloadValue(

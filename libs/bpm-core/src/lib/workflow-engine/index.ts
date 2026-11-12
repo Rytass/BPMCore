@@ -16,6 +16,7 @@ export * from './initiator-custom-fields-resolver.token';
 export * from './task-candidate.entity';
 export * from './task-decision.entity';
 export * from './task.entity';
+export * from './stuck-approval-instance.object';
 export * from './task-reassignment.object';
 export * from './workflow-condition-evaluator';
 export * from './workflow-dry-run.object';

@@ -66,6 +66,12 @@ export enum MemberTaskRoleEnum {
   CANDIDATE = 'CANDIDATE',
 }
 
+/** What stopped a stuck instance: a decision on a task, or a resubmission after a return. */
+export enum StuckApprovalInstanceKindEnum {
+  DECISION = 'DECISION',
+  RESUBMIT = 'RESUBMIT',
+}
+
 export enum TaskReassignmentOutcomeEnum {
   REASSIGNED = 'REASSIGNED',
   REJECTED = 'REJECTED',
@@ -170,6 +176,10 @@ registerEnumType(ActivityLogEventTypeEnum, {
 
 registerEnumType(MemberTaskRoleEnum, {
   name: 'MemberTaskRole',
+});
+
+registerEnumType(StuckApprovalInstanceKindEnum, {
+  name: 'StuckApprovalInstanceKind',
 });
 
 registerEnumType(TaskReassignmentOutcomeEnum, {
