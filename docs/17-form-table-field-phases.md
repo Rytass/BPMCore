@@ -451,6 +451,14 @@ api-reference 六個新 export 逐一對照無遺漏；Mezzanine 守則（零 cl
   刪除鈕仍被捲到畫面外（實測 x≈4278）。拿掉後在 1440 寬的畫面上，刪除鈕固定在 x=1022，
   捲到中段時表頭與內容欄位也對得齊。唯讀時沒有列動作欄。只剩 1 列時刪除鈕是否停用，
   仍照舊由 `minRows` 決定。
+- **2026-11-12 更新（表格寬度）**：表格原本包在 HORIZONTAL＋TIGHT 的 `FormField` 裡，
+  Mezzanine 對這種版面的輸入區有 `max-width: size-container-wide`（640px）的上限，
+  即使 uiSchema 給了 FULL，表格也只有 640 寬，多欄表格只能在 640 裡橫捲，使用者幾乎
+  看不出可以捲。VERTICAL 一樣有 640 上限，Mezzanine 唯一沒有上限的版面是 STRETCH 且
+  不帶 density（`density=BASE`），所以 table 欄位改用這個組合，不覆寫任何元件樣式。
+  實測（1440 寬、5 欄的請購明細）：表格寬度從 640 變成 1087，撐滿整列。代價是 STRETCH
+  的標籤寬度貼合文字，不跟其他欄位共用標籤欄寬，所以表格左緣比上方輸入框靠左
+  （x=337 對 x=424）。textarea 與 file_upload 維持 640，長文字過寬反而不好讀。
 
 **P2 期間記錄、不在本 phase 處理**
 

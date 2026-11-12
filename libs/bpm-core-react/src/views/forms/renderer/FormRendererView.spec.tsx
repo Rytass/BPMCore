@@ -20,8 +20,8 @@ import { FormRenderer } from './FormRendererView';
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 jest.mock('@mezzanine-ui/core/form', () => ({
-  FormFieldDensity: { TIGHT: 'TIGHT' },
-  FormFieldLayout: { HORIZONTAL: 'HORIZONTAL' },
+  FormFieldDensity: { BASE: 'BASE', TIGHT: 'TIGHT' },
+  FormFieldLayout: { HORIZONTAL: 'HORIZONTAL', STRETCH: 'STRETCH' },
 }));
 
 jest.mock('@mezzanine-ui/react', () => {
@@ -29,7 +29,11 @@ jest.mock('@mezzanine-ui/react', () => {
     props: Readonly<Record<string, unknown>>,
   ): ReactElement {
     return (
-      <div data-mock-form-field={String(props.name ?? '')}>
+      <div
+        data-mock-form-field={String(props.name ?? '')}
+        data-mock-form-field-density={String(props.density ?? '')}
+        data-mock-form-field-layout={String(props.layout ?? '')}
+      >
         <span>{String(props.label ?? '')}</span>
         {props.children as ReactNode}
       </div>
@@ -656,6 +660,19 @@ describe('FormRenderer table field', () => {
       // No scroller of our own around it: a pinned column only sticks to the
       // scroller the Table itself owns.
       expect(table?.parentElement?.style.overflowX).toBe('');
+      // Every other FormField layout caps its input area at 640px; a stretch
+      // field without a density lets a FULL table use the whole row.
+      const tableFormField = harness.container.querySelector<HTMLElement>(
+        '[data-mock-form-field="items"]',
+      );
+      const textFormField = harness.container.querySelector<HTMLElement>(
+        '[data-mock-form-field="purpose"]',
+      );
+
+      expect(tableFormField?.dataset.mockFormFieldLayout).toBe('STRETCH');
+      expect(tableFormField?.dataset.mockFormFieldDensity).toBe('BASE');
+      expect(textFormField?.dataset.mockFormFieldLayout).toBe('HORIZONTAL');
+      expect(textFormField?.dataset.mockFormFieldDensity).toBe('TIGHT');
     } finally {
       await unmountRenderer(harness);
     }
