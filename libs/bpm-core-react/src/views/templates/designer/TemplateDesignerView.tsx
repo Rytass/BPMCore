@@ -3387,7 +3387,9 @@ export function TemplateDesignerView({
                 chainStartMode === 'INITIATOR'
                   ? '從發起人的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。'
                   : `從起點的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。${
-                      excludeInitiator ? '' : CHAIN_MAY_REACH_INITIATOR_HINT
+                      chainStartsAwayFromInitiator && !excludeInitiator
+                        ? CHAIN_MAY_REACH_INITIATOR_HINT
+                        : ''
                     }`
               }
               label="簽到職等"
@@ -4311,7 +4313,8 @@ export function TemplateDesignerView({
         {excludeInitiator ? (
           <BPMFormField
             hintText={
-              chainStartsAwayFromInitiator
+              chainStartsAwayFromInitiator &&
+              excludeInitiator.whenEmpty === 'INITIATOR_MANAGER'
                 ? INITIATOR_MANAGER_IS_NOT_START_MANAGER_HINT
                 : undefined
             }
@@ -4385,7 +4388,8 @@ export function TemplateDesignerView({
             </BPMFormField>
             <BPMFormField
               hintText={
-                chainStartsAwayFromInitiator
+                chainStartsAwayFromInitiator &&
+                excludeNodeActors.whenEmpty === 'INITIATOR_MANAGER'
                   ? INITIATOR_MANAGER_IS_NOT_START_MANAGER_HINT
                   : undefined
               }
