@@ -390,10 +390,14 @@ CI reports `pnpm audit` on every run and fails on `high` and `critical`. The
 gate sat at `critical` while `image-size`, reached through
 `@nx/webpack > less`, had no published fix; less 4.8 dropped it, so the
 2026-10-31 dependency round cleared every `high` and raised the gate. What
-remains is a moderate `uuid` (`webpack-dev-server > sockjs` holds it at 8) and
-a low `deepmerge` (`jest-config`) with no patched version at all — the reason
-the gate stops above `moderate`. Nothing is suppressed into an allowlist; the
-outstanding findings stay visible in the log.
+remains (re-checked in the 2026-11-12 round) is moderate `uuid`
+(`webpack-dev-server > sockjs` holds it at 8), `glob` (`jest-config`) and
+`minimatch` (`@nx/devkit`, `@nx/eslint`), each patched only in a major its
+parent does not accept, and a low `deepmerge` (`jest-config`) with no patched
+version at all — the reason the gate stops above `moderate`. The same round
+had to override `@graphql-tools/*` (see `pnpm-workspace.yaml`): a patch of
+`@apollo/server` capped them back onto a `high` version. Nothing is
+suppressed into an allowlist; the outstanding findings stay visible in the log.
 
 A `high` advisory with no published fix would turn every run red. Fix it with
 an override if a patched version exists; otherwise lower the gate to

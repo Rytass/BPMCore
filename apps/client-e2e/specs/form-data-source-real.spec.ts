@@ -514,7 +514,14 @@ async function openSelectTrigger(page: Page, fieldKey: string): Promise<void> {
     `[data-form-field-key="${fieldKey}"] .mzn-select-trigger`,
   );
 
-  if ((await trigger.getAttribute('aria-expanded')) === 'true') {
+  // Mezzanine 1.8 moved the combobox ARIA, aria-expanded included, from the
+  // trigger onto its input.
+  const expanded = await trigger
+    .getByRole('combobox')
+    .first()
+    .getAttribute('aria-expanded');
+
+  if (expanded === 'true') {
     return;
   }
 
