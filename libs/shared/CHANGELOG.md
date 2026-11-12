@@ -1,3 +1,14 @@
+## 0.21.2 (2026-11-12)
+
+### 🩹 Fixes
+
+- **designer:** show the initiator-manager hint only where it applies ([24463a9c](https://github.com/Rytass/BPMCore/commit/24463a9c))
+- **designer:** warn when a manager chain away from the initiator may reach them ([801f63c6](https://github.com/Rytass/BPMCore/commit/801f63c6))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.21.1 (2026-11-11)
 
 ### 🚀 Features
