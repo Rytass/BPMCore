@@ -885,7 +885,10 @@ function chainLine(me: WorkflowNode): WorkflowDefinition {
         startFrom: { nodeIds: ['m1'], type: 'NODE_ACTOR' },
       }),
       taskNode('plain'),
+      // A sound continuation of `m1` (its level is above m1's), so its only
+      // defect as a stage is being a continuation itself.
       chainNode('cont', {
+        minPositionLevel: 40,
         startFrom: { nodeId: 'm1', type: 'CHAIN_CONTINUATION' },
       }),
       chainNode('form', {
