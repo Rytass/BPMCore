@@ -41,6 +41,7 @@ import {
   ApproverResolverFallback,
   formatOrgManagerChainPlaceholder,
   isNotifyRecipientResolverType,
+  isOrgManagerChainContinuation,
   isOrgManagerChainStartedFromInitiator,
   readOrgManagerChainStartPositionLevel,
   readUnsupportedApproverFallbackType,
@@ -52,6 +53,7 @@ import {
   isAsyncNotifyServiceTask,
   isNotifyRecipientsEmpty,
   readNotifyWebhookTargets,
+  readOrgManagerChainIssue,
   readSelectableReturnTargetNodeIds,
 } from '@rytass/bpm-core-shared/workflow-graph';
 import { WorkflowWebhookDeliveryService } from '../workflow-webhook/workflow-webhook-delivery.service';
@@ -595,10 +597,57 @@ interface ResolvedRuntimeTaskCandidates {
   readonly skippedDelegations: readonly SkippedDelegation[];
 }
 
-// A node whose approvers were all kept out and that is configured to be
-// skipped instead of failing: which of its two exclusion rules decided it.
+// A node that is skipped instead of getting a task: either everyone it
+// resolved to was kept out and it is configured to be skipped (which of its
+// two exclusion rules decided it), or its manager chain has no one left to
+// sign because the level it asks for is already reached.
 interface SkippedRuntimeTask {
-  readonly skippedBy: 'INITIATOR' | 'NODE_ACTORS';
+  readonly skippedBy: 'INITIATOR' | 'MANAGER_CHAIN_REACHED' | 'NODE_ACTORS';
+}
+
+// What each way of being skipped writes into the `TOKEN_ADVANCED` payload. The
+// two chain settings that can skip a node share one key.
+const SKIPPED_RUNTIME_TASK_PAYLOADS: Readonly<
+  Record<SkippedRuntimeTask['skippedBy'], Readonly<Record<string, true>>>
+> = {
+  INITIATOR: { skippedByInitiatorExclusion: true },
+  MANAGER_CHAIN_REACHED: { skippedByManagerChainReached: true },
+  NODE_ACTORS: { skippedByNodeActorExclusion: true },
+};
+
+type OrgManagerChainResolver = Extract<
+  ApproverResolver,
+  { type: 'ORG_MANAGER_CHAIN' }
+>;
+
+// Why a chain that continues an earlier one, or skips when its start already
+// qualifies, is refused anywhere task creation did not work its context out.
+const ORG_MANAGER_CHAIN_CONTEXT_REFUSAL =
+  '接續前一段主管鏈、或「起點本人已達簽到職等時略過」，只能在建立簽核任務時使用，此處不支援。';
+
+// Whose manager an `ORG_MANAGER_CHAIN` starts from. `memberId` is `null` when
+// the start names nobody, with `missingReason` saying why; `description` is the
+// lead-in of the "no manager reaches the level" reason.
+interface OrgManagerChainStartPerson {
+  readonly description: string;
+  readonly memberId: string | null;
+  readonly missingReason: string;
+}
+
+// What the walk of a manager chain needs to know before it starts when the
+// chain continues an earlier one or skips when its start already qualifies.
+// Task creation works it out first and hands it down; no other entry point
+// builds one, so a chain with these settings reached any other way is refused.
+interface OrgManagerChainContext {
+  // Set only for a chain that continues an earlier stage: the stage's start
+  // person, and the position level that stage actually got a signature from
+  // (`null` when it got none that counts).
+  readonly continuation: {
+    readonly reachedLevel: number | null;
+    readonly start: OrgManagerChainStartPerson;
+  } | null;
+  // The chain has nobody left to ask: the level it asks for is already there.
+  readonly skipped: boolean;
 }
 
 // Everyone one node keeps out of its approvers, kept per rule because each
@@ -5367,9 +5416,7 @@ export class WorkflowEngineService {
       instance,
       token,
       node,
-      skippedBy === 'NODE_ACTORS'
-        ? { skippedByNodeActorExclusion: true }
-        : { skippedByInitiatorExclusion: true },
+      SKIPPED_RUNTIME_TASK_PAYLOADS[skippedBy],
     );
   }
 
@@ -7212,7 +7259,9 @@ export class WorkflowEngineService {
    * Resolves who gets the node's task. A {@link SkippedRuntimeTask} means the
    * node asked to be skipped (`excludeInitiator.whenEmpty` or
    * `excludeNodeActors.whenEmpty` = SKIP_NODE) because everyone left was kept
-   * out: the sole caller creates no task and advances the token instead.
+   * out, or its manager chain found the level it asks for already reached
+   * (`skipWhenStartReached`, or an earlier stage it continues): the sole
+   * caller creates no task and advances the token instead.
    *
    * With both exclusions set the initiator rule runs first. When it alone
    * leaves nobody, `excludeInitiator.whenEmpty` decides; when it leaves
@@ -7225,6 +7274,19 @@ export class WorkflowEngineService {
     node: UserTaskNode,
   ): Promise<ResolvedRuntimeTaskCandidates | SkippedRuntimeTask> {
     const label = `簽核節點「${node.data.label}」`;
+    // Worked out before anything else because it can end the node: a chain
+    // that needs nobody more is skipped without resolving or excluding anyone.
+    const chainContext = await this.resolveOrgManagerChainContext(
+      manager,
+      instance,
+      node,
+      label,
+    );
+
+    if (chainContext?.skipped) {
+      return { skippedBy: 'MANAGER_CHAIN_REACHED' };
+    }
+
     const exclusions = await this.readNodeExclusions(manager, instance, node);
     const resolvedCandidates = await this.resolveApproverResolver(
       manager,
@@ -7233,6 +7295,7 @@ export class WorkflowEngineService {
       label,
       '簽核人',
       exclusions.memberIds,
+      chainContext,
     );
     const delegatedCandidates = await this.delegateResolvedCandidates(
       manager,
@@ -7306,6 +7369,235 @@ export class WorkflowEngineService {
         : hasSubmitter
           ? `${label} 無法建立待簽任務：解析出的簽核人只剩申請人或代為送出此單的人（含委派後的代理人），且此節點不允許申請人或代送人簽核。`
           : `${label} 無法建立待簽任務：解析出的簽核人只剩申請人本人（含委派後的代理人），且此節點不允許申請人自簽。`,
+    );
+  }
+
+  /**
+   * What the walk of `node`'s manager chain has to know first, or `undefined`
+   * for a node that is not a manager chain using one of the two settings that
+   * need it (continuing an earlier chain, or skipping when the start already
+   * qualifies); such a node is resolved exactly as before.
+   *
+   * The settings are checked again here, since the instance runs on its own
+   * snapshot of the definition and a definition from another build can carry
+   * a shape this one never published. A setting that does not hold throws a
+   * {@link ConflictException} naming the node.
+   *
+   * `skipped` is set when the level the chain asks for is already there: the
+   * start person's own level for `skipWhenStartReached`, the level the earlier
+   * stage got a signature from for a continuation.
+   */
+  private async resolveOrgManagerChainContext(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    node: UserTaskNode,
+    label: string,
+  ): Promise<OrgManagerChainContext | undefined> {
+    const resolver = node.data.approverResolver;
+
+    if (
+      resolver.type !== 'ORG_MANAGER_CHAIN' ||
+      !usesOrgManagerChainSettings(resolver)
+    ) {
+      return undefined;
+    }
+
+    const shapeIssue = readOrgManagerChainIssue(resolver, '簽核節點');
+
+    if (shapeIssue !== null) {
+      throw new ConflictException(`${label} 無法建立待簽任務：${shapeIssue}`);
+    }
+
+    if (!isOrgManagerChainContinuation(resolver)) {
+      return {
+        continuation: null,
+        skipped: await this.isOrgManagerChainStartLevelReached(
+          manager,
+          instance,
+          resolver,
+          label,
+        ),
+      };
+    }
+
+    const found = readChainContinuationSource(
+      instance.workflowSnapshot,
+      node.id,
+      resolver,
+    );
+
+    if ('issue' in found) {
+      throw new ConflictException(`${label} 無法建立待簽任務：${found.issue}`);
+    }
+
+    // The earlier stage's own start, so both stages climb the same line.
+    const start = await this.resolveOrgManagerChainStart(
+      manager,
+      instance,
+      found.source,
+      label,
+      '簽核人',
+    );
+    const reachedLevel = await this.readChainStageReachedLevel(
+      manager,
+      instance,
+      found.sourceId,
+    );
+
+    return {
+      continuation: { reachedLevel, start },
+      skipped:
+        reachedLevel !== null && reachedLevel >= resolver.minPositionLevel,
+    };
+  }
+
+  /**
+   * `skipWhenStartReached`: whether the person the chain starts from already
+   * holds a position level of `minPositionLevel` or more today. No start
+   * person, or one without a graded position, reads as "not reached" so the
+   * chain is walked as usual.
+   */
+  private async isOrgManagerChainStartLevelReached(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    resolver: OrgManagerChainResolver,
+    label: string,
+  ): Promise<boolean> {
+    const start = await this.resolveOrgManagerChainStart(
+      manager,
+      instance,
+      resolver,
+      label,
+      '簽核人',
+    );
+
+    if (start.memberId === null) {
+      return false;
+    }
+
+    const level = await this.readMemberPositionLevel(
+      manager,
+      start.memberId,
+      this.readOrganizationToday(),
+    );
+
+    return level !== null && level >= resolver.minPositionLevel;
+  }
+
+  /**
+   * The position level the manager-chain stage `stageNodeId` actually got a
+   * signature from in its latest round (`T`), or `null` when none counts.
+   *
+   * - A stage whose latest round was a skip for `skippedByManagerChainReached`
+   *   got nobody to sign, so its older approvals do not count: `null`.
+   * - Otherwise the people who really approved its latest batch
+   *   ({@link readNodeActorApprovals}: no ad-hoc countersign, no SLA
+   *   auto-approval), each at the level they held on the day they approved.
+   *   `Position.level` has no history, but memberships are dated, so a
+   *   promotion that took effect after the approval does not raise `T`. The day
+   *   is the organisation's, the same one "today" is.
+   *
+   * The people counted are those who pressed approve, delegates and transfer
+   * receivers included, not the seat they sat in.
+   */
+  private async readChainStageReachedLevel(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    stageNodeId: string,
+  ): Promise<number | null> {
+    if (
+      await this.wasChainStageSkippedLastRound(manager, instance, stageNodeId)
+    ) {
+      return null;
+    }
+
+    const approvals = (
+      await this.readNodeActorApprovals(manager, instance, [stageNodeId])
+    ).map((decision) => ({
+      date: formatDateOnlyInTimeZone(
+        decision.decidedAt,
+        this.organizationTimeZone,
+      ),
+      memberId: decision.decidedByMemberId,
+    }));
+    const levelGroups = await Promise.all(
+      uniqueTexts(approvals.map((approval) => approval.date)).map(
+        async (date): Promise<readonly (number | null)[]> => [
+          ...(
+            await this.readMemberPositionLevels(
+              manager,
+              approvals
+                .filter((approval) => approval.date === date)
+                .map((approval) => approval.memberId),
+              date,
+            )
+          ).values(),
+        ],
+      ),
+    );
+    const levels = levelGroups
+      .flat()
+      .filter((level): level is number => level !== null);
+
+    return levels.length === 0 ? null : Math.max(...levels);
+  }
+
+  /**
+   * Whether the latest thing that happened to the stage `stageNodeId` was a
+   * skip for `skippedByManagerChainReached`, rather than a task being made for
+   * it: the newest such `TOKEN_ADVANCED` is newer than the newest
+   * `TASK_CREATED` of one of the stage's own (non-ad-hoc) tasks. Newer is
+   * decided by the log's `seq` (the order the database wrote the rows in;
+   * `created_at` is the transaction start and ties within one transaction).
+   *
+   * The `TASK_CREATED` payload does not say whether its task is ad-hoc, so the
+   * task is looked up by the id the log carries.
+   */
+  private async wasChainStageSkippedLastRound(
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+    stageNodeId: string,
+  ): Promise<boolean> {
+    const [logs, stageTasks] = await Promise.all([
+      manager.getRepository(ActivityLogEntity).find({
+        where: {
+          eventType: In([
+            ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+            ActivityLogEventTypeEnum.TASK_CREATED,
+          ]),
+          instanceId: instance.id,
+          nodeId: stageNodeId,
+        },
+      }),
+      manager.getRepository(TaskEntity).find({
+        where: { instanceId: instance.id, isAdhoc: false, nodeId: stageNodeId },
+      }),
+    ]);
+    const stageTaskIds = new Set(stageTasks.map((task) => task.id));
+    const newestSeq = (matching: readonly ActivityLogEntity[]): bigint | null =>
+      matching.reduce<bigint | null>((newest, log) => {
+        const seq = BigInt(log.seq);
+
+        return newest === null || seq > newest ? seq : newest;
+      }, null);
+    const skippedSeq = newestSeq(
+      logs.filter(
+        (log) =>
+          log.eventType === ActivityLogEventTypeEnum.TOKEN_ADVANCED &&
+          log.payload['skippedByManagerChainReached'] === true,
+      ),
+    );
+    const createdSeq = newestSeq(
+      logs.filter(
+        (log) =>
+          log.eventType === ActivityLogEventTypeEnum.TASK_CREATED &&
+          log.taskId !== null &&
+          stageTaskIds.has(log.taskId),
+      ),
+    );
+
+    return (
+      skippedSeq !== null && (createdSeq === null || skippedSeq > createdSeq)
     );
   }
 
@@ -7697,6 +7989,7 @@ export class WorkflowEngineService {
     label: string,
     subject: ResolvedSubject = '簽核人',
     skippedChainMemberIds: readonly string[] = [],
+    chainContext?: OrgManagerChainContext,
   ): Promise<readonly ResolvedApproverCandidate[]> {
     const memberIds = await this.resolveApproverMemberIds(
       manager,
@@ -7705,6 +7998,7 @@ export class WorkflowEngineService {
       label,
       subject,
       skippedChainMemberIds,
+      chainContext,
     );
 
     return memberIds.map((memberId) => ({
@@ -7721,6 +8015,7 @@ export class WorkflowEngineService {
     label: string,
     subject: ResolvedSubject,
     skippedChainMemberIds: readonly string[],
+    chainContext?: OrgManagerChainContext,
   ): Promise<readonly string[]> {
     if (resolver.type === 'DIRECT') {
       return readMemberIdsFromValue(resolver.memberIds, label, subject);
@@ -7799,6 +8094,7 @@ export class WorkflowEngineService {
         label,
         subject,
         skippedChainMemberIds,
+        chainContext,
       );
     }
 
@@ -8210,24 +8506,47 @@ export class WorkflowEngineService {
    * past without joining the chain or counting as the stopping point, and so
    * are managers below `startPositionLevel`, until the first one at or above
    * it starts the chain.
+   *
+   * A chain that continues an earlier stage climbs from that stage's start and
+   * walks past every manager whose level is not above the one the stage got a
+   * signature from, as if that level were the last one already added. Both it
+   * and a chain that skips when its start already qualifies are only walked
+   * with the `chainContext` task creation worked out; without one they are
+   * refused, which keeps every other entry point (a notify node's recipients,
+   * for one) from reading them as an ordinary chain.
    */
   private async resolveOrgManagerChainCandidates(
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
-    resolver: Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>,
+    resolver: OrgManagerChainResolver,
     label: string,
     subject: ResolvedSubject,
     skippedMemberIds: readonly string[],
+    chainContext?: OrgManagerChainContext,
   ): Promise<readonly string[]> {
     const { fallback, minPositionLevel } = resolver;
     const startPositionLevel = readOrgManagerChainStartPositionLevel(resolver);
-    const start = await this.resolveOrgManagerChainStart(
-      manager,
-      instance,
-      resolver,
-      label,
-      subject,
-    );
+    const continuation = chainContext?.continuation ?? null;
+
+    if (
+      usesOrgManagerChainSettings(resolver) &&
+      (chainContext === undefined ||
+        (isOrgManagerChainContinuation(resolver) && continuation === null))
+    ) {
+      throw new ConflictException(
+        `${label} ${subject === '通知對象' ? '無法建立通知' : '無法建立待簽任務'}：${ORG_MANAGER_CHAIN_CONTEXT_REFUSAL}`,
+      );
+    }
+
+    const start =
+      continuation?.start ??
+      (await this.resolveOrgManagerChainStart(
+        manager,
+        instance,
+        resolver,
+        label,
+        subject,
+      ));
 
     // Nobody to climb from: the same "no manager" path as a chain whose walk
     // finds nobody, so the fallback decides.
@@ -8246,7 +8565,10 @@ export class WorkflowEngineService {
     const visitedMemberIds = new Set<string>([start.memberId]);
     const chain: string[] = [];
     let currentMemberId = start.memberId;
-    let lastAddedLevel: number | null = null;
+    // A continuation starts out as if the level its earlier stage got a
+    // signature from were the last one added: managers at or below it are
+    // walked past, so only those above it are asked.
+    let lastAddedLevel: number | null = continuation?.reachedLevel ?? null;
 
     for (let hop = 0; hop < ORG_MANAGER_CHAIN_MAX_HOPS; hop += 1) {
       // A chain is a single path, so it always uses closest-org-unit semantics
@@ -8347,14 +8669,10 @@ export class WorkflowEngineService {
   private async resolveOrgManagerChainStart(
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
-    resolver: Extract<ApproverResolver, { type: 'ORG_MANAGER_CHAIN' }>,
+    resolver: OrgManagerChainResolver,
     label: string,
     subject: ResolvedSubject,
-  ): Promise<{
-    readonly description: string;
-    readonly memberId: string | null;
-    readonly missingReason: string;
-  }> {
+  ): Promise<OrgManagerChainStartPerson> {
     if (isOrgManagerChainStartedFromInitiator(resolver)) {
       return {
         description: '',
@@ -8388,6 +8706,15 @@ export class WorkflowEngineService {
     if (subject === '通知對象') {
       throw new ConflictException(
         `${label} ${failure}：知會節點的主管鏈只能從發起人開始。`,
+      );
+    }
+
+    // The start of a continuation is its earlier stage's, which task creation
+    // hands over already resolved; asking for it here is a mistake of the
+    // caller, not a start to climb from.
+    if (startFrom.type === 'CHAIN_CONTINUATION') {
+      throw new ConflictException(
+        `${label} ${failure}：${ORG_MANAGER_CHAIN_CONTEXT_REFUSAL}`,
       );
     }
 
@@ -10749,6 +11076,103 @@ function readInitiatorAndSubmitter(
 
 function isOrgManagerChainNode(node: UserTaskNode): boolean {
   return node.data.approverResolver.type === 'ORG_MANAGER_CHAIN';
+}
+
+/**
+ * Whether a manager chain uses one of the two settings that need the context
+ * task creation works out first: it continues an earlier chain, or
+ * `skipWhenStartReached` is anything but absent, `null` or `false` (a value
+ * that is not a boolean is "used" too, so the shape check can refuse it
+ * instead of the chain being walked as if it were absent).
+ */
+function usesOrgManagerChainSettings(
+  resolver: OrgManagerChainResolver,
+): boolean {
+  const skipWhenStartReached: unknown = resolver.skipWhenStartReached;
+
+  return (
+    isOrgManagerChainContinuation(resolver) ||
+    (skipWhenStartReached !== undefined &&
+      skipWhenStartReached !== null &&
+      skipWhenStartReached !== false)
+  );
+}
+
+/**
+ * The manager-chain stage a continuing chain (`nodeId`, whose resolver is
+ * `resolver`) continues, or the first reason it cannot: it is missing, not a
+ * user task, not a manager chain, itself a continuation (stages are not
+ * chained more than once), started from something that can change while the
+ * stage's approvals stay (a form field, or a start this build does not know),
+ * or asks for a level at or below this chain's own, which would skip this
+ * chain every time. The same rules the publish lint applies to the stage;
+ * where the stage sits in the graph is only checked there.
+ */
+function readChainContinuationSource(
+  workflow: WorkflowDefinition,
+  nodeId: string,
+  resolver: OrgManagerChainResolver,
+):
+  | { readonly issue: string }
+  | { readonly source: OrgManagerChainResolver; readonly sourceId: string } {
+  const sourceId = (resolver.startFrom as { readonly nodeId: string }).nodeId;
+  const source = workflow.nodes.find((candidate) => candidate.id === sourceId);
+  const nameOf = (id: string): string =>
+    `「${readWorkflowNodeLabel(workflow, id) ?? id}」`;
+
+  if (source === undefined) {
+    return { issue: `接續的前一段主管鏈「${sourceId}」不存在。` };
+  }
+
+  if (source.type !== 'userTask') {
+    return { issue: `接續的前一段主管鏈 ${nameOf(sourceId)} 不是簽核關卡。` };
+  }
+
+  const sourceResolver = source.data.approverResolver as
+    ApproverResolver | undefined;
+
+  if (sourceResolver?.type !== 'ORG_MANAGER_CHAIN') {
+    return {
+      issue: `接續的前一段 ${nameOf(sourceId)} 的簽核來源不是「沿主管鏈簽核」。`,
+    };
+  }
+
+  if (isOrgManagerChainContinuation(sourceResolver)) {
+    return {
+      issue: `接續的前一段主管鏈 ${nameOf(sourceId)} 本身也是接續型主管鏈，不支援多段串接。`,
+    };
+  }
+
+  const sourceStart: unknown = sourceResolver.startFrom;
+  const sourceStartType: unknown =
+    typeof sourceStart === 'object' && sourceStart !== null
+      ? (sourceStart as { readonly type?: unknown }).type
+      : undefined;
+
+  if (
+    sourceStart !== undefined &&
+    sourceStart !== null &&
+    sourceStartType !== 'INITIATOR' &&
+    sourceStartType !== 'NODE_ACTOR'
+  ) {
+    return {
+      issue: `接續的前一段主管鏈 ${nameOf(sourceId)} 的起點只能是申請人或前面關卡的簽核者，不能是表單欄位或其他起點。`,
+    };
+  }
+
+  const sourceLevel: unknown = sourceResolver.minPositionLevel;
+
+  if (
+    typeof sourceLevel === 'number' &&
+    Number.isInteger(sourceLevel) &&
+    resolver.minPositionLevel <= sourceLevel
+  ) {
+    return {
+      issue: `接續關卡 ${nameOf(nodeId)} 的職等門檻（${resolver.minPositionLevel}）必須高於前一段主管鏈 ${nameOf(sourceId)} 的職等門檻（${sourceLevel}）；否則前一段只要簽到自己的職等，這一關就一定被略過。`,
+    };
+  }
+
+  return { source: sourceResolver, sourceId };
 }
 
 // Candidates of a manager-chain node that came from the chain (or replaced the
