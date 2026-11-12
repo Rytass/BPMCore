@@ -327,7 +327,7 @@ export type ChainContinuationSourceChoice = Readonly<{
 
 /** Shown when no upstream manager chain can be continued. */
 export const NO_CONTINUABLE_CHAIN_HINT =
-  '這個節點前面沒有可以接續的主管鏈關卡；需要是每條路徑都會經過、起點為申請人或前面關卡簽核者、沒有進入條件、也沒設跳過此關的「沿主管鏈簽核」關卡。';
+  '這個節點前面沒有可以接續的主管鏈關卡；需要是每條路徑都會經過、起點為申請人或前面關卡簽核者、本身不是接續型、沒有進入條件、也沒設跳過此關的「沿主管鏈簽核」關卡。';
 
 // A copy of the definition in which `nodeId` continues `sourceId` at a level no
 // stage can be at or below, with the hand-over to the initiator's manager taken
