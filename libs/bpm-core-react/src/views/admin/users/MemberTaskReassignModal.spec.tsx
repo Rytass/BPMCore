@@ -50,6 +50,9 @@ jest.mock('@mezzanine-ui/react', () => {
         <button onClick={props.onCancel as () => void} type="button">
           {props.cancelText as string}
         </button>
+        <button onClick={props.onClose as () => void} type="button">
+          dismiss
+        </button>
       </div>
     ) : null;
   };
@@ -62,11 +65,60 @@ jest.mock('@mezzanine-ui/react', () => {
     const rows = props.dataSource as readonly Readonly<
       Record<string, unknown>
     >[];
+    const rowSelection = props.rowSelection as
+      | {
+          readonly hideSelectAll?: boolean;
+          readonly onChange: (
+            keys: string[],
+            row: null,
+            rows: unknown[],
+          ) => void;
+          readonly selectedRowKeys: readonly string[];
+        }
+      | undefined;
 
     return (
       <div>
+        {rowSelection && !rowSelection.hideSelectAll ? (
+          <input
+            checked={rows.every((row) =>
+              rowSelection.selectedRowKeys.includes(String(row.key)),
+            )}
+            data-select-all="true"
+            onChange={(): void =>
+              rowSelection.onChange(
+                rowSelection.selectedRowKeys.length === rows.length
+                  ? []
+                  : rows.map((row) => String(row.key)),
+                null,
+                [],
+              )
+            }
+            type="checkbox"
+          />
+        ) : null}
         {rows.map((row): ReactElement => (
           <div key={String(row.key)}>
+            {rowSelection ? (
+              <input
+                checked={rowSelection.selectedRowKeys.includes(
+                  String(row.key),
+                )}
+                data-row-key={String(row.key)}
+                onChange={(): void =>
+                  rowSelection.onChange(
+                    rowSelection.selectedRowKeys.includes(String(row.key))
+                      ? rowSelection.selectedRowKeys.filter(
+                          (key) => key !== String(row.key),
+                        )
+                      : [...rowSelection.selectedRowKeys, String(row.key)],
+                    null,
+                    [],
+                  )
+                }
+                type="checkbox"
+              />
+            ) : null}
             {columns.map((column): ReactElement => (
               <span key={column.key}>
                 {column.render
@@ -146,6 +198,20 @@ const TASK: MemberOpenTaskRecord = {
   templateName: '採購',
 };
 
+const TASK_2: MemberOpenTaskRecord = {
+  ...TASK,
+  instanceId: 'instance-2',
+  instanceTitle: '出差申請',
+  taskId: 'task-2',
+};
+
+const TASK_3: MemberOpenTaskRecord = {
+  ...TASK,
+  instanceId: 'instance-3',
+  instanceTitle: '請購單',
+  taskId: 'task-3',
+};
+
 const WOULD_REASSIGN: TaskReassignmentResultRecord = {
   errorCode: null,
   instanceId: 'instance-1',
@@ -158,6 +224,12 @@ const WOULD_REASSIGN: TaskReassignmentResultRecord = {
 const REASSIGNED: TaskReassignmentResultRecord = {
   ...WOULD_REASSIGN,
   outcome: 'REASSIGNED',
+};
+
+const WOULD_REASSIGN_2: TaskReassignmentResultRecord = {
+  ...WOULD_REASSIGN,
+  instanceId: 'instance-2',
+  taskId: 'task-2',
 };
 
 describe('MemberTaskReassignModal', () => {
@@ -177,12 +249,48 @@ describe('MemberTaskReassignModal', () => {
     container.remove();
   });
 
-  async function render(): Promise<void> {
+  async function render(onClose: () => void = jest.fn()): Promise<void> {
     await act(async (): Promise<void> => {
       root.render(
-        <MemberTaskReassignModal member={MEMBER} onClose={jest.fn()} />,
+        <MemberTaskReassignModal member={MEMBER} onClose={onClose} />,
       );
     });
+  }
+
+  function rowCheckbox(taskId: string): HTMLInputElement {
+    const checkbox = container.querySelector<HTMLInputElement>(
+      `input[data-row-key="${taskId}"]`,
+    );
+
+    if (!checkbox) {
+      throw new Error(`Row checkbox "${taskId}" was not rendered`);
+    }
+
+    return checkbox;
+  }
+
+  function selectAllCheckbox(): HTMLInputElement | null {
+    return container.querySelector<HTMLInputElement>(
+      'input[data-select-all="true"]',
+    );
+  }
+
+  async function toggleRow(taskId: string): Promise<void> {
+    await act(async (): Promise<void> => {
+      rowCheckbox(taskId).click();
+    });
+  }
+
+  // Sorted copy: the order of `taskIds` is not part of the contract.
+  function sentTaskIds(callIndex: number): string[] {
+    const input = api.reassignMemberTasks.mock.calls[callIndex]?.[0];
+
+    return [...(input?.taskIds ?? [])].sort();
+  }
+
+  async function chooseTargetAndReason(): Promise<void> {
+    await clickButton('選接手人');
+    typeReason('離職');
   }
 
   function findButton(text: string): HTMLButtonElement {
@@ -241,7 +349,18 @@ describe('MemberTaskReassignModal', () => {
             answerFirst = resolve;
           }),
       )
-      .mockResolvedValueOnce([{ ...TASK, instanceTitle: '另一位的案件' }]);
+      .mockResolvedValueOnce([
+        {
+          ...TASK,
+          instanceTitle: '另一位的案件',
+          taskId: 'other-1',
+        },
+        {
+          ...TASK,
+          instanceTitle: '另一位的第二張案件',
+          taskId: 'other-2',
+        },
+      ]);
 
     await act(async (): Promise<void> => {
       root.render(
@@ -275,6 +394,7 @@ describe('MemberTaskReassignModal', () => {
       dryRun: true,
       fromMemberId: 'member-from',
       reason: '離職',
+      taskIds: ['task-1'],
       toMemberId: 'member-to',
     });
     expect(findButton('確認改派').disabled).toBe(false);
@@ -304,11 +424,216 @@ describe('MemberTaskReassignModal', () => {
       dryRun: false,
       fromMemberId: 'member-from',
       reason: '離職',
+      taskIds: ['task-1'],
       toMemberId: 'member-to',
     });
     expect(api.listMemberOpenTasks).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('已改派');
     expect(container.textContent).toContain('採購申請');
     expect(container.textContent).not.toContain('task-1');
+  });
+
+  describe('choosing which tasks to reassign', (): void => {
+    const THREE = [TASK, TASK_2, TASK_3];
+
+    it('selects every task by default and sends all of them', async (): Promise<void> => {
+      api.listMemberOpenTasks.mockResolvedValueOnce(THREE);
+      api.reassignMemberTasks.mockResolvedValueOnce([]);
+      await render();
+      await chooseTargetAndReason();
+      await clickButton('預覽');
+
+      expect(sentTaskIds(0)).toEqual(['task-1', 'task-2', 'task-3']);
+      expect(container.textContent).toContain('已選 3／3 筆');
+    });
+
+    it('sends only the checked tasks when one is unchecked', async (): Promise<void> => {
+      api.listMemberOpenTasks.mockResolvedValueOnce(THREE);
+      api.reassignMemberTasks.mockResolvedValueOnce([]);
+      await render();
+      await toggleRow('task-2');
+      await chooseTargetAndReason();
+      await clickButton('預覽');
+
+      expect(sentTaskIds(0)).toEqual(['task-1', 'task-3']);
+      expect(container.textContent).toContain('已選 2／3 筆');
+    });
+
+    it('disables preview and confirm when nothing is checked', async (): Promise<void> => {
+      api.listMemberOpenTasks.mockResolvedValueOnce(THREE);
+      api.reassignMemberTasks.mockResolvedValueOnce([WOULD_REASSIGN]);
+      await render();
+      await chooseTargetAndReason();
+      await clickButton('預覽');
+
+      expect(findButton('確認改派').disabled).toBe(false);
+
+      await toggleRow('task-1');
+      await toggleRow('task-2');
+      await toggleRow('task-3');
+
+      expect(container.textContent).toContain('已選 0／3 筆');
+      expect(findButton('預覽').disabled).toBe(true);
+      expect(findButton('確認改派').disabled).toBe(true);
+    });
+
+    it('clears the preview when the selection changes, and previews again after it is restored', async (): Promise<void> => {
+      api.listMemberOpenTasks.mockResolvedValueOnce(THREE);
+      api.reassignMemberTasks
+        .mockResolvedValueOnce([WOULD_REASSIGN])
+        .mockResolvedValueOnce([WOULD_REASSIGN]);
+      await render();
+      await chooseTargetAndReason();
+      await clickButton('預覽');
+
+      expect(findButton('確認改派').disabled).toBe(false);
+
+      await toggleRow('task-3');
+
+      expect(findButton('確認改派').disabled).toBe(true);
+
+      await toggleRow('task-3');
+
+      expect(findButton('確認改派').disabled).toBe(true);
+
+      await clickButton('預覽');
+
+      expect(api.reassignMemberTasks).toHaveBeenCalledTimes(2);
+      expect(findButton('確認改派').disabled).toBe(false);
+    });
+
+    it('lists a sent task that did not come back, with the title it was sent with', async (): Promise<void> => {
+      // task-3 stays unchecked: two ids are sent, only task-1 is answered.
+      api.listMemberOpenTasks
+        .mockResolvedValueOnce(THREE)
+        .mockResolvedValueOnce([]);
+      api.reassignMemberTasks
+        .mockResolvedValueOnce([WOULD_REASSIGN])
+        .mockResolvedValueOnce([REASSIGNED]);
+      await render();
+      await toggleRow('task-3');
+      await chooseTargetAndReason();
+      await clickButton('預覽');
+
+      expect(sentTaskIds(0)).toEqual(['task-1', 'task-2']);
+      expect(container.textContent).toContain('已不在此人的待辦中');
+      expect(container.textContent).toContain('出差申請');
+      expect(container.textContent).not.toContain('task-2');
+
+      // Commit path: the reloaded list is empty, so the title can only come
+      // from the snapshot taken when the request was sent.
+      await clickButton('確認改派');
+
+      expect(sentTaskIds(1)).toEqual(['task-1', 'task-2']);
+      expect(container.textContent).toContain('已改派');
+      expect(container.textContent).toContain('已不在此人的待辦中');
+      expect(container.textContent).toContain('出差申請');
+      expect(container.textContent).not.toContain('task-2');
+    });
+
+    it('selects the reloaded list again after a commit and sends all of it next time', async (): Promise<void> => {
+      api.listMemberOpenTasks
+        .mockResolvedValueOnce(THREE)
+        .mockResolvedValueOnce([TASK_2, TASK_3]);
+      api.reassignMemberTasks
+        .mockResolvedValueOnce([WOULD_REASSIGN])
+        .mockResolvedValueOnce([REASSIGNED])
+        .mockResolvedValueOnce([WOULD_REASSIGN_2]);
+      await render();
+      await toggleRow('task-2');
+      await toggleRow('task-3');
+      await chooseTargetAndReason();
+      await clickButton('預覽');
+
+      expect(container.textContent).toContain('已選 1／3 筆');
+
+      await clickButton('確認改派');
+
+      expect(container.textContent).toContain('已選 2／2 筆');
+
+      await clickButton('預覽');
+
+      expect(sentTaskIds(2)).toEqual(['task-2', 'task-3']);
+    });
+
+    it('selects the other member tasks after switching members', async (): Promise<void> => {
+      const OTHER: MemberProfileRecord = {
+        ...MEMBER,
+        memberId: 'member-other',
+        name: '另一位',
+      };
+
+      api.listMemberOpenTasks
+        .mockResolvedValueOnce(THREE)
+        .mockResolvedValueOnce([
+          { ...TASK, taskId: 'other-1' },
+          { ...TASK, taskId: 'other-2' },
+        ]);
+      api.reassignMemberTasks.mockResolvedValueOnce([]);
+      await render();
+      await act(async (): Promise<void> => {
+        root.render(
+          <MemberTaskReassignModal member={OTHER} onClose={jest.fn()} />,
+        );
+      });
+
+      expect(container.textContent).toContain('已選 2／2 筆');
+
+      await chooseTargetAndReason();
+      await clickButton('預覽');
+
+      expect(sentTaskIds(0)).toEqual(['other-1', 'other-2']);
+    });
+
+    describe('while a request is in flight', (): void => {
+      let finish: (results: TaskReassignmentResultRecord[]) => void;
+      let onClose: jest.Mock;
+
+      beforeEach(async (): Promise<void> => {
+        finish = (): void => undefined;
+        onClose = jest.fn();
+        api.listMemberOpenTasks.mockResolvedValueOnce(THREE);
+        api.reassignMemberTasks.mockImplementationOnce(
+          (): Promise<TaskReassignmentResultRecord[]> =>
+            new Promise((resolve): void => {
+              finish = resolve;
+            }),
+        );
+        await render(onClose);
+        await chooseTargetAndReason();
+        await clickButton('預覽');
+      });
+
+      afterEach(async (): Promise<void> => {
+        await act(async (): Promise<void> => {
+          finish([]);
+        });
+      });
+
+      it('does not close through the cancel button or the dismiss path', async (): Promise<void> => {
+        await clickButton('關閉');
+        await clickButton('dismiss');
+
+        expect(onClose).not.toHaveBeenCalled();
+      });
+
+      it('hides select-all and ignores row changes', async (): Promise<void> => {
+        expect(selectAllCheckbox()).toBeNull();
+
+        await toggleRow('task-1');
+
+        expect(container.textContent).toContain('已選 3／3 筆');
+      });
+
+      it('closes again once the request has finished', async (): Promise<void> => {
+        await act(async (): Promise<void> => {
+          finish([]);
+        });
+        await clickButton('關閉');
+        await clickButton('dismiss');
+
+        expect(onClose).toHaveBeenCalledTimes(2);
+      });
+    });
   });
 });

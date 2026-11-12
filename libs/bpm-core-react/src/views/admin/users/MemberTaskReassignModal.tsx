@@ -38,19 +38,25 @@ type ResultRow = Readonly<
   }
 >;
 
+/**
+ * Both states keep what was sent and the titles it was sent with: the server
+ * skips an id the member no longer holds (no result row for it), and a commit
+ * reloads the task list, so neither can be recovered from the current list.
+ */
 interface PreviewState {
   readonly inputKey: string;
   readonly results: readonly TaskReassignmentResultRecord[];
-}
-
-/**
- * A committed run keeps the titles it was started with: the task list reloads
- * right after, and a member whose every task moved no longer lists any of them.
- */
-interface CommittedState {
-  readonly results: readonly TaskReassignmentResultRecord[];
+  readonly sentTaskIds: readonly string[];
   readonly titleById: ReadonlyMap<string, string>;
 }
+
+interface CommittedState {
+  readonly results: readonly TaskReassignmentResultRecord[];
+  readonly sentTaskIds: readonly string[];
+  readonly titleById: ReadonlyMap<string, string>;
+}
+
+const TASK_GONE_LABEL = '已不在此人的待辦中';
 
 /**
  * Administrator reassignment of a member's open tasks. Lists what the member
@@ -68,6 +74,7 @@ export function MemberTaskReassignModal({
 }): ReactElement {
   const [tasks, setTasks] = useState<readonly MemberOpenTaskRecord[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<readonly string[]>([]);
   const [target, setTarget] = useState<MemberOption | null>(null);
   const [reason, setReason] = useState('');
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -75,12 +82,23 @@ export function MemberTaskReassignModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The ids to send are the checked ones that the current list still holds, so
+  // a stale check (other member, reloaded list) never reaches the server.
+  const selectedIds = useMemo((): readonly string[] => {
+    const checked = new Set(checkedIds);
+
+    return tasks
+      .filter((task) => checked.has(task.taskId))
+      .map((task) => task.taskId);
+  }, [tasks, checkedIds]);
+  const selectionKey = [...selectedIds].sort().join(',');
   const trimmedReason = reason.trim();
-  const inputKey = `${target?.id ?? ''}|${trimmedReason}`;
+  const inputKey = `${target?.id ?? ''}|${trimmedReason}|${selectionKey}`;
   const previewIsCurrent = preview !== null && preview.inputKey === inputKey;
   const canConfirm =
     preview !== null &&
     previewIsCurrent &&
+    selectedIds.length > 0 &&
     preview.results.some((result) => result.outcome === 'WOULD_REASSIGN');
 
   // Only the latest request may write: switching members while an earlier
@@ -98,6 +116,7 @@ export function MemberTaskReassignModal({
 
       if (latestRequestRef.current === request) {
         setTasks(loaded);
+        setCheckedIds(loaded.map((task) => task.taskId));
       }
     } catch (requestError: unknown) {
       if (latestRequestRef.current === request) {
@@ -126,6 +145,7 @@ export function MemberTaskReassignModal({
     }
 
     setTasks([]);
+    setCheckedIds([]);
     void loadTasks(member.memberId);
   }, [member, loadTasks]);
 
@@ -136,9 +156,14 @@ export function MemberTaskReassignModal({
   );
 
   async function runReassignment(dryRun: boolean): Promise<void> {
-    if (!member || !target || !trimmedReason) {
+    if (!member || !target || !trimmedReason || selectedIds.length === 0) {
       return;
     }
+
+    // Snapshot at click time: the request, the preview key and the titles all
+    // describe the same selection even if the list reloads while we wait.
+    const sentTaskIds = selectedIds;
+    const sentTitleById = titleById;
 
     setBusy(true);
     setError(null);
@@ -148,14 +173,24 @@ export function MemberTaskReassignModal({
         dryRun,
         fromMemberId: member.memberId,
         reason: trimmedReason,
+        taskIds: [...sentTaskIds],
         toMemberId: target.id,
       });
 
       if (dryRun) {
-        setPreview({ inputKey, results: outcomes });
+        setPreview({
+          inputKey,
+          results: outcomes,
+          sentTaskIds,
+          titleById: sentTitleById,
+        });
         setCommitted(null);
       } else {
-        setCommitted({ results: outcomes, titleById });
+        setCommitted({
+          results: outcomes,
+          sentTaskIds,
+          titleById: sentTitleById,
+        });
         setPreview(null);
         await loadTasks(member.memberId);
       }
@@ -167,16 +202,36 @@ export function MemberTaskReassignModal({
   }
 
   const shownResultRows = useMemo((): ResultRow[] => {
-    const shownResults = committed?.results ?? preview?.results ?? [];
-    const shownTitleById = committed?.titleById ?? titleById;
+    const shown = committed ?? preview;
 
-    return shownResults.map((result) => ({
-      instanceTitle: shownTitleById.get(result.taskId) ?? result.taskId,
-      key: result.taskId,
-      message: result.message,
-      outcomeLabel: readOutcomeLabel(result.outcome),
-    }));
-  }, [committed, preview, titleById]);
+    if (!shown) {
+      return [];
+    }
+
+    const returnedIds = new Set(shown.results.map((result) => result.taskId));
+    const returnedRows = shown.results.map(
+      (result): ResultRow => ({
+        instanceTitle: shown.titleById.get(result.taskId) ?? result.taskId,
+        key: result.taskId,
+        message: result.message,
+        outcomeLabel: readOutcomeLabel(result.outcome),
+      }),
+    );
+    // Sent but not answered: the member no longer holds it, so the server
+    // returns no row. Show it instead of letting the selection silently shrink.
+    const goneRows = shown.sentTaskIds
+      .filter((taskId) => !returnedIds.has(taskId))
+      .map(
+        (taskId): ResultRow => ({
+          instanceTitle: shown.titleById.get(taskId) ?? taskId,
+          key: `gone:${taskId}`,
+          message: null,
+          outcomeLabel: TASK_GONE_LABEL,
+        }),
+      );
+
+    return [...returnedRows, ...goneRows];
+  }, [committed, preview]);
 
   const taskColumns = useMemo(
     (): TableColumn<TaskRow>[] => [
@@ -226,6 +281,17 @@ export function MemberTaskReassignModal({
     [],
   );
 
+  // The backdrop hides the member table, so closing is the only way `member`
+  // changes. While a request is in flight every close path is a no-op, which
+  // closes the window where a late answer writes into another member's view.
+  const handleClose = (): void => {
+    if (busy) {
+      return;
+    }
+
+    onClose();
+  };
+
   return (
     <Modal
       cancelText="關閉"
@@ -233,8 +299,8 @@ export function MemberTaskReassignModal({
       confirmText="確認改派"
       loading={busy}
       modalType="standard"
-      onCancel={onClose}
-      onClose={onClose}
+      onCancel={handleClose}
+      onClose={handleClose}
       onConfirm={(): void => {
         void runReassignment(false);
       }}
@@ -256,15 +322,34 @@ export function MemberTaskReassignModal({
             </Typography>
           ) : null}
           {tasks.length ? (
-            <Table
-              columns={taskColumns}
-              dataSource={tasks.map((task): TaskRow => ({
-                ...task,
-                key: task.taskId,
-              }))}
-              fullWidth
-              loading={tasksLoading}
-            />
+            <>
+              <Typography color="text-neutral" variant="caption">
+                {`已選 ${selectedIds.length}／${tasks.length} 筆`}
+              </Typography>
+              <Table
+                columns={taskColumns}
+                dataSource={tasks.map((task): TaskRow => ({
+                  ...task,
+                  key: task.taskId,
+                }))}
+                fullWidth
+                loading={tasksLoading}
+                rowSelection={{
+                  hideSelectAll: busy,
+                  mode: 'checkbox',
+                  onChange: (selectedRowKeys: string[]): void => {
+                    if (busy) {
+                      return;
+                    }
+
+                    setCheckedIds(selectedRowKeys);
+                    setPreview(null);
+                    setCommitted(null);
+                  },
+                  selectedRowKeys: [...selectedIds],
+                }}
+              />
+            </>
           ) : (
             <Typography color="text-neutral" variant="body">
               {tasksLoading ? '載入待辦中…' : '此成員目前沒有待簽任務。'}
@@ -302,7 +387,10 @@ export function MemberTaskReassignModal({
             <div>
               <Button
                 disabled={
-                  busy || !target || !trimmedReason || tasks.length === 0
+                  busy ||
+                  !target ||
+                  !trimmedReason ||
+                  selectedIds.length === 0
                 }
                 onClick={(): void => {
                   void runReassignment(true);
