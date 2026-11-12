@@ -94,8 +94,9 @@ export class WorkflowEngineMutations {
 
   @Mutation(() => [TaskReassignmentResultObject], {
     description:
-      'Administrator: moves every open task the source member holds to the ' +
-      'target, one transaction per task, one result per task. Set dryRun to ' +
+      'Administrator: moves the open tasks the source member holds (all of ' +
+      'them, or only taskIds) to the target, one transaction per task, one ' +
+      'result per task. Set dryRun to ' +
       'report the outcomes without writing. Set taskIds to move only those ' +
       'tasks (ids the member does not hold return no result row); omit it for ' +
       'every open task, and an empty list is refused.',

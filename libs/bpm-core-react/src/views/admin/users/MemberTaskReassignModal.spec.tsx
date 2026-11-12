@@ -98,7 +98,7 @@ jest.mock('@mezzanine-ui/react', () => {
           />
         ) : null}
         {rows.map((row): ReactElement => (
-          <div key={String(row.key)}>
+          <div data-table-row-key={String(row.key)} key={String(row.key)}>
             {rowSelection ? (
               <input
                 checked={rowSelection.selectedRowKeys.includes(
@@ -241,6 +241,10 @@ describe('MemberTaskReassignModal', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     jest.clearAllMocks();
+    // clearAllMocks keeps queued mockResolvedValueOnce values; reset so a test
+    // that fails midway cannot leak unused answers into the next one.
+    api.listMemberOpenTasks.mockReset();
+    api.reassignMemberTasks.mockReset();
     api.listMemberOpenTasks.mockResolvedValue([TASK]);
   });
 
@@ -273,6 +277,20 @@ describe('MemberTaskReassignModal', () => {
     return container.querySelector<HTMLInputElement>(
       'input[data-select-all="true"]',
     );
+  }
+
+  function goneRow(): HTMLElement {
+    const row = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-table-row-key]'),
+    ).find((candidate) =>
+      (candidate.textContent ?? '').includes('已不在此人的待辦中'),
+    );
+
+    if (!row) {
+      throw new Error('The "gone" result row was not rendered');
+    }
+
+    return row;
   }
 
   async function toggleRow(taskId: string): Promise<void> {
@@ -516,8 +534,9 @@ describe('MemberTaskReassignModal', () => {
       await clickButton('預覽');
 
       expect(sentTaskIds(0)).toEqual(['task-1', 'task-2']);
-      expect(container.textContent).toContain('已不在此人的待辦中');
-      expect(container.textContent).toContain('出差申請');
+      // Scoped to the "gone" row: the title is also in the task table above,
+      // so a page-wide check would pass even if the row fell back to the id.
+      expect(goneRow().textContent).toContain('出差申請');
       expect(container.textContent).not.toContain('task-2');
 
       // Commit path: the reloaded list is empty, so the title can only come
@@ -632,6 +651,7 @@ describe('MemberTaskReassignModal', () => {
         await clickButton('關閉');
         await clickButton('dismiss');
 
+        expect(selectAllCheckbox()).not.toBeNull();
         expect(onClose).toHaveBeenCalledTimes(2);
       });
     });

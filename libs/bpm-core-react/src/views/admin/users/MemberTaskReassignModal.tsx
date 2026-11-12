@@ -145,6 +145,8 @@ export function MemberTaskReassignModal({
     }
 
     setTasks([]);
+    // Only clears; selecting everything again happens inside loadTasks (its
+    // latest-request guard), once the new member's list has arrived.
     setCheckedIds([]);
     void loadTasks(member.memberId);
   }, [member, loadTasks]);
@@ -173,7 +175,7 @@ export function MemberTaskReassignModal({
         dryRun,
         fromMemberId: member.memberId,
         reason: trimmedReason,
-        taskIds: [...sentTaskIds],
+        taskIds: sentTaskIds,
         toMemberId: target.id,
       });
 
