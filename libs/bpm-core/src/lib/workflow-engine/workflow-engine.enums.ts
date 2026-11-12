@@ -100,6 +100,12 @@ export enum ActivityLogEventTypeEnum {
   ADHOC_DIRECTIVE_CANCELLED = 'ADHOC_DIRECTIVE_CANCELLED',
   ADHOC_DIRECTIVE_CREATED = 'ADHOC_DIRECTIVE_CREATED',
   ADHOC_PRE_APPROVAL_RETURNED = 'ADHOC_PRE_APPROVAL_RETURNED',
+  /**
+   * A decision or a resubmission could not move the instance on (the next stage
+   * had no resolvable approver, say). The transaction rolled back, so the task
+   * is still open or the instance is still returned; this row is the only trace.
+   */
+  ADVANCE_FAILED = 'ADVANCE_FAILED',
   ENGINE_PROCESS_REQUESTED = 'ENGINE_PROCESS_REQUESTED',
   INSTANCE_CANCELLED = 'INSTANCE_CANCELLED',
   /** SLA `TERMINATE_INSTANCE` ended the instance; it has no actor. */

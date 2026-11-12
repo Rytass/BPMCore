@@ -162,6 +162,10 @@ import {
   computeFormDataFingerprint,
   computeStableValueFingerprint,
 } from './form-data-fingerprint';
+import {
+  InstanceAdvanceFailure,
+  type InstanceAdvanceFailureContext,
+} from './instance-advance-failure';
 import { readDistinctSubmitterMemberId } from './instance-submitter';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
@@ -802,6 +806,180 @@ export class WorkflowEngineService {
   }
 
   /**
+   * Runs a public operation whose engine transaction may fail with an
+   * {@link InstanceAdvanceFailure}. The transaction has rolled back by the time
+   * it lands here, so the record is written in a transaction of its own, and
+   * the caller then gets the original error: same class, same message, as if
+   * none of this existed. The wrapper type never leaves this method.
+   */
+  private async withAdvanceFailureRecorded<TResult>(
+    run: () => Promise<TResult>,
+  ): Promise<TResult> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof InstanceAdvanceFailure) {
+        await this.recordAdvanceFailure(error);
+
+        throw error.originalError;
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Writes the `ADVANCE_FAILED` row for a rolled-back attempt. A failure to
+   * write is logged and swallowed: the caller must see the error that stopped
+   * the case, not the one that stopped its record.
+   */
+  private async recordAdvanceFailure(
+    failure: InstanceAdvanceFailure,
+  ): Promise<void> {
+    const { context, message } = failure;
+
+    try {
+      await this.approvalInstanceRepository.manager.transaction(
+        async (manager): Promise<void> => {
+          // The same per-instance lock every decision takes, so two attempts
+          // failing together cannot both pass the check below and write twice.
+          await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+            context.instanceId,
+          ]);
+
+          const unresolved = await this.readUnresolvedAdvanceFailures(
+            manager,
+            context.instanceId,
+          );
+
+          if (
+            unresolved.some((logged): boolean =>
+              isSameAdvanceFailure(logged, context, message),
+            )
+          ) {
+            return;
+          }
+
+          const activityRepository = manager.getRepository(ActivityLogEntity);
+
+          await activityRepository.save(
+            activityRepository.create({
+              actorMemberId: context.actorMemberId,
+              eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+              instanceId: context.instanceId,
+              nodeId: context.nodeId,
+              payload: {
+                action: context.action,
+                automatic: context.automatic,
+                kind: context.kind,
+                message,
+                nodeId: context.nodeId,
+                taskId: context.taskId,
+              },
+              taskId: context.taskId,
+            }),
+          );
+        },
+      );
+    } catch (recordError) {
+      this.logger.warn(
+        `Could not record ADVANCE_FAILED for instance ${context.instanceId}: ${
+          recordError instanceof Error ? recordError.message : 'unknown error'
+        }`,
+      );
+    }
+  }
+
+  /**
+   * The `ADVANCE_FAILED` rows of one instance that still describe how it is
+   * stuck, oldest first. Whether a decision went through is not read from
+   * `TASK_DECIDED`: a countersign leaves one behind from an earlier voter while
+   * the last vote is the one that failed. What counts is whether the situation
+   * the row describes still holds.
+   *
+   * - `DECISION`: the task is still open and the instance is still RUNNING.
+   *   Once the task is done, cancelled, transferred or the instance has ended,
+   *   the case has moved on or been taken over.
+   * - `RESUBMIT`: the instance is still RETURNED and no later
+   *   `INSTANCE_RESUBMITTED` exists.
+   *
+   * Shared by the duplicate check when a failure is recorded and by the list
+   * of stuck instances; the caller picks the last row for "the latest".
+   */
+  private async readUnresolvedAdvanceFailures(
+    manager: EntityManager,
+    instanceId: string,
+  ): Promise<readonly ActivityLogEntity[]> {
+    const instance = await manager
+      .getRepository(ApprovalInstanceEntity)
+      .findOne({ where: { id: instanceId } });
+
+    if (!instance) {
+      return [];
+    }
+
+    const logs = await manager.getRepository(ActivityLogEntity).find({
+      order: { seq: 'ASC' },
+      where: {
+        eventType: In([
+          ActivityLogEventTypeEnum.ADVANCE_FAILED,
+          ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+        ]),
+        instanceId,
+      },
+    });
+    const failures = logs.filter(
+      (log): boolean =>
+        log.eventType === ActivityLogEventTypeEnum.ADVANCE_FAILED,
+    );
+    const decidedTaskIds = [
+      ...new Set(
+        failures.flatMap((failure): readonly string[] =>
+          failure.taskId ? [failure.taskId] : [],
+        ),
+      ),
+    ];
+    const openTaskIds = new Set(
+      decidedTaskIds.length === 0
+        ? []
+        : (
+            await manager.getRepository(TaskEntity).find({
+              where: {
+                id: In(decidedTaskIds),
+                status: In([...OPEN_TASK_STATUSES]),
+              },
+            })
+          ).map((task): string => task.id),
+    );
+
+    return failures.filter((failure): boolean => {
+      const kind = readStringPayloadValue(failure.payload, 'kind');
+
+      if (kind === 'DECISION') {
+        return (
+          instance.state === ApprovalInstanceStateEnum.RUNNING &&
+          failure.taskId !== null &&
+          openTaskIds.has(failure.taskId)
+        );
+      }
+
+      if (kind === 'RESUBMIT') {
+        return (
+          instance.state === ApprovalInstanceStateEnum.RETURNED &&
+          !logs
+            .slice(logs.indexOf(failure) + 1)
+            .some(
+              (log): boolean =>
+                log.eventType === ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+            )
+        );
+      }
+
+      return false;
+    });
+  }
+
+  /**
    * Queues a webhook for after the commit. A manager this service did not open
    * has no queue and no commit it can see, so that webhook goes out on the spot
    * rather than being dropped.
@@ -1250,6 +1428,15 @@ export class WorkflowEngineService {
   async decideTask(
     input: DecideTaskInput,
     options: DecideTaskOptions = {},
+  ): Promise<TaskDecisionEntity> {
+    return this.withAdvanceFailureRecorded(() =>
+      this.decideTaskInTransaction(input, options),
+    );
+  }
+
+  private async decideTaskInTransaction(
+    input: DecideTaskInput,
+    options: DecideTaskOptions,
   ): Promise<TaskDecisionEntity> {
     return this.runEngineTransaction(
       async (manager): Promise<TaskDecisionEntity> => {
@@ -1760,6 +1947,21 @@ export class WorkflowEngineService {
           }),
         );
 
+        // What an ADVANCE_FAILED row says if the move to the next stage fails.
+        // An SLA timeout acts as the member `resolveTaskActorMemberId` picked,
+        // who never pressed anything, so `automatic` is what tells them apart.
+        const advanceContext = (
+          action: 'APPROVED' | 'RETURNED',
+        ): InstanceAdvanceFailureContext => ({
+          action,
+          actorMemberId: input.decidedByMemberId,
+          automatic: options.automatic ?? null,
+          instanceId: instance.id,
+          kind: 'DECISION',
+          nodeId: claimedTask.nodeId,
+          taskId: claimedTask.id,
+        });
+
         // Resolve the recipient's "待簽" notification so its inline 同意/拒絕
         // actions disappear once the task is decided. When the task has ended
         // (rejected / returned, or an approval that completed it), every other
@@ -1808,44 +2010,48 @@ export class WorkflowEngineService {
             return decision;
           }
 
-          const token = await tokenRepository.findOne({
-            where: { id: claimedTask.tokenId },
-          });
+          // Everything from here to the next stage is the part that leaves the
+          // case stuck when it fails: the decision rolls back with it.
+          await runInstanceAdvanceStep(advanceContext('APPROVED'), async () => {
+            const token = await tokenRepository.findOne({
+              where: { id: claimedTask.tokenId },
+            });
 
-          if (!token) {
-            throw new NotFoundException(
-              `Workflow token ${claimedTask.tokenId} was not found`,
-            );
-          }
+            if (!token) {
+              throw new NotFoundException(
+                `Workflow token ${claimedTask.tokenId} was not found`,
+              );
+            }
 
-          if (token.status !== WorkflowTokenStatusEnum.WAITING) {
-            throw new ConflictException(
-              `Workflow token ${token.id} is not waiting for a task decision`,
-            );
-          }
+            if (token.status !== WorkflowTokenStatusEnum.WAITING) {
+              throw new ConflictException(
+                `Workflow token ${token.id} is not waiting for a task decision`,
+              );
+            }
 
-          const activeToken = await tokenRepository.save({
-            ...token,
-            consumedAt: null,
-            status: WorkflowTokenStatusEnum.ACTIVE,
-          });
+            const activeToken = await tokenRepository.save({
+              ...token,
+              consumedAt: null,
+              status: WorkflowTokenStatusEnum.ACTIVE,
+            });
 
-          await this.dispatchAdhocStageNotifications(
-            manager,
-            instance,
-            claimedTask.nodeId,
-            'APPROVED',
-          );
-          await this.advanceTokenToOutgoingNodes(
-            manager,
-            instance,
-            activeToken,
-            readWorkflowNodeOrThrow(
-              instance.workflowSnapshot,
+            await this.dispatchAdhocStageNotifications(
+              manager,
+              instance,
               claimedTask.nodeId,
-            ),
-          );
-          await this.processRunningInstance(manager, instance);
+              'APPROVED',
+            );
+            await this.advanceTokenToOutgoingNodes(
+              manager,
+              instance,
+              activeToken,
+              readWorkflowNodeOrThrow(
+                instance.workflowSnapshot,
+                claimedTask.nodeId,
+              ),
+            );
+            await this.processRunningInstance(manager, instance);
+          });
 
           return decision;
         }
@@ -1855,12 +2061,14 @@ export class WorkflowEngineService {
         }
 
         if (input.action === TaskDecisionActionEnum.RETURNED) {
-          await this.returnInstanceToNode(
-            manager,
-            instance,
-            completedTask,
-            returnToNodeId,
-            decidedAt,
+          await runInstanceAdvanceStep(advanceContext('RETURNED'), () =>
+            this.returnInstanceToNode(
+              manager,
+              instance,
+              completedTask,
+              returnToNodeId,
+              decidedAt,
+            ),
           );
 
           return decision;
@@ -2053,6 +2261,15 @@ export class WorkflowEngineService {
     input: ResubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
+    return this.withAdvanceFailureRecorded(() =>
+      this.resubmitApprovalInstanceInTransaction(input, authContext),
+    );
+  }
+
+  private async resubmitApprovalInstanceInTransaction(
+    input: ResubmitApprovalInstanceCommand,
+    authContext?: BPMAuthContext,
+  ): Promise<ApprovalInstanceEntity> {
     const submittedFormData = parseJsonObject(
       input.formDataJson,
       'formDataJson',
@@ -2203,7 +2420,18 @@ export class WorkflowEngineService {
             taskId: null,
           }),
         );
-        await this.processRunningInstance(manager, runtimeInstance);
+        await runInstanceAdvanceStep(
+          {
+            action: null,
+            actorMemberId: input.initiatorMemberId,
+            automatic: null,
+            instanceId: instance.id,
+            kind: 'RESUBMIT',
+            nodeId: null,
+            taskId: null,
+          },
+          () => this.processRunningInstance(manager, runtimeInstance),
+        );
 
         const refreshedInstance = await instanceRepository.findOne({
           where: { id: instance.id },
@@ -10509,6 +10737,59 @@ function readReturnResubmitStrategyFromPayload(
   return payload.resubmitStrategy === 'FROM_RETURN_POINT'
     ? 'FROM_RETURN_POINT'
     : 'RESTART';
+}
+
+/**
+ * Whether a recorded failure is the one a new attempt would write again: same
+ * kind and key, same reason. A decision is keyed by task, actor and action, so
+ * the votes of a countersign each keep their own row; a resubmission has one
+ * key per instance. The same actor failing for a different reason is news, so
+ * the message is part of the match.
+ */
+function isSameAdvanceFailure(
+  logged: ActivityLogEntity,
+  context: InstanceAdvanceFailureContext,
+  message: string,
+): boolean {
+  if (
+    readStringPayloadValue(logged.payload, 'kind') !== context.kind ||
+    logged.payload['message'] !== message
+  ) {
+    return false;
+  }
+
+  return (
+    context.kind === 'RESUBMIT' ||
+    (logged.taskId === context.taskId &&
+      logged.actorMemberId === context.actorMemberId &&
+      readStringPayloadValue(logged.payload, 'action') === context.action)
+  );
+}
+
+/**
+ * Runs the step that moves an instance on and, when it fails with an error an
+ * operator is meant to read (an `HttpException` below 500), hands it on as an
+ * {@link InstanceAdvanceFailure} so the public method can record it once the
+ * transaction has rolled back. Everything else passes through untouched: a 5xx
+ * is usually a hiccup that retrying clears, and a plain `Error` may carry SQL.
+ *
+ * Used at the three call sites only. `processRunningInstance` and
+ * `returnInstanceToNode` stay unwrapped because submit and the administrator's
+ * re-run call them too, and they must keep throwing the original class.
+ */
+async function runInstanceAdvanceStep<TResult>(
+  context: InstanceAdvanceFailureContext,
+  step: () => Promise<TResult>,
+): Promise<TResult> {
+  try {
+    return await step();
+  } catch (error) {
+    if (error instanceof HttpException && error.getStatus() < 500) {
+      throw new InstanceAdvanceFailure(error, context);
+    }
+
+    throw error;
+  }
 }
 
 function readStringPayloadValue(
