@@ -552,19 +552,12 @@ const TABLE_FIELD_ACTIONS_STYLE: CSSProperties = {
   justifyContent: 'flex-start',
 };
 
-const TABLE_SCROLLER_STYLE: CSSProperties = {
-  maxWidth: '100%',
-  overflowX: 'auto',
-};
-
-// Mezzanine `Table` fills whatever box it is given, so an `overflow-x: auto`
-// wrapper on its own never scrolls: the columns just keep shrinking. Keeping
-// the table out of the single-column reading width is what stops a control
-// from overflowing its own cell; this floor is the defence for tables wide
-// enough that even the full width would squeeze them, and it is what makes the
-// wrapper actually scroll when that happens.
+// Mezzanine `Table` fills whatever box it is given and would keep shrinking
+// its columns. Keeping the table out of the single-column reading width is
+// what stops a control from overflowing its own cell; this per-column floor is
+// the defence for tables wide enough that even the full width would squeeze
+// them, and it is what makes the Table's own scroller scroll when that happens.
 const TABLE_COLUMN_MIN_WIDTH = 160;
-const TABLE_ACTIONS_COLUMN_WIDTH = 56;
 
 const TABLE_CELL_STYLE: CSSProperties = {
   display: 'grid',
@@ -674,6 +667,7 @@ function FormTableField({
   const columns: TableColumn<FormTableRowRecord>[] = field.columns.map(
     (column) => ({
       key: column.fieldKey,
+      minWidth: TABLE_COLUMN_MIN_WIDTH,
       render: (row): ReactElement => (
         <FormTableCell
           column={column}
@@ -725,37 +719,28 @@ function FormTableField({
             variant: 'destructive-ghost',
           },
         ],
+        fixed: 'end',
         width: 56,
       };
 
   return (
     <div style={TABLE_FIELD_STYLE}>
       {/*
-        Mezzanine `Table`'s `scroll` is vertical only, so a wide table is kept
-        inside its own horizontal scroller rather than pushing the page sideways.
-        The wrapper adds no styling of its own to the table (ADR 16 §3.9 assumed
-        `scroll` covered this; see docs/17).
+        Mezzanine `Table` scrolls horizontally inside its own scroller once its
+        columns' `minWidth` floors outgrow the box. It must own that scroller:
+        the row actions are pinned with `fixed: 'end'`, and a pinned column
+        only sticks to the Table's scroller, never to a wrapper around it.
       */}
-      <div style={TABLE_SCROLLER_STYLE}>
-        <div
-          style={{
-            minWidth:
-              field.columns.length * TABLE_COLUMN_MIN_WIDTH +
-              (actions ? TABLE_ACTIONS_COLUMN_WIDTH : 0),
-          }}
-        >
-          <Table
-            {...(actions ? { actions } : {})}
-            columns={columns}
-            dataSource={[...dataSource]}
-            // Cells carry form controls rather than text, so the row height
-            // comes from the roomy container token, not the compact default.
-            rowHeightPreset="roomy"
-            showHeader
-            size="sub"
-          />
-        </div>
-      </div>
+      <Table
+        {...(actions ? { actions } : {})}
+        columns={columns}
+        dataSource={[...dataSource]}
+        // Cells carry form controls rather than text, so the row height
+        // comes from the roomy container token, not the compact default.
+        rowHeightPreset="roomy"
+        showHeader
+        size="sub"
+      />
       {readonly ? null : (
         <div style={TABLE_FIELD_ACTIONS_STYLE}>
           <Button
