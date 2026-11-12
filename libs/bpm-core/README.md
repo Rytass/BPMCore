@@ -1046,6 +1046,33 @@ the initiator. Both settings are read from the instance's workflow snapshot;
 left out, the chain behaves exactly as before. An engine from before this
 change ignores them and climbs from the initiator.
 
+Two more settings cover a flow that signs a manager chain up to some level,
+inserts other stages (an HR countersign, say), and then picks the chain up again
+to the final approver. `startFrom: { type: 'CHAIN_CONTINUATION', nodeId }` names
+the earlier chain stage (S) to continue. The stage climbs from S's start and
+signs only managers above the position level S actually got a signature from
+(the highest level, on the day each person approved, of those who really
+approved S's latest round; an SLA auto-approval does not count, and a stage whose
+latest round was skipped counts as nobody); when that level already reaches this
+stage's `minPositionLevel`, the whole stage is skipped. `skipWhenStartReached:
+true` skips the stage when the start person's own highest position level
+already reaches `minPositionLevel`; a start without a level does not skip. A
+skip creates no task and advances the token like `SKIP_NODE`, writing
+`skippedByManagerChainReached: true` in the `TOKEN_ADVANCED` payload.
+
+The two exclude each other and neither is allowed on a notify node. For a
+continuation, publish requires S to be an `ORG_MANAGER_CHAIN` user task on every
+path to this stage that is not a continuation itself and starts at the initiator
+or an earlier stage's approver (not a form field), requires this stage's
+`minPositionLevel` to be higher than S's, and refuses
+`whenEmpty: 'INITIATOR_MANAGER'` here. A stage that can be skipped this way
+cannot have approver-fillable fields and cannot be a `NODE_ACTOR` source
+(`NodeActorSourceSkipReason` gains `managerChainReached`, so an exhaustive
+`Record` over it needs the new member). An engine that has `startFrom` but not
+`CHAIN_CONTINUATION` refuses a continuation by name, while one from before
+`skipWhenStartReached` ignores that key and runs the stage as before, so upgrade
+the engine before publishing a template that uses it.
+
 Fallback types:
 
 | Type       | Behavior                                                                                                                                                                                                                                        |

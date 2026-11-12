@@ -425,15 +425,72 @@ async function resolveApprovers(
   省略時第一位有職等的主管就開始簽。整條鏈都沒有人達到起始職等時走 `fallback`，原因文字寫出
   起始職等與簽到的職等。例：`startPositionLevel: 20`、`minPositionLevel: 30` 會略過職等 10 的課長，
   從職等 20 的主管簽到職等 30。
+- **接續起點（`startFrom: { type: 'CHAIN_CONTINUATION', nodeId }`）**：簽核常見「主管鏈簽到某一級 → 插入別的關卡
+  （例如人資會簽）→ 再接回主管鏈往上簽到核准者」。接續起點讓後面這一關知道前面那一關（下稱「前一段」S，本關稱 T 關）
+  實際簽到哪一級：本關從 S 的起點往上走，**只簽比 S 實際已簽到的職等更高的主管**；S 已經有人簽到本關
+  `minPositionLevel` 時，本關整關略過。
+  - **起點**：用 S 自己的起點設定解析（`INITIATOR` 或 `NODE_ACTOR`），本關的鏈與 S 的鏈走同一條線。S 沒有起點
+    （例如 S 的 `NODE_ACTOR` 起點找不到人）時，本關走自己的 `fallback`，原因文字沿用 S 的「找不到起點」。
+  - **怎麼算 T（S 已簽到的職等）**：讀 S 最新一批「真的同意」的紀錄（口徑同 `NODE_ACTOR`：最新一輪、不含臨時加簽、
+    **不含 SLA 自動同意**），取其中**實際按同意的人**（含代理人、轉簽接手人；不算該席位原本的人）在**各自同意當天**的
+    最高職等。日期用組織時區的日期（與「今天」同一個算法，不是 UTC 日期），所以簽完之後才升遷不會墊高 T；
+    但職位本身的 `level` 沒有歷史，改職位的職等會影響已簽的紀錄，而且 host 調職要用「舊的 membership 設截止日、
+    另開一筆」才查得到當天的職位。S 這一輪沒人真的同意（例如全是被自動同意）時，T＝null。
+  - **S 被略過時 T＝null**：S 最近一次是被 `skipWhenStartReached` 略過（比 ActivityLog 的 `seq`：S 最新的
+    `skippedByManagerChainReached` 略過紀錄比最新一筆非臨時任務的 `TASK_CREATED` 新），就不讀 S 上一輪的舊紀錄，
+    T＝null。T＝null 時本關與一般主管鏈完全相同（同職等的主管仍會簽）。
+  - **略過條件**：T 不是 null、而且 T `>=` 本關的 `minPositionLevel`，本關整關略過。
+  - **走鏈**：沒略過時，從起點的直屬主管往上走，**職等 `<=` T 的主管穿過不簽**（等於把 T 當成「最後一位已加入的職等」）；
+    本關的 `startPositionLevel`、`excludeInitiator`、`excludeNodeActors`、`fallback` 照常作用，走到頂、去重、
+    多位主管丟 `ConflictException` 的規則與訊息都不變。只走一次，共用 `ORG_MANAGER_CHAIN_MAX_HOPS`。
+  - **限制**：S 本身不能是接續型（不支援多段串接）；S 的起點只能是 `INITIATOR`／`NODE_ACTOR`（`FORM_MEMBER`
+    退回重送時表單欄位可以被改掉，起點會換人而 T 仍是舊那個人鏈上的紀錄）；本關的 `minPositionLevel` 必須高於 S 的；
+    本關不能設 `whenEmpty: 'INITIATOR_MANAGER'`（改派申請人直屬主管會無視 T）。T 的保證範圍是「本關被略過時，
+    一定有人在那一輪真的按同意、而且當時職等已達本關的簽到職等」，**不保證那個人在申請人的直屬線上**：職等更高的
+    代理人代簽、S 走到頂時的 `fallback` 人員、S 的 `INITIATOR_MANAGER` 改派，都會把 T 墊高。
+- **略過條件旗標（`skipWhenStartReached`，布林，可省略）**：設 `true` 時，起點本人在**所有在職職務裡的最高職等**
+  （執行當下現算）已經 `>=` `minPositionLevel`，本關整關略過，不建任務。起點沒有職等、或沒有起點時不略過，照
+  上面的規則走。省略、`false`、`null` 與以前相同。不能與 `CHAIN_CONTINUATION` 同時設。
+  - **略過紀錄**：兩種新設定的略過都不建任務、token 往下走（與 `SKIP_NODE` 同一條路：待生效的臨時加簽順延到下一個
+    真正建任務的關卡；退回目標是被略過的關卡時 token 直接往下走），`TOKEN_ADVANCED` 的 payload 是
+    `{ skippedByManagerChainReached: true, tokenId }`，**不含** `skippedByInitiatorExclusion`／
+    `skippedByNodeActorExclusion`。
+  - **只在建立簽核任務時有效**：接續與略過旗標需要「接續上下文」（起點、T、是否略過），由建立簽核任務時算出並傳給
+    主管鏈解析；其他入口（知會收件人等）看到這兩個設定卻沒有上下文，會丟 `ConflictException` 指名拒絕，不會當成一般
+    主管鏈算。臨時加簽、改派、轉簽的職等門檻、`SEQUENTIAL` 逐位推進不產生也不重新解析主管鏈，不受影響；試跑與設計器、
+    AI 工具組支援（見下）。
+  - **例：用人申請**（單位主管 `ORG_MANAGER_CHAIN { minPositionLevel: 30, skipWhenStartReached: true }` → 人資會簽
+    → 核准 `ORG_MANAGER_CHAIN { minPositionLevel: 40, startFrom: { type: 'CHAIN_CONTINUATION', nodeId: '單位主管' } }`）。
+    職等：10 課、20 部、30 處、40 營運長、50 總經理。
+
+    | 申請人＝ | 往上依序                                 | 單位主管       | 核准                                        |
+    | -------- | ---------------------------------------- | -------------- | ------------------------------------------- |
+    | 部級     | 處級 → 營運長                            | 處級           | 營運長（T＝30）                             |
+    | 部級     | 營運長（沒有處級）                       | 營運長         | 略過（T＝40）                               |
+    | 部級     | 營運長（沒有處級），營運長逾時被自動同意 | 營運長（自動） | 營運長（T＝null，自動同意不算）             |
+    | 處級     | 營運長                                   | 略過           | 營運長（T＝null）                           |
+    | 處級     | 處級（同職等主管）→ 營運長               | 略過           | 處級、營運長（T＝null，與今天的主管鏈相同） |
+    | 部級     | 處級 → 總經理（沒有營運長）              | 處級           | 總經理                                      |
+    | 營運長   | 總經理                                   | 略過           | 總經理                                      |
+
+    第五列若希望核准只找營運長以上，核准關另設 `startPositionLevel: 40` 即可。
 - **知會節點**：`NOTIFY.recipients` 也可以用主管鏈，但只能從申請人開始（知會沒有前面的關卡，也不讀表單的人）：
-  `startFrom` 只能省略或 `INITIATOR`，其他起點 publish 會被擋，執行時也會被拒絕。`startPositionLevel` 可用。
+  `startFrom` 只能省略或 `INITIATOR`（`CHAIN_CONTINUATION` 也不行），其他起點 publish 會被擋，執行時也會被拒絕。`startPositionLevel` 可用，`skipWhenStartReached` 不可用。
 - **設計器**：選「主管鏈（簽到指定職等）」時多「從誰的主管開始」與「從職等幾開始簽」兩個設定（見
-  `08-frontend-schema.md`）；起點的關卡選單不列可能有多位簽核人的關卡，知會節點不開放起點設定。
+  `08-frontend-schema.md`）；起點的關卡選單不列可能有多位簽核人的關卡，知會節點不開放起點設定。起點多一個選項「接續前面某一段主管鏈」
+  （「接續哪一關」只列通過接續來源檢查的上游主管鏈關卡），另有開關「起點本人已達簽到職等時略過此關」；兩者互斥，
+  已選接續時開關停用，已開開關時接續選項的名稱會加上「（已勾選略過，不能同時使用）」。
 - **讀的是案件上的快照**：引擎永遠讀案件的 `workflowSnapshot`，所以改了範本不會影響進行中的案件，
   進行中的案件也不會因升級而改變行為。兩個欄位都省略時，行為與錯誤訊息跟以前逐字相同。
 - **相容性**：舊版引擎不認得這兩個欄位，會**安靜地照申請人起算**。升級到支援的版本之前，不要發佈用了
   這兩個設定的範本。本版引擎遇到自己不認得的 `startFrom` 類型（更新版本存的範本）會直接拒絕並指名，
   不會改從申請人起算。
+  - `CHAIN_CONTINUATION` 是新的起點類型：支援 `startFrom` 但不認得它的引擎會指名拒絕，不會算錯。
+  - `skipWhenStartReached` 是新欄位：不認得它的引擎會**安靜地忽略**、照舊執行（前一段可能多簽一位）。
+    ⇒ 先升引擎，再發布用了新設定的範本。
+  - 沒用新設定時，行為、錯誤訊息、試跑佔位字與以前逐字相同。
+  - `NodeActorSourceSkipReason` 多一個成員 `managerChainReached`；下游若用
+    `Record<NodeActorSourceSkipReason, …>` 做窮舉會編譯失敗。
 - **Publish 檢查**：`minPositionLevel` 必須是整數；`userTask` 的 `decisionPolicy` 必須是
   `SEQUENTIAL` 或 `PARALLEL_ALL`，否則第一位主管簽完就會讓節點結案。另外：`startPositionLevel`
   必須是整數且不可高於 `minPositionLevel`；`startFrom` 的類型要認得、`FORM_MEMBER` 要有 `formPath`、
@@ -445,6 +502,16 @@ async function resolveApprovers(
   `DIRECT` 成員），因為最後一位簽核人按同意時引擎無法決定從誰起算，而那個 `ConflictException` 會丟在
   他自己的同意交易裡，使那次同意永遠無法 commit，範本改了也救不了進行中的案件。`NODE_ACTOR`／
   `NODE_ACTOR_MANAGER` 本身不受這條限制（它們取所有簽核人）。引擎執行時的 Conflict 保留給繞過 publish 檢查的舊資料。
+  接續與略過旗標另有：`skipWhenStartReached` 必須是布林或 `null`；接續起點必須帶非空的 `nodeId`；兩者不能同時設；
+  本關 `minPositionLevel` 必須高於 S 的；本關不能設 `excludeInitiator`／`excludeNodeActors` 的
+  `whenEmpty: 'INITIATOR_MANAGER'`；知會節點兩者都不能用；S 必須存在、是 `userTask`、簽核來源是
+  `ORG_MANAGER_CHAIN`、本身不是接續型、起點是 `INITIATOR`／`NODE_ACTOR`，且在本關上游、從開始到本關的每條路徑都經過它
+  （`readChainContinuationSourceIssues`）；S 不能有 `entryCondition`、`SKIP_NODE`、`skipNodeByNodeActors` 的略過
+  （這些情況下 S 這一輪沒跑，讀到的是上一輪的紀錄），但**放行** SLA 自動同意（不算進 T）與 `skipWhenStartReached`
+  （讀略過紀錄）。可能被略過的關卡（設了 `skipWhenStartReached` 或起點是接續型）不能有可由簽核人補填的欄位，也不能當
+  `NODE_ACTOR`／`NODE_ACTOR_MANAGER`／`excludeNodeActors`／`startFrom: NODE_ACTOR` 的來源（略過原因
+  `managerChainReached`）。覆蓋與上游只在發布時檢查；引擎執行時只重做形狀、S 的型別與來源、S 不是接續型、S 的起點
+  不是 `FORM_MEMBER`、本關職等高於 S，與不在知會節點，不合就 `ConflictException` 指名。
 - **代理人與轉簽對象的職等**：主管鏈解析完之後，代理與轉簽都不會再檢查職等，所以主管鏈節點多一條規則——
   **接手的人職等必須 `>=` 被他取代的那位成員**（不是固定門檻：鏈上本來就會有低於 `minPositionLevel`
   的主管，固定門檻會讓他們完全不能代理）。職等一律在動作當下用上面的〈職等來源〉現算；
