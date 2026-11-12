@@ -18,6 +18,13 @@ overrides:
   '@ai-sdk/openai': '^4.0.115'
   '@ai-sdk/provider-utils': '^5.0.79'
   '@ai-sdk/react': '^4.0.174'
+  # @apollo/server 5.5.2 caps these below the versions that need Node 22, for
+  # npm --engine-strict on Node 20; the cap lands @graphql-tools/utils on
+  # 12.0.1, inside GHSA-c4qx-w738-7hr3 (high). This workspace runs on Node 24+,
+  # so keep the patched copies main already had, one of each.
+  '@graphql-tools/merge': '^9.2.8'
+  '@graphql-tools/schema': '^10.1.5'
+  '@graphql-tools/utils': '^12.1.0'
   '@babel/core': '^7.29.6'
   '@babel/plugin-transform-modules-systemjs': '^7.29.4'
   '@xhmikosr/decompress': '^11.1.3'
