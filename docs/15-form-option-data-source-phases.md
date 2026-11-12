@@ -156,6 +156,12 @@ AutoComplete 不做前置 gate，不先觸發搜尋就不存在等待狀態；�
     在欄位存續期間保持同一個參照，改從 ref 讀取最新的 cursor 與搜尋字串，四種資料來源控制項
     也一律傳入這個 handler，不再依 `hasNextPage` 決定傳或不傳。同一輪也讓所有下拉都帶
     `menuMaxHeight`（320，`form-control-menu.ts`）。
+    分頁能動之後，又發現 AutoComplete 在 async 模式下只要收到 `loading` 就會清空列表，
+    結果選單收合、捲動位置跳回頂端。現在 hook 多提供 `loadingNextPage`，載入下一頁時
+    renderer 不把 `loading` 傳給 AutoComplete，實測分頁期間列表維持原樣、捲動位置不變。
+    另外第 1 頁查詢失敗後重開選單會重查；後續頁失敗則保留已載入的選項。已知限制：
+    尚未查過就直接打字開啟時，會先送一次空字串查詢，300ms 後才送關鍵字。結果正確，
+    由防過期機制保證，但多一次請求。
 
 同輪改進：client 各 query 與 `requestGraphQl()` 支援 optional `AbortSignal`；submit 的
 provider 呼叫加並行上限 4；GraphQL input 全面加 `@MaxLength`；前端將可修正的錯誤

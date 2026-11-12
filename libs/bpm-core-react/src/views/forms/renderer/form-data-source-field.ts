@@ -48,6 +48,12 @@ export interface FormDataSourceFieldState {
   readonly error: string | null;
   readonly hasValue: boolean;
   readonly hasNextPage: boolean;
+  /**
+   * True while the pending query is a next page rather than a first page. An
+   * AutoComplete in async mode empties its list whenever it is told it is
+   * loading, so the view keeps the loaded options on screen while paging.
+   */
+  readonly loadingNextPage: boolean;
   readonly invalidValues: readonly string[];
   /**
    * Call when the control's menu opens. A control that only queries on search
@@ -116,6 +122,7 @@ const EMPTY_FIELD_STATE: FormDataSourceFieldState = {
   error: null,
   hasValue: false,
   hasNextPage: false,
+  loadingNextPage: false,
   invalidValues: [],
   onOpen: (): void => undefined,
   onReachBottom: (): void => undefined,
@@ -557,6 +564,7 @@ export function useFormDataSourceField(
     },
   );
   const [error, setError] = useState<string | null>(null);
+  const [loadingNextPage, setLoadingNextPage] = useState(false);
   const loadedOptionCount = useRef(0);
   const requestSequence = useRef(0);
   const resolveSequence = useRef(0);
@@ -621,6 +629,7 @@ export function useFormDataSourceField(
       const controller = new AbortController();
       optionsAbort.current = controller;
       setStatus(pendingQueryStatus);
+      setLoadingNextPage(cursor !== null);
       setError(null);
 
       const request =
@@ -652,6 +661,7 @@ export function useFormDataSourceField(
             return;
           }
 
+          setLoadingNextPage(false);
           setRemoteOptions((currentOptions) => {
             const selectedOptions = readSelectedFormDataSourceOptions(
               currentValue,
@@ -696,6 +706,13 @@ export function useFormDataSourceField(
           // server-side error the host deliberately reduced to a generic
           // message — must not be rendered verbatim; it is English technical
           // copy the filler cannot act on.
+          // A failed first page leaves nothing loaded, so the next open retries
+          // it; a failed later page keeps what is already listed.
+          if (cursor === null) {
+            queriedSinceReset.current = false;
+          }
+          setLoadingNextPage(false);
+
           const message =
             readFormDataSourceErrorMessage(requestError) ??
             '選項來源暫時無法使用。';
@@ -818,6 +835,7 @@ export function useFormDataSourceField(
     requestSequence.current += 1;
     queriedSinceReset.current = false;
     optionsAbort.current?.abort();
+    setLoadingNextPage(false);
     setRemoteOptions((currentOptions) =>
       readSelectedFormDataSourceOptions(currentValue, currentOptions),
     );
@@ -951,6 +969,7 @@ export function useFormDataSourceField(
     error,
     hasValue,
     hasNextPage: Boolean(nextCursor),
+    loadingNextPage,
     invalidValues,
     onOpen,
     onReachBottom,

@@ -1229,6 +1229,9 @@ function renderDynamicOptionControl(
     dataSourceState.options,
   ).map(readFieldOptionAsSelectOption);
   const loading = dataSourceState.status === 'LOADING';
+  // An async AutoComplete clears its list while loading; keep the loaded
+  // options visible while the next page comes in.
+  const autoCompleteLoading = loading && !dataSourceState.loadingNextPage;
   const waitingForDependencies =
     dataSourceState.status === 'WAITING_FOR_DEPENDENCIES';
   const interactiveSearch = Boolean(dataSourceContext) && !readonly;
@@ -1248,7 +1251,7 @@ function renderDynamicOptionControl(
           disabled={autoCompleteDisabled}
           disabledOptionsFilter={interactiveSearch}
           globalPortal
-          loading={loading}
+          loading={autoCompleteLoading}
           menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
           mode="multiple"
           onChange={(nextOptions): void =>
@@ -1283,7 +1286,7 @@ function renderDynamicOptionControl(
         disabled={autoCompleteDisabled}
         disabledOptionsFilter={interactiveSearch}
         globalPortal
-        loading={loading}
+        loading={autoCompleteLoading}
         menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         mode="single"
         onChange={(nextOption): void =>

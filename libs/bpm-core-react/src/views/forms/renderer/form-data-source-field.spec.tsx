@@ -656,6 +656,83 @@ describe('useFormDataSourceField', () => {
     expect(previewOptionsMock).toHaveBeenCalledTimes(2);
   });
 
+  it('flags a next-page load apart from a first-page load', async (): Promise<void> => {
+    const field = createField('autocomplete');
+    let resolvePage: (result: FormDataSourceOptionsResultRecord) => void = (): void => undefined;
+    previewOptionsMock
+      .mockResolvedValueOnce({
+        ...createOptionsResult(),
+        nextCursor: 'page-2',
+        options: Array.from({ length: 10 }, (_, index) => ({
+          label: `option-${index}`,
+          value: `option-${index}`,
+        })),
+      })
+      .mockImplementationOnce(
+        (): Promise<FormDataSourceOptionsResultRecord> =>
+          new Promise((resolve): void => {
+            resolvePage = resolve;
+          }),
+      );
+    const harness = mountHookHarness({
+      context: { kind: 'preview' },
+      field,
+      formData: {},
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    });
+
+    await act(async (): Promise<void> => {
+      harness.current().onOpen();
+      await Promise.resolve();
+    });
+    await waitForState(harness, (state) => state.options.length === 10);
+    expect(harness.current().loadingNextPage).toBe(false);
+
+    act((): void => {
+      harness.current().onReachBottom();
+    });
+    expect(harness.current().status).toBe('LOADING');
+    expect(harness.current().loadingNextPage).toBe(true);
+    expect(harness.current().options).toHaveLength(10);
+
+    await act(async (): Promise<void> => {
+      resolvePage({ ...createOptionsResult('option-10'), nextCursor: null });
+      await Promise.resolve();
+    });
+    await waitForState(harness, (state) => state.options.length === 11);
+    expect(harness.current().loadingNextPage).toBe(false);
+  });
+
+  it('retries the first page on the next open after it failed', async (): Promise<void> => {
+    const field = createField('autocomplete');
+    previewOptionsMock
+      .mockRejectedValueOnce(new Error('Internal server error'))
+      .mockResolvedValueOnce(createOptionsResult('first'));
+    const harness = mountHookHarness({
+      context: { kind: 'preview' },
+      field,
+      formData: {},
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    });
+
+    await act(async (): Promise<void> => {
+      harness.current().onOpen();
+      await Promise.resolve();
+    });
+    await waitForState(harness, (state) => state.error !== null);
+
+    await act(async (): Promise<void> => {
+      harness.current().onOpen();
+      await Promise.resolve();
+    });
+    await waitForState(harness, (state) => state.options.length === 1);
+    expect(previewOptionsMock).toHaveBeenCalledTimes(2);
+  });
+
   it('does not query on open for a read-only field', (): void => {
     const field = createField('autocomplete');
     const harness = mountHookHarness({
