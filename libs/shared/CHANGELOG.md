@@ -1,3 +1,13 @@
+## 0.21.4 (2026-11-12)
+
+### 🩹 Fixes
+
+- **form:** let a table field use the full row width ([01fa028a](https://github.com/Rytass/BPMCore/commit/01fa028a))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.21.3 (2026-11-12)
 
 ### 🩹 Fixes
