@@ -1777,6 +1777,38 @@ decided it already (both answer a `ConflictException`). The task-level
 assignee, delegation chain and `openedAt` stay as they were: a seat transfer is
 not a claim of the whole stage.
 
+## Stuck Approval Instances (unreleased)
+
+Not in a published version yet. It landed after `v0.21.4`.
+
+A decision on a task, or an initiator's resubmission of a returned instance,
+can fail to move the instance on to its next stage (the next stage has no
+resolvable approver, say). The transaction rolls back, so the task is still
+open or the instance is still returned, and the person who pressed sees the
+error. Without a trace, nobody else would know the instance is stuck.
+
+- The failure is recorded as an `ADVANCE_FAILED` activity record, written in a
+  transaction of its own after the first one has rolled back. Only an
+  `HttpException` with a status below 500 is recorded; its message is what the
+  operator sees. A 5xx, which usually clears on retry, and a plain `Error`,
+  which may carry SQL, are not recorded. The caller still gets the original
+  error, unchanged.
+- An administrator (`@BPMAdminOnly()`) lists the instances that are still stuck
+  with `stuckApprovalInstances`: one row per `RUNNING` or `RETURNED` instance,
+  newest failure first, with the reason, the node, who has to press again now
+  (read when the list loads, so it follows a later reassignment) and, for a
+  timeout approval the system made, `automatic: 'SLA_AUTO_APPROVE'`.
+- `adminCancelApprovalInstance(input)` ends a running or returned instance
+  whoever started it. `input.reason` is required. After it, the instance leaves
+  the stuck list.
+- The initiator is sent an in-app notification with the reason, unless the
+  administrator is the initiator. It is created inside the cancel transaction,
+  as its last step.
+- The `INSTANCE_CANCELLED` activity record of that cancellation carries
+  `cancelledByAdministrator: true` in its payload, and the reason as `comment`.
+  A host that reads `INSTANCE_CANCELLED` can tell it from the initiator
+  withdrawing, whose payload has no such key.
+
 ## Delegation Rules
 
 > The priority order and the root check below are unreleased (they landed after
