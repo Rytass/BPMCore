@@ -1030,15 +1030,20 @@ export function isOrgManagerChainContinuationPickDisabled(
 
 /**
  * `true` when the 起點本人已達簽到職等時略過 box cannot be ticked because the
- * stage continues an earlier chain. A stage that is somehow both stays
- * unblocked, so the author can still untick it.
+ * stage continues an earlier chain. A stage that stores anything but "no
+ * flag" next to the continuation stays unblocked, so the author can still
+ * write the flag back to a valid value: `true` (both set) and a stored value
+ * that is not a boolean (`'yes'`, which the box shows unticked while the shape
+ * check keeps refusing it) would otherwise be impossible to clear.
  */
 export function isOrgManagerChainSkipToggleDisabled(
   resolver: OrgManagerChainResolver,
 ): boolean {
+  const skip: unknown = resolver.skipWhenStartReached;
+
   return (
     isOrgManagerChainContinuation(resolver) &&
-    !isOrgManagerChainSkippingWhenStartReached(resolver)
+    (skip === undefined || skip === null || skip === false)
   );
 }
 

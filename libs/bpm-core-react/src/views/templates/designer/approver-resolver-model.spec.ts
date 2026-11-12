@@ -2014,6 +2014,32 @@ describe('manager chain continuation and 略過 settings', () => {
     expect(isOrgManagerChainContinuationPickDisabled(both)).toBe(false);
   });
 
+  it('leaves the 略過 box usable when a continuation stores a flag that is not a boolean', () => {
+    const dirty: ChainResolver = {
+      ...CONTINUING,
+      skipWhenStartReached: 'yes' as unknown as boolean,
+    };
+
+    expect(readOrgManagerChainSkipWhenStartReached(dirty)).toBe(false);
+    expect(isOrgManagerChainSkipToggleDisabled(dirty)).toBe(false);
+    expect(
+      'skipWhenStartReached' in
+        withOrgManagerChainSkipWhenStartReached(dirty, false),
+    ).toBe(false);
+    expect(
+      isOrgManagerChainSkipToggleDisabled({
+        ...CONTINUING,
+        skipWhenStartReached: false,
+      }),
+    ).toBe(true);
+    expect(
+      isOrgManagerChainSkipToggleDisabled({
+        ...CONTINUING,
+        skipWhenStartReached: null as unknown as boolean,
+      }),
+    ).toBe(true);
+  });
+
   it('names the continued stage in the summary and the missing start in the fallback hint', () => {
     expect(
       readApproverResolverSummary(
