@@ -202,8 +202,9 @@ test.describe('BPM skill matrix real browser e2e coverage', () => {
     await unauthenticatedPage.getByRole('button', { name: '登入' }).click();
     await expect(unauthenticatedPage).toHaveURL(/\/inbox$/);
     await expect(
+      // The user menu trigger is a native button since Mezzanine 1.8.
       unauthenticatedPage
-        .getByRole('combobox')
+        .getByRole('button')
         .filter({ hasText: '林總經理' })
         .first(),
     ).toBeVisible();
