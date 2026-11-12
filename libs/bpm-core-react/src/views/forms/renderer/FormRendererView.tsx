@@ -23,6 +23,7 @@ import {
   Toggle,
   Typography,
 } from '@mezzanine-ui/react';
+import { FormFieldDensity, FormFieldLayout } from '@mezzanine-ui/core/form';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { PlusIcon, TrashIcon } from '@mezzanine-ui/icons';
 import {
@@ -462,6 +463,7 @@ function FormRendererField({
       <BPMFormField
         label={field.label}
         {...(labelMarker ? { labelOptionalMarker: labelMarker } : {})}
+        {...(isTableFieldDefinition(field) ? TABLE_FORM_FIELD_LAYOUT : {})}
         name={field.fieldKey}
         required={required}
       >
@@ -559,6 +561,15 @@ const TABLE_FIELD_ACTIONS_STYLE: CSSProperties = {
 // the defence for tables wide enough that even the full width would squeeze
 // them, and it is what makes the Table's own scroller scroll when that happens.
 const TABLE_COLUMN_MIN_WIDTH = 160;
+
+// Every other layout caps the input area at the wide container (640px), so a
+// FULL-width table would scroll inside 640px of a much wider row. A stretch
+// field without a density is the only Mezzanine layout with no cap; its label
+// takes its own width instead of the shared label column.
+const TABLE_FORM_FIELD_LAYOUT = {
+  density: FormFieldDensity.BASE,
+  layout: FormFieldLayout.STRETCH,
+} as const;
 
 const TABLE_CELL_STYLE: CSSProperties = {
   display: 'grid',
