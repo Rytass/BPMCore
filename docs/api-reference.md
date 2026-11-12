@@ -2237,7 +2237,7 @@ and `@mezzanine-ui/core` also carries the styles — see
 
 ## Pages (Next.js Server Component shims)
 
-20 subpaths. Each exports `{ default, metadata }`. Consumer's `app/<route>/page.tsx`:
+21 subpaths. Each exports `{ default, metadata }`. Consumer's `app/<route>/page.tsx`:
 
 ```ts
 export { default, metadata } from '@rytass/bpm-core-react/pages/<feature>';
