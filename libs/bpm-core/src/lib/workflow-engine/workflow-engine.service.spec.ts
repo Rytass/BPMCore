@@ -18748,8 +18748,9 @@ describe('WorkflowEngineService', () => {
       );
       // The notification template renders its title from `nodeLabel`; without
       // it the title would be an empty string. This fixture mocks the
-      // notification service, so the title itself is checked by asserting the
-      // payload carries a non-empty `nodeLabel`.
+      // notification service, so this only checks the payload carries a
+      // non-empty `nodeLabel`; the rendered title is pinned in
+      // notification.service.spec.ts, against the real service.
       const call = (
         notify as unknown as jest.Mock<
           Promise<unknown>,
@@ -20599,7 +20600,12 @@ describe('WorkflowEngineService', () => {
       });
     });
 
-    it('writes the record in a transaction of its own, under the instance lock', async (): Promise<void> => {
+    interface LockCall {
+      readonly order: number;
+      readonly params: readonly unknown[];
+    }
+
+    it('writes the record in a transaction of its own, taking the instance lock before it reads anything', async (): Promise<void> => {
       const fixture = createApprovalFixture();
 
       await readRejection(approve(fixture));
@@ -20607,12 +20613,37 @@ describe('WorkflowEngineService', () => {
       // One transaction for the decision that rolled back, one for the record.
       expect(fixture.transaction).toHaveBeenCalledTimes(2);
 
-      const lockParams = fixture.managerQuery.mock.calls
-        .filter(([sql]): boolean => sql.includes('pg_advisory_xact_lock'))
-        .map(([, params]): readonly unknown[] => params);
+      // Only what happens inside the record transaction counts: it is the last
+      // one opened, and everything it does is invoked after it was opened.
+      const recordStart = fixture.transaction.mock
+        .invocationCallOrder[1] as number;
+      const inRecord = (order: number): boolean => order > recordStart;
 
-      expect(lockParams.length).toBeGreaterThanOrEqual(2);
-      expect(lockParams[lockParams.length - 1]).toEqual(['instance-1']);
+      const lockCalls = fixture.managerQuery.mock.calls.flatMap(
+        ([sql, params], index): readonly LockCall[] => {
+          const order = fixture.managerQuery.mock.invocationCallOrder[
+            index
+          ] as number;
+
+          return sql.includes('pg_advisory_xact_lock') && inRecord(order)
+            ? [{ order, params }]
+            : [];
+        },
+      );
+      // The reads of the ADVANCE_FAILED rows already logged: the instance, then
+      // its activity log.
+      const readOrders = [
+        ...fixture.transactionalInstanceFindOne.mock.invocationCallOrder,
+        ...fixture.transactionalActivityLogFind.mock.invocationCallOrder,
+      ].filter(inRecord);
+
+      expect(lockCalls).toHaveLength(1);
+      expect(lockCalls[0]?.params).toEqual(['instance-1']);
+      // The check that stops a second row is only sound under the lock.
+      expect(readOrders.length).toBeGreaterThan(0);
+      expect(lockCalls[0]?.order as number).toBeLessThan(
+        Math.min(...readOrders),
+      );
     });
 
     const refusals: [string, Partial<TaskEntity>, Partial<DecideTaskInput>][] =
@@ -23060,6 +23091,10 @@ interface ServiceFixture {
   >;
   readonly savedDecision: TaskDecisionEntity | null;
   readonly transactionalActivityLogFindOne: import('typeorm').Repository<ActivityLogEntity>['findOne'];
+  // The in-transaction reads of the activity log and the instance, for tests
+  // that pin the order of what a transaction does.
+  readonly transactionalActivityLogFind: jest.Mock;
+  readonly transactionalInstanceFindOne: jest.Mock;
   // The repository manager's `transaction`: one call per engine transaction.
   readonly transaction: jest.Mock;
   // `AttachmentService.releaseUnreferencedFormAttachments`, one call per release.
@@ -24264,6 +24299,10 @@ function createServiceFixture({
     templateFind,
     templateFindOne,
     transactionalActivityLogFindOne: transactionalActivityRepository.findOne,
+    transactionalActivityLogFind:
+      transactionalActivityRepository.find as unknown as jest.Mock,
+    transactionalInstanceFindOne:
+      transactionalInstanceRepository.findOne as unknown as jest.Mock,
     releaseUnreferencedFormAttachments:
       attachmentService.releaseUnreferencedFormAttachments as jest.Mock,
     bindFormDataAttachmentsToInstance:

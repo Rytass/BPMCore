@@ -208,7 +208,7 @@ export function AdminStuckInstancesView(): ReactElement {
                 目前沒有卡住的案件
               </Typography>
             ) : null}
-            {instances.length ? (
+            {loading || instances.length ? (
               <Table
                 actions={actions}
                 columns={columns}

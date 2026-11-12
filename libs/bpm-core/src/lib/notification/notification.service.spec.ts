@@ -575,6 +575,69 @@ describe('NotificationService', () => {
     );
   });
 
+  // The administrator-cancel notice goes through the engine's own call, which
+  // the engine spec mocks; this runs the real method with the arguments that
+  // call sends, so the row an applicant actually sees is checked.
+  it('titles the administrator-cancel notice 管理員撤銷 and carries the reason in its body', async (): Promise<void> => {
+    const reason = '重複送件，請改用 INV-0002';
+    const saved: NotificationEntity[] = [];
+    const notificationRepository = {
+      create: (entity: Partial<NotificationEntity>): NotificationEntity =>
+        Object.assign(new NotificationEntity(), entity),
+      findOne: (): Promise<null> => Promise.resolve(null),
+      save: (entities: NotificationEntity[]): Promise<NotificationEntity[]> => {
+        saved.push(...entities);
+
+        return Promise.resolve(entities);
+      },
+    };
+    const manager = {
+      getRepository: (): unknown => notificationRepository,
+    } as unknown as EntityManager;
+    const service = new NotificationService(
+      notificationRepository as unknown as Repository<NotificationEntity>,
+      {
+        findOne: (): Promise<NotificationPreferenceEntity | null> =>
+          Promise.resolve(null),
+      } as unknown as Repository<NotificationPreferenceEntity>,
+      createRepository<TaskEntity>(),
+      createRepository<TaskCandidateEntity>(),
+      createRepository<ApprovalInstanceEntity>(),
+      createRepository<ActivityLogEntity>(),
+      createDeliveryService(),
+      createModuleRef(),
+      { ...DEFAULT_BPM_NOTIFICATION_OPTIONS, inAppEnabled: true },
+    );
+    const instance = Object.assign(new ApprovalInstanceEntity(), {
+      ...createApprovalInstance(),
+      initiatorMemberId: 'member-applicant',
+      title: '費用申請',
+    });
+
+    const created = await service.createAdhocWorkflowNotifications({
+      channels: null,
+      instance,
+      manager,
+      message: `案件「${instance.title}」已由管理員撤銷：${reason}`,
+      payload: {
+        nodeLabel: '管理員撤銷',
+        reason,
+        type: 'INSTANCE_CANCELLED_BY_ADMINISTRATOR',
+      },
+      recipientMemberIds: ['member-applicant'],
+    });
+
+    expect(created).toHaveLength(1);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      channel: NotificationChannelEnum.IN_APP,
+      recipientMemberId: 'member-applicant',
+      title: '管理員撤銷',
+      type: NotificationTypeEnum.WORKFLOW_NOTIFICATION,
+    });
+    expect(saved[0]?.body).toContain(reason);
+  });
+
   describe('task notification hasFillableFields flag', () => {
     const fillableFieldAccess: UserTaskNode['data']['fieldAccess'] = [
       { display: 'SHOW', fieldKey: 'invoiceNo', fill: 'OPTIONAL' },

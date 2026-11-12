@@ -62,7 +62,7 @@ jest.mock('@mezzanine-ui/react', () => {
       | undefined;
 
     return (
-      <div>
+      <div data-loading={String(props.loading)} data-table="">
         {rows.map((row): ReactElement => (
           <div data-row={row.key} key={row.key}>
             {columns.map((column): ReactElement => (
@@ -246,6 +246,35 @@ describe('AdminStuckInstancesView', () => {
     await render();
 
     expect(container.textContent).toContain('目前沒有卡住的案件');
+  });
+
+  it('shows the table, loading, while the first listing is still on its way', async (): Promise<void> => {
+    let resolveListing: (
+      instances: readonly StuckApprovalInstanceRecord[],
+    ) => void = (): void => undefined;
+
+    api.listStuckApprovalInstances.mockReturnValue(
+      new Promise<readonly StuckApprovalInstanceRecord[]>((resolve): void => {
+        resolveListing = resolve;
+      }),
+    );
+
+    await render();
+
+    const table = container.querySelector('[data-table]');
+
+    expect(table).not.toBeNull();
+    expect(table?.getAttribute('data-loading')).toBe('true');
+    expect(container.textContent).not.toContain('目前沒有卡住的案件');
+
+    await act(async (): Promise<void> => {
+      resolveListing([STUCK]);
+    });
+
+    expect(
+      container.querySelector('[data-table]')?.getAttribute('data-loading'),
+    ).toBe('false');
+    expect(cell('instance-1', 'instanceTitle')).toBe('採購申請');
   });
 
   it('shows the error when the list cannot be loaded, not the empty message', async (): Promise<void> => {
