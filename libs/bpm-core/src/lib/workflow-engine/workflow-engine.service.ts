@@ -538,6 +538,33 @@ export interface InactiveMemberOpenTasksRecord {
   readonly openTaskCount: number;
 }
 
+/** Input of {@link WorkflowEngineService.adminCancelApprovalInstance}. */
+export interface AdminCancelApprovalInstanceCommand {
+  readonly cancelledByMemberId: string;
+  readonly instanceId: string;
+  /** Why the administrator ends it; stored and sent to the initiator. */
+  readonly reason: string;
+}
+
+/**
+ * What one cancellation path brings to {@link WorkflowEngineService}'s shared
+ * cancel transaction. The steps run in a fixed order; see
+ * `cancelApprovalInstanceInTransaction`.
+ */
+interface InstanceCancellation {
+  readonly actorMemberId: string;
+  /** Runs as the last step, in the same transaction. */
+  readonly afterCancelled?: (
+    manager: EntityManager,
+    instance: ApprovalInstanceEntity,
+  ) => Promise<void>;
+  /** Runs once the instance is read; throws to refuse. */
+  readonly authorize: (instance: ApprovalInstanceEntity) => void;
+  readonly instanceId: string;
+  /** The payload of the INSTANCE_CANCELLED activity record. */
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
 /**
  * Engine-internal decision knobs that are deliberately kept out of
  * {@link DecideTaskInput} so they never reach the GraphQL schema.
@@ -2117,30 +2144,105 @@ export class WorkflowEngineService {
   async cancelApprovalInstance(
     input: CancelApprovalInstanceInput,
   ): Promise<ApprovalInstanceEntity> {
+    return this.cancelApprovalInstanceInTransaction({
+      actorMemberId: input.cancelledByMemberId,
+      authorize: (instance): void => {
+        if (instance.initiatorMemberId !== input.cancelledByMemberId) {
+          throw new ConflictException(
+            `Approval instance ${instance.id} can only be cancelled by its initiator`,
+          );
+        }
+      },
+      instanceId: input.instanceId,
+      payload: {
+        comment: input.comment?.trim() || null,
+      },
+    });
+  }
+
+  /**
+   * Administrator: ends a running or returned instance on the initiator's
+   * behalf, whoever started it. The reason is required; it is recorded as the
+   * comment of the INSTANCE_CANCELLED activity (flagged
+   * `cancelledByAdministrator`, so a host can tell this from the initiator
+   * withdrawing) and sent to the initiator as an in-app notification. An
+   * administrator ending their own instance is not told.
+   */
+  async adminCancelApprovalInstance(
+    input: AdminCancelApprovalInstanceCommand,
+  ): Promise<ApprovalInstanceEntity> {
+    const reason = input.reason.trim();
+
+    // Refused before anything is read, so an empty reason is never mistaken
+    // for a missing instance.
+    if (!reason) {
+      throw new BadRequestException(
+        'A reason is required to cancel an approval instance as an administrator',
+      );
+    }
+
+    return this.cancelApprovalInstanceInTransaction({
+      actorMemberId: input.cancelledByMemberId,
+      afterCancelled: async (manager, instance): Promise<void> => {
+        if (instance.initiatorMemberId === input.cancelledByMemberId) {
+          return;
+        }
+
+        // The last step: the notification observers run inside this
+        // transaction, so a failure after it would roll back a push that has
+        // already gone out.
+        await this.notificationService.createAdhocWorkflowNotifications({
+          channels: null,
+          instance,
+          manager,
+          message: `案件「${instance.title}」已由管理員撤銷：${reason}`,
+          payload: {
+            nodeLabel: '管理員撤銷',
+            reason,
+            type: 'INSTANCE_CANCELLED_BY_ADMINISTRATOR',
+          },
+          recipientMemberIds: [instance.initiatorMemberId],
+        });
+      },
+      authorize: (): void => undefined,
+      instanceId: input.instanceId,
+      payload: {
+        cancelledByAdministrator: true,
+        comment: reason,
+      },
+    });
+  }
+
+  /**
+   * The cancel transaction both paths share. The order is part of the
+   * contract: read, authorize, check the state, close, record, then the
+   * path's own last step. A non-initiator who tries to withdraw an already
+   * approved instance must keep getting the "initiator" refusal, not
+   * "not cancellable".
+   */
+  private async cancelApprovalInstanceInTransaction(
+    cancellation: InstanceCancellation,
+  ): Promise<ApprovalInstanceEntity> {
     return this.runEngineTransaction(
       async (manager): Promise<ApprovalInstanceEntity> => {
         await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-          input.instanceId,
+          cancellation.instanceId,
         ]);
 
         const instanceRepository = manager.getRepository(
           ApprovalInstanceEntity,
         );
         const instance = await instanceRepository.findOne({
-          where: { id: input.instanceId },
+          where: { id: cancellation.instanceId },
         });
 
         if (!instance) {
           throw new NotFoundException(
-            `Approval instance ${input.instanceId} was not found`,
+            `Approval instance ${cancellation.instanceId} was not found`,
           );
         }
 
-        if (instance.initiatorMemberId !== input.cancelledByMemberId) {
-          throw new ConflictException(
-            `Approval instance ${instance.id} can only be cancelled by its initiator`,
-          );
-        }
+        cancellation.authorize(instance);
 
         if (
           instance.state !== ApprovalInstanceStateEnum.RUNNING &&
@@ -2159,16 +2261,16 @@ export class WorkflowEngineService {
 
         await manager.getRepository(ActivityLogEntity).save(
           manager.getRepository(ActivityLogEntity).create({
-            actorMemberId: input.cancelledByMemberId,
+            actorMemberId: cancellation.actorMemberId,
             eventType: ActivityLogEventTypeEnum.INSTANCE_CANCELLED,
             instanceId: instance.id,
             nodeId: null,
-            payload: {
-              comment: input.comment?.trim() || null,
-            },
+            payload: cancellation.payload,
             taskId: null,
           }),
         );
+
+        await cancellation.afterCancelled?.(manager, cancelledInstance);
 
         return cancelledInstance;
       },

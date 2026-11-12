@@ -18586,6 +18586,257 @@ describe('WorkflowEngineService', () => {
     expect(cancelled.formDataJson).toBe(JSON.stringify({ amount: 1200 }));
   });
 
+  describe('an administrator cancelling an instance', (): void => {
+    const REASON = '申請人已離職';
+
+    // The default instance is 費用申請, filed by member-001, with task-1 open
+    // on task_finance.
+    const createCancelFixture = (
+      options: { readonly instanceState?: ApprovalInstanceStateEnum } = {},
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: options.instanceState,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+        rollbackFailedTransactions: true,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    const readLogs = (
+      fixture: ServiceFixture,
+    ): readonly ActivityLogEntity[] => [
+      ...fixture.savedActivityLogs,
+      ...fixture.savedSingleActivityLogs,
+    ];
+
+    const readCancellationLogs = (
+      fixture: ServiceFixture,
+    ): readonly ActivityLogEntity[] =>
+      readLogs(fixture).filter(
+        (log): boolean =>
+          log.eventType === ActivityLogEventTypeEnum.INSTANCE_CANCELLED,
+      );
+
+    const adminCancel = (
+      fixture: ServiceFixture,
+      overrides: {
+        readonly cancelledByMemberId?: string;
+        readonly instanceId?: string;
+        readonly reason?: string;
+      } = {},
+    ): Promise<ApprovalInstanceEntity> =>
+      fixture.service.adminCancelApprovalInstance({
+        cancelledByMemberId: 'admin-001',
+        instanceId: 'instance-1',
+        reason: REASON,
+        ...overrides,
+      });
+
+    it.each([
+      ApprovalInstanceStateEnum.RUNNING,
+      ApprovalInstanceStateEnum.RETURNED,
+    ])(
+      'cancels a %s instance that someone else filed',
+      async (instanceState: ApprovalInstanceStateEnum): Promise<void> => {
+        const fixture = createCancelFixture({ instanceState });
+
+        const cancelled = await adminCancel(fixture);
+
+        expect(cancelled.state).toBe(ApprovalInstanceStateEnum.CANCELLED);
+        // The mutation returns this entity, whose getters GraphQL resolves.
+        expect(cancelled).toBeInstanceOf(ApprovalInstanceEntity);
+      },
+    );
+
+    it.each([
+      ApprovalInstanceStateEnum.APPROVED,
+      ApprovalInstanceStateEnum.CANCELLED,
+    ])(
+      'refuses an instance that is already %s, with no record and no notice',
+      async (instanceState: ApprovalInstanceStateEnum): Promise<void> => {
+        const fixture = createCancelFixture({ instanceState });
+
+        await expect(adminCancel(fixture)).rejects.toThrow(
+          'is not cancellable',
+        );
+
+        expect(readLogs(fixture)).toEqual([]);
+        expect(
+          fixture.notificationService.createAdhocWorkflowNotifications,
+        ).not.toHaveBeenCalled();
+      },
+    );
+
+    it('refuses a reason that is only whitespace, before reading anything', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      // The instance does not exist either: the reason is judged first, so
+      // the caller is told what to fix rather than that the id is wrong.
+      const rejection = await adminCancel(fixture, {
+        instanceId: 'instance-missing',
+        reason: ' \n\t ',
+      }).then(
+        (): unknown => undefined,
+        (error: unknown): unknown => error,
+      );
+
+      expect(rejection).toBeInstanceOf(BadRequestException);
+      expect(rejection).not.toBeInstanceOf(NotFoundException);
+      expect(fixture.transaction).not.toHaveBeenCalled();
+    });
+
+    it('records the cancellation as the administrator, with the trimmed reason and a flag', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await adminCancel(fixture, { reason: `  ${REASON}\n` });
+
+      expect(readCancellationLogs(fixture)).toEqual([
+        expect.objectContaining({
+          actorMemberId: 'admin-001',
+          instanceId: 'instance-1',
+          payload: { cancelledByAdministrator: true, comment: REASON },
+        }),
+      ]);
+    });
+
+    it('ends the open task and clears its pending notices', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await adminCancel(fixture);
+
+      expect(readLatestTask(fixture, 'task-1')?.status).toBe(
+        TaskStatusEnum.CANCELLED,
+      );
+      expect(
+        fixture.notificationService.supersedeInstanceTaskNotifications,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ instanceId: 'instance-1' }),
+      );
+    });
+
+    it('tells the initiator, once, in the app, with the reason', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await adminCancel(fixture, { reason: `  ${REASON}  ` });
+
+      const notify =
+        fixture.notificationService.createAdhocWorkflowNotifications;
+
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // `null` is the in-app channel only.
+          channels: null,
+          message: `案件「費用申請」已由管理員撤銷：${REASON}`,
+          payload: {
+            nodeLabel: '管理員撤銷',
+            reason: REASON,
+            type: 'INSTANCE_CANCELLED_BY_ADMINISTRATOR',
+          },
+          recipientMemberIds: ['member-001'],
+        }),
+      );
+      // The notification template renders its title from `nodeLabel`; without
+      // it the title would be an empty string. This fixture mocks the
+      // notification service, so the title itself is checked by asserting the
+      // payload carries a non-empty `nodeLabel`.
+      const call = (
+        notify as unknown as jest.Mock<
+          Promise<unknown>,
+          [{ readonly payload: { readonly nodeLabel?: string } }]
+        >
+      ).mock.calls[0]?.[0];
+
+      expect(call?.payload.nodeLabel?.trim()).toBeTruthy();
+    });
+
+    it('sends the notice as the last step, after the cancellation is recorded', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+      let logsWhenNotified: readonly ActivityLogEntity[] = [];
+      let instanceStateWhenNotified: ApprovalInstanceStateEnum | undefined;
+
+      (
+        fixture.notificationService
+          .createAdhocWorkflowNotifications as unknown as jest.Mock
+      ).mockImplementationOnce((): Promise<readonly unknown[]> => {
+        logsWhenNotified = readCancellationLogs(fixture);
+        instanceStateWhenNotified = fixture.savedInstance?.state;
+
+        return Promise.resolve([]);
+      });
+
+      await adminCancel(fixture);
+
+      expect(logsWhenNotified).toHaveLength(1);
+      expect(instanceStateWhenNotified).toBe(
+        ApprovalInstanceStateEnum.CANCELLED,
+      );
+    });
+
+    it('does not tell an administrator who cancels their own instance', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await adminCancel(fixture, { cancelledByMemberId: 'member-001' });
+
+      expect(readCancellationLogs(fixture)).toEqual([
+        expect.objectContaining({
+          actorMemberId: 'member-001',
+          payload: { cancelledByAdministrator: true, comment: REASON },
+        }),
+      ]);
+      expect(
+        fixture.notificationService.createAdhocWorkflowNotifications,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('does not tell the initiator when the initiator withdraws the instance', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await fixture.service.cancelApprovalInstance({
+        cancelledByMemberId: 'member-001',
+        comment: ' 不需要了 ',
+        instanceId: 'instance-1',
+      });
+
+      // The initiator path is unchanged: no flag, the comment as before.
+      expect(readCancellationLogs(fixture)).toEqual([
+        expect.objectContaining({
+          actorMemberId: 'member-001',
+          payload: { comment: '不需要了' },
+        }),
+      ]);
+      expect(
+        fixture.notificationService.createAdhocWorkflowNotifications,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('still tells a non-initiator they are not the initiator, even when the instance is already approved', async (): Promise<void> => {
+      const fixture = createCancelFixture({
+        instanceState: ApprovalInstanceStateEnum.APPROVED,
+      });
+
+      // The authorization check sits before the state check on this path, so
+      // the answer stays "initiator", not "not cancellable".
+      await expect(
+        fixture.service.cancelApprovalInstance({
+          cancelledByMemberId: 'member-other',
+          comment: null,
+          instanceId: 'instance-1',
+        }),
+      ).rejects.toThrow('can only be cancelled by its initiator');
+    });
+  });
+
   describe('expiring an instance on an SLA timeout', (): void => {
     const readLogs = (
       fixture: ServiceFixture,
@@ -20958,6 +21209,21 @@ describe('WorkflowEngineService', () => {
             cancelledByMemberId: 'member-001',
             comment: null,
             instanceId: 'instance-1',
+          });
+
+          await expect(listStuck(fixture)).resolves.toEqual([]);
+        });
+
+        it('once an administrator cancelled the instance', async (): Promise<void> => {
+          const fixture = createApprovalFixture();
+
+          await readRejection(approve(fixture));
+          await expect(listStuck(fixture)).resolves.toHaveLength(1);
+
+          await fixture.service.adminCancelApprovalInstance({
+            cancelledByMemberId: 'admin-001',
+            instanceId: 'instance-1',
+            reason: '申請人已離職',
           });
 
           await expect(listStuck(fixture)).resolves.toEqual([]);

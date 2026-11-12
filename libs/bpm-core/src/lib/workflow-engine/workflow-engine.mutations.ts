@@ -15,6 +15,7 @@ import {
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { AdhocNotificationInput } from './dto/adhoc-notification.input';
 import { AdhocTargetInput } from './dto/adhoc-target.input';
+import { AdminCancelApprovalInstanceInput } from './dto/admin-cancel-approval-instance.input';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
 import { DecideTaskInput } from './dto/decide-task.input';
 import { DryRunApprovalWorkflowInput } from './dto/dry-run-approval-workflow.input';
@@ -141,6 +142,27 @@ export class WorkflowEngineMutations {
     return this.workflowEngineService.cancelApprovalInstance({
       ...input,
       cancelledByMemberId: currentMemberId,
+    });
+  }
+
+  @Mutation(() => ApprovalInstanceEntity, {
+    description:
+      'Administrator: ends a running or returned instance whoever started ' +
+      'it. The reason is required; it is recorded on the instance and sent ' +
+      'to the initiator as an in-app notification (not sent when the ' +
+      'administrator is the initiator). The cancellation is recorded with ' +
+      '`cancelledByAdministrator: true` so a host can tell it from the ' +
+      'initiator withdrawing.',
+  })
+  @BPMAdminOnly()
+  async adminCancelApprovalInstance(
+    @Args('input') input: AdminCancelApprovalInstanceInput,
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<ApprovalInstanceEntity> {
+    return this.workflowEngineService.adminCancelApprovalInstance({
+      cancelledByMemberId: currentMemberId,
+      instanceId: input.instanceId,
+      reason: input.reason,
     });
   }
 

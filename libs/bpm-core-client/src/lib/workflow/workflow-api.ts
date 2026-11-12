@@ -250,6 +250,31 @@ export interface InactiveMemberWithOpenTasksRecord {
   readonly openTaskCount: number;
 }
 
+export type StuckApprovalInstanceKind = 'DECISION' | 'RESUBMIT';
+
+/**
+ * An instance that could not move on to its next stage, described by its
+ * latest unresolved failure. `pendingActorMemberIds` is who has to press again
+ * now; it is read when the list loads, so it follows a later reassignment.
+ */
+export interface StuckApprovalInstanceRecord {
+  /** 'SLA_AUTO_APPROVE' when the system was approving an overdue task. */
+  readonly automatic: string | null;
+  readonly failedActorMemberId: string | null;
+  readonly failedAt: string;
+  readonly initiatorMemberId: string;
+  readonly instanceId: string;
+  readonly instanceTitle: string;
+  readonly kind: StuckApprovalInstanceKind;
+  readonly message: string;
+  readonly nodeId: string | null;
+  readonly nodeLabel: string | null;
+  readonly pendingActorMemberIds: readonly string[];
+  readonly taskId: string | null;
+  readonly templateId: string;
+  readonly templateName: string | null;
+}
+
 export type TaskReassignmentOutcome =
   'REASSIGNED' | 'REJECTED' | 'WOULD_REASSIGN';
 
@@ -674,6 +699,10 @@ interface InactiveMembersWithOpenTasksQueryData {
   readonly inactiveMembersWithOpenTasks: readonly InactiveMemberWithOpenTasksRecord[];
 }
 
+interface StuckApprovalInstancesQueryData {
+  readonly stuckApprovalInstances: readonly StuckApprovalInstanceRecord[];
+}
+
 interface ReassignTaskMutationData {
   readonly reassignTask: TaskReassignmentResultRecord;
 }
@@ -684,6 +713,13 @@ interface ReassignMemberTasksMutationData {
 
 interface CancelApprovalInstanceMutationData {
   readonly cancelApprovalInstance: Pick<ApprovalInstanceRecord, 'id' | 'state'>;
+}
+
+interface AdminCancelApprovalInstanceMutationData {
+  readonly adminCancelApprovalInstance: Pick<
+    ApprovalInstanceRecord,
+    'id' | 'state'
+  >;
 }
 
 interface ResubmitApprovalInstanceMutationData {
@@ -2190,6 +2226,37 @@ export async function listInactiveMembersWithOpenTasks(): Promise<
   return data.inactiveMembersWithOpenTasks;
 }
 
+/**
+ * Administrator: the running or returned instances that could not move on and
+ * still cannot, newest failure first, one row each.
+ */
+export async function listStuckApprovalInstances(): Promise<
+  readonly StuckApprovalInstanceRecord[]
+> {
+  const data = await requestGraphQl<StuckApprovalInstancesQueryData>(
+    `query StuckApprovalInstances {
+      stuckApprovalInstances {
+        automatic
+        failedActorMemberId
+        failedAt
+        initiatorMemberId
+        instanceId
+        instanceTitle
+        kind
+        message
+        nodeId
+        nodeLabel
+        pendingActorMemberIds
+        taskId
+        templateId
+        templateName
+      }
+    }`,
+  );
+
+  return data.stuckApprovalInstances;
+}
+
 const TASK_REASSIGNMENT_RESULT_SELECTION = `
   errorCode
   instanceId
@@ -2281,6 +2348,33 @@ export async function cancelApprovalInstance({
         cancelledByMemberId,
         comment,
         instanceId,
+      },
+    },
+  );
+}
+
+/**
+ * Administrator: ends someone else's running or returned instance. The reason
+ * is required; the initiator is sent it as an in-app notification.
+ */
+export async function adminCancelApprovalInstance({
+  instanceId,
+  reason,
+}: {
+  readonly instanceId: string;
+  readonly reason: string;
+}): Promise<void> {
+  await requestGraphQl<AdminCancelApprovalInstanceMutationData>(
+    `mutation AdminCancelApprovalInstance($input: AdminCancelApprovalInstanceInput!) {
+      adminCancelApprovalInstance(input: $input) {
+        id
+        state
+      }
+    }`,
+    {
+      input: {
+        instanceId,
+        reason,
       },
     },
   );

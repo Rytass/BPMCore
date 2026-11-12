@@ -3,6 +3,7 @@ import {
   FormFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
+  adminCancelApprovalInstance,
   decideTask,
   listApprovalHistoryTasks,
   listApprovalInstances,
@@ -11,6 +12,7 @@ import {
   listInboxTasks,
   listInactiveMembersWithOpenTasks,
   listMemberOpenTasks,
+  listStuckApprovalInstances,
   reassignMemberTasks,
   reassignTask,
   readApprovalInstance,
@@ -809,6 +811,61 @@ describe('@rytass/bpm-core-client/workflow', () => {
           },
         });
         expect(returned).toEqual(results);
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
+  describe('administrator stuck instances', () => {
+    it('lists the stuck instances with who has to press again', async (): Promise<void> => {
+      const row = {
+        automatic: null,
+        failedActorMemberId: 'member-approver',
+        failedAt: '2026-11-12T10:00:00.000Z',
+        initiatorMemberId: 'member-initiator',
+        instanceId: 'instance-1',
+        instanceTitle: '出差申請',
+        kind: 'DECISION',
+        message: 'Manager of member-approver was not found',
+        nodeId: 'task_manager',
+        nodeLabel: '部門主管簽核',
+        pendingActorMemberIds: ['member-approver'],
+        taskId: 'task-1',
+        templateId: 'template-1',
+        templateName: '出差申請單',
+      };
+      const harness = installFetchMock({ stuckApprovalInstances: [row] });
+      try {
+        const rows = await listStuckApprovalInstances();
+        const request = harness.capture();
+
+        expect(request.query).toContain('query StuckApprovalInstances');
+        expect(request.query).toContain('pendingActorMemberIds');
+        expect(rows).toEqual([row]);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('cancels an instance as an administrator with the reason as input', async (): Promise<void> => {
+      const harness = installFetchMock({
+        adminCancelApprovalInstance: { id: 'instance-1', state: 'CANCELLED' },
+      });
+      try {
+        await adminCancelApprovalInstance({
+          instanceId: 'instance-1',
+          reason: '申請人已離職',
+        });
+        const request = harness.capture();
+
+        expect(request.query).toContain('mutation AdminCancelApprovalInstance');
+        expect(request.query).toContain(
+          'adminCancelApprovalInstance(input: $input)',
+        );
+        expect(request.variables).toEqual({
+          input: { instanceId: 'instance-1', reason: '申請人已離職' },
+        });
       } finally {
         harness.restore();
       }
