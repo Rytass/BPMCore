@@ -4,6 +4,8 @@ import {
   formatOrgManagerChainPlaceholder,
   isFallbackCapableApproverResolverType,
   isNotifyRecipientResolverType,
+  isOrgManagerChainContinuation,
+  isOrgManagerChainSkippingWhenStartReached,
   isOrgManagerChainStartedFromInitiator,
   parseOrgManagerChainPlaceholder,
   readOrgManagerChainStartPositionLevel,
@@ -308,6 +310,265 @@ describe('manager chain dry-run placeholder', () => {
     'orgManagerChain:3:2:formMember:',
     'orgManagerChain:3:formMember:key',
     'position:p-1',
+  ])('reads %s as not a chain placeholder', (placeholder) => {
+    expect(parseOrgManagerChainPlaceholder(placeholder)).toBeNull();
+  });
+});
+
+describe('manager chain continuation and skip flag', () => {
+  it('knows the CHAIN_CONTINUATION start type', () => {
+    expect(
+      readUnsupportedOrgManagerChainStartType({ type: 'CHAIN_CONTINUATION' }),
+    ).toBeNull();
+  });
+
+  it('reads a CHAIN_CONTINUATION start as a continuation, and nothing else', () => {
+    expect(
+      isOrgManagerChainContinuation({
+        startFrom: { nodeId: 's', type: 'CHAIN_CONTINUATION' },
+      }),
+    ).toBe(true);
+    expect(isOrgManagerChainContinuation({})).toBe(false);
+    expect(
+      isOrgManagerChainContinuation({
+        startFrom: null as unknown as undefined,
+      }),
+    ).toBe(false);
+    expect(
+      isOrgManagerChainContinuation({ startFrom: { type: 'INITIATOR' } }),
+    ).toBe(false);
+    expect(
+      isOrgManagerChainContinuation({
+        startFrom: { formPath: 'a', type: 'FORM_MEMBER' },
+      }),
+    ).toBe(false);
+  });
+
+  it('does not read a continuation as a start at the initiator', () => {
+    expect(
+      isOrgManagerChainStartedFromInitiator({
+        startFrom: { nodeId: 's', type: 'CHAIN_CONTINUATION' },
+      }),
+    ).toBe(false);
+  });
+
+  it('reads the skip flag only when it is exactly true', () => {
+    expect(
+      isOrgManagerChainSkippingWhenStartReached({ skipWhenStartReached: true }),
+    ).toBe(true);
+    expect(isOrgManagerChainSkippingWhenStartReached({})).toBe(false);
+    expect(
+      isOrgManagerChainSkippingWhenStartReached({
+        skipWhenStartReached: false,
+      }),
+    ).toBe(false);
+    expect(
+      isOrgManagerChainSkippingWhenStartReached({
+        skipWhenStartReached: null,
+      }),
+    ).toBe(false);
+    expect(
+      isOrgManagerChainSkippingWhenStartReached({
+        skipWhenStartReached: 'true' as unknown as boolean,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('manager chain dry-run placeholder: continuation and skip flag', () => {
+  it.each<
+    readonly [
+      string,
+      Parameters<typeof formatOrgManagerChainPlaceholder>[0],
+      string,
+    ]
+  >([
+    [
+      'a continuation',
+      {
+        minPositionLevel: 40,
+        startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+      },
+      'orgManagerChain:40::continue:unit',
+    ],
+    [
+      'a continuation with a start level',
+      {
+        minPositionLevel: 40,
+        startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+        startPositionLevel: 35,
+      },
+      'orgManagerChain:40:35:continue:unit',
+    ],
+    [
+      'the skip flag alone',
+      { minPositionLevel: 30, skipWhenStartReached: true },
+      'orgManagerChainSkipReached:30',
+    ],
+    [
+      'the skip flag with a start level',
+      {
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        startPositionLevel: 20,
+      },
+      'orgManagerChainSkipReached:30:20',
+    ],
+    [
+      'the skip flag with a form start',
+      {
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+      },
+      'orgManagerChainSkipReached:30::formMember:picked',
+    ],
+    [
+      // The publish lint refuses the pair, but a draft still gets a preview.
+      'the skip flag together with a continuation',
+      {
+        minPositionLevel: 40,
+        skipWhenStartReached: true,
+        startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+      },
+      'orgManagerChainSkipReached:40::continue:unit',
+    ],
+  ])('writes %s', (_label, resolver, placeholder) => {
+    expect(formatOrgManagerChainPlaceholder(resolver)).toBe(placeholder);
+  });
+
+  it.each([false, null])(
+    "writes today's text for a skip flag of %p",
+    (skipWhenStartReached) => {
+      expect(
+        formatOrgManagerChainPlaceholder({
+          minPositionLevel: 30,
+          skipWhenStartReached,
+          startPositionLevel: 20,
+        }),
+      ).toBe('orgManagerChain:30:20');
+      expect(
+        formatOrgManagerChainPlaceholder({
+          minPositionLevel: 30,
+          skipWhenStartReached,
+        }),
+      ).toBe('orgManagerChain:30');
+    },
+  );
+
+  it.each([
+    [
+      'orgManagerChain:40::continue:unit',
+      {
+        minPositionLevel: 40,
+        startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+        startPositionLevel: null,
+      },
+    ],
+    [
+      'orgManagerChain:40:35:continue:unit',
+      {
+        minPositionLevel: 40,
+        startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+        startPositionLevel: 35,
+      },
+    ],
+    [
+      // A node id may hold a colon: the key is everything after the kind.
+      'orgManagerChain:40::continue:a:b',
+      {
+        minPositionLevel: 40,
+        startFrom: { nodeId: 'a:b', type: 'CHAIN_CONTINUATION' },
+        startPositionLevel: null,
+      },
+    ],
+    [
+      'orgManagerChainSkipReached:30:20',
+      {
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        startFrom: null,
+        startPositionLevel: 20,
+      },
+    ],
+    [
+      'orgManagerChainSkipReached:30::nodeActor:a,b',
+      {
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        startFrom: { nodeIds: ['a', 'b'], type: 'NODE_ACTOR' },
+        startPositionLevel: null,
+      },
+    ],
+    [
+      'orgManagerChainSkipReached:30::continue:unit',
+      {
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+        startPositionLevel: null,
+      },
+    ],
+  ])('reads %s back', (placeholder, parts) => {
+    expect(parseOrgManagerChainPlaceholder(placeholder)).toEqual(parts);
+  });
+
+  it('round-trips what it writes', () => {
+    const resolvers: readonly Parameters<
+      typeof formatOrgManagerChainPlaceholder
+    >[0][] = [
+      {
+        minPositionLevel: 40,
+        startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+        startPositionLevel: 35,
+      },
+      {
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+        startPositionLevel: 20,
+      },
+      { minPositionLevel: 30, skipWhenStartReached: true },
+    ];
+
+    resolvers.forEach((resolver) => {
+      const parsed = parseOrgManagerChainPlaceholder(
+        formatOrgManagerChainPlaceholder(resolver),
+      );
+
+      expect(parsed).toEqual({
+        minPositionLevel: resolver.minPositionLevel,
+        ...(resolver.skipWhenStartReached === true
+          ? { skipWhenStartReached: true }
+          : {}),
+        startFrom: resolver.startFrom ?? null,
+        startPositionLevel: resolver.startPositionLevel ?? null,
+      });
+    });
+  });
+
+  it('leaves the skip key off every placeholder of the old kind', () => {
+    [
+      'orgManagerChain:3',
+      'orgManagerChain:30:20',
+      'orgManagerChain:30::formMember:picked',
+      'orgManagerChain:40::continue:unit',
+    ].forEach((placeholder) => {
+      expect(parseOrgManagerChainPlaceholder(placeholder)).not.toHaveProperty(
+        'skipWhenStartReached',
+      );
+    });
+  });
+
+  it.each([
+    'orgManagerChain:40::continue',
+    'orgManagerChain:40::continue:',
+    'orgManagerChain:40:continue:unit',
+    'orgManagerChainSkipReached',
+    'orgManagerChainSkipReached:x',
+    'orgManagerChainSkipReached:30:',
+    'orgManagerChainSkipReached:30::unknown:key',
+    'orgManagerChainSkip:30',
   ])('reads %s as not a chain placeholder', (placeholder) => {
     expect(parseOrgManagerChainPlaceholder(placeholder)).toBeNull();
   });

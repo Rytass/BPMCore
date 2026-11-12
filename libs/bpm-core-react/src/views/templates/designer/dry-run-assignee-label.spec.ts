@@ -226,3 +226,51 @@ describe('readDryRunAssigneeLabel (manager chain start and start level)', () => 
     );
   });
 });
+
+describe('readDryRunAssigneeLabel: manager chain continuation and 略過', () => {
+  it('describes a continuation by the stage it continues', () => {
+    expect(
+      readDryRunAssigneeLabel('orgManagerChain:40::continue:node-a', directory),
+    ).toBe(
+      '主管鏈：接續「主管審核」往上；若前一段已簽到此職等則略過，簽到職等 40（送出時依組織決定實際主管）',
+    );
+  });
+
+  it('keeps a continued stage id that is not in the workflow', () => {
+    expect(
+      readDryRunAssigneeLabel('orgManagerChain:40:30:continue:gone', directory),
+    ).toBe(
+      '主管鏈：接續「gone」往上；若前一段已簽到此職等則略過，簽到職等 40（從職等 30 開始）（送出時依組織決定實際主管）',
+    );
+  });
+
+  it('adds the 略過 note at the end of the skip kind', () => {
+    expect(
+      readDryRunAssigneeLabel('orgManagerChainSkipReached:30', directory),
+    ).toBe(
+      '主管鏈：簽到職等 30（送出時依組織決定實際主管）（起點本人已達簽到職等時略過此關）',
+    );
+    expect(
+      readDryRunAssigneeLabel(
+        'orgManagerChainSkipReached:30:20:nodeActor:node-a,node-b',
+        directory,
+      ),
+    ).toBe(
+      '主管鏈：從前面關卡「主管審核、財務審核」簽核者的主管起算，簽到職等 30（從職等 20 開始）（送出時依組織決定實際主管）（起點本人已達簽到職等時略過此關）',
+    );
+  });
+
+  it('words the old placeholders exactly as before', () => {
+    expect(readDryRunAssigneeLabel('orgManagerChain:3', directory)).toBe(
+      '主管鏈：簽到職等 3（送出時依組織決定實際主管）',
+    );
+    expect(
+      readDryRunAssigneeLabel(
+        'orgManagerChain:30:20:nodeActor:node-a',
+        directory,
+      ),
+    ).toBe(
+      '主管鏈：從前面關卡「主管審核」簽核者的主管起算，簽到職等 30（從職等 20 開始）（送出時依組織決定實際主管）',
+    );
+  });
+});

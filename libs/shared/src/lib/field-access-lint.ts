@@ -21,6 +21,7 @@ import {
   APPLICANT_FIELD_CONDITION_RULES,
   APPROVER_FILLED_FORM_RULES,
   WORKFLOW_LINT_MESSAGES,
+  canUserTaskBeSkippedByManagerChain,
 } from './workflow-graph';
 import {
   isOnOwnParallelBranch,
@@ -57,6 +58,7 @@ export type FieldAccessIssueCode =
   | 'fieldAccessFillHidden'
   | 'fieldAccessGroupPolicy'
   | 'fieldAccessInvalid'
+  | 'fieldAccessManagerChainReached'
   | 'fieldAccessSkipNode'
   | 'fieldAccessUnknownField'
   | 'legacyFieldPermissions'
@@ -76,9 +78,12 @@ export interface FieldAccessIssue {
  * Why a user task node cannot let its approver fill fields in: a decision
  * shared by several approvers (`PARALLEL_ALL` / `QUORUM`) has no single
  * filler, and a node that can approve or skip itself would pass without
- * anybody filling anything in.
+ * anybody filling anything in. A manager chain that skips itself when its
+ * start person already reaches its level (`skipWhenStartReached`, or a
+ * continuation of an earlier chain) can pass the same way.
  */
-export type UserTaskFillConflict = 'autoApprove' | 'groupPolicy' | 'skipNode';
+export type UserTaskFillConflict =
+  'autoApprove' | 'groupPolicy' | 'managerChainReached' | 'skipNode';
 
 export function readUserTaskFillConflicts(
   node: UserTaskNode,
@@ -93,6 +98,9 @@ export function readUserTaskFillConflicts(
       : []),
     ...(node.data.excludeInitiator?.whenEmpty === 'SKIP_NODE'
       ? (['skipNode'] as const)
+      : []),
+    ...(canUserTaskBeSkippedByManagerChain(node)
+      ? (['managerChainReached'] as const)
       : []),
   ];
 }
@@ -113,6 +121,10 @@ const FILL_CONFLICT_ISSUES: Readonly<
   groupPolicy: {
     code: 'fieldAccessGroupPolicy',
     message: WORKFLOW_LINT_MESSAGES.fieldAccessGroupPolicy,
+  },
+  managerChainReached: {
+    code: 'fieldAccessManagerChainReached',
+    message: WORKFLOW_LINT_MESSAGES.fieldAccessManagerChainReached,
   },
   skipNode: {
     code: 'fieldAccessSkipNode',

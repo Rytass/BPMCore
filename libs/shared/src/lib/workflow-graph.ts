@@ -30,6 +30,8 @@ import {
   WorkflowNodeTriggerMode,
   isFallbackCapableApproverResolverType,
   isNotifyRecipientResolverType,
+  isOrgManagerChainContinuation,
+  isOrgManagerChainSkippingWhenStartReached,
   isOrgManagerChainStartedFromInitiator,
   readOrgManagerChainStartPositionLevel,
   readUnsupportedApproverResolverType,
@@ -202,6 +204,8 @@ export const WORKFLOW_LINT_MESSAGES = Object.freeze({
     `workflow.nodes.${nodeId}.fieldAccess cannot make fields fillable on a PARALLEL_ALL or QUORUM node`,
   fieldAccessInvalid: (nodeId: string): string =>
     `workflow.nodes.${nodeId}.fieldAccess is invalid`,
+  fieldAccessManagerChainReached: (nodeId: string): string =>
+    `workflow.nodes.${nodeId}.approverResolver cannot set skipWhenStartReached or continue another chain on a node with fillable fields`,
   fieldAccessSkipNode: (nodeId: string): string =>
     `workflow.nodes.${nodeId}.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with fillable fields`,
   fieldAccessUnknownField: (nodeId: string, fieldKey: string): string =>
@@ -1348,9 +1352,11 @@ export function isOrgManagerChainDecisionPolicyInvalid(
 }
 
 /**
- * The designer-facing issue with the two optional settings of an
- * `ORG_MANAGER_CHAIN` (`minPositionLevel`, `startFrom`, `startPositionLevel`),
- * or `null` when all are well-formed. `subject` names the node kind in the
+ * The designer-facing issue with the optional settings of an
+ * `ORG_MANAGER_CHAIN` (`minPositionLevel`, `startFrom`, `startPositionLevel`,
+ * `skipWhenStartReached`), or `null` when all are well-formed. A
+ * `CHAIN_CONTINUATION` start and `skipWhenStartReached` exclude each other,
+ * and a notify node may use neither. `subject` names the node kind in the
  * sentence; a notify node's chain may only start at the initiator (it has no
  * earlier stage and no form pick to start from). Reads defensively: on the
  * backend the definition is parsed JSON that no DTO has validated. The form
@@ -1373,6 +1379,7 @@ export function readOrgManagerChainIssue(
   if (startFrom !== undefined && startFrom !== null) {
     const start = startFrom as {
       readonly formPath?: unknown;
+      readonly nodeId?: unknown;
       readonly nodeIds?: unknown;
       readonly type?: unknown;
     };
@@ -1398,6 +1405,23 @@ export function readOrgManagerChainIssue(
     ) {
       return `${subject}需要指定主管鏈起點的前面簽核關卡。`;
     }
+
+    if (
+      start.type === 'CHAIN_CONTINUATION' &&
+      (typeof start.nodeId !== 'string' || !start.nodeId.trim())
+    ) {
+      return `${subject}需要指定要接續的前一段主管鏈關卡。`;
+    }
+  }
+
+  const rawSkip: unknown = resolver.skipWhenStartReached;
+
+  if (
+    rawSkip !== undefined &&
+    rawSkip !== null &&
+    typeof rawSkip !== 'boolean'
+  ) {
+    return `${subject}的「起點本人已達簽到職等時略過」只能是勾選或不勾選。`;
   }
 
   if (
@@ -1405,6 +1429,20 @@ export function readOrgManagerChainIssue(
     !isOrgManagerChainStartedFromInitiator(resolver)
   ) {
     return '知會節點的主管鏈只能從發起人開始。';
+  }
+
+  if (
+    subject === '知會節點' &&
+    isOrgManagerChainSkippingWhenStartReached(resolver)
+  ) {
+    return '知會節點的主管鏈不能設定「起點本人已達簽到職等時略過」。';
+  }
+
+  if (
+    isOrgManagerChainContinuation(resolver) &&
+    isOrgManagerChainSkippingWhenStartReached(resolver)
+  ) {
+    return `${subject}不能同時接續前一段主管鏈又設定「起點本人已達簽到職等時略過」。`;
   }
 
   const rawStartLevel: unknown = resolver.startPositionLevel;
@@ -1528,7 +1566,10 @@ export function readApproverResolverIssue(
  * - `skipNodeByNodeActors`: `excludeNodeActors.whenEmpty: 'SKIP_NODE'` skips
  *   it when removing an earlier stage's approvers leaves nobody;
  * - `autoApprove`: `sla.onTimeout: 'AUTO_APPROVE'` lets the timeout approve
- *   it, and the engine does not count an SLA approval as anyone's signature.
+ *   it, and the engine does not count an SLA approval as anyone's signature;
+ * - `managerChainReached`: a manager chain with `skipWhenStartReached: true`,
+ *   or one that continues an earlier chain (`CHAIN_CONTINUATION`), skips the
+ *   whole stage when the start person already reaches its level.
  *
  * `[]` means the node always has a real signer once it has run. The designer's
  * stage pickers, `readNodeActorSourceIssues` and
@@ -1538,8 +1579,27 @@ export function readApproverResolverIssue(
 export type NodeActorSourceSkipReason =
   | 'autoApprove'
   | 'entryCondition'
+  | 'managerChainReached'
   | 'skipNode'
   | 'skipNodeByNodeActors';
+
+/**
+ * `true` when an `ORG_MANAGER_CHAIN` user task can skip its whole stage
+ * because the start person already reaches the chain's level: it sets
+ * `skipWhenStartReached: true`, or continues an earlier chain. Reads the raw
+ * resolver, which can be missing or malformed on a draft.
+ */
+export function canUserTaskBeSkippedByManagerChain(
+  node: UserTaskNode,
+): boolean {
+  const resolver = node.data.approverResolver as ApproverResolver | undefined;
+
+  return (
+    resolver?.type === 'ORG_MANAGER_CHAIN' &&
+    (isOrgManagerChainSkippingWhenStartReached(resolver) ||
+      isOrgManagerChainContinuation(resolver))
+  );
+}
 
 export function readNodeActorSourceSkipReasons(
   node: UserTaskNode,
@@ -1555,6 +1615,9 @@ export function readNodeActorSourceSkipReasons(
     ...(node.data.sla?.onTimeout === 'AUTO_APPROVE'
       ? (['autoApprove'] as const)
       : []),
+    ...(canUserTaskBeSkippedByManagerChain(node)
+      ? (['managerChainReached'] as const)
+      : []),
   ];
 }
 
@@ -1565,6 +1628,8 @@ const NODE_ACTOR_SOURCE_SKIP_ISSUES: Readonly<
     `簽核來源的前面關卡 ${label} 設有逾時自動核准，可能沒有人實際簽核。`,
   entryCondition: (label) =>
     `簽核來源的前面關卡 ${label} 設有進入條件，可能被跳過、沒有人簽核。`,
+  managerChainReached: (label) =>
+    `簽核來源的前面關卡 ${label} 的主管鏈在起點本人已達簽到職等時會整關略過，可能沒有人簽核。`,
   skipNode: (label) =>
     `簽核來源的前面關卡 ${label} 在排除發起人後沒人時會跳過此關，可能沒有人簽核。`,
   skipNodeByNodeActors: (label) =>
@@ -1576,13 +1641,16 @@ const NODE_ACTOR_SOURCE_SKIP_ISSUES: Readonly<
  * caller only supplies its own sentences, so a `NODE_ACTOR` source and an
  * `excludeNodeActors` stage cannot drift apart on what counts as unsound.
  */
-interface SourceStageTexts {
+interface SourceStagePositionTexts {
   /** Several labels when the stages are checked together (`NODE_ACTOR`). */
   readonly coverage: (
     stageLabels: readonly string[],
     nodeLabel: string,
   ) => string;
   readonly notUpstream: (stageLabel: string, nodeLabel: string) => string;
+}
+
+interface SourceStageTexts extends SourceStagePositionTexts {
   readonly skip: Readonly<
     Record<NodeActorSourceSkipReason, (stageLabel: string) => string>
   >;
@@ -1606,6 +1674,8 @@ const EXCLUDE_NODE_ACTORS_STAGE_TEXTS: SourceStageTexts = {
       `排除對象的前面關卡 ${stageLabel} 設有逾時自動核准，可能沒有人實際簽核，這一關就排除不到任何人。請移除逾時自動核准，或改選其他關卡。`,
     entryCondition: (stageLabel) =>
       `排除對象的前面關卡 ${stageLabel} 設有進入條件，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改用分流，把兩關放在同一條路線上。`,
+    managerChainReached: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 的主管鏈在起點本人已達簽到職等時會整關略過，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改選其他關卡。`,
     skipNode: (stageLabel) =>
       `排除對象的前面關卡 ${stageLabel} 在排除發起人後沒人時會跳過此關，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改選其他處理方式。`,
     skipNodeByNodeActors: (stageLabel) =>
@@ -1650,6 +1720,36 @@ function readSourceStageIssues(
         )
       : [];
   });
+
+  return [
+    ...skippableIssues,
+    ...readSourceStagePositionIssues(
+      definition,
+      nodeId,
+      stageIds,
+      coverageGroups,
+      texts,
+    ),
+  ];
+}
+
+/**
+ * The coverage and upstream halves of {@link readSourceStageIssues}, without
+ * its skip-reason rule: for a reader (the manager-chain continuation) that
+ * accepts some of the reasons a stage may be skipped for and brings its own.
+ */
+function readSourceStagePositionIssues(
+  definition: WorkflowDefinition,
+  nodeId: string,
+  stageIds: readonly string[],
+  coverageGroups: readonly (readonly string[])[],
+  texts: SourceStagePositionTexts,
+): readonly string[] {
+  const labelOf = (id: string): string => {
+    const node = definition.nodes.find((candidate) => candidate.id === id);
+
+    return node?.data.label ? `「${node.data.label}」` : `「${id}」`;
+  };
   const startNodeIds = definition.nodes
     .filter((node) => node.type === 'startEvent')
     .map((node) => node.id);
@@ -1670,7 +1770,7 @@ function readSourceStageIssues(
     )
     .map((id) => texts.notUpstream(labelOf(id), labelOf(nodeId)));
 
-  return [...skippableIssues, ...coverageIssues, ...notUpstreamIssues];
+  return [...coverageIssues, ...notUpstreamIssues];
 }
 
 /**
@@ -1849,6 +1949,202 @@ export function readSingleApproverSourceIssues(
       `主管鏈起點的前面關卡 ${label} 可能有多位實際簽核人，無法決定從誰的主管開始。請改選只會有一位簽核人的關卡。`,
     ];
   });
+}
+
+/**
+ * The reasons a previous chain stage may be skipped that a continuation still
+ * refuses: in each of them the stage did not run this round, so the approvals
+ * the continuation would read belong to an earlier round. A stage skipped for
+ * `managerChainReached` is accepted (the engine reads its skip record and
+ * treats the reached level as unknown), and so is an SLA auto-approval (the
+ * engine does not count it).
+ */
+const CHAIN_CONTINUATION_REFUSED_SKIP_REASONS: readonly NodeActorSourceSkipReason[] =
+  ['entryCondition', 'skipNode', 'skipNodeByNodeActors'];
+
+const CHAIN_CONTINUATION_SKIP_ISSUES: Readonly<
+  Partial<Record<NodeActorSourceSkipReason, (stageLabel: string) => string>>
+> = {
+  entryCondition: (stageLabel) =>
+    `接續的前一段主管鏈 ${stageLabel} 設有進入條件，可能被跳過；被跳過時會讀到上一輪的簽核紀錄。請改用分流，把兩關放在同一條路線上。`,
+  skipNode: (stageLabel) =>
+    `接續的前一段主管鏈 ${stageLabel} 在排除發起人後沒人時會跳過此關；被跳過時會讀到上一輪的簽核紀錄。請改選其他處理方式。`,
+  skipNodeByNodeActors: (stageLabel) =>
+    `接續的前一段主管鏈 ${stageLabel} 在排除前面關卡的簽核者後沒人時會跳過此關；被跳過時會讀到上一輪的簽核紀錄。請改選其他處理方式。`,
+};
+
+const CHAIN_CONTINUATION_POSITION_TEXTS: SourceStagePositionTexts = {
+  coverage: (stageLabels, nodeLabel) =>
+    `有一條路徑不會經過接續的前一段主管鏈 ${stageLabels.join('、')} 就走到 ${nodeLabel}，那一趟沒有可以接續的簽核紀錄。請改用分流，把兩關放在同一條路線上。`,
+  notUpstream: (stageLabel, nodeLabel) =>
+    `接續的前一段主管鏈 ${stageLabel} 不在 ${nodeLabel} 的上游，走不到這個節點，無法接續。`,
+};
+
+/**
+ * The publish-time issues with a manager-chain stage that continues an earlier
+ * one (`startFrom: { type: 'CHAIN_CONTINUATION', nodeId }`); `[]` when `nodeId`
+ * is not such a stage or everything is sound. Returns Chinese issue lines for
+ * the designer and the publish lint. `nodeId` is the continuing stage (T); the
+ * stage it names is S. The shape of the start itself is
+ * {@link readOrgManagerChainIssue}'s.
+ *
+ * About S, and reported on its own (nothing else about S is read once one of
+ * them fails):
+ *
+ * 1. it is not T itself, exists and is a `userTask`;
+ * 2. its approver is an `ORG_MANAGER_CHAIN`;
+ * 3. it is not a continuation itself: stages are not chained more than once;
+ * 4. its start is the initiator or an earlier stage's approver
+ *    (`INITIATOR` / `NODE_ACTOR`, absent reads as the initiator). A
+ *    `FORM_MEMBER` start can change when the applicant revises the form, while
+ *    the approvals T reads are those of the old start.
+ *
+ * Then, reported together:
+ *
+ * 5. S may not be skipped by `entryCondition`, `skipNode` or
+ *    `skipNodeByNodeActors`. This deliberately does **not** reuse
+ *    {@link readNodeActorSourceSkipReasons} as a whole, which
+ *    {@link readExcludeNodeActorsIssues} does: S skipped for
+ *    `managerChainReached` is read by the engine as "nobody reached a level"
+ *    and S with an SLA auto-approval is not counted, so both stay allowed;
+ * 6. every path from the start to T goes through S, and S is upstream of T
+ *    (the coverage and upstream rules of {@link readExcludeNodeActorsIssues}).
+ *
+ * About T itself, always reported:
+ *
+ * 7. T's `minPositionLevel` is higher than S's: at or below it, any S that
+ *    reaches its own level would skip T every time, which is almost never
+ *    intended;
+ * 8. T may not hand over to the initiator's manager when it runs out of people
+ *    (`whenEmpty: INITIATOR_MANAGER` of `excludeInitiator` or
+ *    `excludeNodeActors`): that manager ignores the level S reached and may be
+ *    the person who just signed.
+ *
+ * The graph is a DAG: the publish lint refuses cycles before this runs.
+ */
+export function readChainContinuationSourceIssues(
+  definition: WorkflowDefinition,
+  nodeId: string,
+): readonly string[] {
+  const self = definition.nodes.find((node) => node.id === nodeId);
+  const selfResolver = (
+    self?.type === 'userTask' ? self.data.approverResolver : undefined
+  ) as ApproverResolver | undefined;
+
+  if (
+    self?.type !== 'userTask' ||
+    selfResolver?.type !== 'ORG_MANAGER_CHAIN' ||
+    !isOrgManagerChainContinuation(selfResolver)
+  ) {
+    return [];
+  }
+
+  const selfStart: unknown = selfResolver.startFrom;
+  const sourceId: unknown = (selfStart as { readonly nodeId?: unknown })
+    .nodeId;
+
+  // A missing id is the shape rule's to report (`readOrgManagerChainIssue`).
+  if (typeof sourceId !== 'string' || sourceId.trim() === '') {
+    return [];
+  }
+
+  const labelOf = (id: string): string => {
+    const node = definition.nodes.find((candidate) => candidate.id === id);
+
+    return node?.data.label ? `「${node.data.label}」` : `「${id}」`;
+  };
+  const handOverIssues = [
+    ...(self.data.excludeInitiator?.whenEmpty === 'INITIATOR_MANAGER'
+      ? [
+          `接續關卡 ${labelOf(nodeId)} 的「申請人不可簽核自己的單」不能選擇改派給申請人的直屬主管，這會繞過前一段已簽到的職等。`,
+        ]
+      : []),
+    ...(self.data.excludeNodeActors?.whenEmpty === 'INITIATOR_MANAGER'
+      ? [
+          `接續關卡 ${labelOf(nodeId)} 的「不可與前面關卡同一人」不能選擇改派給申請人的直屬主管，這會繞過前一段已簽到的職等。`,
+        ]
+      : []),
+  ];
+  const source = definition.nodes.find((node) => node.id === sourceId);
+
+  if (sourceId === nodeId) {
+    return ['接續的前一段主管鏈不可以是自己。', ...handOverIssues];
+  }
+
+  if (source === undefined) {
+    return [`接續的前一段主管鏈「${sourceId}」不存在。`, ...handOverIssues];
+  }
+
+  if (source.type !== 'userTask') {
+    return [
+      `接續的前一段主管鏈 ${labelOf(sourceId)} 不是簽核關卡。`,
+      ...handOverIssues,
+    ];
+  }
+
+  const sourceResolver = source.data.approverResolver as
+    ApproverResolver | undefined;
+
+  if (sourceResolver?.type !== 'ORG_MANAGER_CHAIN') {
+    return [
+      `接續的前一段 ${labelOf(sourceId)} 的簽核來源不是「沿主管鏈簽核」。`,
+      ...handOverIssues,
+    ];
+  }
+
+  if (isOrgManagerChainContinuation(sourceResolver)) {
+    return [
+      `接續的前一段主管鏈 ${labelOf(sourceId)} 本身也是接續型主管鏈，不支援多段串接。`,
+      ...handOverIssues,
+    ];
+  }
+
+  const sourceStart: unknown = sourceResolver.startFrom;
+  const sourceStartType: unknown =
+    typeof sourceStart === 'object' && sourceStart !== null
+      ? (sourceStart as { readonly type?: unknown }).type
+      : undefined;
+
+  if (
+    sourceStart !== undefined &&
+    sourceStart !== null &&
+    sourceStartType !== 'INITIATOR' &&
+    sourceStartType !== 'NODE_ACTOR'
+  ) {
+    return [
+      `接續的前一段主管鏈 ${labelOf(sourceId)} 的起點只能是申請人或前面關卡的簽核者，不能是表單欄位或其他起點。`,
+      ...handOverIssues,
+    ];
+  }
+
+  const skipIssues = readNodeActorSourceSkipReasons(source)
+    .filter((reason) =>
+      CHAIN_CONTINUATION_REFUSED_SKIP_REASONS.includes(reason),
+    )
+    .flatMap((reason): readonly string[] => {
+      const text = CHAIN_CONTINUATION_SKIP_ISSUES[reason];
+
+      return text === undefined ? [] : [text(labelOf(sourceId))];
+    });
+  const positionIssues = readSourceStagePositionIssues(
+    definition,
+    nodeId,
+    [sourceId],
+    [[sourceId]],
+    CHAIN_CONTINUATION_POSITION_TEXTS,
+  );
+  const selfLevel: unknown = selfResolver.minPositionLevel;
+  const sourceLevel: unknown = sourceResolver.minPositionLevel;
+  const levelIssues =
+    Number.isInteger(selfLevel) &&
+    Number.isInteger(sourceLevel) &&
+    (selfLevel as number) <= (sourceLevel as number)
+      ? [
+          `接續關卡 ${labelOf(nodeId)} 的職等門檻（${String(selfLevel)}）必須高於前一段主管鏈 ${labelOf(sourceId)} 的職等門檻（${String(sourceLevel)}）；否則前一段只要簽到自己的職等，這一關就一定被略過。`,
+        ]
+      : [];
+
+  return [...skipIssues, ...positionIssues, ...levelIssues, ...handOverIssues];
 }
 
 export function hasConfiguredConditionEdges(

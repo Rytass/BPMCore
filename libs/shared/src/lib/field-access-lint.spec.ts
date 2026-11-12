@@ -359,3 +359,107 @@ describe('readFormFieldAccessIssues', () => {
       ).map(({ code }) => code),
     ).toEqual(['fieldAccessUnknownField']));
 });
+
+describe('a manager chain that may skip itself, on a node with fillable fields', () => {
+  const chain = { minPositionLevel: 30, type: 'ORG_MANAGER_CHAIN' } as const;
+  const skipping = { ...chain, skipWhenStartReached: true };
+  const continuing = {
+    ...chain,
+    startFrom: { nodeId: 's', type: 'CHAIN_CONTINUATION' },
+  };
+
+  it.each([
+    ['skipWhenStartReached', skipping],
+    ['a continuation of another chain', continuing],
+  ])('reads %s as a fill conflict', (_label, approverResolver) => {
+    expect(
+      readUserTaskFillConflicts(
+        buildUserTask('a', undefined, { approverResolver }),
+      ),
+    ).toEqual(['managerChainReached']);
+  });
+
+  it.each([
+    ['a plain chain', chain],
+    ['a chain with the flag off', { ...chain, skipWhenStartReached: false }],
+    ['a chain with a null flag', { ...chain, skipWhenStartReached: null }],
+    [
+      'a chain from a form field',
+      { ...chain, startFrom: { formPath: 'p', type: 'FORM_MEMBER' } },
+    ],
+  ])('reads %s as no conflict (control)', (_label, approverResolver) => {
+    expect(
+      readUserTaskFillConflicts(
+        buildUserTask('a', undefined, { approverResolver }),
+      ),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['skipWhenStartReached', skipping],
+    ['a continuation of another chain', continuing],
+  ])(
+    'reports %s once the node fills a field in',
+    (_label, approverResolver) => {
+      expect(
+        readNodeFieldAccessIssues(
+          buildUserTask('a', [fill('x')], { approverResolver }),
+        ),
+      ).toEqual([
+        {
+          code: 'fieldAccessManagerChainReached',
+          fieldKeys: [],
+          message: WORKFLOW_LINT_MESSAGES.fieldAccessManagerChainReached('a'),
+          nodeIds: ['a'],
+        },
+      ]);
+    },
+  );
+
+  it('says nothing when the node fills nothing in', () => {
+    expect(
+      readNodeFieldAccessIssues(
+        buildUserTask('a', [fill('x', 'NONE')], {
+          approverResolver: skipping,
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      readNodeFieldAccessIssues(
+        buildUserTask('a', undefined, { approverResolver: continuing }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('says nothing about a plain chain that fills a field in (control)', () => {
+    expect(
+      readNodeFieldAccessIssues(
+        buildUserTask('a', [fill('x')], { approverResolver: chain }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('comes last among the fill conflicts', () => {
+    expect(
+      readNodeFieldAccessIssues(
+        buildUserTask('a', [fill('x')], {
+          approverResolver: skipping,
+          decisionPolicy: { type: 'QUORUM' },
+          excludeInitiator: { whenEmpty: 'SKIP_NODE' },
+          sla: { onTimeout: 'AUTO_APPROVE' },
+        }),
+      ).map(({ code }) => code),
+    ).toEqual([
+      'fieldAccessGroupPolicy',
+      'fieldAccessAutoApprove',
+      'fieldAccessSkipNode',
+      'fieldAccessManagerChainReached',
+    ]);
+  });
+
+  it('words the publish-lint line', () => {
+    expect(WORKFLOW_LINT_MESSAGES.fieldAccessManagerChainReached('n1')).toBe(
+      'workflow.nodes.n1.approverResolver cannot set skipWhenStartReached or continue another chain on a node with fillable fields',
+    );
+  });
+});

@@ -3,6 +3,7 @@ import {
   NOTIFY_WEBHOOK_ENDPOINT_VERSION_MAX,
   NOTIFY_WEBHOOK_TARGET_LIMIT,
   createNotifyWebhookTarget,
+  canUserTaskBeSkippedByManagerChain,
   canUserTaskHaveMultipleApprovers,
   createWorkflowNode,
   isDecisionPolicyUnsatisfiable,
@@ -16,6 +17,7 @@ import {
   readExcludeNodeActorsIssues,
   readExcludeNodeActorsShapeIssue,
   readFallbackWorkflowDefinition,
+  readChainContinuationSourceIssues,
   readNodeActorSourceIssues,
   readNodeActorSourceSkipReasons,
   readNotifyRecipientsIssue,
@@ -2962,6 +2964,672 @@ describe('excludeNodeActors', () => {
       expect(readNodeActorSourceIssues(definition, 'me', ['a'])).toEqual([
         expect.stringContaining('排除前面關卡的簽核者後沒人時會跳過此關'),
       ]);
+    });
+  });
+});
+
+describe('manager chain continuation and skipWhenStartReached', () => {
+  const CHAIN = {
+    minPositionLevel: 30,
+    type: 'ORG_MANAGER_CHAIN',
+  } as const;
+  const CONTINUE_FROM_S = {
+    nodeId: 's',
+    type: 'CHAIN_CONTINUATION',
+  } as const;
+
+  const userTask = (
+    id: string,
+    approverResolver: unknown,
+    data: Readonly<Record<string, unknown>> = {},
+  ): WorkflowNode =>
+    ({
+      data: {
+        allowAddSigner: false,
+        allowReject: true,
+        allowTransfer: false,
+        approverResolver,
+        decisionPolicy: { type: 'SEQUENTIAL' },
+        label: id,
+        returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },
+        ...data,
+      },
+      id,
+      position: { x: 0, y: 0 },
+      type: 'userTask',
+    }) as WorkflowNode;
+  const plainNode = (id: string, type: WorkflowNode['type']): WorkflowNode =>
+    ({
+      data: { label: id },
+      id,
+      position: { x: 0, y: 0 },
+      type,
+    }) as WorkflowNode;
+  const link = (source: string, target: string): WorkflowEdge => ({
+    data: {},
+    id: `${source}-${target}`,
+    source,
+    target,
+  });
+  const graph = (
+    nodes: readonly WorkflowNode[],
+    edges: readonly WorkflowEdge[],
+  ): WorkflowDefinition => ({
+    edges: [...edges],
+    meta: { schemaVersion: 1 },
+    nodes: [...nodes],
+  });
+
+  // start -> s -> hr -> t -> end, with the two chain stages configurable.
+  const pair = (
+    sResolver: unknown = { ...CHAIN, minPositionLevel: 20 },
+    tResolver: unknown = { ...CHAIN, startFrom: CONTINUE_FROM_S },
+    sData: Readonly<Record<string, unknown>> = {},
+    tData: Readonly<Record<string, unknown>> = {},
+  ): WorkflowDefinition =>
+    graph(
+      [
+        plainNode('start', 'startEvent'),
+        userTask('s', sResolver, sData),
+        userTask('hr', { memberIds: ['m1'], type: 'DIRECT' }),
+        userTask('t', tResolver, tData),
+        plainNode('end', 'endEvent'),
+      ],
+      [link('start', 's'), link('s', 'hr'), link('hr', 't'), link('t', 'end')],
+    );
+
+  describe('the settings on the resolver', () => {
+    it('accepts a continuation start and the skip flag in every spelling (control)', () => {
+      [
+        { ...CHAIN, startFrom: CONTINUE_FROM_S },
+        { ...CHAIN, skipWhenStartReached: true },
+        { ...CHAIN, skipWhenStartReached: false },
+        { ...CHAIN, skipWhenStartReached: null },
+        { ...CHAIN, skipWhenStartReached: false, startFrom: CONTINUE_FROM_S },
+        { ...CHAIN, skipWhenStartReached: null, startFrom: CONTINUE_FROM_S },
+      ].forEach((resolver) => {
+        expect(
+          readApproverResolverIssue(resolver as ApproverResolver),
+        ).toBeNull();
+      });
+    });
+
+    it('does not change what a chain without either setting reports (control)', () => {
+      expect(readApproverResolverIssue(CHAIN)).toBeNull();
+      expect(
+        readApproverResolverIssue({ ...CHAIN, startPositionLevel: 31 }),
+      ).toBe('簽核節點的起始職等不可高於職等門檻。');
+    });
+
+    it.each([
+      ['an empty id', { nodeId: '', type: 'CHAIN_CONTINUATION' }],
+      ['a blank id', { nodeId: '  ', type: 'CHAIN_CONTINUATION' }],
+      ['no id key', { type: 'CHAIN_CONTINUATION' }],
+      ['an id that is not text', { nodeId: 5, type: 'CHAIN_CONTINUATION' }],
+    ])('refuses a continuation with %s', (_label, startFrom) => {
+      expect(
+        readApproverResolverIssue({
+          ...CHAIN,
+          startFrom,
+        } as unknown as ApproverResolver),
+      ).toBe('簽核節點需要指定要接續的前一段主管鏈關卡。');
+    });
+
+    it.each(['true', 'yes', 1, 0, {}])(
+      'refuses a skip flag that is not a boolean (%p)',
+      (skipWhenStartReached) => {
+        expect(
+          readApproverResolverIssue({
+            ...CHAIN,
+            skipWhenStartReached,
+          } as unknown as ApproverResolver),
+        ).toBe('簽核節點的「起點本人已達簽到職等時略過」只能是勾選或不勾選。');
+      },
+    );
+
+    it('refuses a chain that both continues another chain and skips', () => {
+      expect(
+        readApproverResolverIssue({
+          ...CHAIN,
+          skipWhenStartReached: true,
+          startFrom: CONTINUE_FROM_S,
+        }),
+      ).toBe(
+        '簽核節點不能同時接續前一段主管鏈又設定「起點本人已達簽到職等時略過」。',
+      );
+    });
+
+    it('still lets a skip flag of false sit next to a continuation (control)', () => {
+      expect(
+        readApproverResolverIssue({
+          ...CHAIN,
+          skipWhenStartReached: false,
+          startFrom: CONTINUE_FROM_S,
+        }),
+      ).toBeNull();
+    });
+
+    it('keeps reporting a bad required level before the new settings (control)', () => {
+      expect(
+        readApproverResolverIssue({
+          ...CHAIN,
+          minPositionLevel: 2.5,
+          skipWhenStartReached: 'x',
+        } as unknown as ApproverResolver),
+      ).toBe('簽核節點需要指定有效的職等門檻。');
+    });
+
+    describe('as a notify recipient', () => {
+      it('refuses a continuation start', () => {
+        expect(
+          readNotifyRecipientsIssue({ ...CHAIN, startFrom: CONTINUE_FROM_S }),
+        ).toBe('知會節點的主管鏈只能從發起人開始。');
+      });
+
+      it('refuses the skip flag when it is on', () => {
+        expect(
+          readNotifyRecipientsIssue({ ...CHAIN, skipWhenStartReached: true }),
+        ).toBe('知會節點的主管鏈不能設定「起點本人已達簽到職等時略過」。');
+      });
+
+      it.each([false, null])(
+        'treats a skip flag of %p as absent (control)',
+        (skipWhenStartReached) => {
+          expect(
+            readNotifyRecipientsIssue({
+              ...CHAIN,
+              skipWhenStartReached,
+            }),
+          ).toBeNull();
+        },
+      );
+
+      it('refuses a skip flag that is not a boolean', () => {
+        expect(
+          readNotifyRecipientsIssue({
+            ...CHAIN,
+            skipWhenStartReached: 'x',
+          } as unknown as ApproverResolver),
+        ).toBe('知會節點的「起點本人已達簽到職等時略過」只能是勾選或不勾選。');
+      });
+
+      it('names the missing stage of a continuation before the initiator rule', () => {
+        expect(
+          readNotifyRecipientsIssue({
+            ...CHAIN,
+            startFrom: { nodeId: '', type: 'CHAIN_CONTINUATION' },
+          }),
+        ).toBe('知會節點需要指定要接續的前一段主管鏈關卡。');
+      });
+    });
+  });
+
+  describe('managerChainReached as a reason a stage may be skipped', () => {
+    const asUserTask = (node: WorkflowNode): UserTaskNode =>
+      node as UserTaskNode;
+
+    it('is reported for a chain that skips when its start reached the level', () => {
+      expect(
+        readNodeActorSourceSkipReasons(
+          asUserTask(userTask('a', { ...CHAIN, skipWhenStartReached: true })),
+        ),
+      ).toEqual(['managerChainReached']);
+    });
+
+    it('is reported for a chain that continues another one', () => {
+      expect(
+        readNodeActorSourceSkipReasons(
+          asUserTask(userTask('a', { ...CHAIN, startFrom: CONTINUE_FROM_S })),
+        ),
+      ).toEqual(['managerChainReached']);
+    });
+
+    it('comes after the older reasons', () => {
+      expect(
+        readNodeActorSourceSkipReasons(
+          asUserTask(
+            userTask(
+              'a',
+              { ...CHAIN, skipWhenStartReached: true },
+              {
+                entryCondition: 'form.x == 1',
+                sla: { onTimeout: 'AUTO_APPROVE' },
+              },
+            ),
+          ),
+        ),
+      ).toEqual(['entryCondition', 'autoApprove', 'managerChainReached']);
+    });
+
+    it.each([
+      ['a plain chain', CHAIN],
+      ['a chain with the flag off', { ...CHAIN, skipWhenStartReached: false }],
+      ['a chain with a null flag', { ...CHAIN, skipWhenStartReached: null }],
+      [
+        'a chain from a form field',
+        { ...CHAIN, startFrom: { formPath: 'p', type: 'FORM_MEMBER' } },
+      ],
+      ['a resolver of another type', { memberIds: ['m'], type: 'DIRECT' }],
+    ])('is not reported for %s (control)', (_label, resolver) => {
+      const node = asUserTask(userTask('a', resolver));
+
+      expect(readNodeActorSourceSkipReasons(node)).toEqual([]);
+      expect(canUserTaskBeSkippedByManagerChain(node)).toBe(false);
+    });
+
+    it('reads a node with no resolver as not skippable instead of throwing', () => {
+      expect(
+        canUserTaskBeSkippedByManagerChain(
+          asUserTask(userTask('a', undefined)),
+        ),
+      ).toBe(false);
+    });
+
+    it('rules such a stage out as a NODE_ACTOR source', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          userTask('a', { ...CHAIN, skipWhenStartReached: true }),
+          userTask('me', { nodeIds: ['a'], type: 'NODE_ACTOR' }),
+          plainNode('end', 'endEvent'),
+        ],
+        [link('start', 'a'), link('a', 'me'), link('me', 'end')],
+      );
+
+      expect(readNodeActorSourceIssues(definition, 'me', ['a'])).toEqual([
+        expect.stringContaining('起點本人已達簽到職等時會整關略過'),
+      ]);
+    });
+
+    it('rules such a stage out for excludeNodeActors', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          userTask('a', { ...CHAIN, startFrom: CONTINUE_FROM_S }),
+          userTask('me', { memberIds: ['m'], type: 'DIRECT' }),
+          plainNode('end', 'endEvent'),
+        ],
+        [link('start', 'a'), link('a', 'me'), link('me', 'end')],
+      );
+
+      expect(
+        readExcludeNodeActorsIssues(definition, 'me', {
+          nodeIds: ['a'],
+          whenEmpty: 'FAIL',
+        }),
+      ).toEqual([expect.stringContaining('起點本人已達簽到職等時會整關略過')]);
+    });
+  });
+
+  describe('readChainContinuationSourceIssues', () => {
+    it('passes a sound continuation (control)', () => {
+      expect(readChainContinuationSourceIssues(pair(), 't')).toEqual([]);
+    });
+
+    it.each([
+      ['a node that does not continue anything', 's'],
+      ['a node that does not exist', 'ghost'],
+      ['a node that is not a user task', 'end'],
+      ['the human task between them', 'hr'],
+    ])('has nothing to say about %s', (_label, nodeId) => {
+      expect(readChainContinuationSourceIssues(pair(), nodeId)).toEqual([]);
+    });
+
+    it('leaves a continuation with no stage named to the shape rule', () => {
+      expect(
+        readChainContinuationSourceIssues(
+          pair(undefined, {
+            ...CHAIN,
+            startFrom: { nodeId: '', type: 'CHAIN_CONTINUATION' },
+          }),
+          't',
+        ),
+      ).toEqual([]);
+    });
+
+    it('refuses a continuation of itself', () => {
+      expect(
+        readChainContinuationSourceIssues(
+          pair(undefined, {
+            ...CHAIN,
+            startFrom: { nodeId: 't', type: 'CHAIN_CONTINUATION' },
+          }),
+          't',
+        ),
+      ).toEqual(['接續的前一段主管鏈不可以是自己。']);
+    });
+
+    it('refuses a stage that does not exist', () => {
+      expect(
+        readChainContinuationSourceIssues(
+          pair(undefined, {
+            ...CHAIN,
+            startFrom: { nodeId: 'ghost', type: 'CHAIN_CONTINUATION' },
+          }),
+          't',
+        ),
+      ).toEqual(['接續的前一段主管鏈「ghost」不存在。']);
+    });
+
+    it('refuses a stage that is not a user task', () => {
+      expect(
+        readChainContinuationSourceIssues(
+          pair(undefined, {
+            ...CHAIN,
+            startFrom: { nodeId: 'start', type: 'CHAIN_CONTINUATION' },
+          }),
+          't',
+        ),
+      ).toEqual([expect.stringContaining('不是簽核關卡')]);
+    });
+
+    it('refuses a stage whose approver is not a manager chain', () => {
+      expect(
+        readChainContinuationSourceIssues(
+          pair({ memberIds: ['m'], type: 'DIRECT' }),
+          't',
+        ),
+      ).toEqual([expect.stringContaining('不是「沿主管鏈簽核」')]);
+    });
+
+    it('refuses a stage that continues another one: no chaining of chains', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          userTask('first', { ...CHAIN, minPositionLevel: 10 }),
+          userTask('s', {
+            ...CHAIN,
+            minPositionLevel: 20,
+            startFrom: { nodeId: 'first', type: 'CHAIN_CONTINUATION' },
+          }),
+          userTask('t', { ...CHAIN, startFrom: CONTINUE_FROM_S }),
+          plainNode('end', 'endEvent'),
+        ],
+        [
+          link('start', 'first'),
+          link('first', 's'),
+          link('s', 't'),
+          link('t', 'end'),
+        ],
+      );
+
+      expect(readChainContinuationSourceIssues(definition, 't')).toEqual([
+        expect.stringContaining('不支援多段串接'),
+      ]);
+    });
+
+    it.each([
+      ['a form field start', { formPath: 'picked', type: 'FORM_MEMBER' }],
+      ['a start type this build does not know', { type: 'FUTURE_START' }],
+    ])('refuses a stage with %s', (_label, startFrom) => {
+      expect(
+        readChainContinuationSourceIssues(
+          pair({ ...CHAIN, minPositionLevel: 20, startFrom }),
+          't',
+        ),
+      ).toEqual([
+        expect.stringContaining('起點只能是申請人或前面關卡的簽核者'),
+      ]);
+    });
+
+    it.each([
+      ['no start', {}],
+      ['a null start', { startFrom: null }],
+      ['an INITIATOR start', { startFrom: { type: 'INITIATOR' } }],
+      [
+        'an earlier stage as the start',
+        { startFrom: { nodeIds: ['x'], type: 'NODE_ACTOR' } },
+      ],
+    ])('accepts a stage with %s (control)', (_label, start) => {
+      expect(
+        readChainContinuationSourceIssues(
+          pair({ ...CHAIN, minPositionLevel: 20, ...start }),
+          't',
+        ),
+      ).toEqual([]);
+    });
+
+    describe('where the stage sits', () => {
+      it('refuses a stage that some path to the continuation skips', () => {
+        // start -> gw -> s -> t, and gw -> other -> t
+        const definition = graph(
+          [
+            plainNode('start', 'startEvent'),
+            plainNode('gw', 'exclusiveGateway'),
+            userTask('s', { ...CHAIN, minPositionLevel: 20 }),
+            userTask('other', { memberIds: ['m'], type: 'DIRECT' }),
+            userTask('t', { ...CHAIN, startFrom: CONTINUE_FROM_S }),
+            plainNode('end', 'endEvent'),
+          ],
+          [
+            link('start', 'gw'),
+            link('gw', 's'),
+            link('gw', 'other'),
+            link('s', 't'),
+            link('other', 't'),
+            link('t', 'end'),
+          ],
+        );
+
+        expect(readChainContinuationSourceIssues(definition, 't')).toEqual([
+          expect.stringContaining('不會經過接續的前一段主管鏈 「s」'),
+        ]);
+      });
+
+      it('refuses a stage that sits after the continuation', () => {
+        const definition = graph(
+          [
+            plainNode('start', 'startEvent'),
+            userTask('t', { ...CHAIN, startFrom: CONTINUE_FROM_S }),
+            userTask('s', { ...CHAIN, minPositionLevel: 20 }),
+            plainNode('end', 'endEvent'),
+          ],
+          [link('start', 't'), link('t', 's'), link('s', 'end')],
+        );
+
+        expect(readChainContinuationSourceIssues(definition, 't')).toEqual([
+          expect.stringContaining('不會經過接續的前一段主管鏈 「s」'),
+          expect.stringContaining('「s」 不在 「t」 的上游'),
+        ]);
+      });
+
+      it('refuses a stage on no path to the continuation', () => {
+        const definition = graph(
+          [
+            plainNode('start', 'startEvent'),
+            userTask('t', { ...CHAIN, startFrom: CONTINUE_FROM_S }),
+            userTask('s', { ...CHAIN, minPositionLevel: 20 }),
+            plainNode('end', 'endEvent'),
+          ],
+          [link('start', 't'), link('t', 'end')],
+        );
+
+        expect(readChainContinuationSourceIssues(definition, 't')).toEqual([
+          expect.stringContaining('不會經過接續的前一段主管鏈 「s」'),
+          expect.stringContaining('「s」 不在 「t」 的上游'),
+        ]);
+      });
+    });
+
+    describe('why the stage may not have run this round', () => {
+      it.each([
+        [
+          'an entry condition',
+          { entryCondition: 'form.x == 1' },
+          '設有進入條件',
+        ],
+        [
+          'excludeInitiator that skips the stage',
+          { excludeInitiator: { whenEmpty: 'SKIP_NODE' } },
+          '排除發起人後沒人時會跳過此關',
+        ],
+        [
+          'excludeNodeActors that skips the stage',
+          { excludeNodeActors: { nodeIds: ['x'], whenEmpty: 'SKIP_NODE' } },
+          '排除前面關卡的簽核者後沒人時會跳過此關',
+        ],
+      ])('refuses a stage with %s', (_label, data, text) => {
+        expect(
+          readChainContinuationSourceIssues(
+            pair(undefined, undefined, data),
+            't',
+          ),
+        ).toEqual([expect.stringContaining(text)]);
+      });
+
+      it('reports every reason together, in the order of the stage rules', () => {
+        expect(
+          readChainContinuationSourceIssues(
+            pair(undefined, undefined, {
+              entryCondition: 'form.x == 1',
+              excludeInitiator: { whenEmpty: 'SKIP_NODE' },
+            }),
+            't',
+          ),
+        ).toEqual([
+          expect.stringContaining('設有進入條件'),
+          expect.stringContaining('排除發起人後沒人時會跳過此關'),
+        ]);
+      });
+
+      // The reverse control of the rule above: the two reasons below are the
+      // ones `readExcludeNodeActorsIssues` refuses and a continuation takes.
+      it('lets a stage that skips when its start reached the level through', () => {
+        const definition = pair({
+          ...CHAIN,
+          minPositionLevel: 20,
+          skipWhenStartReached: true,
+        });
+
+        expect(readChainContinuationSourceIssues(definition, 't')).toEqual([]);
+        expect(
+          readExcludeNodeActorsIssues(definition, 't', {
+            nodeIds: ['s'],
+            whenEmpty: 'FAIL',
+          }),
+        ).toEqual([
+          expect.stringContaining('起點本人已達簽到職等時會整關略過'),
+        ]);
+      });
+
+      it('lets a stage with an SLA auto-approval through', () => {
+        const definition = pair(undefined, undefined, {
+          sla: { onTimeout: 'AUTO_APPROVE' },
+        });
+
+        expect(readChainContinuationSourceIssues(definition, 't')).toEqual([]);
+        expect(
+          readExcludeNodeActorsIssues(definition, 't', {
+            nodeIds: ['s'],
+            whenEmpty: 'FAIL',
+          }),
+        ).toEqual([expect.stringContaining('逾時自動核准')]);
+      });
+    });
+
+    describe('the position level of the continuation', () => {
+      it.each([
+        [30, 30],
+        [20, 30],
+        [1, 30],
+      ])('refuses %i against %i of the stage', (own, previous) => {
+        expect(
+          readChainContinuationSourceIssues(
+            pair(
+              { ...CHAIN, minPositionLevel: previous },
+              { ...CHAIN, minPositionLevel: own, startFrom: CONTINUE_FROM_S },
+            ),
+            't',
+          ),
+        ).toEqual([
+          expect.stringContaining(
+            `職等門檻（${own}）必須高於前一段主管鏈 「s」 的職等門檻（${previous}）`,
+          ),
+        ]);
+      });
+
+      it('accepts a level one above the stage (control)', () => {
+        expect(
+          readChainContinuationSourceIssues(
+            pair(
+              { ...CHAIN, minPositionLevel: 30 },
+              { ...CHAIN, minPositionLevel: 31, startFrom: CONTINUE_FROM_S },
+            ),
+            't',
+          ),
+        ).toEqual([]);
+      });
+
+      it('leaves a level that is not a whole number to the shape rule', () => {
+        expect(
+          readChainContinuationSourceIssues(
+            pair(
+              { ...CHAIN, minPositionLevel: 30 },
+              { ...CHAIN, minPositionLevel: 2.5, startFrom: CONTINUE_FROM_S },
+            ),
+            't',
+          ),
+        ).toEqual([]);
+      });
+    });
+
+    describe("handing the seat to the initiator's manager", () => {
+      it('refuses excludeInitiator.whenEmpty INITIATOR_MANAGER', () => {
+        expect(
+          readChainContinuationSourceIssues(
+            pair(undefined, undefined, undefined, {
+              excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+            }),
+            't',
+          ),
+        ).toEqual([
+          expect.stringContaining('「申請人不可簽核自己的單」不能選擇改派'),
+        ]);
+      });
+
+      it('refuses excludeNodeActors.whenEmpty INITIATOR_MANAGER', () => {
+        expect(
+          readChainContinuationSourceIssues(
+            pair(undefined, undefined, undefined, {
+              excludeNodeActors: {
+                nodeIds: ['s'],
+                whenEmpty: 'INITIATOR_MANAGER',
+              },
+            }),
+            't',
+          ),
+        ).toEqual([
+          expect.stringContaining('「不可與前面關卡同一人」不能選擇改派'),
+        ]);
+      });
+
+      it.each(['FAIL', 'SKIP_NODE'] as const)(
+        'accepts whenEmpty %s (control)',
+        (whenEmpty) => {
+          expect(
+            readChainContinuationSourceIssues(
+              pair(undefined, undefined, undefined, {
+                excludeInitiator: { whenEmpty },
+              }),
+              't',
+            ),
+          ).toEqual([]);
+        },
+      );
+
+      it('is still reported next to a problem with the stage', () => {
+        expect(
+          readChainContinuationSourceIssues(
+            pair({ memberIds: ['m'], type: 'DIRECT' }, undefined, undefined, {
+              excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+            }),
+            't',
+          ),
+        ).toEqual([
+          expect.stringContaining('不是「沿主管鏈簽核」'),
+          expect.stringContaining('「申請人不可簽核自己的單」不能選擇改派'),
+        ]);
+      });
     });
   });
 });

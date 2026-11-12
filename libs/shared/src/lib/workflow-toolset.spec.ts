@@ -2029,6 +2029,144 @@ describe('set_user_task_approver — manager chain start settings', () => {
     );
   });
 
+  describe('continuation and skip flag', () => {
+    const CONTINUE_FROM_UNIT = { nodeId: 'unit', type: 'CHAIN_CONTINUATION' };
+
+    it('keeps a continuation start on the resolver', async () => {
+      const { resolver } = await chainAfter({
+        minPositionLevel: 40,
+        startFrom: CONTINUE_FROM_UNIT,
+        startPositionLevel: 35,
+      });
+
+      expect(resolver).toEqual({
+        minPositionLevel: 40,
+        startFrom: CONTINUE_FROM_UNIT,
+        startPositionLevel: 35,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+      expect(
+        readApproverResolverIssue(resolver as ApproverResolver),
+      ).toBeNull();
+    });
+
+    it('keeps a continuation with no stage named as written so validation reports it', async () => {
+      const { resolver } = await chainAfter({
+        minPositionLevel: 40,
+        startFrom: { type: 'CHAIN_CONTINUATION' },
+      });
+
+      expect(resolver).toEqual({
+        minPositionLevel: 40,
+        startFrom: { nodeId: '', type: 'CHAIN_CONTINUATION' },
+        type: 'ORG_MANAGER_CHAIN',
+      });
+      expect(readApproverResolverIssue(resolver as ApproverResolver)).toBe(
+        '簽核節點需要指定要接續的前一段主管鏈關卡。',
+      );
+    });
+
+    it('stores the skip flag when it is on', async () => {
+      const { resolver } = await chainAfter({
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+      });
+
+      expect(resolver).toEqual({
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        type: 'ORG_MANAGER_CHAIN',
+      });
+      expect(
+        readApproverResolverIssue(resolver as ApproverResolver),
+      ).toBeNull();
+    });
+
+    it.each([false, null])(
+      'stores nothing for a skip flag of %p, which reads as absent',
+      async (skipWhenStartReached) => {
+        const { resolver } = await chainAfter({
+          minPositionLevel: 30,
+          skipWhenStartReached,
+        });
+
+        expect(resolver).toEqual({
+          minPositionLevel: 30,
+          type: 'ORG_MANAGER_CHAIN',
+        });
+      },
+    );
+
+    it.each(['true', 1])(
+      'keeps a skip flag of %p as written so validation reports it',
+      async (skipWhenStartReached) => {
+        const { resolver } = await chainAfter({
+          minPositionLevel: 30,
+          skipWhenStartReached,
+        });
+
+        expect(resolver).toEqual({
+          minPositionLevel: 30,
+          skipWhenStartReached,
+          type: 'ORG_MANAGER_CHAIN',
+        });
+        expect(readApproverResolverIssue(resolver as ApproverResolver)).toBe(
+          '簽核節點的「起點本人已達簽到職等時略過」只能是勾選或不勾選。',
+        );
+      },
+    );
+
+    it('keeps both settings when a call writes them together, so validation reports the pair', async () => {
+      const { resolver } = await chainAfter({
+        minPositionLevel: 40,
+        skipWhenStartReached: true,
+        startFrom: CONTINUE_FROM_UNIT,
+      });
+
+      expect(readApproverResolverIssue(resolver as ApproverResolver)).toBe(
+        '簽核節點不能同時接續前一段主管鏈又設定「起點本人已達簽到職等時略過」。',
+      );
+    });
+
+    it('reads both back in the node summary', async () => {
+      const continued = await chainAfter({
+        minPositionLevel: 40,
+        startFrom: CONTINUE_FROM_UNIT,
+      });
+      const skipping = await chainAfter({
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+      });
+      const skippingFromForm = await chainAfter({
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+        startPositionLevel: 20,
+      });
+
+      expect(continued.summary).toContain(
+        '簽核人=ORG_MANAGER_CHAIN；主管鏈起點=接續關卡 unit 的主管鏈；決策=',
+      );
+      expect(skipping.summary).toContain(
+        '簽核人=ORG_MANAGER_CHAIN；主管鏈起點=發起人；起點本人已達職等門檻時略過此關；決策=',
+      );
+      expect(skippingFromForm.summary).toContain(
+        '簽核人=ORG_MANAGER_CHAIN；主管鏈起點=表單欄位 picked；起始職等=20；起點本人已達職等門檻時略過此關；決策=',
+      );
+    });
+
+    it('explains both settings and the carry-over exception in the tool schema', () => {
+      const description = JSON.stringify(
+        WORKFLOW_TOOLSET.find((tool) => tool.name === 'set_user_task_approver')
+          ?.inputSchema,
+      );
+
+      expect(description).toContain('CHAIN_CONTINUATION');
+      expect(description).toContain('skipWhenStartReached');
+      expect(description).toContain('只有真的互斥時才不沿用');
+    });
+  });
+
   describe('rewriting a chain that already has a start', () => {
     const WITH_START = {
       minPositionLevel: 30,
@@ -2172,6 +2310,222 @@ describe('set_user_task_approver — manager chain start settings', () => {
         ...WITH_START,
         fallback: { memberId: 'm9', type: 'DIRECT' },
         minPositionLevel: 40,
+      });
+    });
+
+    describe('with the skip flag and the continuation start', () => {
+      const CONTINUE_FROM_UNIT = {
+        nodeId: 'unit',
+        type: 'CHAIN_CONTINUATION',
+      };
+      const SKIPPING = {
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+        startPositionLevel: 20,
+        type: 'ORG_MANAGER_CHAIN',
+      };
+      const CONTINUING = {
+        minPositionLevel: 40,
+        startFrom: CONTINUE_FROM_UNIT,
+        type: 'ORG_MANAGER_CHAIN',
+      };
+
+      it('carries the skip flag and the start over when the call leaves both out', async () => {
+        expect(
+          await rewriteAs(
+            { minPositionLevel: 35, type: 'ORG_MANAGER_CHAIN' },
+            SKIPPING,
+          ),
+        ).toEqual({ ...SKIPPING, minPositionLevel: 35 });
+      });
+
+      it('carries a continuation start over when the call leaves it out', async () => {
+        expect(
+          await rewriteAs(
+            { minPositionLevel: 45, type: 'ORG_MANAGER_CHAIN' },
+            CONTINUING,
+          ),
+        ).toEqual({ ...CONTINUING, minPositionLevel: 45 });
+      });
+
+      it('does not carry the skip flag onto a call that writes a continuation start', async () => {
+        expect(
+          await rewriteAs(
+            {
+              minPositionLevel: 40,
+              startFrom: CONTINUE_FROM_UNIT,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            SKIPPING,
+          ),
+        ).toEqual({
+          minPositionLevel: 40,
+          startFrom: CONTINUE_FROM_UNIT,
+          startPositionLevel: 20,
+          type: 'ORG_MANAGER_CHAIN',
+        });
+      });
+
+      it('does not carry a continuation start onto a call that turns the skip flag on', async () => {
+        expect(
+          await rewriteAs(
+            {
+              minPositionLevel: 40,
+              skipWhenStartReached: true,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            { ...CONTINUING, startPositionLevel: 35 },
+          ),
+        ).toEqual({
+          minPositionLevel: 40,
+          skipWhenStartReached: true,
+          startPositionLevel: 35,
+          type: 'ORG_MANAGER_CHAIN',
+        });
+      });
+
+      // The reverse controls of the two rules above: the exclusion only
+      // applies to a call that really conflicts with what the node holds.
+      it('keeps the skip flag when the call only writes another kind of start', async () => {
+        expect(
+          await rewriteAs(
+            {
+              minPositionLevel: 30,
+              startFrom: { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            SKIPPING,
+          ),
+        ).toEqual({
+          minPositionLevel: 30,
+          skipWhenStartReached: true,
+          startFrom: { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+          startPositionLevel: 20,
+          type: 'ORG_MANAGER_CHAIN',
+        });
+        expect(
+          await rewriteAs(
+            {
+              minPositionLevel: 30,
+              startFrom: { formPath: 'other', type: 'FORM_MEMBER' },
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            SKIPPING,
+          ),
+        ).toEqual({
+          ...SKIPPING,
+          startFrom: { formPath: 'other', type: 'FORM_MEMBER' },
+        });
+      });
+
+      it('keeps a start that is not a continuation when the call turns the skip flag on', async () => {
+        expect(
+          await rewriteAs(
+            {
+              minPositionLevel: 30,
+              skipWhenStartReached: true,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            {
+              minPositionLevel: 30,
+              startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+              type: 'ORG_MANAGER_CHAIN',
+            },
+          ),
+        ).toEqual({
+          minPositionLevel: 30,
+          skipWhenStartReached: true,
+          startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+          type: 'ORG_MANAGER_CHAIN',
+        });
+      });
+
+      it('keeps a continuation start when the call writes the skip flag as false', async () => {
+        expect(
+          await rewriteAs(
+            {
+              minPositionLevel: 45,
+              skipWhenStartReached: false,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            CONTINUING,
+          ),
+        ).toEqual({ ...CONTINUING, minPositionLevel: 45 });
+      });
+
+      it.each([false, null])(
+        'clears the skip flag when the call writes %p, and keeps the start',
+        async (skipWhenStartReached) => {
+          expect(
+            await rewriteAs(
+              {
+                minPositionLevel: 30,
+                skipWhenStartReached,
+                type: 'ORG_MANAGER_CHAIN',
+              },
+              SKIPPING,
+            ),
+          ).toEqual({
+            minPositionLevel: 30,
+            startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+            startPositionLevel: 20,
+            type: 'ORG_MANAGER_CHAIN',
+          });
+        },
+      );
+
+      it('keeps the skip flag when the call clears the start', async () => {
+        expect(
+          await rewriteAs(
+            {
+              minPositionLevel: 30,
+              startFrom: null,
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            SKIPPING,
+          ),
+        ).toEqual({
+          minPositionLevel: 30,
+          skipWhenStartReached: true,
+          startPositionLevel: 20,
+          type: 'ORG_MANAGER_CHAIN',
+        });
+      });
+
+      it('drops a continuation start when the call sends an INITIATOR start', async () => {
+        expect(
+          await rewriteAs(
+            {
+              minPositionLevel: 40,
+              startFrom: { type: 'INITIATOR' },
+              type: 'ORG_MANAGER_CHAIN',
+            },
+            CONTINUING,
+          ),
+        ).toEqual({
+          minPositionLevel: 40,
+          startFrom: { type: 'INITIATOR' },
+          type: 'ORG_MANAGER_CHAIN',
+        });
+      });
+
+      it('does not carry the skip flag onto another resolver type', async () => {
+        expect(
+          await rewriteAs(
+            {
+              baseFromInitiator: true,
+              levelsUp: 1,
+              type: 'ORG_MANAGER',
+            },
+            SKIPPING,
+          ),
+        ).toEqual({
+          baseFromInitiator: true,
+          levelsUp: 1,
+          preferClosestOrgUnit: false,
+          type: 'ORG_MANAGER',
+        });
       });
     });
   });

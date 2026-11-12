@@ -89,6 +89,7 @@ export function readFieldAccessNodeTag(node: UserTaskNode): string | null {
 const FILL_CONFLICT_CODES: ReadonlySet<FieldAccessIssueCode> = new Set([
   'fieldAccessAutoApprove',
   'fieldAccessGroupPolicy',
+  'fieldAccessManagerChainReached',
   'fieldAccessSkipNode',
 ]);
 

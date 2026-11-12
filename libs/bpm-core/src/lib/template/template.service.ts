@@ -34,6 +34,7 @@ import {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  readChainContinuationSourceIssues,
   readExcludeNodeActorsIssues,
   readNodeActorSourceIssues,
   readSingleApproverSourceIssues,
@@ -1215,6 +1216,9 @@ export class TemplateService {
     const excludeNodeActorsErrors = workflowResult.valid
       ? lintWorkflowExcludeNodeActors(version.workflowDefinition)
       : [];
+    const chainContinuationErrors = workflowResult.valid
+      ? lintWorkflowChainContinuations(version.workflowDefinition)
+      : [];
     const approverFilledFieldErrors = readFormFieldAccessIssues(
       version.workflowDefinition,
       formVersion.schema,
@@ -1236,6 +1240,7 @@ export class TemplateService {
       ...orgUnitReferenceErrors,
       ...nodeActorSourceErrors,
       ...excludeNodeActorsErrors,
+      ...chainContinuationErrors,
       ...approverFilledFieldErrors,
       ...approverFilledReadErrors,
       ...webhookErrors,
@@ -2000,6 +2005,27 @@ function lintWorkflowExcludeNodeActors(
           node.data.excludeNodeActors,
         ).map(
           (issue) => `workflow.nodes.${node.id}.excludeNodeActors: ${issue}`,
+        )
+      : [],
+  );
+}
+
+/**
+ * The graph checks behind a manager chain that continues an earlier chain
+ * (`startFrom: CHAIN_CONTINUATION`, shared with the designer): the earlier
+ * stage exists, is a plain manager chain on every path to this node, and this
+ * node asks for a higher level than it. A node that is not a continuation
+ * reports nothing. Runs after the structural lint, like the other graph
+ * checks, so the shape rule has already refused a missing `nodeId`.
+ */
+function lintWorkflowChainContinuations(
+  definition: WorkflowDefinition,
+): readonly string[] {
+  return definition.nodes.flatMap((node): readonly string[] =>
+    node.type === 'userTask'
+      ? readChainContinuationSourceIssues(definition, node.id).map(
+          (issue) =>
+            `workflow.nodes.${node.id}.approverResolver.startFrom: ${issue}`,
         )
       : [],
   );

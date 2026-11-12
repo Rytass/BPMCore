@@ -12117,6 +12117,1384 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  describe('ORG_MANAGER_CHAIN continuing an earlier chain, or skipping when its start already qualifies', (): void => {
+    type ChainResolver = Extract<
+      ApproverResolver,
+      { type: 'ORG_MANAGER_CHAIN' }
+    >;
+    type OrgData = ReturnType<typeof createManagerChainOrg>;
+    type NextOptions = Omit<
+      NonNullable<Parameters<typeof createLinearUserTaskWorkflow>[0]>,
+      'approverResolver'
+    >;
+
+    // The ladder of the example: 部 20, 處 30, 營運長 40, 總經理 50.
+    const STAGE = 'task_stage';
+    const TAIPEI: BPMRootRuntimeOptions = {
+      organizationTimeZone: 'Asia/Taipei',
+    };
+    const CONTINUE: Partial<ChainResolver> = {
+      startFrom: { nodeId: STAGE, type: 'CHAIN_CONTINUATION' },
+    };
+    const SKIP_PAYLOAD = {
+      skippedByManagerChainReached: true,
+      tokenId: 'token-1',
+    };
+
+    const at = (minute: number): Date =>
+      new Date(Date.UTC(2026, 4, 1, 0, minute));
+    const chain = (value: Partial<ChainResolver> = {}): ChainResolver => ({
+      minPositionLevel: 30,
+      type: 'ORG_MANAGER_CHAIN',
+      ...value,
+    });
+    const finished = (
+      id: string,
+      nodeId: string,
+      tokenId: string,
+      minute: number,
+      extra: Partial<TaskEntity> = {},
+    ): TaskEntity =>
+      createTask({
+        createdAt: at(minute),
+        id,
+        nodeId,
+        status: TaskStatusEnum.COMPLETED,
+        tokenId,
+        ...extra,
+      });
+    const approved = (
+      id: string,
+      taskId: string,
+      memberId: string,
+      decidedAt: Date = at(1),
+      action: TaskDecisionActionEnum = TaskDecisionActionEnum.APPROVED,
+    ): TaskDecisionEntity =>
+      createTaskDecision({
+        action,
+        decidedAt,
+        decidedByMemberId: memberId,
+        id,
+        taskId,
+      });
+    // The database assigns `seq`; the fixture does not, so a log a test wants
+    // ordered carries one.
+    const logged = (
+      seq: number,
+      value: Partial<ActivityLogEntity>,
+    ): ActivityLogEntity =>
+      Object.assign(createActivityLog({ id: `log-${seq}`, ...value }), {
+        seq: String(seq),
+      });
+    const taskCreated = (
+      seq: number,
+      taskId: string,
+      nodeId: string = STAGE,
+    ): ActivityLogEntity =>
+      logged(seq, {
+        eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+        nodeId,
+        payload: { tokenId: 'tok-1' },
+        taskId,
+      });
+    const stageSkipped = (seq: number): ActivityLogEntity =>
+      logged(seq, {
+        eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+        nodeId: STAGE,
+        payload: { skippedByManagerChainReached: true, tokenId: 'tok-1' },
+      });
+    // The log row decideTask writes next to a decision the SLA timeout made.
+    const slaMark = (decisionId: string, taskId: string): ActivityLogEntity =>
+      createActivityLog({
+        eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+        id: `log-${decisionId}`,
+        payload: {
+          action: TaskDecisionActionEnum.APPROVED,
+          automatic: 'SLA_AUTO_APPROVE',
+          decisionId,
+        },
+        taskId,
+      });
+    // The earlier stage signed by `memberId` in round one.
+    const stageSignedBy = (
+      memberId: string,
+    ): Pick<
+      Parameters<typeof stagedFixture>[0],
+      'decisions' | 'logs' | 'tasks'
+    > => ({
+      decisions: [approved('d-stage', 't-stage', memberId)],
+      logs: [taskCreated(1, 't-stage')],
+      tasks: [finished('t-stage', STAGE, 'tok-1', 0)],
+    });
+
+    // start -> 單位主管 (task_stage) -> 財務簽核 (task_finance) -> end.
+    const stagedWorkflow = (
+      stage: ApproverResolver,
+      next: Partial<ChainResolver>,
+      nextOptions: NextOptions = {},
+    ): WorkflowDefinition => {
+      const linear = createLinearUserTaskWorkflow({
+        approverResolver: {
+          minPositionLevel: 40,
+          type: 'ORG_MANAGER_CHAIN',
+          ...next,
+        },
+        decisionPolicy: { type: 'SEQUENTIAL' },
+        ...nextOptions,
+      });
+
+      return withNodeData(
+        {
+          edges: [
+            {
+              data: {},
+              id: 'edge_start_stage',
+              source: 'start',
+              target: STAGE,
+              type: 'smoothstep',
+            },
+            {
+              data: {},
+              id: 'edge_stage_task',
+              source: STAGE,
+              target: 'task_finance',
+              type: 'smoothstep',
+            },
+            ...linear.edges.filter((edge) => edge.source !== 'start'),
+          ],
+          meta: linear.meta,
+          nodes: [
+            ...linear.nodes.filter((node) => node.id === 'start'),
+            createUserTaskNode(STAGE, '單位主管', 'member-x', 190, 160),
+            ...linear.nodes.filter((node) => node.id !== 'start'),
+          ],
+        },
+        STAGE,
+        { approverResolver: stage, decisionPolicy: { type: 'SEQUENTIAL' } },
+      );
+    };
+    // The token waits at 財務簽核, so the earlier stage's rows are exactly what
+    // the test seeded.
+    const stagedFixture = (options: {
+      readonly decisions?: readonly TaskDecisionEntity[];
+      readonly logs?: readonly ActivityLogEntity[];
+      readonly next?: Partial<ChainResolver>;
+      readonly nextOptions?: NextOptions;
+      readonly org: OrgData;
+      readonly stage?: ApproverResolver;
+      readonly submittedByMemberId?: string;
+      readonly tasks?: readonly TaskEntity[];
+      readonly workflow?: WorkflowDefinition;
+    }): ReturnType<typeof createServiceFixture> =>
+      createServiceFixture({
+        additionalProcessTasks: options.tasks ?? [],
+        currentVersionId: 'template-version-1',
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.ACTIVE,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        ...options.org,
+        processActivityLogs: options.logs ?? [],
+        processTaskDecisions: options.decisions ?? [],
+        processWorkflowSnapshot:
+          options.workflow ??
+          stagedWorkflow(
+            options.stage ?? chain({ skipWhenStartReached: true }),
+            options.next ?? CONTINUE,
+            options.nextOptions,
+          ),
+        rootOptions: TAIPEI,
+        submittedByMemberId: options.submittedByMemberId,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    const approversOf = async (
+      options: Parameters<typeof stagedFixture>[0],
+    ): Promise<readonly string[]> => {
+      const fixture = stagedFixture(options);
+
+      await fixture.service.processInstance('instance-1');
+
+      return fixture.savedTaskCandidates.map((candidate) => candidate.memberId);
+    };
+    const skipLogsOf = (
+      fixture: ReturnType<typeof createServiceFixture>,
+    ): readonly ActivityLogEntity[] =>
+      fixture.savedSingleActivityLogs.filter(
+        (log) =>
+          log.eventType === ActivityLogEventTypeEnum.TOKEN_ADVANCED &&
+          log.payload['skippedByManagerChainReached'] === true,
+      );
+
+    describe('the example: 單位主管 (30, skips when its start qualifies) then 核准 (40, continues it)', (): void => {
+      type Row = {
+        readonly name: string;
+        readonly expected: readonly string[] | 'SKIPPED';
+        readonly org: OrgData;
+        readonly stage: Pick<
+          Parameters<typeof stagedFixture>[0],
+          'decisions' | 'logs' | 'tasks'
+        >;
+      };
+      const skippedStage: Row['stage'] = { logs: [stageSkipped(1)] };
+      const rows: readonly Row[] = [
+        {
+          // T is 30: the 處級 signed, so the 營運長 is still asked.
+          expected: ['member-coo'],
+          name: '部 -> 處 -> 營運長: 處 signs 單位主管, 營運長 signs 核准',
+          org: createManagerChainOrg({
+            grades: { 'member-001': 20, 'member-coo': 40, 'member-d': 30 },
+            links: [
+              ['member-001', 'member-d'],
+              ['member-d', 'member-coo'],
+            ],
+          }),
+          stage: stageSignedBy('member-d'),
+        },
+        {
+          // T is 40: the 營運長 already signed 單位主管, so 核准 is skipped.
+          expected: 'SKIPPED',
+          name: '部 -> 營運長 (no 處): 營運長 signs 單位主管, 核准 is skipped',
+          org: createManagerChainOrg({
+            grades: { 'member-001': 20, 'member-coo': 40 },
+            links: [['member-001', 'member-coo']],
+          }),
+          stage: stageSignedBy('member-coo'),
+        },
+        {
+          // The SLA timeout approved for him: nobody really signed, T is null.
+          expected: ['member-coo'],
+          name: '部 -> 營運長: 營運長 was approved by the SLA timeout, 營運長 signs 核准',
+          org: createManagerChainOrg({
+            grades: { 'member-001': 20, 'member-coo': 40 },
+            links: [['member-001', 'member-coo']],
+          }),
+          stage: {
+            ...stageSignedBy('member-coo'),
+            logs: [taskCreated(1, 't-stage'), slaMark('d-stage', 't-stage')],
+          },
+        },
+        {
+          expected: ['member-coo'],
+          name: '處 -> 營運長: 單位主管 is skipped, 營運長 signs 核准',
+          org: createManagerChainOrg({
+            grades: { 'member-001': 30, 'member-coo': 40 },
+            links: [['member-001', 'member-coo']],
+          }),
+          stage: skippedStage,
+        },
+        {
+          // T is null, as in today's chain: the same-level manager signs too.
+          expected: ['member-p', 'member-coo'],
+          name: '處 -> 處 -> 營運長: 單位主管 is skipped, 處 and 營運長 sign 核准',
+          org: createManagerChainOrg({
+            grades: { 'member-001': 30, 'member-coo': 40, 'member-p': 30 },
+            links: [
+              ['member-001', 'member-p'],
+              ['member-p', 'member-coo'],
+            ],
+          }),
+          stage: skippedStage,
+        },
+        {
+          expected: ['member-gm'],
+          name: '部 -> 處 -> 總經理 (no 營運長): 處 signs 單位主管, 總經理 signs 核准',
+          org: createManagerChainOrg({
+            grades: { 'member-001': 20, 'member-d': 30, 'member-gm': 50 },
+            links: [
+              ['member-001', 'member-d'],
+              ['member-d', 'member-gm'],
+            ],
+          }),
+          stage: stageSignedBy('member-d'),
+        },
+        {
+          expected: ['member-gm'],
+          name: '營運長 -> 總經理: 單位主管 is skipped, 總經理 signs 核准',
+          org: createManagerChainOrg({
+            grades: { 'member-001': 40, 'member-gm': 50 },
+            links: [['member-001', 'member-gm']],
+          }),
+          stage: skippedStage,
+        },
+      ];
+
+      it.each(rows)('$name', async (row): Promise<void> => {
+        const fixture = stagedFixture({ org: row.org, ...row.stage });
+
+        await fixture.service.processInstance('instance-1');
+
+        if (row.expected === 'SKIPPED') {
+          expect(fixture.savedTasks).toEqual([]);
+          expect(skipLogsOf(fixture)).toHaveLength(1);
+          expect(skipLogsOf(fixture)[0]).toMatchObject({
+            eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+            nodeId: 'task_finance',
+            taskId: null,
+          });
+          expect(skipLogsOf(fixture)[0]?.payload).toEqual(SKIP_PAYLOAD);
+
+          return;
+        }
+
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(row.expected);
+        expect(skipLogsOf(fixture)).toEqual([]);
+      });
+    });
+
+    describe('skipWhenStartReached', (): void => {
+      // 單位主管 alone, then a plain next stage to see where the token goes.
+      const skipFixture = ({
+        directives = [],
+        formData = {},
+        org,
+        resolver,
+      }: {
+        readonly directives?: readonly AdhocDirectiveEntity[];
+        readonly formData?: Readonly<Record<string, unknown>>;
+        readonly org: OrgData;
+        readonly resolver: Partial<ChainResolver>;
+      }): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          ...org,
+          processAdhocDirectives: directives,
+          processFormData: formData,
+          processWorkflowSnapshot: appendNextUserTask(
+            createLinearUserTaskWorkflow({
+              approverResolver: chain(resolver),
+              decisionPolicy: { type: 'SEQUENTIAL' },
+            }),
+          ),
+          rootOptions: TAIPEI,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      const SKIP: Partial<ChainResolver> = { skipWhenStartReached: true };
+      const ladder = (initiatorLevel: number | null): OrgData =>
+        createManagerChainOrg({
+          grades: {
+            'member-001': initiatorLevel,
+            'member-coo': 40,
+            'member-d': 30,
+          },
+          links: [
+            ['member-001', 'member-d'],
+            ['member-d', 'member-coo'],
+          ],
+        });
+      const run = async (
+        options: Parameters<typeof skipFixture>[0],
+      ): Promise<ReturnType<typeof createServiceFixture>> => {
+        const fixture = skipFixture(options);
+
+        await fixture.service.processInstance('instance-1');
+
+        return fixture;
+      };
+      const expectSkipped = (
+        fixture: ReturnType<typeof createServiceFixture>,
+      ): void => {
+        expect(
+          fixture.savedTasks.filter((task) => task.nodeId === 'task_finance'),
+        ).toEqual([]);
+        expect(fixture.savedTasks).toEqual([
+          expect.objectContaining({
+            assigneeMemberId: 'member-next',
+            nodeId: 'task_next',
+          }),
+        ]);
+      };
+      const expectWalked = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        approvers: readonly string[],
+      ): void => {
+        expect(skipLogsOf(fixture)).toEqual([]);
+        expect(
+          fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+        ).toEqual(approvers);
+      };
+
+      it.each([30, 40])(
+        'skips the node, with only its own payload key, when the start holds level %s',
+        async (level): Promise<void> => {
+          const fixture = await run({ org: ladder(level), resolver: SKIP });
+
+          expectSkipped(fixture);
+          expect(skipLogsOf(fixture)).toHaveLength(1);
+          expect(skipLogsOf(fixture)[0]).toMatchObject({
+            actorMemberId: null,
+            eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+            nodeId: 'task_finance',
+            taskId: null,
+          });
+          expect(skipLogsOf(fixture)[0]?.payload).toEqual(SKIP_PAYLOAD);
+          expect(skipLogsOf(fixture)[0]?.payload).not.toHaveProperty(
+            'skippedByInitiatorExclusion',
+          );
+          expect(skipLogsOf(fixture)[0]?.payload).not.toHaveProperty(
+            'skippedByNodeActorExclusion',
+          );
+        },
+      );
+
+      it('walks the chain when the start is below the level, and no skip is recorded', async (): Promise<void> => {
+        expectWalked(await run({ org: ladder(20), resolver: SKIP }), [
+          'member-d',
+        ]);
+      });
+
+      it('walks the chain when the start has no position', async (): Promise<void> => {
+        expectWalked(await run({ org: ladder(null), resolver: SKIP }), [
+          'member-d',
+        ]);
+      });
+
+      it('reads the highest level over all the start memberships held today', async (): Promise<void> => {
+        const org = createManagerChainOrg({
+          extraMemberships: [
+            createMembership({
+              id: 'membership-extra',
+              memberId: 'member-001',
+              positionId: 'position-30',
+            }),
+          ],
+          extraPositionLevels: [30],
+          grades: { 'member-001': 10, 'member-coo': 40, 'member-d': 30 },
+          links: [
+            ['member-001', 'member-d'],
+            ['member-d', 'member-coo'],
+          ],
+        });
+
+        expectSkipped(await run({ org, resolver: SKIP }));
+      });
+
+      it('does not count a membership that has ended', async (): Promise<void> => {
+        const org = createManagerChainOrg({
+          extraMemberships: [
+            createMembership({
+              effectiveTo: '2026-01-31',
+              id: 'membership-ended',
+              memberId: 'member-001',
+              positionId: 'position-30',
+            }),
+          ],
+          extraPositionLevels: [30],
+          grades: { 'member-001': 10, 'member-coo': 40, 'member-d': 30 },
+          links: [
+            ['member-001', 'member-d'],
+            ['member-d', 'member-coo'],
+          ],
+        });
+
+        expectWalked(await run({ org, resolver: SKIP }), ['member-d']);
+      });
+
+      it('reads the person a FORM_MEMBER start picks, not the initiator', async (): Promise<void> => {
+        const org = createManagerChainOrg({
+          grades: {
+            'member-001': 40,
+            'member-coo': 40,
+            'member-emp': 30,
+            'member-m1': 30,
+          },
+          links: [
+            ['member-001', 'member-coo'],
+            ['member-emp', 'member-m1'],
+          ],
+        });
+        const start: Partial<ChainResolver> = {
+          ...SKIP,
+          startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+        };
+
+        expectSkipped(
+          await run({
+            formData: { picked: 'member-emp' },
+            org,
+            resolver: start,
+          }),
+        );
+        expectWalked(
+          await run({
+            formData: { picked: 'member-m1' },
+            org: createManagerChainOrg({
+              grades: { 'member-001': 40, 'member-coo': 40, 'member-m1': 20 },
+              links: [['member-m1', 'member-coo']],
+            }),
+            resolver: start,
+          }),
+          ['member-coo'],
+        );
+      });
+
+      it('walks as today when the start names nobody: the fallback decides', async (): Promise<void> => {
+        expectWalked(
+          await run({
+            org: ladder(40),
+            resolver: {
+              ...SKIP,
+              fallback: { memberId: 'member-fb', type: 'DIRECT' },
+              startFrom: { nodeIds: ['ACT3'], type: 'NODE_ACTOR' },
+            },
+          }),
+          ['member-fb'],
+        );
+      });
+
+      it.each<readonly [string, Partial<ChainResolver>]>([
+        ['false', { skipWhenStartReached: false }],
+        ['null', { skipWhenStartReached: null }],
+        ['absent', {}],
+      ])(
+        'changes nothing when it is %s: a start at the level still gets the whole chain',
+        async (_label, resolver): Promise<void> => {
+          expectWalked(await run({ org: ladder(40), resolver }), ['member-d']);
+        },
+      );
+
+      it('leaves a pending countersign for the next real task, as SKIP_NODE does', async (): Promise<void> => {
+        const fixture = await run({
+          directives: [
+            createAdhocDirective({
+              id: 'directive-seed-1',
+              originNodeId: 'task_origin',
+              status: AdhocDirectiveStatusEnum.PENDING,
+              type: AdhocDirectiveTypeEnum.COUNTERSIGN,
+            }),
+          ],
+          org: ladder(30),
+          resolver: SKIP,
+        });
+
+        expect(skipLogsOf(fixture)).toHaveLength(1);
+        expect(fixture.savedTasks.find((task) => task.isAdhoc)).toMatchObject({
+          adhocDirectiveId: 'directive-seed-1',
+          nodeId: 'task_next',
+        });
+      });
+    });
+
+    describe('a chain that continues an earlier chain', (): void => {
+      const ladder = createManagerChainOrg({
+        grades: { 'member-001': 20, 'member-coo': 40, 'member-d': 30 },
+        links: [
+          ['member-001', 'member-d'],
+          ['member-d', 'member-coo'],
+        ],
+      });
+
+      it('control: the same chain without the continuation asks the whole ladder', async (): Promise<void> => {
+        await expect(
+          approversOf({
+            next: {},
+            org: ladder,
+            ...stageSignedBy('member-d'),
+          }),
+        ).resolves.toEqual(['member-d', 'member-coo']);
+      });
+
+      it('walks past a manager at the level the earlier stage reached, and asks the ones above', async (): Promise<void> => {
+        await expect(
+          approversOf({ org: ladder, ...stageSignedBy('member-d') }),
+        ).resolves.toEqual(['member-coo']);
+      });
+
+      it('keeps the chain source type on the candidates, so the grade rules still apply', async (): Promise<void> => {
+        const fixture = stagedFixture({
+          org: ladder,
+          ...stageSignedBy('member-d'),
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTaskCandidates[0]).toMatchObject({
+          memberId: 'member-coo',
+          sourceType: 'ORG_MANAGER_CHAIN',
+        });
+      });
+
+      it('takes the highest level when several people signed the earlier stage', async (): Promise<void> => {
+        const org = createManagerChainOrg({
+          grades: {
+            'member-001': 20,
+            'member-coo': 40,
+            'member-d': 30,
+            'member-e': 35,
+          },
+          links: [
+            ['member-001', 'member-d'],
+            ['member-d', 'member-e'],
+            ['member-e', 'member-coo'],
+          ],
+        });
+
+        await expect(
+          approversOf({
+            decisions: [
+              approved('d-1', 't-stage', 'member-d'),
+              approved('d-2', 't-stage', 'member-e', at(2)),
+            ],
+            logs: [taskCreated(1, 't-stage')],
+            org,
+            tasks: [finished('t-stage', STAGE, 'tok-1', 0)],
+          }),
+        ).resolves.toEqual(['member-coo']);
+      });
+
+      it('asks the delegate who signed at his own level: the 營運長 signing for a 處 skips the approval', async (): Promise<void> => {
+        // The seat was the 處's; the 營運長 pressed approve. T is his level.
+        const fixture = stagedFixture({
+          decisions: [approved('d-stage', 't-stage', 'member-coo')],
+          logs: [taskCreated(1, 't-stage')],
+          org: ladder,
+          tasks: [
+            finished('t-stage', STAGE, 'tok-1', 0, {
+              assigneeMemberId: 'member-coo',
+              originalAssigneeMemberId: 'member-d',
+            }),
+          ],
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(fixture.savedTasks).toEqual([]);
+        expect(skipLogsOf(fixture)[0]?.payload).toEqual(SKIP_PAYLOAD);
+      });
+
+      it('takes the level of whoever approved after an SLA transfer, not the seat it left', async (): Promise<void> => {
+        // The 營運長's seat was transferred to a 處; the 處 approved.
+        const base = {
+          decisions: [
+            approved(
+              'd-transfer',
+              't-first',
+              'member-coo',
+              at(1),
+              TaskDecisionActionEnum.TRANSFERRED,
+            ),
+            approved('d-approve', 't-second', 'member-d', at(3)),
+          ],
+          logs: [taskCreated(1, 't-first'), taskCreated(2, 't-second')],
+          org: ladder,
+          tasks: [
+            finished('t-first', STAGE, 'tok-1', 0, {
+              status: TaskStatusEnum.TRANSFERRED,
+            }),
+            finished('t-second', STAGE, 'tok-1', 2, {
+              assigneeMemberId: 'member-d',
+              originalAssigneeMemberId: 'member-coo',
+            }),
+          ],
+        };
+
+        await expect(approversOf(base)).resolves.toEqual(['member-coo']);
+      });
+
+      it('reads only the latest round after the earlier stage was returned and signed again', async (): Promise<void> => {
+        const round = {
+          logs: [taskCreated(1, 't-old'), taskCreated(2, 't-new')],
+          org: ladder,
+          tasks: [
+            finished('t-old', STAGE, 'tok-1', 0),
+            finished('t-new', STAGE, 'tok-2', 30),
+          ],
+        };
+
+        // Old round 營運長 (40), new round 處 (30): T is 30, 核准 is asked.
+        await expect(
+          approversOf({
+            ...round,
+            decisions: [
+              approved('d-old', 't-old', 'member-coo'),
+              approved('d-new', 't-new', 'member-d', at(31)),
+            ],
+          }),
+        ).resolves.toEqual(['member-coo']);
+        // Control: with only the old round on file, T is 40 and 核准 is skipped.
+        const skipped = stagedFixture({
+          decisions: [approved('d-old', 't-old', 'member-coo')],
+          logs: [taskCreated(1, 't-old')],
+          org: ladder,
+          tasks: [finished('t-old', STAGE, 'tok-1', 0)],
+        });
+
+        await skipped.service.processInstance('instance-1');
+
+        expect(skipLogsOf(skipped)).toHaveLength(1);
+      });
+
+      it('takes the start and the level from the same round of an earlier stage that was returned', async (): Promise<void> => {
+        const org = createManagerChainOrg({
+          grades: {
+            'member-coo': 40,
+            'member-emp': null,
+            'member-m1': 10,
+            'member-m3': 30,
+            'member-old': null,
+            'member-old-boss': 40,
+          },
+          links: [
+            ['member-emp', 'member-m1'],
+            ['member-m1', 'member-m3'],
+            ['member-m3', 'member-coo'],
+            ['member-old', 'member-old-boss'],
+          ],
+        });
+
+        // The earlier stage climbs from whoever signed ACT3. Round two of ACT3
+        // was signed by member-emp, round two of the stage by a 處 (30); round
+        // one's people sit on another line that reaches 40.
+        await expect(
+          approversOf({
+            decisions: [
+              approved('d-act-old', 't-act-old', 'member-old'),
+              approved('d-act-new', 't-act-new', 'member-emp', at(31)),
+              approved('d-old', 't-old', 'member-old-boss'),
+              approved('d-new', 't-new', 'member-m3', at(32)),
+            ],
+            logs: [taskCreated(1, 't-old'), taskCreated(2, 't-new')],
+            org,
+            stage: chain({
+              startFrom: { nodeIds: ['ACT3'], type: 'NODE_ACTOR' },
+            }),
+            tasks: [
+              finished('t-act-old', 'ACT3', 'tok-1', 0),
+              finished('t-act-new', 'ACT3', 'tok-2', 30),
+              finished('t-old', STAGE, 'tok-1', 0),
+              finished('t-new', STAGE, 'tok-2', 30),
+            ],
+          }),
+        ).resolves.toEqual(['member-coo']);
+      });
+
+      describe('when the earlier stage was skipped', (): void => {
+        const org = createManagerChainOrg({
+          grades: { 'member-001': 30, 'member-coo': 40 },
+          links: [['member-001', 'member-coo']],
+        });
+        // A 營運長 signed the stage in an earlier round.
+        const oldRound = {
+          decisions: [approved('d-old', 't-old', 'member-coo')],
+          org,
+          tasks: [finished('t-old', STAGE, 'tok-1', 0)],
+        };
+
+        it('control: the earlier round counts when the stage then got a task again', async (): Promise<void> => {
+          const fixture = stagedFixture({
+            ...oldRound,
+            logs: [stageSkipped(1), taskCreated(5, 't-old')],
+          });
+
+          await fixture.service.processInstance('instance-1');
+
+          expect(skipLogsOf(fixture)).toHaveLength(1);
+          expect(fixture.savedTasks).toEqual([]);
+        });
+
+        it('reads T as null, not the earlier round, when the skip is the latest thing', async (): Promise<void> => {
+          await expect(
+            approversOf({
+              ...oldRound,
+              logs: [taskCreated(1, 't-old'), stageSkipped(5)],
+            }),
+          ).resolves.toEqual(['member-coo']);
+        });
+
+        it('orders the logs as numbers: a skip at seq 10 is newer than a task at seq 9', async (): Promise<void> => {
+          await expect(
+            approversOf({
+              ...oldRound,
+              logs: [taskCreated(9, 't-old'), stageSkipped(10)],
+            }),
+          ).resolves.toEqual(['member-coo']);
+          // And the other way round, where "9" > "10" as text would say skipped.
+          const fixture = stagedFixture({
+            ...oldRound,
+            logs: [stageSkipped(9), taskCreated(10, 't-old')],
+          });
+
+          await fixture.service.processInstance('instance-1');
+
+          expect(fixture.savedTasks).toEqual([]);
+        });
+
+        it('does not let a later ad-hoc task of the stage count as the stage running again', async (): Promise<void> => {
+          await expect(
+            approversOf({
+              ...oldRound,
+              logs: [
+                taskCreated(1, 't-old'),
+                stageSkipped(5),
+                taskCreated(9, 't-adhoc'),
+              ],
+              tasks: [
+                ...oldRound.tasks,
+                finished('t-adhoc', STAGE, 'tok-1', 7, {
+                  adhocType: AdhocDirectiveTypeEnum.COUNTERSIGN,
+                  isAdhoc: true,
+                }),
+              ],
+            }),
+          ).resolves.toEqual(['member-coo']);
+        });
+      });
+
+      describe('the level is the one held on the day of approval', (): void => {
+        // 2026-02-04 17:00 UTC is 2026-02-05 01:00 in Taipei.
+        const approvedAtTaipeiEarlyMorning = new Date(
+          Date.UTC(2026, 1, 4, 17, 0),
+        );
+
+        it('does not raise T for a promotion that took effect after he signed', async (): Promise<void> => {
+          // A 處 on 2026-02-05, a 營運長 from 2026-02-06 and today.
+          const org = createManagerChainOrg({
+            extraMemberships: [
+              createMembership({
+                effectiveTo: '2026-02-05',
+                id: 'membership-d-30',
+                memberId: 'member-d',
+                positionId: 'position-30',
+              }),
+              createMembership({
+                effectiveFrom: '2026-02-06',
+                id: 'membership-d-40',
+                memberId: 'member-d',
+                positionId: 'position-40',
+              }),
+            ],
+            extraPositionLevels: [30, 40],
+            grades: { 'member-001': 20, 'member-d': null },
+            links: [['member-001', 'member-d']],
+          });
+          const fixture = stagedFixture({
+            decisions: [
+              approved(
+                'd-stage',
+                't-stage',
+                'member-d',
+                approvedAtTaipeiEarlyMorning,
+              ),
+            ],
+            logs: [taskCreated(1, 't-stage')],
+            org,
+            tasks: [finished('t-stage', STAGE, 'tok-1', 0)],
+          });
+
+          await fixture.service.processInstance('instance-1');
+
+          // T is 30, so 核准 (40) is still asked: of him, as a 營運長 now.
+          // Reading today's level would give 40 and skip it.
+          expect(skipLogsOf(fixture)).toEqual([]);
+          expect(
+            fixture.savedTaskCandidates.map((candidate) => candidate.memberId),
+          ).toEqual(['member-d']);
+        });
+
+        it('reads the day in the organisation time zone, not the UTC date', async (): Promise<void> => {
+          // 處 from 2026-02-05, a 部 (20) until the day before. He signed at
+          // 01:00 Taipei on 2026-02-05, which is still 2026-02-04 in UTC.
+          const org = createManagerChainOrg({
+            extraMemberships: [
+              createMembership({
+                effectiveTo: '2026-02-04',
+                id: 'membership-d-20',
+                memberId: 'member-d',
+                positionId: 'position-20',
+              }),
+              createMembership({
+                effectiveFrom: '2026-02-05',
+                id: 'membership-d-30',
+                memberId: 'member-d',
+                positionId: 'position-30',
+              }),
+            ],
+            extraPositionLevels: [20, 30],
+            grades: { 'member-001': 20, 'member-coo': 40, 'member-d': null },
+            links: [
+              ['member-001', 'member-d'],
+              ['member-d', 'member-coo'],
+            ],
+          });
+
+          // T is 30 (the UTC date would say 20 and ask him again).
+          await expect(
+            approversOf({
+              decisions: [
+                approved(
+                  'd-stage',
+                  't-stage',
+                  'member-d',
+                  approvedAtTaipeiEarlyMorning,
+                ),
+              ],
+              logs: [taskCreated(1, 't-stage')],
+              org,
+              tasks: [finished('t-stage', STAGE, 'tok-1', 0)],
+            }),
+          ).resolves.toEqual(['member-coo']);
+        });
+      });
+
+      describe('what the rest of the node still does', (): void => {
+        it('takes the earlier stage fallback when that stage had no start, naming it when there is none', async (): Promise<void> => {
+          const options = {
+            org: ladder,
+            stage: chain({
+              startFrom: { nodeIds: ['ACT3'], type: 'NODE_ACTOR' },
+            }),
+          };
+
+          await expect(
+            approversOf({
+              ...options,
+              next: {
+                ...CONTINUE,
+                fallback: { memberId: 'member-fb', type: 'DIRECT' },
+              },
+            }),
+          ).resolves.toEqual(['member-fb']);
+          await expect(approversOf(options)).rejects.toThrow(
+            '簽核節點「財務簽核」 無法建立待簽任務：關卡「ACT3」沒有實際同意的簽核紀錄，且未設定改派固定人',
+          );
+        });
+
+        it('takes its own fallback when nobody is above the level reached', async (): Promise<void> => {
+          const org = createManagerChainOrg({
+            grades: { 'member-001': 20, 'member-d': 30 },
+            links: [['member-001', 'member-d']],
+          });
+
+          await expect(
+            approversOf({
+              next: {
+                ...CONTINUE,
+                fallback: { memberId: 'member-fb', type: 'DIRECT' },
+              },
+              org,
+              ...stageSignedBy('member-d'),
+            }),
+          ).resolves.toEqual(['member-fb']);
+          await expect(
+            approversOf({ org, ...stageSignedBy('member-d') }),
+          ).rejects.toThrow(
+            '簽核節點「財務簽核」 無法建立待簽任務：沿主管鏈找不到職等達 40 的主管，且未設定改派固定人',
+          );
+        });
+
+        it('walks past a person the node keeps out without letting him raise the level', async (): Promise<void> => {
+          // The person who filed the document is the 45 above the 處: kept out,
+          // he is climbed through, so the 總經理 above him is the one asked.
+          const org = createManagerChainOrg({
+            grades: {
+              'member-001': 20,
+              'member-d': 30,
+              'member-sub': 45,
+              'member-top': 50,
+            },
+            links: [
+              ['member-001', 'member-d'],
+              ['member-d', 'member-sub'],
+              ['member-sub', 'member-top'],
+            ],
+          });
+          const filed = {
+            org,
+            submittedByMemberId: 'member-sub',
+            ...stageSignedBy('member-d'),
+          };
+
+          await expect(
+            approversOf({
+              ...filed,
+              nextOptions: { excludeInitiator: { whenEmpty: 'FAIL' } },
+            }),
+          ).resolves.toEqual(['member-top']);
+          // Control: without the exclusion he is the one who signs.
+          await expect(approversOf(filed)).resolves.toEqual(['member-sub']);
+        });
+      });
+    });
+
+    describe('settings the node cannot run with', (): void => {
+      const org = createManagerChainOrg({
+        grades: { 'member-001': 20, 'member-d': 30 },
+        links: [['member-001', 'member-d']],
+      });
+      const naming = '簽核節點「財務簽核」 無法建立待簽任務：';
+
+      it.each<readonly [string, Parameters<typeof stagedFixture>[0], string]>([
+        [
+          'a continuation with no stage id',
+          {
+            next: { startFrom: { nodeId: '  ', type: 'CHAIN_CONTINUATION' } },
+            org,
+          },
+          '簽核節點需要指定要接續的前一段主管鏈關卡。',
+        ],
+        [
+          'both settings at once',
+          { next: { ...CONTINUE, skipWhenStartReached: true }, org },
+          '簽核節點不能同時接續前一段主管鏈又設定「起點本人已達簽到職等時略過」。',
+        ],
+        [
+          'a skip setting that is not a boolean',
+          {
+            next: {
+              skipWhenStartReached: 'yes' as unknown as boolean,
+            },
+            org,
+          },
+          '簽核節點的「起點本人已達簽到職等時略過」只能是勾選或不勾選。',
+        ],
+        [
+          'a stage that does not exist',
+          {
+            next: {
+              startFrom: { nodeId: 'ghost', type: 'CHAIN_CONTINUATION' },
+            },
+            org,
+          },
+          '接續的前一段主管鏈「ghost」不存在。',
+        ],
+        [
+          'a stage that is not a user task',
+          {
+            next: {
+              startFrom: { nodeId: 'start', type: 'CHAIN_CONTINUATION' },
+            },
+            org,
+          },
+          '不是簽核關卡。',
+        ],
+        [
+          'a stage whose approver is not a manager chain',
+          { org, stage: { memberIds: ['member-x'], type: 'DIRECT' } },
+          '的簽核來源不是「沿主管鏈簽核」。',
+        ],
+        [
+          'a stage that itself continues another',
+          {
+            org,
+            stage: chain({
+              startFrom: { nodeId: 'task_finance', type: 'CHAIN_CONTINUATION' },
+            }),
+          },
+          '本身也是接續型主管鏈，不支援多段串接。',
+        ],
+        [
+          'a stage that starts from a form field',
+          {
+            org,
+            stage: chain({
+              startFrom: { formPath: 'picked', type: 'FORM_MEMBER' },
+            }),
+          },
+          '的起點只能是申請人或前面關卡的簽核者，不能是表單欄位或其他起點。',
+        ],
+        [
+          'a level that is not above the stage',
+          { next: { ...CONTINUE, minPositionLevel: 30 }, org },
+          '必須高於前一段主管鏈',
+        ],
+      ])(
+        'stops with a message that names the node for %s',
+        async (_label, options, message): Promise<void> => {
+          const fixture = stagedFixture({
+            ...options,
+            ...stageSignedBy('member-d'),
+          });
+          const failure = fixture.service.processInstance('instance-1');
+
+          await expect(failure).rejects.toThrow(ConflictException);
+          await expect(failure).rejects.toThrow(naming);
+          await expect(failure).rejects.toThrow(message);
+          expect(fixture.savedTasks).toEqual([]);
+        },
+      );
+    });
+
+    describe('other entry points', (): void => {
+      const ladder = createManagerChainOrg({
+        grades: { 'member-m1': 10, 'member-m2': 20, 'member-m3': 30 },
+        links: [
+          ['member-001', 'member-m1'],
+          ['member-m1', 'member-m2'],
+          ['member-m2', 'member-m3'],
+        ],
+      });
+      const refusal =
+        '接續前一段主管鏈、或「起點本人已達簽到職等時略過」，只能在建立簽核任務時使用，此處不支援。';
+
+      it.each<readonly [string, Partial<ChainResolver>]>([
+        ['a continuation', CONTINUE],
+        ['skipWhenStartReached', { skipWhenStartReached: true }],
+      ])(
+        'refuses %s as the recipients of a notify node and sends nothing',
+        async (_label, setting): Promise<void> => {
+          const fixture = createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            ...ladder,
+            processWorkflowSnapshot: createNotifyServiceTaskWorkflow({
+              recipients: chain({ minPositionLevel: 30, ...setting }),
+            }),
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          });
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(`知會節點「財務知會」 無法建立通知：${refusal}`);
+          expect(
+            fixture.notificationService.createServiceTaskNotifications,
+          ).not.toHaveBeenCalled();
+        },
+      );
+
+      it('control: a notify chain with skipWhenStartReached false notifies the whole chain', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          ...ladder,
+          processWorkflowSnapshot: createNotifyServiceTaskWorkflow({
+            recipients: chain({ skipWhenStartReached: false }),
+          }),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(
+          fixture.notificationService.createServiceTaskNotifications,
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            recipientMemberIds: ['member-m1', 'member-m2', 'member-m3'],
+          }),
+        );
+      });
+
+      it.each<readonly [string, Partial<ChainResolver>]>([
+        ['a continuation', CONTINUE],
+        ['skipWhenStartReached', { skipWhenStartReached: true }],
+      ])(
+        'refuses %s when the resolver is called without the context task creation builds',
+        async (_label, setting): Promise<void> => {
+          const service = stagedFixture({ org: ladder }).service as unknown as {
+            resolveApproverResolver: (
+              manager: EntityManager,
+              instance: ApprovalInstanceEntity,
+              resolver: ApproverResolver,
+              label: string,
+            ) => Promise<unknown>;
+          };
+
+          await expect(
+            service.resolveApproverResolver(
+              {} as EntityManager,
+              {} as ApprovalInstanceEntity,
+              chain(setting),
+              '簽核節點「X」',
+            ),
+          ).rejects.toThrow(`簽核節點「X」 無法建立待簽任務：${refusal}`);
+        },
+      );
+
+      describe('dry run', (): void => {
+        const dryRun = (
+          approverResolver: ApproverResolver,
+        ): ReturnType<WorkflowEngineService['dryRunApprovalWorkflow']> =>
+          createServiceFixture({
+            currentVersionId: 'template-version-1',
+            formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+            templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          }).service.dryRunApprovalWorkflow({
+            formDataJson: '{}',
+            initiatorMemberId: 'member-001',
+            initiatorMetadataSnapshotJson: null,
+            workflowDefinitionJson: JSON.stringify(
+              createLinearUserTaskWorkflow({ approverResolver }),
+            ),
+          });
+
+        it.each<readonly [string, Partial<ChainResolver>, string]>([
+          ['a continuation', CONTINUE, `orgManagerChain:3::continue:${STAGE}`],
+          [
+            'a continuation with a start level',
+            { ...CONTINUE, startPositionLevel: 2 },
+            `orgManagerChain:3:2:continue:${STAGE}`,
+          ],
+          [
+            'skipWhenStartReached',
+            { skipWhenStartReached: true },
+            'orgManagerChainSkipReached:3',
+          ],
+          [
+            'skipWhenStartReached with a start level',
+            { skipWhenStartReached: true, startPositionLevel: 2 },
+            'orgManagerChainSkipReached:3:2',
+          ],
+          [
+            'skipWhenStartReached false',
+            { skipWhenStartReached: false },
+            'orgManagerChain:3',
+          ],
+        ])(
+          'shows %s as a placeholder without walking the chain',
+          (_label, setting, placeholder): void => {
+            const result = dryRun(chain({ minPositionLevel: 3, ...setting }));
+
+            expect(result.steps).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  assigneeMemberId: placeholder,
+                  nodeId: 'task_finance',
+                  status: 'WAITING',
+                }),
+              ]),
+            );
+          },
+        );
+      });
+    });
+
+    describe('one flow: 單位主管 (30, skips when its start qualifies) -> 人資會簽 -> 核准 (40, continues 單位主管)', (): void => {
+      const MIDDLE = 'task_mid';
+      const MIDDLE_APPROVER = 'member-hr';
+
+      // The example's flow with a plain stage in between, which is where the
+      // continuation gets to read what the first stage left in the log.
+      const flowWorkflow = (): WorkflowDefinition => {
+        const staged = stagedWorkflow(
+          chain({ skipWhenStartReached: true }),
+          CONTINUE,
+        );
+
+        return {
+          ...staged,
+          edges: [
+            ...staged.edges.filter((edge) => edge.id !== 'edge_stage_task'),
+            {
+              data: {},
+              id: 'edge_stage_mid',
+              source: STAGE,
+              target: MIDDLE,
+              type: 'smoothstep',
+            },
+            {
+              data: {},
+              id: 'edge_mid_task',
+              source: MIDDLE,
+              target: 'task_finance',
+              type: 'smoothstep',
+            },
+          ],
+          nodes: [
+            ...staged.nodes,
+            createUserTaskNode(MIDDLE, '人資會簽', MIDDLE_APPROVER, 410, 160),
+          ],
+        };
+      };
+      // The token starts at the start event: every row below is written by the
+      // engine itself, `seq` included (the fixture numbers the rows it stores).
+      const flowFixture = (
+        org: OrgData,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          ...org,
+          processWorkflowSnapshot: flowWorkflow(),
+          rootOptions: TAIPEI,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      const approve = async (
+        fixture: ReturnType<typeof createServiceFixture>,
+        nodeId: string,
+        memberId: string,
+      ): Promise<void> => {
+        await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: memberId,
+          taskId: readTaskByNodeId(fixture.savedTasks, nodeId).id,
+        });
+      };
+      const candidatesOf = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        nodeId: string,
+      ): readonly string[] => {
+        const taskId = readTaskByNodeId(fixture.savedTasks, nodeId).id;
+
+        return fixture.savedTaskCandidates
+          .filter((candidate) => candidate.taskId === taskId)
+          .map((candidate) => candidate.memberId);
+      };
+
+      it('skips 單位主管 for a 處級 applicant, then asks the 營運長 for 核准 (T is null)', async (): Promise<void> => {
+        const fixture = flowFixture(
+          createManagerChainOrg({
+            grades: { 'member-001': 30, 'member-coo': 40, 'member-gm': 50 },
+            links: [
+              ['member-001', 'member-coo'],
+              ['member-coo', 'member-gm'],
+            ],
+          }),
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(skipLogsOf(fixture)).toHaveLength(1);
+        expect(skipLogsOf(fixture)[0]).toMatchObject({
+          eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+          nodeId: STAGE,
+          taskId: null,
+        });
+        expect(skipLogsOf(fixture)[0]?.payload).toEqual(SKIP_PAYLOAD);
+        expect(fixture.savedTasks.map((task) => task.nodeId)).toEqual([MIDDLE]);
+
+        await approve(fixture, MIDDLE, MIDDLE_APPROVER);
+
+        // Nobody signed 單位主管, so the continuation starts from the bottom of
+        // the ladder: the first manager at 40 is the 營運長.
+        expect(candidatesOf(fixture, 'task_finance')).toEqual(['member-coo']);
+        expect(skipLogsOf(fixture)).toHaveLength(1);
+      });
+
+      it('skips 核准 when the 營運長 signed 單位主管 (T is 40), by the same flow', async (): Promise<void> => {
+        const fixture = flowFixture(
+          createManagerChainOrg({
+            grades: { 'member-001': 20, 'member-coo': 40 },
+            links: [['member-001', 'member-coo']],
+          }),
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(skipLogsOf(fixture)).toEqual([]);
+        expect(candidatesOf(fixture, STAGE)).toEqual(['member-coo']);
+
+        await approve(fixture, STAGE, 'member-coo');
+        await approve(fixture, MIDDLE, MIDDLE_APPROVER);
+
+        expect(
+          fixture.savedTasks.filter((task) => task.nodeId === 'task_finance'),
+        ).toEqual([]);
+        expect(skipLogsOf(fixture)).toHaveLength(1);
+        expect(skipLogsOf(fixture)[0]).toMatchObject({
+          eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+          nodeId: 'task_finance',
+          taskId: null,
+        });
+        expect(skipLogsOf(fixture)[0]?.payload).toMatchObject({
+          skippedByManagerChainReached: true,
+        });
+      });
+    });
+  });
+
   describe('ORG_MANAGER_CHAIN approver resolver', () => {
     const createChainFixture = (
       org: ReturnType<typeof createManagerChainOrg>,
@@ -22713,12 +24091,30 @@ function createServiceFixture({
       (
         entityOrEntities: ActivityLogEntity | ActivityLogEntity[],
       ): Promise<ActivityLogEntity | ActivityLogEntity[]> => {
-        storedActivityLogs = [
-          ...storedActivityLogs,
-          ...(Array.isArray(entityOrEntities)
+        // The database numbers the rows it writes; the rows read back here get
+        // the next number after the largest one stored, unless a test seeded
+        // its own. The objects handed back to `save`'s caller (and recorded in
+        // `savedActivityLogs`) are left as they were.
+        storedActivityLogs = (
+          Array.isArray(entityOrEntities)
             ? entityOrEntities
-            : [entityOrEntities]),
-        ];
+            : [entityOrEntities]
+        ).reduce<readonly ActivityLogEntity[]>(
+          (stored, log) => [
+            ...stored,
+            log.seq
+              ? log
+              : Object.assign(new ActivityLogEntity(), log, {
+                  seq: String(
+                    stored.reduce(
+                      (largest, row) => Math.max(largest, Number(row.seq || 0)),
+                      0,
+                    ) + 1,
+                  ),
+                }),
+          ],
+          storedActivityLogs,
+        );
 
         if (Array.isArray(entityOrEntities)) {
           savedActivityLogs = [...entityOrEntities];

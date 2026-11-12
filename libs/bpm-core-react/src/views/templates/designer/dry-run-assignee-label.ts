@@ -47,6 +47,8 @@ export function readDryRunAssigneeLabel(
   const formFieldName = (fieldKey: string): string =>
     directory.formFields.find((field) => field.fieldKey === fieldKey)?.label ||
     fieldKey;
+  const nodeName = (id: string): string =>
+    directory.nodes.find((node) => node.id === id)?.name ?? id;
   const nodeNames = (idList: string): string =>
     idList
       .split(',')
@@ -85,13 +87,19 @@ export function readDryRunAssigneeLabel(
         ? `從表單欄位「${formFieldName(chain.startFrom.formPath)}」的主管起算，`
         : chain.startFrom?.type === 'NODE_ACTOR'
           ? `從前面關卡「${nodeNames(chain.startFrom.nodeIds.join(','))}」簽核者的主管起算，`
-          : '';
+          : chain.startFrom?.type === 'CHAIN_CONTINUATION'
+            ? `接續「${nodeName(chain.startFrom.nodeId)}」往上；若前一段已簽到此職等則略過，`
+            : '';
     const startLevel =
       chain.startPositionLevel === null
         ? ''
         : `（從職等 ${chain.startPositionLevel} 開始）`;
 
-    return `主管鏈：${from}簽到職等 ${chain.minPositionLevel}${startLevel}（送出時依組織決定實際主管）`;
+    const skip = chain.skipWhenStartReached
+      ? '（起點本人已達簽到職等時略過此關）'
+      : '';
+
+    return `主管鏈：${from}簽到職等 ${chain.minPositionLevel}${startLevel}（送出時依組織決定實際主管）${skip}`;
   }
 
   // A malformed chain placeholder that still has a single part keeps the

@@ -146,6 +146,8 @@ import {
   EXCLUDE_NODE_ACTORS_STAGE_HINT,
   NODE_ACTOR_STAGE_HINT,
   ORG_MANAGER_CHAIN_STAGE_HINT,
+  readChainContinuationGraphIssues,
+  readChainContinuationSourceChoice,
   readExcludeNodeActorsGraphIssues,
   readExcludeNodeActorStageChoice,
   readNodeActorGraphIssues,
@@ -209,11 +211,14 @@ import {
   readApproverSourcePick,
   readApproverSubjectChoice,
   readApproverSubjectPick,
+  isOrgManagerChainSkipToggleDisabled,
   readFallbackMemberSelectOption,
   readManagerLevelOption,
   readManagerLevelOptionById,
   readMemberSelectOption,
+  readOrgManagerChainContinuationNodeId,
   readOrgManagerChainFallbackHint,
+  readOrgManagerChainSkipWhenStartReached,
   readOrgManagerChainStartChoice,
   readOrgManagerChainStartFormPath,
   readOrgManagerChainStartLevelChoice,
@@ -227,7 +232,9 @@ import {
   readSelectedOrgUnitOption,
   readSelectedPositionOption,
   updateApproverResolverFallback,
+  withOrgManagerChainContinuationNodeId,
   withOrgManagerChainMinPositionLevel,
+  withOrgManagerChainSkipWhenStartReached,
   withOrgManagerChainStartFormPath,
   withOrgManagerChainStartNodeIds,
   withOrgUnitSource,
@@ -1367,11 +1374,19 @@ export function TemplateDesignerView({
       readExcludeNodeActorsGraphIssues(workflowDefinition)[0] ?? null,
     [workflowDefinition],
   );
+  // Publish-only too: a manager chain that continues an earlier one needs that
+  // stage to be sound, and a higher 簽到職等 than it.
+  const chainContinuationPublishIssue = useMemo(
+    (): string | null =>
+      readChainContinuationGraphIssues(workflowDefinition)[0] ?? null,
+    [workflowDefinition],
+  );
   const publishIssue =
     webhookPublishIssue ??
     fieldAccessPublishIssue ??
     nodeActorPublishIssue ??
-    excludeNodeActorsPublishIssue;
+    excludeNodeActorsPublishIssue ??
+    chainContinuationPublishIssue;
   const flowNodes = useMemo((): FlowNode[] => {
     // Stage names for the 依前面關卡的簽核者 cards, instead of a count.
     const nodeNames = workflowDefinition.nodes.map((candidate) => ({
@@ -3135,6 +3150,14 @@ export function TemplateDesignerView({
             readOrgManagerChainStartNodeIds(chainResolver) ?? [],
           )
         : null;
+    const chainContinuationChoice =
+      chainResolver && chainStartMode === 'CHAIN_CONTINUATION'
+        ? readChainContinuationSourceChoice(
+            workflowDefinition,
+            node.id,
+            readOrgManagerChainContinuationNodeId(chainResolver),
+          )
+        : null;
     const chainStartLevelChoice = chainResolver
       ? readOrgManagerChainStartLevelChoice(chainResolver, positions)
       : null;
@@ -3492,6 +3515,33 @@ export function TemplateDesignerView({
                 />
               </BPMFormField>
             ) : null}
+            {chainContinuationChoice && chainResolver ? (
+              <BPMFormField
+                hintText={
+                  chainContinuationChoice.problems.length > 0
+                    ? chainContinuationChoice.problems.join('；')
+                    : '只列出每條路徑都會經過、起點為申請人或前面關卡簽核者的主管鏈關卡；本關的簽到職等必須高於它。'
+                }
+                label="接續哪一關"
+                name="orgManagerChainContinuationNodeId"
+                required
+              >
+                <Select
+                  clearable={false}
+                  onChange={(option): void =>
+                    updateUserTaskResolver(
+                      withOrgManagerChainContinuationNodeId(
+                        chainResolver,
+                        option?.id ?? '',
+                      ),
+                    )
+                  }
+                  options={[...chainContinuationChoice.options]}
+                  placeholder="選擇前面的主管鏈關卡"
+                  value={chainContinuationChoice.selected ?? undefined}
+                />
+              </BPMFormField>
+            ) : null}
             {chainStartLevelChoice ? (
               <BPMFormField
                 hintText={
@@ -3517,6 +3567,36 @@ export function TemplateDesignerView({
                   }}
                   options={[...chainStartLevelChoice.options]}
                   value={chainStartLevelChoice.selected}
+                />
+              </BPMFormField>
+            ) : null}
+            {chainResolver ? (
+              <BPMFormField
+                hintText={
+                  isOrgManagerChainSkipToggleDisabled(chainResolver)
+                    ? '已選「接續前面某一段主管鏈」，不能同時使用；要用請先改選其他起點。'
+                    : '起點本人在所有在職職務裡的最高職等已達簽到職等時，本關整關略過；起點沒有職等時不略過。'
+                }
+                label="起點本人已達簽到職等時略過此關"
+                name="orgManagerChainSkipWhenStartReached"
+              >
+                <Toggle
+                  checked={readOrgManagerChainSkipWhenStartReached(
+                    chainResolver,
+                  )}
+                  disabled={isOrgManagerChainSkipToggleDisabled(chainResolver)}
+                  inputProps={{
+                    id: 'orgManagerChainSkipWhenStartReached',
+                    name: 'orgManagerChainSkipWhenStartReached',
+                  }}
+                  onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+                    updateUserTaskResolver(
+                      withOrgManagerChainSkipWhenStartReached(
+                        chainResolver,
+                        event.target.checked,
+                      ),
+                    )
+                  }
                 />
               </BPMFormField>
             ) : null}

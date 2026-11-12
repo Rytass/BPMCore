@@ -589,13 +589,19 @@ function lintApproverResolver(
 }
 
 /**
- * The two optional settings of an `ORG_MANAGER_CHAIN` (`startFrom`,
- * `startPositionLevel`). The shape and range checks are the designer's own
+ * The optional settings of an `ORG_MANAGER_CHAIN` (`startFrom`, including the
+ * `CHAIN_CONTINUATION` start that picks up where an earlier chain stopped,
+ * `startPositionLevel` and `skipWhenStartReached`). The shape and range checks
+ * (a continuation names its stage, the skip flag is a boolean, the two do not
+ * go together, a notify chain sets neither) are the designer's own
  * (`readOrgManagerChainIssue`), so the two cannot disagree; what only the
- * definition can tell, that the stages a start names exist and are approval
- * nodes, is checked here. Whether the form field fits and the earlier stage
- * always signs needs the form schema and the whole graph, so `TemplateService`
- * runs those once the definition has passed this lint.
+ * definition can tell, that the stages a `NODE_ACTOR` start names exist and are
+ * approval nodes, is checked here. Whether the form field fits and the earlier
+ * stage always signs needs the form schema and the whole graph, and so does
+ * everything about the stage a `CHAIN_CONTINUATION` names (it exists, is a
+ * plain manager chain, sits on every path to this node, and this node asks for
+ * a higher level), so `TemplateService` runs those once the definition has
+ * passed this lint.
  */
 function lintOrgManagerChain(
   resolver: Extract<ApproverResolver, { readonly type: 'ORG_MANAGER_CHAIN' }>,

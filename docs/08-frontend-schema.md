@@ -240,6 +240,9 @@ type ApproverResolver =
       readonly startFrom?: OrgManagerChainStart;
       // 職等低於它的主管穿過不簽；省略＝第一位有職等的主管就開始簽
       readonly startPositionLevel?: number;
+      // 為 true 時，起點本人的最高職等已達 minPositionLevel 就整關略過（不可與 CHAIN_CONTINUATION 並用，
+      // 知會節點不可用）；省略、false、null＝照舊。不認得它的引擎會安靜忽略
+      readonly skipWhenStartReached?: boolean | null;
       readonly type: 'ORG_MANAGER_CHAIN';
     }
   | { readonly formPath: string; readonly type: 'DYNAMIC_FORM' }
@@ -274,7 +277,10 @@ type ApproverResolver =
 type OrgManagerChainStart =
   | { readonly type: 'INITIATOR' }
   | { readonly formPath: string; readonly type: 'FORM_MEMBER' }
-  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' };
+  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' }
+  // 接續前一段主管鏈：只簽比那一段實際已簽到的職等更高的主管；那一段已簽到本關職等時本關整關略過。
+  // 不認得它的引擎會指名拒絕
+  | { readonly nodeId: string; readonly type: 'CHAIN_CONTINUATION' };
 
 type ApproverResolverFallback =
   | { readonly type: 'NONE' }
@@ -320,6 +326,29 @@ position / org id 是否真實存在。
 試跑的處理者文字則把占位字串（用 `parseOrgManagerChainPlaceholder` 解析）轉成同樣的寫法，
 例如「主管鏈：從表單欄位「負責人」的主管起算，簽到職等 30（從職等 20 開始）」。
 知會節點的收件人在設計器裡本來就不開放主管鏈的設定面板（只顯示摘要），所以不會出現「從誰的主管開始」。
+
+主管鏈再多兩個設定（`startFrom: { type: 'CHAIN_CONTINUATION', nodeId }` 與 `skipWhenStartReached`，未發佈）：
+「從誰的主管開始」多一個選項「接續前面某一段主管鏈」，另有開關（`Toggle`）「起點本人已達簽到職等時略過此關」。
+- **接續哪一關**：選了接續才出現的選單，只列通過 `readChainContinuationSourceIssues` 接續來源檢查的上游主管鏈關卡
+  （存在、是簽核關卡、簽核來源是主管鏈、本身不是接續型、起點是申請人或前面關卡的簽核者、在每條路徑上）；
+  已存的關卡刪掉了或不再合格時保留並標示。可能被略過的主管鏈關卡（設了 `skipWhenStartReached`）仍會列出，
+  因為引擎讀它的略過紀錄。
+- **互斥**：接續與開關不能同時用。已開開關時，「接續前面某一段主管鏈」選項不會灰掉，而是名稱加上
+  「（已勾選略過，不能同時使用）」，選了無效；已選接續時開關停用並說明原因。選了接續時，略過旗標是 `false`、`null` 或非布林的殘值就會移除；
+  旗標是 `true` 時這個選擇會被拒絕（見上一句，`readOrgManagerChainStartPick` 回 `null`）。切到其他起點則保留旗標；開關關閉時移除 key 而不是寫 `false`。壞掉的草稿兩者並存時，開關仍可操作，方便使用者自己解開。
+- **簽到職等**：改了前一段（或接續關卡自己）的「簽到職等」之後，「必須高於」前一段職等的問題會顯示在接續關卡自己身上；
+  接續關卡的兩個「排除後沒有簽核人時」選單選「改由申請人的直屬主管簽核」也會顯示問題（見發布檢查）。
+- **摘要與試跑**：節點摘要寫成「主管鏈：接續前一段主管鏈「單位主管」，簽到職等 40」，開關開啟時結尾加
+  「（起點本人已達簽到職等時略過此關）」；試跑的處理者文字由占位字串轉成「主管鏈：接續「…」往上；若前一段已簽到
+  此職等則略過，簽到職等 40（送出時依組織決定實際主管）」。占位字串：接續為
+  `orgManagerChain:<min>:<startLevel>:continue:<nodeId>`；開關開啟時 kind 改為 `orgManagerChainSkipReached`，其餘段落相同；
+  兩者都沒設時與以前逐字相同，舊版解析器遇到 `continue` 段或新 kind 都回 `null`。
+- **可能被略過的關卡**（開關開啟，或起點是接續）不能有可由簽核人補填的欄位，也不能被選為 `NODE_ACTOR`／
+  `NODE_ACTOR_MANAGER`／`excludeNodeActors`／`startFrom: NODE_ACTOR` 的來源（新略過原因 `managerChainReached`，
+  設計器提示文字逐條列出）。
+- **AI 工具組**（`set_user_task_approver`）：沒帶的 `startFrom`／`startPositionLevel`／`skipWhenStartReached` 沿用節點原值；
+  只有真的互斥時才不沿用——這次寫接續起點就不沿用略過旗標，這次寫 `skipWhenStartReached: true` 而節點原本是接續起點就不沿用
+  起點（改回從發起人起算，摘要寫明）。`skipWhenStartReached` 傳 `false` 或 `null` 都等同清掉。
 
 四種新來源（`FORM_MEMBER_MANAGER`、`FORM_ORG_UNIT_MANAGER`、`NODE_ACTOR`、`NODE_ACTOR_MANAGER`，未發佈）
 的就緒檢查（`readApproverResolverIssue`）：`formPath` 不可空白、`nodeIds` 不可為空、
@@ -455,6 +484,20 @@ type OrgUnitFieldDefinition = BaseFormFieldDefinition<'org_unit'>;
 且沒人可簽時改派申請人主管（`whenEmpty: 'INITIATOR_MANAGER'`），仍照決策方式判斷，因為唯一成員
 剛好是申請人時會改派給可能是多人的主管），設計器的關卡選項請用同一個函式過濾。
 用在 `NOTIFY.recipients` 時 `startFrom` 只能省略或 `INITIATOR`。
+
+接續與略過的檢查（未發佈）：
+- **形狀**：`skipWhenStartReached` 必須是布林或 `null`；`startFrom: { type: 'CHAIN_CONTINUATION', nodeId }` 的 `nodeId` 須為非空字串。
+- **互斥**：同一個主管鏈不能同時設接續起點與 `skipWhenStartReached: true`。
+- **本關職等要高於 S**：接續關卡的 `minPositionLevel` 必須**高於**前一段 S 的 `minPositionLevel`；等於或更低時，
+  只要 S 有人簽到它自己的職等，本關就一定略過。本關也不能設 `excludeInitiator.whenEmpty` 或
+  `excludeNodeActors.whenEmpty` 為 `INITIATOR_MANAGER`。
+- **S 的起點限制**（`readChainContinuationSourceIssues`）：S 必須存在、是 `userTask`、簽核來源是 `ORG_MANAGER_CHAIN`、
+  本身不是接續型（不支援多段串接）、起點只能是 `INITIATOR` 或 `NODE_ACTOR`（不能是 `FORM_MEMBER`）；S 在本關上游，
+  而且從開始到本關的每條路徑都經過它；S 不能有 `entryCondition`、`SKIP_NODE`、`skipNodeByNodeActors`，
+  但可以設 `skipWhenStartReached` 或 SLA 自動同意。
+- **可能被略過的關卡不能有補填欄位**：設了 `skipWhenStartReached`、或起點是接續的 `userTask`，不能有可由簽核人補填的欄位
+  （規則同 `excludeInitiator.whenEmpty: SKIP_NODE`）；就緒檢查與發布檢查都擋。
+- **知會節點兩者都不能用**：`NOTIFY.recipients` 的主管鏈不能設接續起點，也不能設 `skipWhenStartReached`。
 
 ### Service Task
 
