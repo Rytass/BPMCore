@@ -34,6 +34,13 @@ import {
   readOrgManagerChainStartMode,
   readOrgManagerChainStartNodeIds,
   NO_START_POSITION_LEVEL_OPTION_ID,
+  ORG_MANAGER_CHAIN_START_OPTIONS,
+  isOrgManagerChainContinuationPickDisabled,
+  isOrgManagerChainSkipToggleDisabled,
+  readOrgManagerChainContinuationNodeId,
+  readOrgManagerChainSkipWhenStartReached,
+  withOrgManagerChainContinuationNodeId,
+  withOrgManagerChainSkipWhenStartReached,
   readOrgManagerChainStartPick,
   readStoredManagerLevelOption,
   withApproverSubject,
@@ -1875,5 +1882,159 @@ describe('readOrgManagerChainFallbackHint', () => {
     expect(readOrgManagerChainFallbackHint(CHAIN_FROM_FORM)).toBe(
       '預設會停止流程並提示；若設定固定人，主管鏈在達到簽核職等前就結束時，會再加上該會員作為最後一關；找不到起點（表單欄位沒選人），或鏈上沒有人達到起始職等時，則改派給該會員。',
     );
+  });
+});
+
+describe('manager chain continuation and 略過 settings', () => {
+  const CONTINUING: ChainResolver = {
+    minPositionLevel: 40,
+    startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+    type: 'ORG_MANAGER_CHAIN',
+  };
+  const SKIPPING: ChainResolver = {
+    ...CHAIN,
+    skipWhenStartReached: true,
+  };
+
+  it('offers 接續前面某一段主管鏈 as the last start option', () => {
+    expect(ORG_MANAGER_CHAIN_START_OPTIONS[
+        ORG_MANAGER_CHAIN_START_OPTIONS.length - 1
+      ]).toStrictEqual({
+      id: 'CHAIN_CONTINUATION',
+      name: '接續前面某一段主管鏈',
+    });
+    expect(
+      readOrgManagerChainStartChoice(CHAIN).options.map((option) => option.id),
+    ).toContain('CHAIN_CONTINUATION');
+  });
+
+  it('reads a continuation as its own start mode with its hint', () => {
+    const choice = readOrgManagerChainStartChoice(CONTINUING);
+
+    expect(readOrgManagerChainStartMode(CONTINUING)).toBe('CHAIN_CONTINUATION');
+    expect(choice.selected).toStrictEqual({
+      id: 'CHAIN_CONTINUATION',
+      name: '接續前面某一段主管鏈',
+    });
+    expect(choice.hint).toBe(
+      '只簽比那一段實際已簽到的職等更高的主管；那一段已簽到本關職等時，本關整關略過。',
+    );
+    expect(readOrgManagerChainContinuationNodeId(CONTINUING)).toBe('unit');
+    expect(readOrgManagerChainContinuationNodeId(CHAIN)).toBeNull();
+  });
+
+  it('writes an empty continuation start when it is picked', () => {
+    expect(
+      readOrgManagerChainStartPick(CHAIN, 'CHAIN_CONTINUATION'),
+    ).toStrictEqual({
+      minPositionLevel: 5,
+      startFrom: { nodeId: '', type: 'CHAIN_CONTINUATION' },
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('drops the 略過 flag when a continuation is picked', () => {
+    const picked = withOrgManagerChainStart(
+      { ...SKIPPING, startPositionLevel: 3 },
+      'CHAIN_CONTINUATION',
+    );
+
+    expect(picked).toStrictEqual({
+      minPositionLevel: 5,
+      startFrom: { nodeId: '', type: 'CHAIN_CONTINUATION' },
+      startPositionLevel: 3,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+    expect('skipWhenStartReached' in picked).toBe(false);
+  });
+
+  it('keeps the 略過 flag when any other start is picked', () => {
+    expect(
+      withOrgManagerChainStart(SKIPPING, 'NODE_ACTOR').skipWhenStartReached,
+    ).toBe(true);
+  });
+
+  it('sets the continued stage only on a continuation', () => {
+    expect(
+      withOrgManagerChainContinuationNodeId(CONTINUING, 'other'),
+    ).toStrictEqual({
+      ...CONTINUING,
+      startFrom: { nodeId: 'other', type: 'CHAIN_CONTINUATION' },
+    });
+    expect(withOrgManagerChainContinuationNodeId(CHAIN, 'other')).toBe(CHAIN);
+  });
+
+  it('writes true for the 略過 flag and removes the key for false', () => {
+    const ticked = withOrgManagerChainSkipWhenStartReached(CHAIN, true);
+    const unticked = withOrgManagerChainSkipWhenStartReached(ticked, false);
+
+    expect(ticked).toStrictEqual({ ...CHAIN, skipWhenStartReached: true });
+    expect(readOrgManagerChainSkipWhenStartReached(ticked)).toBe(true);
+    expect(unticked).toStrictEqual(CHAIN);
+    expect('skipWhenStartReached' in unticked).toBe(false);
+    expect(
+      'skipWhenStartReached' in
+        withOrgManagerChainSkipWhenStartReached(CHAIN, false),
+    ).toBe(false);
+    expect(readOrgManagerChainSkipWhenStartReached(CHAIN)).toBe(false);
+  });
+
+  it('keeps the other settings when the 略過 flag changes', () => {
+    expect(
+      withOrgManagerChainSkipWhenStartReached(CHAIN_FROM_FORM, true),
+    ).toStrictEqual({ ...CHAIN_FROM_FORM, skipWhenStartReached: true });
+  });
+
+  it('blocks the 略過 box on a continuation and the continuation on a 略過 chain', () => {
+    expect(isOrgManagerChainSkipToggleDisabled(CONTINUING)).toBe(true);
+    expect(isOrgManagerChainSkipToggleDisabled(CHAIN)).toBe(false);
+    expect(isOrgManagerChainSkipToggleDisabled(SKIPPING)).toBe(false);
+    expect(isOrgManagerChainContinuationPickDisabled(SKIPPING)).toBe(true);
+    expect(isOrgManagerChainContinuationPickDisabled(CHAIN)).toBe(false);
+    expect(isOrgManagerChainContinuationPickDisabled(CONTINUING)).toBe(false);
+  });
+
+  it('refuses to pick a continuation on a 略過 chain and marks the option', () => {
+    const choice = readOrgManagerChainStartChoice(SKIPPING);
+
+    expect(
+      readOrgManagerChainStartPick(SKIPPING, 'CHAIN_CONTINUATION'),
+    ).toBeNull();
+    expect(
+      choice.options.find((option) => option.id === 'CHAIN_CONTINUATION')?.name,
+    ).toBe('接續前面某一段主管鏈（已勾選略過，不能同時使用）');
+    expect(readOrgManagerChainStartPick(SKIPPING, 'NODE_ACTOR')).not.toBeNull();
+  });
+
+  it('leaves the 略過 box usable when a bad draft has both settings', () => {
+    const both: ChainResolver = { ...CONTINUING, skipWhenStartReached: true };
+
+    expect(isOrgManagerChainSkipToggleDisabled(both)).toBe(false);
+    expect(isOrgManagerChainContinuationPickDisabled(both)).toBe(false);
+  });
+
+  it('names the continued stage in the summary and the missing start in the fallback hint', () => {
+    expect(
+      readApproverResolverSummary(
+        CONTINUING,
+        MEMBERS,
+        ORG_UNITS,
+        POSITIONS,
+        null,
+        [{ id: 'unit', name: '單位主管' }],
+      ),
+    ).toBe('主管鏈：接續前一段主管鏈「單位主管」，簽到職等 40');
+    expect(readOrgManagerChainFallbackHint(CONTINUING)).toContain(
+      '找不到起點（接續的前一段主管鏈沒有起點）',
+    );
+    expect(
+      readApproverResolverSummary(
+        SKIPPING,
+        MEMBERS,
+        ORG_UNITS,
+        POSITIONS,
+        null,
+      ),
+    ).toBe('主管鏈：簽到職等 5（起點本人已達簽到職等時略過此關）');
   });
 });

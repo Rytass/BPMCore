@@ -3,6 +3,8 @@ import {
   ApproverResolverFallback,
   OrgManagerChainStart,
   isFallbackCapableApproverResolverType,
+  isOrgManagerChainContinuation,
+  isOrgManagerChainSkippingWhenStartReached,
   isOrgManagerChainStartedFromInitiator,
   readOrgManagerChainStartPositionLevel,
   readUnsupportedApproverResolverType,
@@ -942,6 +944,7 @@ export const ORG_MANAGER_CHAIN_START_OPTIONS: readonly Readonly<{
   { id: 'INITIATOR', name: '發起人' },
   { id: 'FORM_MEMBER', name: '表單欄位的人' },
   { id: 'NODE_ACTOR', name: '前面關卡的簽核者' },
+  { id: 'CHAIN_CONTINUATION', name: '接續前面某一段主管鏈' },
 ];
 
 /** The id of the read-only entry an unknown start is shown as. */
@@ -969,6 +972,8 @@ export const START_POSITION_LEVEL_ABOVE_MIN_HINT =
 const ORG_MANAGER_CHAIN_START_HINTS: Readonly<
   Record<OrgManagerChainStartMode, string>
 > = {
+  CHAIN_CONTINUATION:
+    '只簽比那一段實際已簽到的職等更高的主管；那一段已簽到本關職等時，本關整關略過。',
   FORM_MEMBER: '依申請人送出表單時在該欄位選的人員，從他的主管開始往上簽。',
   INITIATOR: '從發起人的直屬主管開始往上簽。',
   NODE_ACTOR: '從所選前面關卡實際簽核的那一位開始，往上找他的主管。',
@@ -1005,6 +1010,56 @@ export function readOrgManagerChainStartMode(
     : null;
 }
 
+const CHAIN_CONTINUATION_BLOCKED_BY_SKIP_SUFFIX =
+  '（已勾選略過，不能同時使用）';
+
+/**
+ * `true` when 接續前面某一段主管鏈 cannot be picked because the stage already
+ * has 起點本人已達簽到職等時略過 ticked: the two exclude each other (the publish
+ * check refuses both together). A stage that already continues is not blocked:
+ * its own option is the selected one.
+ */
+export function isOrgManagerChainContinuationPickDisabled(
+  resolver: OrgManagerChainResolver,
+): boolean {
+  return (
+    isOrgManagerChainSkippingWhenStartReached(resolver) &&
+    !isOrgManagerChainContinuation(resolver)
+  );
+}
+
+/**
+ * `true` when the 起點本人已達簽到職等時略過 box cannot be ticked because the
+ * stage continues an earlier chain. A stage that is somehow both stays
+ * unblocked, so the author can still untick it.
+ */
+export function isOrgManagerChainSkipToggleDisabled(
+  resolver: OrgManagerChainResolver,
+): boolean {
+  return (
+    isOrgManagerChainContinuation(resolver) &&
+    !isOrgManagerChainSkippingWhenStartReached(resolver)
+  );
+}
+
+// The start options, with 接續前面某一段主管鏈 marked when the 略過 box blocks
+// it (Mezzanine's Select cannot disable one option; picking it is refused by
+// `readOrgManagerChainStartPick`).
+function readOrgManagerChainStartOptions(
+  resolver: OrgManagerChainResolver,
+): readonly OrgManagerChainStartOption[] {
+  return isOrgManagerChainContinuationPickDisabled(resolver)
+    ? ORG_MANAGER_CHAIN_START_OPTIONS.map((option) =>
+        option.id === 'CHAIN_CONTINUATION'
+          ? {
+              ...option,
+              name: `${option.name}${CHAIN_CONTINUATION_BLOCKED_BY_SKIP_SUFFIX}`,
+            }
+          : option,
+      )
+    : ORG_MANAGER_CHAIN_START_OPTIONS;
+}
+
 export type OrgManagerChainStartChoice = Readonly<{
   /** Hint under the select: what the chosen start means. */
   hint: string;
@@ -1030,14 +1085,14 @@ export function readOrgManagerChainStartChoice(
 
     return {
       hint: UNSUPPORTED_ORG_MANAGER_CHAIN_START_HINT,
-      options: [...ORG_MANAGER_CHAIN_START_OPTIONS, selected],
+      options: [...readOrgManagerChainStartOptions(resolver), selected],
       selected,
     };
   }
 
   return {
     hint: ORG_MANAGER_CHAIN_START_HINTS[mode],
-    options: ORG_MANAGER_CHAIN_START_OPTIONS,
+    options: readOrgManagerChainStartOptions(resolver),
     selected:
       ORG_MANAGER_CHAIN_START_OPTIONS.find((option) => option.id === mode) ??
       ORG_MANAGER_CHAIN_START_OPTIONS[0],
@@ -1062,7 +1117,7 @@ function readUnsupportedOrgManagerChainStartLabel(
 // and whatever else the definition carries is kept as it is.
 function omitOrgManagerChainKey(
   resolver: OrgManagerChainResolver,
-  omitted: 'startFrom' | 'startPositionLevel',
+  omitted: 'skipWhenStartReached' | 'startFrom' | 'startPositionLevel',
 ): OrgManagerChainResolver {
   return Object.fromEntries(
     Object.entries(resolver).filter(([key]) => key !== omitted),
@@ -1089,6 +1144,15 @@ export function withOrgManagerChainStart(
     return { ...base, startFrom: { nodeIds: [], type: 'NODE_ACTOR' } };
   }
 
+  if (mode === 'CHAIN_CONTINUATION') {
+    // Continuing and skipping when the start already qualifies exclude each
+    // other, so picking the one drops the other.
+    return {
+      ...omitOrgManagerChainKey(base, 'skipWhenStartReached'),
+      startFrom: { nodeId: '', type: 'CHAIN_CONTINUATION' },
+    };
+  }
+
   return base;
 }
 
@@ -1109,7 +1173,9 @@ export function readOrgManagerChainStartPick(
   if (
     resolver.type !== 'ORG_MANAGER_CHAIN' ||
     !picked ||
-    picked.id === readOrgManagerChainStartMode(resolver)
+    picked.id === readOrgManagerChainStartMode(resolver) ||
+    (picked.id === 'CHAIN_CONTINUATION' &&
+      isOrgManagerChainContinuationPickDisabled(resolver))
   ) {
     return null;
   }
@@ -1159,6 +1225,49 @@ export function withOrgManagerChainStartNodeIds(
   return resolver.startFrom?.type === 'NODE_ACTOR'
     ? { ...resolver, startFrom: { nodeIds, type: 'NODE_ACTOR' } }
     : resolver;
+}
+
+/** The stage a `CHAIN_CONTINUATION` start continues, else `null`. */
+export function readOrgManagerChainContinuationNodeId(
+  resolver: OrgManagerChainResolver,
+): string | null {
+  return resolver.startFrom?.type === 'CHAIN_CONTINUATION'
+    ? resolver.startFrom.nodeId
+    : null;
+}
+
+/**
+ * The resolver with the stage a `CHAIN_CONTINUATION` start continues set. Any
+ * other start comes back as the same object.
+ */
+export function withOrgManagerChainContinuationNodeId(
+  resolver: OrgManagerChainResolver,
+  nodeId: string,
+): OrgManagerChainResolver {
+  return resolver.startFrom?.type === 'CHAIN_CONTINUATION'
+    ? { ...resolver, startFrom: { nodeId, type: 'CHAIN_CONTINUATION' } }
+    : resolver;
+}
+
+/** Whether 起點本人已達簽到職等時略過此關 is ticked. */
+export function readOrgManagerChainSkipWhenStartReached(
+  resolver: OrgManagerChainResolver,
+): boolean {
+  return isOrgManagerChainSkippingWhenStartReached(resolver);
+}
+
+/**
+ * The resolver after 起點本人已達簽到職等時略過此關 is ticked or unticked: ticked
+ * writes `skipWhenStartReached: true`, unticked removes the key (never a
+ * stored `false`, which reads the same but would show up as a change).
+ */
+export function withOrgManagerChainSkipWhenStartReached(
+  resolver: OrgManagerChainResolver,
+  skip: boolean,
+): OrgManagerChainResolver {
+  return skip
+    ? { ...resolver, skipWhenStartReached: true }
+    : omitOrgManagerChainKey(resolver, 'skipWhenStartReached');
 }
 
 // The stored start level when it is a whole number, `null` otherwise. The
@@ -1308,6 +1417,14 @@ function readOrgManagerChainStartSummary(
       : '從前面關卡（未指定）簽核者的主管起算';
   }
 
+  if (mode === 'CHAIN_CONTINUATION') {
+    const sourceId = readOrgManagerChainContinuationNodeId(resolver) ?? '';
+
+    return sourceId.trim()
+      ? `接續前一段主管鏈「${nodes?.find((node) => node.id === sourceId)?.name ?? sourceId}」`
+      : '接續前一段主管鏈（未指定）';
+  }
+
   return null;
 }
 
@@ -1329,6 +1446,9 @@ export function readOrgManagerChainFallbackHint(
   const emptyChainCases = [
     ...(mode === 'FORM_MEMBER' ? ['找不到起點（表單欄位沒選人）'] : []),
     ...(mode === 'NODE_ACTOR' ? ['找不到起點（前面關卡沒有同意紀錄）'] : []),
+    ...(mode === 'CHAIN_CONTINUATION'
+      ? ['找不到起點（接續的前一段主管鏈沒有起點）']
+      : []),
     ...(readOrgManagerChainStartPositionLevel(resolver) !== null
       ? ['鏈上沒有人達到起始職等']
       : []),
@@ -1354,5 +1474,5 @@ function readOrgManagerChainSummary(
 
   return `主管鏈：${start ? `${start}，` : ''}簽到職等 ${resolver.minPositionLevel}${
     startLevel === null ? '' : `（從職等 ${startLevel} 開始）`
-  }`;
+  }${isOrgManagerChainSkippingWhenStartReached(resolver) ? '（起點本人已達簽到職等時略過此關）' : ''}`;
 }

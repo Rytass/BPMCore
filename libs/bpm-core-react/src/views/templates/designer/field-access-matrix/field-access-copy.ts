@@ -86,9 +86,18 @@ export function readFieldAccessNodeTag(node: UserTaskNode): string | null {
   return parts.length ? parts.join(' · ') : null;
 }
 
+/**
+ * Why a node whose manager chain can skip itself (`skipWhenStartReached`, or a
+ * continuation of an earlier chain) cannot have fields for the approver to fill
+ * in; the same rule as `fieldAccessManagerChainReached`.
+ */
+export const FIELD_ACCESS_MANAGER_CHAIN_REACHED_NOTE =
+  '此關可能因主管鏈已簽到職等而整關略過，不能有簽核人補填的欄位';
+
 const FILL_CONFLICT_CODES: ReadonlySet<FieldAccessIssueCode> = new Set([
   'fieldAccessAutoApprove',
   'fieldAccessGroupPolicy',
+  'fieldAccessManagerChainReached',
   'fieldAccessSkipNode',
 ]);
 
