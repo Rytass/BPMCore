@@ -1537,6 +1537,46 @@ describe('workflow definition validator: manager chain start settings', (): void
     ]);
   });
 
+  it('accepts a continuation start and the skip flag on their own (the graph checks belong to the publish lint)', (): void => {
+    expect(
+      lintChainAfterFirstStage({
+        startFrom: { nodeId: 'task_first', type: 'CHAIN_CONTINUATION' },
+      }),
+    ).toEqual([]);
+    expect(lintChain({ skipWhenStartReached: true })).toEqual([]);
+    expect(lintChain({ skipWhenStartReached: null })).toEqual([]);
+  });
+
+  it('refuses a continuation start that names no earlier chain', (): void => {
+    expect(
+      lintChainAfterFirstStage({
+        startFrom: { nodeId: ' ', type: 'CHAIN_CONTINUATION' },
+      }),
+    ).toEqual([`${PATH}: 簽核節點需要指定要接續的前一段主管鏈關卡。`]);
+  });
+
+  it('refuses a continuation that also sets skipWhenStartReached', (): void => {
+    const errors = lintChainAfterFirstStage({
+      skipWhenStartReached: true,
+      startFrom: { nodeId: 'task_first', type: 'CHAIN_CONTINUATION' },
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain(`${PATH}: `);
+    expect(errors[0]).toContain('不能同時接續前一段主管鏈又設定');
+  });
+
+  it.each(['true', 1, {}])(
+    'refuses a skipWhenStartReached that is not a boolean (%j)',
+    (skipWhenStartReached): void => {
+      const errors = lintChain({ skipWhenStartReached });
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain(`${PATH}: `);
+      expect(errors[0]).toContain('只能是勾選或不勾選');
+    },
+  );
+
   it.each([
     ['empty', [], 'startFrom.nodeIds is required'],
     [
@@ -1627,6 +1667,24 @@ describe('workflow definition validator: manager chain start settings', (): void
       expect(lintRecipients(chain({ startFrom }))).toEqual([
         `${RECIPIENTS}: 知會節點的主管鏈只能從發起人開始。`,
       ]);
+    });
+
+    it('refuses skipWhenStartReached on a notify chain', (): void => {
+      const errors = lintRecipients(chain({ skipWhenStartReached: true }));
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain(`${RECIPIENTS}: `);
+      expect(errors[0]).toContain('知會節點的主管鏈不能設定');
+    });
+
+    it('refuses a continuation start on a notify chain', (): void => {
+      expect(
+        lintRecipients(
+          chain({
+            startFrom: { nodeId: 'task_first', type: 'CHAIN_CONTINUATION' },
+          }),
+        ),
+      ).toEqual([`${RECIPIENTS}: 知會節點的主管鏈只能從發起人開始。`]);
     });
 
     it('refuses a start level above the required level', (): void => {

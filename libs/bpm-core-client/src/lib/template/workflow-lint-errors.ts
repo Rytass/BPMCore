@@ -79,6 +79,7 @@ interface WorkflowLintCopy {
   readonly fieldAccessFillHidden: (name: string, fieldKey: string) => string;
   readonly fieldAccessGroupPolicy: (name: string) => string;
   readonly fieldAccessInvalid: (name: string) => string;
+  readonly fieldAccessManagerChainReached: (name: string) => string;
   readonly fieldAccessSkipNode: (name: string) => string;
   readonly fieldAccessUnknownField: (name: string, fieldKey: string) => string;
   readonly legacyFieldPermissions: (name: string) => string;
@@ -244,6 +245,8 @@ const WORKFLOW_LINT_COPY: Readonly<
       `The approval node "${name}" is a joint approval (everyone / a quorum must approve), so it cannot have fields to fill in; several people filling in at once would overwrite each other.`,
     fieldAccessInvalid: (name): string =>
       `The field settings of the approval node "${name}" are malformed. Open the node in the designer and set them again.`,
+    fieldAccessManagerChainReached: (name): string =>
+      `The approval node "${name}" has fields to fill in, so its manager chain cannot skip the whole step once the starting person already holds the required level, nor continue an earlier chain; the step could be skipped and the case approved with nobody filling them in.`,
     fieldAccessSkipNode: (name): string =>
       `The approval node "${name}" has fields to fill in, so what "Initiator cannot self-approve" (申請人不能自簽) does when nobody is left to sign cannot be "Skip this step" (跳過此關); otherwise the case would be approved with nobody filling them in.`,
     fieldAccessUnknownField: (name, fieldKey): string =>
@@ -386,6 +389,8 @@ const WORKFLOW_LINT_COPY: Readonly<
       `簽核節點「${name}」是會簽（全部同意／過半數），不能設定補填欄位，否則多人同時填寫會互相覆蓋。`,
     fieldAccessInvalid: (name): string =>
       `簽核節點「${name}」的欄位設定格式不正確，請在設計器重新設定。`,
+    fieldAccessManagerChainReached: (name): string =>
+      `簽核節點「${name}」有補填欄位，主管鏈不能設定「起點本人已達簽到職等時略過」，也不能接續前一段主管鏈；此關可能因主管鏈已簽到職等而整關略過，不能有簽核人補填的欄位，否則這張單沒有人補填就核准了。`,
     fieldAccessSkipNode: (name): string =>
       `簽核節點「${name}」有補填欄位，「申請人不能自簽」的無人可簽處理不能選「跳過此關」，否則這張單沒有人補填就核准了。`,
     fieldAccessUnknownField: (name, fieldKey): string =>
@@ -1180,6 +1185,10 @@ function readFieldAccessTranslations(
       [
         WORKFLOW_LINT_MESSAGES.fieldAccessAutoApprove(node.id),
         copy.fieldAccessAutoApprove(name),
+      ],
+      [
+        WORKFLOW_LINT_MESSAGES.fieldAccessManagerChainReached(node.id),
+        copy.fieldAccessManagerChainReached(name),
       ],
       [
         WORKFLOW_LINT_MESSAGES.fieldAccessSkipNode(node.id),

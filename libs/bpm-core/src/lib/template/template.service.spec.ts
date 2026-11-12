@@ -1534,6 +1534,148 @@ describe('TemplateService', () => {
     });
   });
 
+  describe('manager chain continuation graph rules', (): void => {
+    const PREFIX = 'workflow.nodes.task_3.approverResolver.startFrom: ';
+    const chainData = (
+      resolver: Readonly<Record<string, unknown>>,
+    ): Readonly<Record<string, unknown>> => ({
+      approverResolver: { type: 'ORG_MANAGER_CHAIN', ...resolver },
+      decisionPolicy: { type: 'SEQUENTIAL' },
+    });
+    // start -> task_1 -> task_2 -> task_3 -> end, each node getting its patch.
+    const withNodes = (
+      patches: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+    ): WorkflowDefinition => {
+      const base = createFieldAccessWorkflow([[], [], []]);
+
+      return {
+        ...base,
+        nodes: base.nodes.map((node) =>
+          node.type === 'userTask' && patches[node.id] !== undefined
+            ? { ...node, data: { ...node.data, ...patches[node.id] } }
+            : node,
+        ),
+      } as WorkflowDefinition;
+    };
+    const publish = (
+      workflowDefinition: WorkflowDefinition,
+    ): Promise<unknown> =>
+      createTableConditionPublishService({
+        workflowDefinition,
+      }).publishApprovalTemplateVersion('template-version-1');
+    const messageOf = (
+      workflowDefinition: WorkflowDefinition,
+    ): Promise<string> =>
+      publish(workflowDefinition).then(
+        () => '',
+        (error: Error): string => error.message,
+      );
+
+    // HR_0002: the unit manager (level 30, skipped when the applicant already
+    // is one), a middle stage, then the approval stage (level 40) that picks
+    // up where the first chain stopped.
+    const hr0002 = (
+      approvalResolver: Readonly<Record<string, unknown>> = {},
+    ): WorkflowDefinition =>
+      withNodes({
+        task_1: chainData({
+          minPositionLevel: 30,
+          skipWhenStartReached: true,
+        }),
+        task_3: chainData({
+          minPositionLevel: 40,
+          startFrom: { nodeId: 'task_1', type: 'CHAIN_CONTINUATION' },
+          ...approvalResolver,
+        }),
+      });
+
+    it('publishes the HR_0002 shape: a skip-aware chain, a middle stage, then a continuation', async (): Promise<void> => {
+      await expect(publish(hr0002())).resolves.toMatchObject({
+        id: 'template-version-1',
+      });
+    });
+
+    it('rejects a continuation whose earlier chain is not upstream, naming the start key', async (): Promise<void> => {
+      // task_1 asks to continue task_3, which runs after it.
+      const message = await messageOf(
+        withNodes({
+          task_1: chainData({
+            minPositionLevel: 40,
+            startFrom: { nodeId: 'task_3', type: 'CHAIN_CONTINUATION' },
+          }),
+          task_3: chainData({ minPositionLevel: 30 }),
+        }),
+      );
+
+      expect(message).toContain(
+        'workflow.nodes.task_1.approverResolver.startFrom: ',
+      );
+      expect(message).toMatch(
+        /接續的前一段主管鏈 「補填 3」 不在 「補填 1」 的上游/,
+      );
+    });
+
+    it('rejects a continuation whose earlier chain does not exist', async (): Promise<void> => {
+      const message = await messageOf(
+        hr0002({
+          startFrom: { nodeId: 'ghost', type: 'CHAIN_CONTINUATION' },
+        }),
+      );
+
+      expect(message).toContain(`${PREFIX}接續的前一段主管鏈「ghost」不存在。`);
+    });
+
+    it('rejects a continuation that does not ask for a higher level than the earlier chain', async (): Promise<void> => {
+      const message = await messageOf(hr0002({ minPositionLevel: 30 }));
+
+      expect(message).toContain(PREFIX);
+      expect(message).toContain('必須高於前一段主管鏈');
+    });
+
+    it('rejects an earlier chain that an entry condition can skip', async (): Promise<void> => {
+      const message = await messageOf(
+        withNodes({
+          task_1: {
+            ...chainData({ minPositionLevel: 30 }),
+            entryCondition: 'form.amount > 10',
+          },
+          task_3: chainData({
+            minPositionLevel: 40,
+            startFrom: { nodeId: 'task_1', type: 'CHAIN_CONTINUATION' },
+          }),
+        }),
+      );
+
+      expect(message).toContain(PREFIX);
+    });
+
+    it('does not report a plain chain, so existing templates publish unchanged (control)', async (): Promise<void> => {
+      await expect(
+        publish(withNodes({ task_3: chainData({ minPositionLevel: 40 }) })),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('does not repeat a shape error the structural lint already reported', async (): Promise<void> => {
+      // Continuing and skipping at once is a shape error. The level is not
+      // above the earlier chain's, which the graph check would also report
+      // had it run; it must not, so the message holds the shape error alone.
+      const message = await messageOf(
+        withNodes({
+          task_1: chainData({ minPositionLevel: 30 }),
+          task_3: chainData({
+            minPositionLevel: 30,
+            skipWhenStartReached: true,
+            startFrom: { nodeId: 'task_1', type: 'CHAIN_CONTINUATION' },
+          }),
+        }),
+      );
+
+      expect(message.split('; ')).toHaveLength(1);
+      expect(message).toContain('不能同時接續前一段主管鏈又設定');
+      expect(message).not.toContain('必須高於前一段主管鏈');
+    });
+  });
+
   describe('approver-filled fields against the bound form', (): void => {
     const dataSource = { bindings: [], key: 'invoice_kinds', version: 1 };
     const fillSchema: FormDefinitionSchema = {
