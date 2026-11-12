@@ -13359,6 +13359,140 @@ describe('WorkflowEngineService', () => {
         );
       });
     });
+
+    describe('one flow: 單位主管 (30, skips when its start qualifies) -> 人資會簽 -> 核准 (40, continues 單位主管)', (): void => {
+      const MIDDLE = 'task_mid';
+      const MIDDLE_APPROVER = 'member-hr';
+
+      // The example's flow with a plain stage in between, which is where the
+      // continuation gets to read what the first stage left in the log.
+      const flowWorkflow = (): WorkflowDefinition => {
+        const staged = stagedWorkflow(
+          chain({ skipWhenStartReached: true }),
+          CONTINUE,
+        );
+
+        return {
+          ...staged,
+          edges: [
+            ...staged.edges.filter((edge) => edge.id !== 'edge_stage_task'),
+            {
+              data: {},
+              id: 'edge_stage_mid',
+              source: STAGE,
+              target: MIDDLE,
+              type: 'smoothstep',
+            },
+            {
+              data: {},
+              id: 'edge_mid_task',
+              source: MIDDLE,
+              target: 'task_finance',
+              type: 'smoothstep',
+            },
+          ],
+          nodes: [
+            ...staged.nodes,
+            createUserTaskNode(MIDDLE, '人資會簽', MIDDLE_APPROVER, 410, 160),
+          ],
+        };
+      };
+      // The token starts at the start event: every row below is written by the
+      // engine itself, `seq` included (the fixture numbers the rows it stores).
+      const flowFixture = (
+        org: OrgData,
+      ): ReturnType<typeof createServiceFixture> =>
+        createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          ...org,
+          processWorkflowSnapshot: flowWorkflow(),
+          rootOptions: TAIPEI,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+      const approve = async (
+        fixture: ReturnType<typeof createServiceFixture>,
+        nodeId: string,
+        memberId: string,
+      ): Promise<void> => {
+        await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: memberId,
+          taskId: readTaskByNodeId(fixture.savedTasks, nodeId).id,
+        });
+      };
+      const candidatesOf = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        nodeId: string,
+      ): readonly string[] => {
+        const taskId = readTaskByNodeId(fixture.savedTasks, nodeId).id;
+
+        return fixture.savedTaskCandidates
+          .filter((candidate) => candidate.taskId === taskId)
+          .map((candidate) => candidate.memberId);
+      };
+
+      it('skips 單位主管 for a 處級 applicant, then asks the 營運長 for 核准 (T is null)', async (): Promise<void> => {
+        const fixture = flowFixture(
+          createManagerChainOrg({
+            grades: { 'member-001': 30, 'member-coo': 40, 'member-gm': 50 },
+            links: [
+              ['member-001', 'member-coo'],
+              ['member-coo', 'member-gm'],
+            ],
+          }),
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(skipLogsOf(fixture)).toHaveLength(1);
+        expect(skipLogsOf(fixture)[0]).toMatchObject({
+          eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+          nodeId: STAGE,
+          taskId: null,
+        });
+        expect(skipLogsOf(fixture)[0]?.payload).toEqual(SKIP_PAYLOAD);
+        expect(fixture.savedTasks.map((task) => task.nodeId)).toEqual([MIDDLE]);
+
+        await approve(fixture, MIDDLE, MIDDLE_APPROVER);
+
+        // Nobody signed 單位主管, so the continuation starts from the bottom of
+        // the ladder: the first manager at 40 is the 營運長.
+        expect(candidatesOf(fixture, 'task_finance')).toEqual(['member-coo']);
+        expect(skipLogsOf(fixture)).toHaveLength(1);
+      });
+
+      it('skips 核准 when the 營運長 signed 單位主管 (T is 40), by the same flow', async (): Promise<void> => {
+        const fixture = flowFixture(
+          createManagerChainOrg({
+            grades: { 'member-001': 20, 'member-coo': 40 },
+            links: [['member-001', 'member-coo']],
+          }),
+        );
+
+        await fixture.service.processInstance('instance-1');
+
+        expect(skipLogsOf(fixture)).toEqual([]);
+        expect(candidatesOf(fixture, STAGE)).toEqual(['member-coo']);
+
+        await approve(fixture, STAGE, 'member-coo');
+        await approve(fixture, MIDDLE, MIDDLE_APPROVER);
+
+        expect(
+          fixture.savedTasks.filter((task) => task.nodeId === 'task_finance'),
+        ).toEqual([]);
+        expect(skipLogsOf(fixture)).toHaveLength(1);
+        expect(skipLogsOf(fixture)[0]).toMatchObject({
+          eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+          nodeId: 'task_finance',
+          taskId: null,
+        });
+        expect(skipLogsOf(fixture)[0]?.payload).toMatchObject({
+          skippedByManagerChainReached: true,
+        });
+      });
+    });
   });
 
   describe('ORG_MANAGER_CHAIN approver resolver', () => {
@@ -23957,12 +24091,30 @@ function createServiceFixture({
       (
         entityOrEntities: ActivityLogEntity | ActivityLogEntity[],
       ): Promise<ActivityLogEntity | ActivityLogEntity[]> => {
-        storedActivityLogs = [
-          ...storedActivityLogs,
-          ...(Array.isArray(entityOrEntities)
+        // The database numbers the rows it writes; the rows read back here get
+        // the next number after the largest one stored, unless a test seeded
+        // its own. The objects handed back to `save`'s caller (and recorded in
+        // `savedActivityLogs`) are left as they were.
+        storedActivityLogs = (
+          Array.isArray(entityOrEntities)
             ? entityOrEntities
-            : [entityOrEntities]),
-        ];
+            : [entityOrEntities]
+        ).reduce<readonly ActivityLogEntity[]>(
+          (stored, log) => [
+            ...stored,
+            log.seq
+              ? log
+              : Object.assign(new ActivityLogEntity(), log, {
+                  seq: String(
+                    stored.reduce(
+                      (largest, row) => Math.max(largest, Number(row.seq || 0)),
+                      0,
+                    ) + 1,
+                  ),
+                }),
+          ],
+          storedActivityLogs,
+        );
 
         if (Array.isArray(entityOrEntities)) {
           savedActivityLogs = [...entityOrEntities];
