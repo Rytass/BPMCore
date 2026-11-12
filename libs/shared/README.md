@@ -70,10 +70,20 @@ without a `mode` normalize to `single`; `radio` is always single and
   `POSITION`). The `POSITION` fallback type is not released yet (it landed after
   `v0.16.2`); older engines reject it at run time.
   `ORG_MANAGER_CHAIN` also takes `startFrom` (`OrgManagerChainStart`: the
-  initiator, the person picked in a form field, or the person who approved an
-  earlier stage) and `startPositionLevel` (managers below it are walked past);
-  both are optional, and an older engine ignores them and climbs from the
-  initiator.
+  initiator, the person picked in a form field, the person who approved an
+  earlier stage, or `CHAIN_CONTINUATION` to continue an earlier manager-chain
+  stage by `nodeId`), `startPositionLevel` (managers below it are walked past)
+  and `skipWhenStartReached` (skip the whole stage when the start person's own
+  position level already reaches `minPositionLevel`); all are optional. A
+  continuation only signs managers above the level the earlier stage actually
+  reached, and skips the stage when that level already reaches its own
+  `minPositionLevel`. `CHAIN_CONTINUATION` and `skipWhenStartReached: true`
+  exclude each other, and a notify node may use neither
+  (`readOrgManagerChainIssue`); `readChainContinuationSourceIssues` checks the
+  earlier stage. An engine that knows `startFrom` but not `CHAIN_CONTINUATION`
+  refuses it by name; an engine from before `startFrom` ignores `startFrom` and
+  `startPositionLevel` and climbs from the initiator, and one from before
+  `skipWhenStartReached` ignores that key and runs the stage as before.
 - Service task actions (`ServiceAction`) have three types. The workflow engine
   executes all three at run time:
   - `NOTIFY`: `channels`, `recipients` (an `ApproverResolver`), optional

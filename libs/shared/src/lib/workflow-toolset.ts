@@ -23,6 +23,8 @@ import {
   WorkflowNodeTriggerMode,
   isFallbackCapableApproverResolverType,
   isNotifyRecipientResolverType,
+  isOrgManagerChainContinuation,
+  isOrgManagerChainSkippingWhenStartReached,
   readOrgManagerChainStartPositionLevel,
 } from './workflow';
 import {
@@ -119,9 +121,11 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     '簽核人員解析策略，以 type 區分。DIRECT: { type, memberIds[] }；POSITION: { type, positionId }；' +
     'ORG_UNIT_MEMBER: { type, orgUnitId, includeDescendants? }；ORG_UNIT_POSITION: { type, orgUnitId, positionId, includeDescendants? }；' +
     'ORG_MANAGER: { type, baseFromInitiator, levelsUp, fallback? }；' +
-    'ORG_MANAGER_CHAIN: { type, minPositionLevel, startFrom?, startPositionLevel?, fallback? }（沿主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽。' +
-    "startFrom 決定鏈從誰的主管開始爬，省略＝從發起人：{ type: 'INITIATOR' }、{ type: 'FORM_MEMBER', formPath }（表單上「人員選擇」單選欄位選的人）、{ type: 'NODE_ACTOR', nodeIds[] }（前面指定關卡實際簽核的那一位）；起點本人不在鏈上，從他的直屬主管開始；知會節點只能從發起人開始。" +
-    "startPositionLevel 為起始職等，職等低於它的主管穿過不簽、第一位達到的主管才開始簽，省略＝第一位有職等的主管就開始簽，不可高於 minPositionLevel。改寫簽核人時，若沒有帶 startFrom／startPositionLevel 這兩個 key，會沿用節點原有的起點與起始職等；要改回從發起人起算請傳 startFrom: { type: 'INITIATOR' } 或 null，要清掉起始職等請傳 startPositionLevel: null）；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；" +
+    'ORG_MANAGER_CHAIN: { type, minPositionLevel, startFrom?, startPositionLevel?, skipWhenStartReached?, fallback? }（沿主管鏈往上簽到職等 minPositionLevel 為止，需全部同意；決策方式請用 SEQUENTIAL 由近到遠依序簽，或 PARALLEL_ALL 同時簽。' +
+    "startFrom 決定鏈從誰的主管開始爬，省略＝從發起人：{ type: 'INITIATOR' }、{ type: 'FORM_MEMBER', formPath }（表單上「人員選擇」單選欄位選的人）、{ type: 'NODE_ACTOR', nodeIds[] }（前面指定關卡實際簽核的那一位）、{ type: 'CHAIN_CONTINUATION', nodeId }（接續前面另一段主管鏈：只簽比那一段實際已簽到的職等更高的主管，那一段已簽到本關的 minPositionLevel 時本關整關略過；那一段須是同樣沿主管鏈簽核、從發起人或前面關卡簽核者起算、一定會走到的上游關卡，且本關的 minPositionLevel 要高於它）；起點本人不在鏈上，從他的直屬主管開始；知會節點只能從發起人開始。" +
+    'skipWhenStartReached 為 true 時，起點本人的職等已達 minPositionLevel 就整關略過（不能與 CHAIN_CONTINUATION 並用，知會節點不能用；這種可能被略過的關卡不能有簽核人補填的欄位）。' +
+    "startPositionLevel 為起始職等，職等低於它的主管穿過不簽、第一位達到的主管才開始簽，省略＝第一位有職等的主管就開始簽，不可高於 minPositionLevel。改寫簽核人時，若沒有帶 startFrom／startPositionLevel／skipWhenStartReached 這三個 key，會沿用節點原有的設定；要改回從發起人起算請傳 startFrom: { type: 'INITIATOR' } 或 null，要清掉起始職等請傳 startPositionLevel: null，要取消略過請傳 skipWhenStartReached: false 或 null。" +
+    '只有真的互斥時才不沿用：這次傳 CHAIN_CONTINUATION 起點就不沿用原有的 skipWhenStartReached；這次傳 skipWhenStartReached: true 而節點原本是接續起點，就不沿用原有的起點（改回從發起人起算，節點摘要會顯示主管鏈起點=發起人））；ORG_UNIT_MANAGER: { type, orgUnitId, fallback? }；' +
     "fallback（無主管時的改派）可為 { type: 'NONE' }（預設，停止流程）、{ type: 'DIRECT', memberId, allowInitiatorSelfApproval? }（改派固定會員）、或 { type: 'POSITION', positionId, allowInitiatorSelfApproval? }（改派給該職位目前的有效成員，多人時全部成為簽核人）；" +
     'DYNAMIC_FORM: { type, formPath }；EXPRESSION: { type, expression }；' +
     'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
@@ -679,14 +683,23 @@ function readOrgManagerChainSummary(resolver: ApproverResolver): string {
 
   const startLevel = readOrgManagerChainStartPositionLevel(resolver);
   const startFrom = resolver.startFrom;
+  const skips = isOrgManagerChainSkippingWhenStartReached(resolver);
   const from =
     startFrom?.type === 'FORM_MEMBER'
       ? `；主管鏈起點=表單欄位 ${startFrom.formPath}`
       : startFrom?.type === 'NODE_ACTOR'
         ? `；主管鏈起點=關卡 ${startFrom.nodeIds.join(',')} 的簽核者`
-        : '';
+        : startFrom?.type === 'CHAIN_CONTINUATION'
+          ? `；主管鏈起點=接續關卡 ${startFrom.nodeId} 的主管鏈`
+          : // A skipping chain names its start even when it is the initiator,
+            // so a start the tool dropped for it reads back as that.
+            skips
+            ? '；主管鏈起點=發起人'
+            : '';
 
-  return `${from}${startLevel === null ? '' : `；起始職等=${startLevel}`}`;
+  return `${from}${startLevel === null ? '' : `；起始職等=${startLevel}`}${
+    skips ? '；起點本人已達職等門檻時略過此關' : ''
+  }`;
 }
 
 // Raw JSON that was never linted can carry a `nodeIds` that is not a list; a
@@ -945,17 +958,25 @@ function isFallbackCapableApproverResolver(
 
 /**
  * `set_user_task_approver` replaces the whole resolver, so a call that leaves a
- * setting out would silently drop the one the node already has. Two settings
- * are carried over when the call leaves their key out, and a key in the call
- * is always obeyed as written:
+ * setting out would silently drop the one the node already has. Settings are
+ * carried over when the call leaves their key out, and a key in the call is
+ * always obeyed as written:
  *
  * - `fallback`, when both the old and the new resolver take one
  *   (`{ type: 'NONE' }` clears it);
- * - `startFrom` and `startPositionLevel`, when both the old and the new
- *   resolver are `ORG_MANAGER_CHAIN`. Dropping the start would send the chain
- *   back to the initiator without any error. To reset it, send
- *   `startFrom: { type: 'INITIATOR' }` or `null`; to clear the start level,
- *   send `startPositionLevel: null`.
+ * - `startFrom`, `startPositionLevel` and `skipWhenStartReached`, when both
+ *   the old and the new resolver are `ORG_MANAGER_CHAIN`. Dropping the start
+ *   would send the chain back to the initiator without any error. To reset it,
+ *   send `startFrom: { type: 'INITIATOR' }` or `null`; to clear the start
+ *   level, send `startPositionLevel: null`; to stop skipping, send
+ *   `skipWhenStartReached: false` or `null` (`null` reads as clearing).
+ *
+ * The two that exclude each other (a `CHAIN_CONTINUATION` start and
+ * `skipWhenStartReached: true`) give way only when the call really conflicts:
+ * a call that writes a continuation start does not inherit the old skip flag,
+ * and a call that writes `skipWhenStartReached: true` over a node that is a
+ * continuation does not inherit the old start (the chain starts at the
+ * initiator again). Any other combination carries over as usual.
  */
 function carryOverApproverSettings(
   command: WorkflowCommand,
@@ -1016,14 +1037,31 @@ function carryOverChainStart(
     return nextResolver;
   }
 
+  const writesContinuation = isOrgManagerChainContinuation(nextResolver);
+  const writesSkip = isOrgManagerChainSkippingWhenStartReached(nextResolver);
   const startFrom =
-    'startFrom' in writtenKeys ? undefined : currentResolver.startFrom;
+    'startFrom' in writtenKeys ||
+    (writesSkip && isOrgManagerChainContinuation(currentResolver))
+      ? undefined
+      : currentResolver.startFrom;
   const startPositionLevel =
     'startPositionLevel' in writtenKeys
       ? undefined
       : currentResolver.startPositionLevel;
+  // Only a flag that is really on is worth carrying: `false` and `null` mean
+  // the same as no flag.
+  const skipWhenStartReached =
+    'skipWhenStartReached' in writtenKeys ||
+    writesContinuation ||
+    !isOrgManagerChainSkippingWhenStartReached(currentResolver)
+      ? undefined
+      : true;
 
-  if (startFrom === undefined && startPositionLevel === undefined) {
+  if (
+    startFrom === undefined &&
+    startPositionLevel === undefined &&
+    skipWhenStartReached === undefined
+  ) {
     return nextResolver;
   }
 
@@ -1031,6 +1069,7 @@ function carryOverChainStart(
     ...nextResolver,
     ...(startFrom === undefined ? {} : { startFrom }),
     ...(startPositionLevel === undefined ? {} : { startPositionLevel }),
+    ...(skipWhenStartReached === undefined ? {} : { skipWhenStartReached }),
   };
 }
 
@@ -1584,6 +1623,7 @@ function parseApproverResolver(value: unknown): ApproverResolver {
       const fallback = parseApproverResolverFallback(value['fallback']);
       const startFrom = parseOrgManagerChainStart(value['startFrom']);
       const startPositionLevel = value['startPositionLevel'];
+      const skipWhenStartReached = value['skipWhenStartReached'];
 
       // A level that is missing, fractional or not a number is kept as written,
       // like `startFrom` and `startPositionLevel`, so the publish lint reports
@@ -1600,6 +1640,13 @@ function parseApproverResolver(value: unknown): ApproverResolver {
         ...(startPositionLevel === undefined || startPositionLevel === null
           ? {}
           : { startPositionLevel: startPositionLevel as number }),
+        // `false` and `null` read as no flag, so they are not stored; anything
+        // else that is not a boolean is kept as written for the lint to report.
+        ...(skipWhenStartReached === undefined ||
+        skipWhenStartReached === null ||
+        skipWhenStartReached === false
+          ? {}
+          : { skipWhenStartReached: skipWhenStartReached as boolean }),
       };
     }
     case 'ORG_UNIT_MANAGER': {
@@ -1678,12 +1725,12 @@ function parseApproverResolver(value: unknown): ApproverResolver {
 
 /**
  * The `startFrom` of an `ORG_MANAGER_CHAIN`, **never throwing**. An incomplete
- * `FORM_MEMBER` / `NODE_ACTOR` keeps its type with an empty `formPath` /
- * `nodeIds`, and an object with a type this build does not know (or none) is
- * kept as written, so `validate_workflow` and the publish lint report the gap
- * rather than the chain quietly starting at the initiator. So is a value that
- * is not an object (a bare `'FORM_MEMBER'`, say). Only an absent or `null`
- * value is read as absent.
+ * `FORM_MEMBER` / `NODE_ACTOR` / `CHAIN_CONTINUATION` keeps its type with an
+ * empty `formPath` / `nodeIds` / `nodeId`, and an object with a type this
+ * build does not know (or none) is kept as written, so `validate_workflow`
+ * and the publish lint report the gap rather than the chain quietly starting
+ * at the initiator. So is a value that is not an object (a bare
+ * `'FORM_MEMBER'`, say). Only an absent or `null` value is read as absent.
  */
 function parseOrgManagerChainStart(
   value: unknown,
@@ -1709,6 +1756,12 @@ function parseOrgManagerChainStart(
       return {
         nodeIds: readNodeIdsAsWritten(value['nodeIds']),
         type: 'NODE_ACTOR',
+      };
+    case 'CHAIN_CONTINUATION':
+      // An empty id is kept so the lint reports it, like the cases above.
+      return {
+        nodeId: readNonEmptyString(value['nodeId']) ?? '',
+        type: 'CHAIN_CONTINUATION',
       };
     default:
       // The lint names it as unsupported; see `readOrgManagerChainIssue`.
