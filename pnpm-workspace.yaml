@@ -3,6 +3,9 @@ linkWorkspacePackages: true
 packages:
   - libs/*
 
+# 新發佈的套件需滿 24 小時（1440 分鐘）才可被安裝，降低供應鏈攻擊風險。
+minimumReleaseAge: 1440
+
 # Security overrides.
 #
 # Use ranges, never exact pins. An exact pin stops pnpm taking the next patch,
@@ -82,7 +85,7 @@ overrides:
   # version bpm-core-react's peer resolves against. A `~` range, not `^`,
   # because the root declaration pins the 16.4 minor on purpose; `^` here
   # would override that and pull an unverified 16.5. Patches still flow.
-  'next': '~16.4.3'
+  'next': '~16.4.6'
   'nodemailer': '^10.3.1'
   # The one deliberate exact pin, and it mirrors react-pdf's own: react-pdf
   # depends on `pdfjs-dist` exactly (6.3.289 for react-pdf 11), while
