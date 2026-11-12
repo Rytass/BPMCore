@@ -20899,6 +20899,142 @@ describe('administrator task reassignment', (): void => {
     });
   });
 
+  describe('reassigning only the chosen tasks of a member', (): void => {
+    // member-from holds three single-seat tasks; the tests pick some of them.
+    const createThreeTaskFixture = (): {
+      readonly fixture: ServiceFixture;
+      readonly task1: TaskEntity;
+      readonly task2: TaskEntity;
+      readonly task3: TaskEntity;
+    } => {
+      const heldTask = (id: string): TaskEntity =>
+        createTask({
+          assigneeMemberId: 'member-from',
+          id,
+          nodeId: 'task_finance',
+        });
+      const task1 = heldTask('task-1');
+      const task2 = heldTask('task-2');
+      const task3 = heldTask('task-3');
+      const fixture = createServiceFixture({
+        additionalProcessTasks: [task2, task3],
+        currentVersionId: 'template-version-1',
+        decisionTask: task1,
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      answerTaskQueriesFromSeeds(fixture, [task1, task2, task3]);
+
+      return { fixture, task1, task2, task3 };
+    };
+
+    const reassignChosen = (
+      fixture: ServiceFixture,
+      taskIds: readonly string[] | null | undefined,
+      dryRun = false,
+    ): Promise<readonly TaskReassignmentResult[]> =>
+      fixture.service.reassignMemberTasks({
+        actorMemberId: ADMIN_MEMBER_ID,
+        dryRun,
+        fromMemberId: 'member-from',
+        reason: REASON,
+        taskIds,
+        toMemberId: 'member-to',
+      });
+
+    it('moves only the listed tasks and leaves the others with their holder', async (): Promise<void> => {
+      const { fixture, task1, task2, task3 } = createThreeTaskFixture();
+
+      const results = await reassignChosen(fixture, ['task-1', 'task-3']);
+
+      expect(
+        results.map(({ outcome, taskId }) => ({ outcome, taskId })),
+      ).toEqual([
+        { outcome: TaskReassignmentOutcomeEnum.REASSIGNED, taskId: 'task-1' },
+        { outcome: TaskReassignmentOutcomeEnum.REASSIGNED, taskId: 'task-3' },
+      ]);
+      expect(readTaskState(fixture, task1).assigneeMemberId).toBe('member-to');
+      expect(readTaskState(fixture, task3).assigneeMemberId).toBe('member-to');
+      expect(readTaskState(fixture, task2).assigneeMemberId).toBe(
+        'member-from',
+      );
+      expect(fixture.savedTasks.map((task) => task.id)).not.toContain('task-2');
+    });
+
+    it('reports only the listed tasks under dryRun and writes nothing', async (): Promise<void> => {
+      const { fixture } = createThreeTaskFixture();
+
+      const results = await reassignChosen(fixture, ['task-2'], true);
+
+      expect(
+        results.map(({ outcome, taskId }) => ({ outcome, taskId })),
+      ).toEqual([
+        {
+          outcome: TaskReassignmentOutcomeEnum.WOULD_REASSIGN,
+          taskId: 'task-2',
+        },
+      ]);
+      expect(fixture.savedTasks).toEqual([]);
+      expect(fixture.savedTaskCandidates).toEqual([]);
+    });
+
+    it('moves every open task when taskIds is omitted or null', async (): Promise<void> => {
+      const omitted = createThreeTaskFixture();
+      const nulled = createThreeTaskFixture();
+
+      const omittedResults = await reassignChosen(omitted.fixture, undefined);
+      const nulledResults = await reassignChosen(nulled.fixture, null);
+
+      expect(omittedResults.map((result) => result.taskId).sort()).toEqual([
+        'task-1',
+        'task-2',
+        'task-3',
+      ]);
+      expect(nulledResults.map((result) => result.taskId).sort()).toEqual([
+        'task-1',
+        'task-2',
+        'task-3',
+      ]);
+    });
+
+    it('gives no result row and no error for an id the member does not hold, and still moves the rest', async (): Promise<void> => {
+      const { fixture, task1, task2 } = createThreeTaskFixture();
+
+      const results = await reassignChosen(fixture, [
+        'task-not-held',
+        'task-2',
+      ]);
+
+      expect(
+        results.map(({ outcome, taskId }) => ({ outcome, taskId })),
+      ).toEqual([
+        { outcome: TaskReassignmentOutcomeEnum.REASSIGNED, taskId: 'task-2' },
+      ]);
+      expect(readTaskState(fixture, task2).assigneeMemberId).toBe('member-to');
+      expect(readTaskState(fixture, task1).assigneeMemberId).toBe(
+        'member-from',
+      );
+    });
+
+    it('refuses an empty taskIds before reading or writing anything, never reading it as "all"', async (): Promise<void> => {
+      const { fixture } = createThreeTaskFixture();
+
+      await expect(reassignChosen(fixture, [])).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      expect(fixture.rootTaskFind).not.toHaveBeenCalled();
+      expect(fixture.savedTasks).toEqual([]);
+      expect(fixture.savedTaskCandidates).toEqual([]);
+      expect(writtenActivityLogs(fixture)).toEqual([]);
+    });
+  });
+
   it('moves a task out of the old holder inbox and into the new holder inbox', async (): Promise<void> => {
     const seed = createTask({
       assigneeMemberId: 'member-from',

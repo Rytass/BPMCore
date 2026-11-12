@@ -1743,7 +1743,12 @@ administrator (`@BPMAdminOnly()`) can move it without that person's help:
   module, the list is always empty.
 - `reassignTask(input)` moves one task's seat from `fromMemberId` to
   `toMemberId`. `reassignMemberTasks(input)` does the same for every open task
-  the source member holds, one transaction and one result per task.
+  the source member holds, one transaction and one result per task. Its
+  optional `taskIds` limits the batch to those tasks: omitted or `null` keeps
+  every open task, an empty list is refused with a `BadRequestException` (the
+  service checks it itself, so it holds without a `ValidationPipe`), and an id
+  the member does not hold gets no result row and no error. Deploy the server
+  before a screen that sends `taskIds`.
 
 The rules that differ from the holder's own transfer:
 

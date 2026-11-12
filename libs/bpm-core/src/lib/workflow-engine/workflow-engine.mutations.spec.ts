@@ -299,6 +299,36 @@ describe('WorkflowEngineMutations task reassignment', () => {
     });
   });
 
+  it('hands taskIds of reassignMemberTasks to the service as given, null included', async (): Promise<void> => {
+    const reassignMemberTasks = jest.fn(() => Promise.resolve([]));
+    const mutations = new WorkflowEngineMutations({
+      reassignMemberTasks,
+    } as unknown as WorkflowEngineService);
+    const base = {
+      fromMemberId: 'member-from',
+      reason: '離職',
+      toMemberId: 'member-to',
+    };
+
+    await mutations.reassignMemberTasks(
+      { ...base, taskIds: [TASK_ID] },
+      'admin-001',
+    );
+    await mutations.reassignMemberTasks(
+      { ...base, taskIds: null },
+      'admin-001',
+    );
+
+    expect(reassignMemberTasks).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ taskIds: [TASK_ID] }),
+    );
+    expect(reassignMemberTasks).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ taskIds: null }),
+    );
+  });
+
   it('guards the reassignment and member task entry points with the admin level', (): void => {
     const access = (
       resolverName: string,
