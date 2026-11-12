@@ -107,7 +107,7 @@ export function StuckInstanceCancelModal({
           ) : null}
           <BPMFormField label="撤銷理由（必填）" name="stuckCancelReason">
             <Input
-              disabled={busy}
+              {...(busy ? { disabled: true as const } : {})}
               fullWidth
               name="stuckCancelReason"
               onChange={(event: ChangeEvent<HTMLInputElement>): void => {

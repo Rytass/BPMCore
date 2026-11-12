@@ -154,8 +154,18 @@ describe('AdminStuckInstancesView', () => {
     api.listStuckApprovalInstances.mockReset();
     api.adminCancelApprovalInstance.mockReset();
     members.resolveMembers.mockResolvedValue([
-      { email: 'a@example.com', memberId: 'member-1', name: '王小明' },
-      { email: 'b@example.com', memberId: 'member-2', name: '李大華' },
+      {
+        customFieldsJson: '{}',
+        email: 'a@example.com',
+        memberId: 'member-1',
+        name: '王小明',
+      },
+      {
+        customFieldsJson: '{}',
+        email: 'b@example.com',
+        memberId: 'member-2',
+        name: '李大華',
+      },
     ]);
   });
 

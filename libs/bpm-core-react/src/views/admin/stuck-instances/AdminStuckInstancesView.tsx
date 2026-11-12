@@ -18,10 +18,8 @@ import {
 } from '@mezzanine-ui/react';
 import ContentHeader from '@mezzanine-ui/react/ContentHeader';
 import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
-import {
-  resolveMembers,
-  type MemberProfileRecord,
-} from '@rytass/bpm-core-client';
+import { resolveMembers } from '@rytass/bpm-core-client';
+import type { MemberProfileRecord } from '@rytass/bpm-core-client/template';
 import {
   listStuckApprovalInstances,
   type StuckApprovalInstanceRecord,
