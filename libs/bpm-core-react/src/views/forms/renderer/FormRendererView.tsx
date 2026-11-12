@@ -1259,12 +1259,13 @@ function renderDynamicOptionControl(
                 : undefined,
             )
           }
-          onReachBottom={
-            dataSourceState.hasNextPage
-              ? dataSourceState.onReachBottom
-              : undefined
-          }
+          onReachBottom={dataSourceState.onReachBottom}
           onSearch={interactiveSearch ? dataSourceState.onSearch : undefined}
+          onVisibilityChange={(open: boolean): void => {
+            if (open && interactiveSearch) {
+              dataSourceState.onOpen();
+            }
+          }}
           options={options}
           placeholder={field.placeholder ?? '請輸入或選擇'}
           readOnly={readonly}
@@ -1288,12 +1289,13 @@ function renderDynamicOptionControl(
         onChange={(nextOption): void =>
           onChange(field.fieldKey, nextOption?.id ?? undefined)
         }
-        onReachBottom={
-          dataSourceState.hasNextPage
-            ? dataSourceState.onReachBottom
-            : undefined
-        }
+        onReachBottom={dataSourceState.onReachBottom}
         onSearch={interactiveSearch ? dataSourceState.onSearch : undefined}
+        onVisibilityChange={(open: boolean): void => {
+          if (open && interactiveSearch) {
+            dataSourceState.onOpen();
+          }
+        }}
         options={options}
         placeholder={field.placeholder ?? '請輸入或選擇'}
         readOnly={readonly}
@@ -1353,11 +1355,7 @@ function renderDynamicOptionControl(
               : undefined,
           )
         }
-        onReachBottom={
-          dataSourceState.hasNextPage
-            ? dataSourceState.onReachBottom
-            : undefined
-        }
+        onReachBottom={dataSourceState.onReachBottom}
         options={options}
         placeholder={field.placeholder ?? '請選擇一或多個選項'}
         readOnly={readonly}
@@ -1375,11 +1373,7 @@ function renderDynamicOptionControl(
       onChange={(nextOption): void =>
         onChange(field.fieldKey, nextOption?.id ?? undefined)
       }
-      onReachBottom={
-        dataSourceState.hasNextPage
-          ? dataSourceState.onReachBottom
-          : undefined
-      }
+      onReachBottom={dataSourceState.onReachBottom}
       options={options}
       placeholder={field.placeholder ?? '請選擇'}
       readOnly={readonly}

@@ -554,6 +554,125 @@ describe('useFormDataSourceField', () => {
     expect(previewOptionsMock).toHaveBeenCalledTimes(2);
   });
 
+  it('loads the first page of a search-only field when its menu opens, once', async (): Promise<void> => {
+    const field = createField('autocomplete');
+    previewOptionsMock.mockResolvedValue(createOptionsResult('first'));
+
+    const harness = mountHookHarness({
+      context: { kind: 'preview' },
+      field,
+      formData: {},
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    });
+
+    // AutoComplete does not query by itself, so an unopened menu stays idle.
+    expect(previewOptionsMock).not.toHaveBeenCalled();
+
+    await act(async (): Promise<void> => {
+      harness.current().onOpen();
+      await Promise.resolve();
+    });
+    await waitForState(harness, (state) => state.status === 'VALID');
+    expect(previewOptionsMock).toHaveBeenCalledTimes(1);
+    expect(previewOptionsMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: null, searchText: '' }),
+    );
+    expect(harness.current().options).toEqual([
+      { label: 'first', value: 'first' },
+    ]);
+
+    // Reopening keeps the loaded page rather than querying it again.
+    act((): void => {
+      harness.current().onOpen();
+    });
+    expect(previewOptionsMock).toHaveBeenCalledTimes(1);
+
+    // After a search, reopening (with the input cleared on close) goes back to
+    // the unfiltered first page.
+    await act(async (): Promise<void> => {
+      harness.current().onSearch('abc');
+      await Promise.resolve();
+    });
+    await waitForState(harness, (state) => state.status === 'VALID');
+    await act(async (): Promise<void> => {
+      harness.current().onOpen();
+      await Promise.resolve();
+    });
+    expect(previewOptionsMock).toHaveBeenCalledTimes(3);
+    expect(previewOptionsMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: null, searchText: '' }),
+    );
+  });
+
+  it('keeps one onReachBottom that pages with the latest cursor', async (): Promise<void> => {
+    const field = createField('autocomplete');
+    const page = (start: number, nextCursor: string | null): FormDataSourceOptionsResultRecord => ({
+      ...createOptionsResult(),
+      nextCursor,
+      options: Array.from({ length: 10 }, (_, index) => ({
+        label: `option-${start + index}`,
+        value: `option-${start + index}`,
+      })),
+    });
+    previewOptionsMock
+      .mockResolvedValueOnce(page(1, 'page-2'))
+      .mockResolvedValueOnce(page(11, null));
+
+    const harness = mountHookHarness({
+      context: { kind: 'preview' },
+      field,
+      formData: {},
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    });
+    // The menu's scrollbar keeps the handler from its first render, which is
+    // before the first page — and its cursor — exist.
+    const handlerFromFirstRender = harness.current().onReachBottom;
+
+    await act(async (): Promise<void> => {
+      harness.current().onOpen();
+      await Promise.resolve();
+    });
+    await waitForState(harness, (state) => state.options.length === 10);
+    expect(harness.current().onReachBottom).toBe(handlerFromFirstRender);
+
+    await act(async (): Promise<void> => {
+      handlerFromFirstRender();
+      await Promise.resolve();
+    });
+    await waitForState(harness, (state) => state.options.length === 20);
+    expect(previewOptionsMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: 'page-2', searchText: '' }),
+    );
+    expect(harness.current().hasNextPage).toBe(false);
+
+    // Past the last page the same handler does nothing.
+    act((): void => {
+      handlerFromFirstRender();
+    });
+    expect(previewOptionsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not query on open for a read-only field', (): void => {
+    const field = createField('autocomplete');
+    const harness = mountHookHarness({
+      context: { kind: 'preview' },
+      field,
+      formData: {},
+      readonly: true,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    });
+
+    act((): void => {
+      harness.current().onOpen();
+    });
+    expect(previewOptionsMock).not.toHaveBeenCalled();
+  });
+
   it('supersedes an older search response', async (): Promise<void> => {
     const field = createField('autocomplete');
     let resolveFirst: ((result: FormDataSourceOptionsResultRecord) => void) | null =
