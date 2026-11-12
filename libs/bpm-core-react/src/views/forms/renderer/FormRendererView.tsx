@@ -75,6 +75,7 @@ import {
 } from './file-upload-field';
 import { readStringArrayValue } from './form-value-readers';
 import { resolveFormFieldLink } from './form-field-link';
+import { FORM_CONTROL_MENU_MAX_HEIGHT } from './form-control-menu';
 import { MemberFieldControl } from './member-field';
 import { OrgUnitFieldControl } from './org-unit-field';
 
@@ -1057,6 +1058,7 @@ function renderStaticControl(
 
     return (
       <Select
+        menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         mode="multiple"
         onChange={(options): void =>
           onChange(
@@ -1082,6 +1084,7 @@ function renderStaticControl(
 
     return (
       <Select
+        menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         onChange={(option): void =>
           onChange(field.fieldKey, option?.id ?? undefined)
         }
@@ -1246,6 +1249,7 @@ function renderDynamicOptionControl(
           disabledOptionsFilter={interactiveSearch}
           globalPortal
           loading={loading}
+          menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
           mode="multiple"
           onChange={(nextOptions): void =>
             onChange(
@@ -1279,6 +1283,7 @@ function renderDynamicOptionControl(
         disabledOptionsFilter={interactiveSearch}
         globalPortal
         loading={loading}
+        menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         mode="single"
         onChange={(nextOption): void =>
           onChange(field.fieldKey, nextOption?.id ?? undefined)
@@ -1338,6 +1343,7 @@ function renderDynamicOptionControl(
       <Select
         disabled={optionControlDisabled}
         loading={loading}
+        menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         mode="multiple"
         onChange={(nextOptions): void =>
           onChange(
@@ -1365,6 +1371,7 @@ function renderDynamicOptionControl(
     <Select
       disabled={optionControlDisabled}
       loading={loading}
+      menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
       onChange={(nextOption): void =>
         onChange(field.fieldKey, nextOption?.id ?? undefined)
       }

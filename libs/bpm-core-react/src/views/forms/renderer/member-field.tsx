@@ -17,6 +17,7 @@ import {
   readUnresolvedMemberIds,
   type MemberFieldOption,
 } from './member-field-options';
+import { FORM_CONTROL_MENU_MAX_HEIGHT } from './form-control-menu';
 
 export interface MemberFieldControlProps {
   readonly multiple: boolean;
@@ -155,6 +156,7 @@ export function MemberFieldControl({
     },
     loading,
     loadingText: '搜尋成員中...',
+    menuMaxHeight: FORM_CONTROL_MENU_MAX_HEIGHT,
     onSearch: handleSearch,
     onVisibilityChange: (open: boolean): void => {
       if (open) {

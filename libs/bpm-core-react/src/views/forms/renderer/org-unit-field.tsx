@@ -16,6 +16,7 @@ import {
   readUnresolvedOrgUnitId,
   type OrgUnitFieldOption,
 } from './org-unit-field-options';
+import { FORM_CONTROL_MENU_MAX_HEIGHT } from './form-control-menu';
 
 export interface OrgUnitFieldControlProps {
   readonly name: string;
@@ -148,6 +149,7 @@ export function OrgUnitFieldControl({
         }}
         loading={loading}
         loadingText="搜尋組織中..."
+        menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         mode="single"
         onChange={(nextOption): void =>
           onChange(readOrgUnitFieldValue(nextOption ?? null))
