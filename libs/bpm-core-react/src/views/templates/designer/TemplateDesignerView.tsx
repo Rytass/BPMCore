@@ -666,6 +666,11 @@ const EXCLUDE_INITIATOR_WHEN_EMPTY_OPTIONS: readonly ExcludeInitiatorWhenEmptyOp
     { id: 'SKIP_NODE', name: '跳過此關' },
     { id: 'FAIL', name: '停止流程並提示' },
   ];
+// Hints for a manager chain that does not start at the initiator.
+const CHAIN_MAY_REACH_INITIATOR_HINT =
+  '往上可能簽到申請人本人；若不允許，請開啟「申請人不可簽核自己的單」。';
+const INITIATOR_MANAGER_IS_NOT_START_MANAGER_HINT =
+  '「改由申請人的直屬主管簽核」是申請人的主管，不是主管鏈起點那一位的主管。';
 const DEFAULT_EXCLUDE_INITIATOR_CONFIG: ExcludeInitiatorConfig = {
   whenEmpty: 'INITIATOR_MANAGER',
 };
@@ -3108,6 +3113,10 @@ export function TemplateDesignerView({
     const chainStartMode = chainResolver
       ? readOrgManagerChainStartMode(chainResolver)
       : null;
+    // A chain that starts below or beside the initiator can climb to the
+    // initiator, and "the initiator's manager" is then not the start's manager.
+    const chainStartsAwayFromInitiator =
+      chainStartMode !== null && chainStartMode !== 'INITIATOR';
     const chainStartChoice = chainResolver
       ? readOrgManagerChainStartChoice(chainResolver)
       : null;
@@ -3377,7 +3386,9 @@ export function TemplateDesignerView({
               hintText={
                 chainStartMode === 'INITIATOR'
                   ? '從發起人的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。'
-                  : '從起點的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。'
+                  : `從起點的直屬主管開始往上，職等比前一位高的主管依序加入，簽到職等達此值的主管為止。沒有職位的主管會略過。${
+                      excludeInitiator ? '' : CHAIN_MAY_REACH_INITIATOR_HINT
+                    }`
               }
               label="簽到職等"
               name="minPositionLevel"
@@ -4299,6 +4310,11 @@ export function TemplateDesignerView({
         </BPMFormField>
         {excludeInitiator ? (
           <BPMFormField
+            hintText={
+              chainStartsAwayFromInitiator
+                ? INITIATOR_MANAGER_IS_NOT_START_MANAGER_HINT
+                : undefined
+            }
             label="排除後沒有簽核人時"
             name="excludeInitiatorWhenEmpty"
             required
@@ -4368,6 +4384,11 @@ export function TemplateDesignerView({
               />
             </BPMFormField>
             <BPMFormField
+              hintText={
+                chainStartsAwayFromInitiator
+                  ? INITIATOR_MANAGER_IS_NOT_START_MANAGER_HINT
+                  : undefined
+              }
               label="排除後沒有簽核人時"
               name="excludeNodeActorsWhenEmpty"
               required
