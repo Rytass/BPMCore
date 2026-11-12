@@ -5,6 +5,7 @@ export * from './approval-instance-page-info.object';
 export * from './approval-instance.entity';
 export * from './dto/adhoc-notification.input';
 export * from './dto/adhoc-target.input';
+export * from './dto/admin-cancel-approval-instance.input';
 export * from './dto/cancel-approval-instance.input';
 export * from './dto/decide-task.input';
 export * from './dto/dry-run-approval-workflow.input';
