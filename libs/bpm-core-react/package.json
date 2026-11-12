@@ -326,6 +326,16 @@
         "default": "./dist/views/admin/webhook-endpoints/index.cjs"
       }
     },
+    "./views/admin/stuck-instances": {
+      "import": {
+        "types": "./dist/views/admin/stuck-instances/index.d.ts",
+        "default": "./dist/views/admin/stuck-instances/index.js"
+      },
+      "require": {
+        "types": "./dist/views/admin/stuck-instances/index.d.cts",
+        "default": "./dist/views/admin/stuck-instances/index.cjs"
+      }
+    },
     "./pages/root": {
       "import": {
         "types": "./dist/pages/root/index.d.ts",
@@ -524,6 +534,16 @@
       "require": {
         "types": "./dist/pages/admin/webhook-endpoints/index.d.cts",
         "default": "./dist/pages/admin/webhook-endpoints/index.cjs"
+      }
+    },
+    "./pages/admin/stuck-instances": {
+      "import": {
+        "types": "./dist/pages/admin/stuck-instances/index.d.ts",
+        "default": "./dist/pages/admin/stuck-instances/index.js"
+      },
+      "require": {
+        "types": "./dist/pages/admin/stuck-instances/index.d.cts",
+        "default": "./dist/pages/admin/stuck-instances/index.cjs"
       }
     }
   },
