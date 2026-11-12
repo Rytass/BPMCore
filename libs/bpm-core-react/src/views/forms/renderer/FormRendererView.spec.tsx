@@ -172,11 +172,22 @@ jest.mock('@mezzanine-ui/react', () => {
     const columns = Array.isArray(props.columns) ? props.columns : [];
     const rows = Array.isArray(props.dataSource) ? props.dataSource : [];
     const actions = props.actions as
-      | { readonly render: (row: unknown) => readonly unknown[] }
+      | {
+          readonly fixed?: unknown;
+          readonly render: (row: unknown) => readonly unknown[];
+        }
       | undefined;
 
     return (
-      <div data-mock-table="">
+      <div
+        data-mock-table=""
+        data-mock-table-actions-fixed={String(actions?.fixed ?? '')}
+        data-mock-table-column-min-widths={columns
+          .map((column) =>
+            String((column as { readonly minWidth?: unknown }).minWidth ?? ''),
+          )
+          .join(',')}
+      >
         {rows.map((row, rowIndex): ReactElement => (
           <div
             data-mock-table-row={String(rowIndex)}
@@ -609,7 +620,7 @@ describe('FormRenderer table field', () => {
     }
   });
 
-  it('keeps the single-column cap off the table and floors its width per column', async (): Promise<void> => {
+  it('keeps the single-column cap off the table, floors each column and pins the row actions', async (): Promise<void> => {
     const tableSchema = createTableSchema({ minRows: 1 });
     const harness = await mountRenderer({
       maxWidth: 480,
@@ -633,12 +644,18 @@ describe('FormRenderer table field', () => {
       expect(
         readFieldWrapper(harness.container, 'purpose')?.style.maxWidth,
       ).toBe('480px');
-      // Mezzanine's Table fills its box, so only this floor makes the
-      // surrounding `overflow-x: auto` wrapper actually scroll: two columns at
-      // 160 plus the 56 wide row-actions column.
-      expect(readTableWidthFloor(harness.container)?.style.minWidth).toBe(
-        '376px',
+      // Each column keeps a 160px floor, so a wide table scrolls inside the
+      // Table's own scroller instead of squeezing its columns, and the row
+      // actions stay pinned to the end of it.
+      const table = harness.container.querySelector<HTMLElement>(
+        '[data-mock-table]',
       );
+
+      expect(table?.dataset.mockTableColumnMinWidths).toBe('160,160');
+      expect(table?.dataset.mockTableActionsFixed).toBe('end');
+      // No scroller of our own around it: a pinned column only sticks to the
+      // scroller the Table itself owns.
+      expect(table?.parentElement?.style.overflowX).toBe('');
     } finally {
       await unmountRenderer(harness);
     }
@@ -1400,12 +1417,6 @@ function readFieldWrapper(
   return container.querySelector<HTMLElement>(
     `[data-form-field-key="${fieldKey}"]`,
   );
-}
-
-function readTableWidthFloor(container: HTMLElement): HTMLElement | null {
-  const table = container.querySelector<HTMLElement>('[data-mock-table]');
-
-  return table?.parentElement ?? null;
 }
 
 function createUiSchema(): FormUiSchema {

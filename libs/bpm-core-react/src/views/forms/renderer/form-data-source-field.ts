@@ -48,7 +48,19 @@ export interface FormDataSourceFieldState {
   readonly error: string | null;
   readonly hasValue: boolean;
   readonly hasNextPage: boolean;
+  /**
+   * True while the pending query is a next page rather than a first page. An
+   * AutoComplete in async mode empties its list whenever it is told it is
+   * loading, so the view keeps the loaded options on screen while paging.
+   */
+  readonly loadingNextPage: boolean;
   readonly invalidValues: readonly string[];
+  /**
+   * Call when the control's menu opens. A control that only queries on search
+   * (AutoComplete) loads its first page here, so opening it lists options
+   * instead of an empty menu; it is a no-op once that page is loaded.
+   */
+  readonly onOpen: () => void;
   readonly onReachBottom: () => void;
   readonly onSearch: (searchText: string) => void;
   readonly options: readonly FormFieldOption[];
@@ -110,7 +122,9 @@ const EMPTY_FIELD_STATE: FormDataSourceFieldState = {
   error: null,
   hasValue: false,
   hasNextPage: false,
+  loadingNextPage: false,
   invalidValues: [],
+  onOpen: (): void => undefined,
   onReachBottom: (): void => undefined,
   onSearch: (): void => undefined,
   options: [],
@@ -550,11 +564,15 @@ export function useFormDataSourceField(
     },
   );
   const [error, setError] = useState<string | null>(null);
+  const [loadingNextPage, setLoadingNextPage] = useState(false);
   const loadedOptionCount = useRef(0);
   const requestSequence = useRef(0);
   const resolveSequence = useRef(0);
   const optionsAbort = useRef<AbortController | null>(null);
   const resolveAbort = useRef<AbortController | null>(null);
+  // Whether anything was queried since the options were last reset, so that
+  // opening a search-only control loads its first page exactly once.
+  const queriedSinceReset = useRef(false);
   const lastRequest = useRef<{ readonly cursor: string | null; readonly searchText: string }>({
     cursor: null,
     searchText: '',
@@ -602,6 +620,7 @@ export function useFormDataSourceField(
 
       const requestId = requestSequence.current + 1;
       requestSequence.current = requestId;
+      queriedSinceReset.current = true;
       lastRequest.current = {
         cursor,
         searchText: nextSearchTextToLoad,
@@ -610,6 +629,7 @@ export function useFormDataSourceField(
       const controller = new AbortController();
       optionsAbort.current = controller;
       setStatus(pendingQueryStatus);
+      setLoadingNextPage(cursor !== null);
       setError(null);
 
       const request =
@@ -641,6 +661,7 @@ export function useFormDataSourceField(
             return;
           }
 
+          setLoadingNextPage(false);
           setRemoteOptions((currentOptions) => {
             const selectedOptions = readSelectedFormDataSourceOptions(
               currentValue,
@@ -685,6 +706,13 @@ export function useFormDataSourceField(
           // server-side error the host deliberately reduced to a generic
           // message — must not be rendered verbatim; it is English technical
           // copy the filler cannot act on.
+          // A failed first page leaves nothing loaded, so the next open retries
+          // it; a failed later page keeps what is already listed.
+          if (cursor === null) {
+            queriedSinceReset.current = false;
+          }
+          setLoadingNextPage(false);
+
           const message =
             readFormDataSourceErrorMessage(requestError) ??
             '選項來源暫時無法使用。';
@@ -805,7 +833,9 @@ export function useFormDataSourceField(
 
   useEffect((): void => {
     requestSequence.current += 1;
+    queriedSinceReset.current = false;
     optionsAbort.current?.abort();
+    setLoadingNextPage(false);
     setRemoteOptions((currentOptions) =>
       readSelectedFormDataSourceOptions(currentValue, currentOptions),
     );
@@ -892,11 +922,32 @@ export function useFormDataSourceField(
     },
     [loadOptions],
   );
-  const onReachBottom = useCallback((): void => {
-    if (nextCursor) {
-      loadOptions(searchText, nextCursor);
+  const onOpen = useCallback((): void => {
+    // A field that loads by itself, or that cannot query, has nothing to do.
+    if (autoQueries || !effectiveContext || input.readonly) {
+      return;
     }
-  }, [loadOptions, nextCursor, searchText]);
+
+    // `clearSearchText` empties the input when the menu closes, so a list
+    // still filtered by the last search would no longer match what is shown.
+    if (!queriedSinceReset.current || searchText !== '') {
+      onSearch('');
+    }
+  }, [autoQueries, effectiveContext, input.readonly, onSearch, searchText]);
+  // Read through a ref so the callback can keep one identity. The menu's
+  // scrollbar keeps the handler it was given when the menu first rendered;
+  // a control that only queries on open (AutoComplete) renders that menu
+  // before its first page lands, so a handler closing over `nextCursor` would
+  // still see `null` when the list is scrolled to the bottom.
+  const nextPageRequest = useRef({ cursor: nextCursor, searchText });
+  nextPageRequest.current = { cursor: nextCursor, searchText };
+  const onReachBottom = useCallback((): void => {
+    const { cursor, searchText: pageSearchText } = nextPageRequest.current;
+
+    if (cursor) {
+      loadOptionsRef.current(pageSearchText, cursor);
+    }
+  }, []);
   const retry = useCallback((): void => {
     if (!effectiveContext) {
       return;
@@ -918,7 +969,9 @@ export function useFormDataSourceField(
     error,
     hasValue,
     hasNextPage: Boolean(nextCursor),
+    loadingNextPage,
     invalidValues,
+    onOpen,
     onReachBottom,
     onSearch,
     options: mergedOptions,

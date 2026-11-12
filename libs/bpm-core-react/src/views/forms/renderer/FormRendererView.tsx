@@ -75,6 +75,7 @@ import {
 } from './file-upload-field';
 import { readStringArrayValue } from './form-value-readers';
 import { resolveFormFieldLink } from './form-field-link';
+import { FORM_CONTROL_MENU_MAX_HEIGHT } from './form-control-menu';
 import { MemberFieldControl } from './member-field';
 import { OrgUnitFieldControl } from './org-unit-field';
 
@@ -552,19 +553,12 @@ const TABLE_FIELD_ACTIONS_STYLE: CSSProperties = {
   justifyContent: 'flex-start',
 };
 
-const TABLE_SCROLLER_STYLE: CSSProperties = {
-  maxWidth: '100%',
-  overflowX: 'auto',
-};
-
-// Mezzanine `Table` fills whatever box it is given, so an `overflow-x: auto`
-// wrapper on its own never scrolls: the columns just keep shrinking. Keeping
-// the table out of the single-column reading width is what stops a control
-// from overflowing its own cell; this floor is the defence for tables wide
-// enough that even the full width would squeeze them, and it is what makes the
-// wrapper actually scroll when that happens.
+// Mezzanine `Table` fills whatever box it is given and would keep shrinking
+// its columns. Keeping the table out of the single-column reading width is
+// what stops a control from overflowing its own cell; this per-column floor is
+// the defence for tables wide enough that even the full width would squeeze
+// them, and it is what makes the Table's own scroller scroll when that happens.
 const TABLE_COLUMN_MIN_WIDTH = 160;
-const TABLE_ACTIONS_COLUMN_WIDTH = 56;
 
 const TABLE_CELL_STYLE: CSSProperties = {
   display: 'grid',
@@ -674,6 +668,7 @@ function FormTableField({
   const columns: TableColumn<FormTableRowRecord>[] = field.columns.map(
     (column) => ({
       key: column.fieldKey,
+      minWidth: TABLE_COLUMN_MIN_WIDTH,
       render: (row): ReactElement => (
         <FormTableCell
           column={column}
@@ -725,37 +720,28 @@ function FormTableField({
             variant: 'destructive-ghost',
           },
         ],
+        fixed: 'end',
         width: 56,
       };
 
   return (
     <div style={TABLE_FIELD_STYLE}>
       {/*
-        Mezzanine `Table`'s `scroll` is vertical only, so a wide table is kept
-        inside its own horizontal scroller rather than pushing the page sideways.
-        The wrapper adds no styling of its own to the table (ADR 16 §3.9 assumed
-        `scroll` covered this; see docs/17).
+        Mezzanine `Table` scrolls horizontally inside its own scroller once its
+        columns' `minWidth` floors outgrow the box. It must own that scroller:
+        the row actions are pinned with `fixed: 'end'`, and a pinned column
+        only sticks to the Table's scroller, never to a wrapper around it.
       */}
-      <div style={TABLE_SCROLLER_STYLE}>
-        <div
-          style={{
-            minWidth:
-              field.columns.length * TABLE_COLUMN_MIN_WIDTH +
-              (actions ? TABLE_ACTIONS_COLUMN_WIDTH : 0),
-          }}
-        >
-          <Table
-            {...(actions ? { actions } : {})}
-            columns={columns}
-            dataSource={[...dataSource]}
-            // Cells carry form controls rather than text, so the row height
-            // comes from the roomy container token, not the compact default.
-            rowHeightPreset="roomy"
-            showHeader
-            size="sub"
-          />
-        </div>
-      </div>
+      <Table
+        {...(actions ? { actions } : {})}
+        columns={columns}
+        dataSource={[...dataSource]}
+        // Cells carry form controls rather than text, so the row height
+        // comes from the roomy container token, not the compact default.
+        rowHeightPreset="roomy"
+        showHeader
+        size="sub"
+      />
       {readonly ? null : (
         <div style={TABLE_FIELD_ACTIONS_STYLE}>
           <Button
@@ -1072,6 +1058,7 @@ function renderStaticControl(
 
     return (
       <Select
+        menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         mode="multiple"
         onChange={(options): void =>
           onChange(
@@ -1097,6 +1084,7 @@ function renderStaticControl(
 
     return (
       <Select
+        menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         onChange={(option): void =>
           onChange(field.fieldKey, option?.id ?? undefined)
         }
@@ -1241,6 +1229,9 @@ function renderDynamicOptionControl(
     dataSourceState.options,
   ).map(readFieldOptionAsSelectOption);
   const loading = dataSourceState.status === 'LOADING';
+  // An async AutoComplete clears its list while loading; keep the loaded
+  // options visible while the next page comes in.
+  const autoCompleteLoading = loading && !dataSourceState.loadingNextPage;
   const waitingForDependencies =
     dataSourceState.status === 'WAITING_FOR_DEPENDENCIES';
   const interactiveSearch = Boolean(dataSourceContext) && !readonly;
@@ -1260,7 +1251,8 @@ function renderDynamicOptionControl(
           disabled={autoCompleteDisabled}
           disabledOptionsFilter={interactiveSearch}
           globalPortal
-          loading={loading}
+          loading={autoCompleteLoading}
+          menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
           mode="multiple"
           onChange={(nextOptions): void =>
             onChange(
@@ -1270,12 +1262,13 @@ function renderDynamicOptionControl(
                 : undefined,
             )
           }
-          onReachBottom={
-            dataSourceState.hasNextPage
-              ? dataSourceState.onReachBottom
-              : undefined
-          }
+          onReachBottom={dataSourceState.onReachBottom}
           onSearch={interactiveSearch ? dataSourceState.onSearch : undefined}
+          onVisibilityChange={(open: boolean): void => {
+            if (open && interactiveSearch) {
+              dataSourceState.onOpen();
+            }
+          }}
           options={options}
           placeholder={field.placeholder ?? '請輸入或選擇'}
           readOnly={readonly}
@@ -1293,17 +1286,19 @@ function renderDynamicOptionControl(
         disabled={autoCompleteDisabled}
         disabledOptionsFilter={interactiveSearch}
         globalPortal
-        loading={loading}
+        loading={autoCompleteLoading}
+        menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         mode="single"
         onChange={(nextOption): void =>
           onChange(field.fieldKey, nextOption?.id ?? undefined)
         }
-        onReachBottom={
-          dataSourceState.hasNextPage
-            ? dataSourceState.onReachBottom
-            : undefined
-        }
+        onReachBottom={dataSourceState.onReachBottom}
         onSearch={interactiveSearch ? dataSourceState.onSearch : undefined}
+        onVisibilityChange={(open: boolean): void => {
+          if (open && interactiveSearch) {
+            dataSourceState.onOpen();
+          }
+        }}
         options={options}
         placeholder={field.placeholder ?? '請輸入或選擇'}
         readOnly={readonly}
@@ -1353,6 +1348,7 @@ function renderDynamicOptionControl(
       <Select
         disabled={optionControlDisabled}
         loading={loading}
+        menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
         mode="multiple"
         onChange={(nextOptions): void =>
           onChange(
@@ -1362,11 +1358,7 @@ function renderDynamicOptionControl(
               : undefined,
           )
         }
-        onReachBottom={
-          dataSourceState.hasNextPage
-            ? dataSourceState.onReachBottom
-            : undefined
-        }
+        onReachBottom={dataSourceState.onReachBottom}
         options={options}
         placeholder={field.placeholder ?? '請選擇一或多個選項'}
         readOnly={readonly}
@@ -1380,14 +1372,11 @@ function renderDynamicOptionControl(
     <Select
       disabled={optionControlDisabled}
       loading={loading}
+      menuMaxHeight={FORM_CONTROL_MENU_MAX_HEIGHT}
       onChange={(nextOption): void =>
         onChange(field.fieldKey, nextOption?.id ?? undefined)
       }
-      onReachBottom={
-        dataSourceState.hasNextPage
-          ? dataSourceState.onReachBottom
-          : undefined
-      }
+      onReachBottom={dataSourceState.onReachBottom}
       options={options}
       placeholder={field.placeholder ?? '請選擇'}
       readOnly={readonly}

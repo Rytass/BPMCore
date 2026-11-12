@@ -146,6 +146,23 @@ AutoComplete 不做前置 gate，不先觸發搜尋就不存在等待狀態；�
     廠別 1 次，之後每次相依變動（TW01 → TW02）都穩定為 1 次。ADR §3.12「保護上游」在穩態
     下已完全達成，殘留的只有一次性的掛載成本（來自 launch context 載入完成後的額外 render）。
 
+15. **AutoComplete 捲到底永遠不載入下一頁；在表格儲存格裡打開時清單是空的**（2026-11-12，
+    下游整合回報）。AutoComplete 不自動查詢（第 12 項），只在搜尋時查，所以沒輸入關鍵字就
+    打開的選單是空的。改為打開時呼叫新的 `onOpen()` 載入第 1 頁，已載入過就不重查。補上之後
+    又暴露第二個問題：Mezzanine 選單的 scrollbar 保留**選單第一次 render 時**拿到的
+    `onReachBottom`，AutoComplete 偏偏在第 1 頁回來之前就已經 render 出選單，於是這個
+    handler 閉包裡的 `nextCursor` 永遠是 `null`（瀏覽器實測：handler 有被呼叫，但讀到的
+    cursor 是 `null`）。Select 不受影響，只是因為它在打開前就自動查過了。現在 `onReachBottom`
+    在欄位存續期間保持同一個參照，改從 ref 讀取最新的 cursor 與搜尋字串，四種資料來源控制項
+    也一律傳入這個 handler，不再依 `hasNextPage` 決定傳或不傳。同一輪也讓所有下拉都帶
+    `menuMaxHeight`（320，`form-control-menu.ts`）。
+    分頁能動之後，又發現 AutoComplete 在 async 模式下只要收到 `loading` 就會清空列表，
+    結果選單收合、捲動位置跳回頂端。現在 hook 多提供 `loadingNextPage`，載入下一頁時
+    renderer 不把 `loading` 傳給 AutoComplete，實測分頁期間列表維持原樣、捲動位置不變。
+    另外第 1 頁查詢失敗後重開選單會重查；後續頁失敗則保留已載入的選項。已知限制：
+    尚未查過就直接打字開啟時，會先送一次空字串查詢，300ms 後才送關鍵字。結果正確，
+    由防過期機制保證，但多一次請求。
+
 同輪改進：client 各 query 與 `requestGraphQl()` 支援 optional `AbortSignal`；submit 的
 provider 呼叫加並行上限 4；GraphQL input 全面加 `@MaxLength`；前端將可修正的錯誤
 （如 `SEARCH_TOO_SHORT`）與「來源壞掉」分級，不再一律 `UNAVAILABLE`、也不再誤擋送出。
