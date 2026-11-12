@@ -1427,13 +1427,14 @@ describe('readOrgManagerChainStartMode / readOrgManagerChainStartChoice', () => 
     expect(readOrgManagerChainStartMode(CHAIN_TYPELESS_START)).toBeNull();
   });
 
-  it('offers 發起人, 表單欄位的人 and 前面關卡的簽核者, in that order', () => {
+  it('offers 發起人, 表單欄位的人, 前面關卡的簽核者 and 接續前面某一段主管鏈, in that order', () => {
     const choice = readOrgManagerChainStartChoice(CHAIN);
 
     expect(choice.options).toEqual([
       { id: 'INITIATOR', name: '發起人' },
       { id: 'FORM_MEMBER', name: '表單欄位的人' },
       { id: 'NODE_ACTOR', name: '前面關卡的簽核者' },
+      { id: 'CHAIN_CONTINUATION', name: '接續前面某一段主管鏈' },
     ]);
     expect(choice.selected).toEqual({ id: 'INITIATOR', name: '發起人' });
     expect(readOrgManagerChainStartChoice(CHAIN_FROM_FORM).selected).toEqual({
@@ -1454,8 +1455,8 @@ describe('readOrgManagerChainStartMode / readOrgManagerChainStartChoice', () => 
       id: 'UNSUPPORTED',
       name: '不支援的起點（FORM_MEMBER_MANAGER）',
     });
-    expect(future.options).toHaveLength(4);
-    expect(future.options[3]).toBe(future.selected);
+    expect(future.options).toHaveLength(5);
+    expect(future.options[4]).toBe(future.selected);
     expect(typeless.selected.name).toBe('不支援的起點（缺少型別）');
   });
 });
