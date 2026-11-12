@@ -417,7 +417,9 @@ async function resolveApprovers(
   不會默默挑一位（跟「同一層有多位主管」同一個原則）。起點沒有人（欄位是空的、指定關卡沒有同意紀錄）
   時走 `fallback`，原因文字會說明找不到起點；沒設 `fallback` 就丟錯，跟沒有主管同一條路。
   `excludeInitiator` 的略過照舊適用：申請人與代送人出現在別人的鏈上時一樣穿過不停；沒開
-  `excludeInitiator` 時，申請人出現在鏈上就是一位普通的主管。
+  `excludeInitiator` 時，申請人出現在鏈上就是一位普通的主管——起點不是申請人時，鏈可能爬到申請人本人，
+  要防自簽就得開 `excludeInitiator`。`excludeInitiator`／`excludeNodeActors` 的
+  `whenEmpty: 'INITIATOR_MANAGER'` 改派的永遠是**申請人**的直屬主管，不是起點那一位的主管。
 - **起始職等（`startPositionLevel`，可省略）**：職等**低於**它的主管穿過不簽——不加入清單、不當停點、
   也不影響「最後一位已加入的職等」；第一位職等 `>=` 它的主管才開始加入，之後規則與上面相同。
   省略時第一位有職等的主管就開始簽。整條鏈都沒有人達到起始職等時走 `fallback`，原因文字寫出
