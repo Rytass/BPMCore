@@ -1,3 +1,19 @@
+## 0.21.3 (2026-11-12)
+
+### 🚀 Features
+
+- **form:** cap every option menu at 320px ([3aa658d2](https://github.com/Rytass/BPMCore/commit/3aa658d2))
+
+### 🩹 Fixes
+
+- **form:** keep loaded options while an autocomplete pages ([e0072ef0](https://github.com/Rytass/BPMCore/commit/e0072ef0))
+- **form:** load and page data-source autocompletes from the menu ([353a36fb](https://github.com/Rytass/BPMCore/commit/353a36fb))
+- **form:** pin table row actions inside the table's own scroller ([d3fa0ed5](https://github.com/Rytass/BPMCore/commit/d3fa0ed5))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.21.2 (2026-11-12)
 
 ### 🩹 Fixes
