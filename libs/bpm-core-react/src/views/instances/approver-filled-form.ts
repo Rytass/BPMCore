@@ -3,6 +3,7 @@ import {
   omitFormDataKeys,
   readApproverFilledFieldKeys,
   readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
   readNodeRequiredFieldKeys,
   type UserTaskNode,
   type WorkflowDefinition,
@@ -124,12 +125,12 @@ export function readFillLabelMarkers(
   const viewerKeys =
     viewerFillNode === null
       ? new Set<string>()
-      : readNodeFillableFieldKeys(viewerFillNode);
+      : readNodeFillGrantFieldKeys(viewerFillNode);
 
   return userTaskNodes(definition).reduce<Readonly<Record<string, string>>>(
     (markers, node) => ({
       ...Object.fromEntries(
-        [...readNodeFillableFieldKeys(node)].map((fieldKey) => [
+        [...readNodeFillGrantFieldKeys(node)].map((fieldKey) => [
           fieldKey,
           viewerKeys.has(fieldKey)
             ? '本關補填'

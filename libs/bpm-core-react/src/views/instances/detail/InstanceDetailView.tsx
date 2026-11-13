@@ -50,6 +50,7 @@ import {
 } from '@rytass/bpm-core-shared/form';
 import {
   readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
   readTopLevelFieldKey,
   type ResolvedFieldAccess,
 } from '@rytass/bpm-core-shared';
@@ -467,7 +468,7 @@ export function InstanceDetailView({
       currentTask &&
       !currentTask.isAdhoc &&
       currentTaskNode?.type === 'userTask' &&
-      readNodeFillableFieldKeys(currentTaskNode).size > 0
+      readNodeFillGrantFieldKeys(currentTaskNode).size > 0
         ? currentTaskNode
         : null,
     [currentTask, currentTaskNode],
@@ -1146,7 +1147,7 @@ export function InstanceDetailView({
                 fillSchema && fillValues && fillNode
                   ? {
                       errors: fillErrors,
-                      fieldCount: readNodeFillableFieldKeys(fillNode).size,
+                      fieldCount: readNodeFillGrantFieldKeys(fillNode).size,
                       onChange: handleFillChange,
                       schema: fillSchema,
                       value: fillValues,

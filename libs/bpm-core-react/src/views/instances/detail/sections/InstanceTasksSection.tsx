@@ -24,7 +24,7 @@ import {
   Typography,
 } from '@mezzanine-ui/react';
 import type { TableColumn } from '@mezzanine-ui/core/table';
-import { readNodeFillableFieldKeys } from '@rytass/bpm-core-shared';
+import { readNodeFillGrantFieldKeys } from '@rytass/bpm-core-shared';
 import {
   AdhocDirectiveRecord,
   AdhocPreApprovalRejectBehavior,
@@ -1403,5 +1403,5 @@ function readOpenTaskFillFieldCount(
     (candidate) => candidate.id === task.nodeId,
   );
 
-  return node?.type === 'userTask' ? readNodeFillableFieldKeys(node).size : 0;
+  return node?.type === 'userTask' ? readNodeFillGrantFieldKeys(node).size : 0;
 }
