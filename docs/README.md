@@ -32,7 +32,7 @@
 | 24  | [流程表達式細部設計](./24-expression-functions-detailed-design.md)       | 已定案的決定、跨 phase 契約與檔案歸屬                            |
 | 25  | [實例欄位篩選與排序 ADR](./25-instance-field-filter-adr.md)              | 欄位 filterable 宣告、jsonb GIN 查詢、啟用檢查與權限（Accepted） |
 | 26  | [實例欄位篩選開發 Phase](./26-instance-field-filter-phases.md)           | P0–P4 分階段交付、gate、E2E 矩陣與驗收情境                       |
-| 27  | [宿主深度整合 ADR](./27-host-integration-round-adr.md)                   | 生命週期事件、決策前檢查、宿主管理範本等九項（Proposed）         |
+| 27  | [宿主深度整合 ADR](./27-host-integration-round-adr.md)                   | 生命週期事件、決策前檢查、宿主管理範本等九項（Accepted）         |
 | 28  | [宿主深度整合開發 Phase](./28-host-integration-round-phases.md)          | 單一 PR 的 P0–P6 順序、gate 與瀏覽器驗收情境                     |
 | ★   | [Public API Reference](./api-reference.md)                               | 4 個 lib 套件所有 export 的完整清冊（必維護）                    |
 
