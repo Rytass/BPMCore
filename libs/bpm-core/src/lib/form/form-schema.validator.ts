@@ -596,7 +596,7 @@ function lintSelectField(
   return [
     ...sourceErrors,
     ...(hasDataSource
-      ? lintDynamicDefaultValue(field, path)
+      ? lintDynamicDefaultValue(field, type, path)
       : lintSelectDefaultValue(field, type, path)),
   ];
 }
@@ -814,13 +814,30 @@ function lintConstantValue(value: unknown, path: string): readonly string[] {
     : [`${path} must be a primitive constant`];
 }
 
+/**
+ * A dynamic data source may carry a default value only when its value cannot
+ * change per filler or per row. FIELD, ROW_FIELD and EXPRESSION bindings make
+ * the option set depend on other values, so a fixed default could go stale.
+ * CONSTANT bindings and bindings-free sources are fixed and may use a default.
+ */
 function lintDynamicDefaultValue(
   field: Readonly<Record<string, unknown>>,
+  type: FormFieldDefinition['type'],
   path: string,
 ): readonly string[] {
-  return Object.prototype.hasOwnProperty.call(field, 'defaultValue')
-    ? [`${path}.defaultValue is not supported for dynamic data sources`]
-    : [];
+  if (typeof field.defaultValue === 'undefined') {
+    return [];
+  }
+
+  const hasDependentBinding = readBindingSources(field).some(
+    (from) => from.kind !== 'CONSTANT',
+  );
+
+  return hasDependentBinding
+    ? [
+        `${path}.defaultValue is not allowed when the dynamic data source depends on other values (FIELD, ROW_FIELD or EXPRESSION binding)`,
+      ]
+    : lintSelectDefaultValue(field, type, path);
 }
 
 function lintBooleanField(

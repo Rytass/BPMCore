@@ -442,8 +442,112 @@ describe('form schema validator', () => {
     expect(result.errors).toContain(
       'schema.fields[1] must contain exactly one of options or dataSource',
     );
+    expect(result.errors).not.toContain(
+      'schema.fields[2].defaultValue is not allowed when the dynamic data source depends on other values (FIELD, ROW_FIELD or EXPRESSION binding)',
+    );
+  });
+
+  it('allows defaults on dynamic sources without FIELD, ROW_FIELD or EXPRESSION bindings', (): void => {
+    const schema = (fields: readonly unknown[]): string =>
+      JSON.stringify({ fields, schemaVersion: 1 });
+    const dataSource = (bindings: readonly unknown[]): unknown => ({
+      bindings,
+      key: 'vendors',
+      version: 1,
+    });
+
+    const result = lintFormSchemaJson(
+      schema([
+        {
+          dataSource: dataSource([]),
+          defaultValue: 'vendor-1',
+          fieldKey: 'no-bindings',
+          label: 'No bindings',
+          required: false,
+          type: 'select',
+        },
+        {
+          dataSource: dataSource([
+            {
+              from: { kind: 'CONSTANT', value: 'ACTIVE' },
+              parameter: 'status',
+            },
+          ]),
+          defaultValue: 'vendor-1',
+          fieldKey: 'constant',
+          label: 'Constant',
+          required: false,
+          type: 'autocomplete',
+        },
+        {
+          dataSource: dataSource([]),
+          defaultValue: ['vendor-1', 'vendor-2'],
+          fieldKey: 'multi',
+          label: 'Multi',
+          mode: 'multiple',
+          required: false,
+          type: 'select',
+        },
+        {
+          dataSource: dataSource([]),
+          defaultValue: 42,
+          fieldKey: 'wrong-type',
+          label: 'Wrong type',
+          required: false,
+          type: 'select',
+        },
+      ]),
+      JSON.stringify({ layout: [], schemaVersion: 1 }),
+    );
+
+    expect(result.errors).not.toContain(
+      'schema.fields[0].defaultValue is not allowed when the dynamic data source depends on other values (FIELD, ROW_FIELD or EXPRESSION binding)',
+    );
+    expect(result.errors).not.toContain(
+      'schema.fields[1].defaultValue is not allowed when the dynamic data source depends on other values (FIELD, ROW_FIELD or EXPRESSION binding)',
+    );
     expect(result.errors).toContain(
-      'schema.fields[2].defaultValue is not supported for dynamic data sources',
+      'schema.fields[3].defaultValue must be a string or null',
+    );
+  });
+
+  it('rejects defaults on dynamic sources that depend on other values', (): void => {
+    const reason =
+      'depends on other values (FIELD, ROW_FIELD or EXPRESSION binding)';
+    const field = (from: unknown, fieldKey: string): unknown => ({
+      dataSource: {
+        bindings: [{ from, parameter: 'p' }],
+        key: 'vendors',
+        version: 1,
+      },
+      defaultValue: 'vendor-1',
+      fieldKey,
+      label: fieldKey,
+      required: false,
+      type: 'select',
+    });
+
+    const result = lintFormSchemaJson(
+      JSON.stringify({
+        fields: [
+          field({ fieldKey: 'company', kind: 'FIELD' }, 'by-field'),
+          field({ columnKey: 'vendor', kind: 'ROW_FIELD' }, 'by-row'),
+          field({ expression: 'true', kind: 'EXPRESSION' }, 'by-expression'),
+        ],
+        schemaVersion: 1,
+      }),
+      JSON.stringify({ layout: [], schemaVersion: 1 }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      `schema.fields[0].defaultValue is not allowed when the dynamic data source ${reason}`,
+    );
+    expect(result.errors).toContain(
+      `schema.fields[1].defaultValue is not allowed when the dynamic data source ${reason}`,
+    );
+    expect(result.errors).toContain(
+      `schema.fields[2].defaultValue is not allowed when the dynamic data source ${reason}`,
     );
   });
 
