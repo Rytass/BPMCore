@@ -49,10 +49,6 @@ interface WorkflowLintCopy {
     firstName: string,
     secondName: string,
   ) => string;
-  readonly approverFilledRequiredBoolean: (
-    name: string,
-    fieldKey: string,
-  ) => string;
   readonly applicantRuleReadsApproverFilled: (
     fieldKey: string,
     ruleLabel: string,
@@ -160,8 +156,6 @@ const WORKFLOW_LINT_COPY: Readonly<
     },
     approverFilledMultipleFillNodesOnPath: (fieldKey, firstName, secondName): string =>
       `The field "${fieldKey}" is filled in at both "${firstName}" and "${secondName}", which can both run in one case, so the later approver would overwrite the earlier one. Keep one fill-in node per path.`,
-    approverFilledRequiredBoolean: (name, fieldKey): string =>
-      `The approval node "${name}" marks the switch field (開關) "${fieldKey}" as required to fill in. A switch left off is still an answer, so it cannot be required.`,
     applicantRuleReadsApproverFilled: (fieldKey, ruleLabel, approverFilledFieldKey): string =>
       `The ${ruleLabel} rule of the field "${fieldKey}" reads "${approverFilledFieldKey}", which an approver fills in after the applicant submits, so the rule would always see it empty.`,
     approverFilledTableDataSourceColumn: (fieldKey): string =>
@@ -304,8 +298,6 @@ const WORKFLOW_LINT_COPY: Readonly<
     },
     approverFilledMultipleFillNodesOnPath: (fieldKey, firstName, secondName): string =>
       `欄位「${fieldKey}」在「${firstName}」與「${secondName}」都設為補填，兩關在同一張單都會執行，後填的會覆寫先填的。同一條路徑只能保留一個補填關卡。`,
-    approverFilledRequiredBoolean: (name, fieldKey): string =>
-      `簽核節點「${name}」把開關欄位「${fieldKey}」設成補填（必填）；開關關著也是答案，不能要求必填。`,
     applicantRuleReadsApproverFilled: (fieldKey, ruleLabel, approverFilledFieldKey): string =>
       `欄位「${fieldKey}」的${ruleLabel}讀取了「${approverFilledFieldKey}」，但它由簽核人在送出後才補填，申請時永遠是空的。請改用申請人填寫的欄位。`,
     approverFilledTableDataSourceColumn: (fieldKey): string =>
@@ -1198,13 +1190,6 @@ function readFieldAccessTranslations(
           [
             WORKFLOW_LINT_MESSAGES.fieldAccessUnknownField(node.id, fieldKey),
             copy.fieldAccessUnknownField(name, fieldKey),
-          ],
-          [
-            WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(
-              node.id,
-              fieldKey,
-            ),
-            copy.approverFilledRequiredBoolean(name, fieldKey),
           ],
         ],
       ),

@@ -534,7 +534,7 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
             { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
             { display: 'SHOW', fieldKey: 'items', fill: 'OPTIONAL' },
             { display: 'SHOW', fieldKey: 'ghost', fill: 'OPTIONAL' },
-            { display: 'SHOW', fieldKey: 'taxFree', fill: 'REQUIRED' },
+            { display: 'SHOW', fieldKey: 'taxFree', fill: 'OPTIONAL' },
           ],
           label: '財務補填',
         },
@@ -562,11 +562,6 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
       'workflow.nodes.userTask_fill.fieldAccess must name a field of the bound form: ghost',
       '簽核節點「財務補填」的欄位設定指定了表單第一層沒有的欄位「ghost」（表格整張一起設定）。',
       'The field settings of the approval node "財務補填" name the field "ghost", which is not a top-level field of the bound form (a table is set as a whole).',
-    ],
-    [
-      'workflow.nodes.userTask_fill.fieldAccess cannot require the boolean field: taxFree',
-      '簽核節點「財務補填」把開關欄位「taxFree」設成補填（必填）；開關關著也是答案，不能要求必填。',
-      'The approval node "財務補填" marks the switch field (開關) "taxFree" as required to fill in. A switch left off is still an answer, so it cannot be required.',
     ],
     [
       'formData.invoiceKind is filled in by both workflow.nodes.userTask_fill and workflow.nodes.userTask_again, which lie on the same path',
@@ -652,7 +647,7 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
 
   it('keeps a line that names a node outside the definition', (): void => {
     const foreign =
-      'workflow.nodes.userTask_9.fieldAccess cannot require the boolean field: taxFree';
+      'workflow.nodes.userTask_9.fieldAccess must name a field of the bound form: ghost';
 
     expect(readWorkflowLintMessage(foreign, fillDefinition)).toBe(foreign);
   });
