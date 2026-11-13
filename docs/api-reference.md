@@ -808,7 +808,7 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | Webhook delivery | `WorkflowWebhookDeliveryStatus`, `WorkflowWebhookDeliveryRecord` (no URL, header or payload; `endpointLabel` is `null` once the endpoint is unregistered) |
 | Form snapshot | `FormDefinitionSnapshot`, `WorkflowFormData` |
 | Activity | `ActivityLogRecord` |
-| Member | `MemberProfileRecord`, `MemberDirectoryPage` |
+| Member | `MemberProfileRecord`, `MemberDirectoryPage`, `MemberTaskPage` (`tasks`, `totalCount`; one page of `listInboxTasksPage` / `listApprovalHistoryTasksPage`) |
 | Delegation | `DelegationScopeType`, `DelegationRuleStatus`, `DelegationRuleRecord` (Phase 23 P4, released in v0.20.0: `scopeConditionDialect`, selected by every delegation query; `createDelegationRule` takes an optional `scopeConditionDialect`) |
 | Notification | `NotificationChannel`, `NotificationDigestMode`, `NotificationStatus`, `NotificationType`, `NotificationResolution`, `NotificationRecord` (incl. `silenced` — recorded but not announced), `NotificationPreferenceRecord` |
 | Attachment / Signature | `AttachmentRecord`, `SignatureRecord`, `SignatureVerificationRecord` |
@@ -826,10 +826,12 @@ gap instead of failing, while submit/resubmit stay all-or-nothing.
 | `readApprovalInstance(id)` | One full instance with all relations |
 | `readLaunchContext(templateId)` | Launch-page bootstrapping data. The second request also reads the current template version's `workflowDefinitionJson` (`approvalTemplateVersion(id:)`, only that one version) into `templateVersion.workflowDefinition` |
 | `listLaunchableTemplates()` | Templates the current member may launch |
-| `listInboxTasks(memberId)` | My pending tasks |
+| `listInboxTasks(memberId)` | My pending tasks, all of them |
+| `listInboxTasksPage({ assigneeMemberId, page, pageSize })` | One page of my pending tasks, newest first, as `MemberTaskPage` (`tasks`, `totalCount`); wraps `inboxTasks` and `inboxTaskCount` in one request |
 | `listMemberOpenTasks(memberId)` | Administrator: the open tasks a member holds on running instances (assignee, or a PENDING / CLAIMED / WAITING candidate seat), with `memberRole` and `candidateStatus` |
 | `listInactiveMembersWithOpenTasks()` | Administrator: members the host reports as deactivated who still hold open tasks, with `openTaskCount` (the rows `listMemberOpenTasks` returns for them), as `InactiveMemberWithOpenTasksRecord` (`memberId`, `name`, `email`, `openTaskCount`), sorted by name in `zh-Hant-TW` order, namesakes by `memberId`. Empty when the host member resolver does not implement `resolveInactive`, or when the engine is wired without the identity module |
-| `listApprovalHistoryTasks(memberId)` | My historical decisions |
+| `listApprovalHistoryTasks(memberId)` | My historical decisions, the latest 50 |
+| `listApprovalHistoryTasksPage({ assigneeMemberId, instanceState?, page, pageSize })` | One page of the tasks I acted on, most recently acted on first, as `MemberTaskPage`; `instanceState: 'RUNNING'` keeps cases still under way. Wraps `approvalHistoryTasks` and `approvalHistoryTaskCount` in one request |
 | `readWorkflowDashboardSummary({ currentMemberId, from, to })` | Dashboard metrics. The four instance counts (`activeInstanceCount`, `completedInstanceCount`, `rejectedInstanceCount`, `totalInstanceCount`) cover the instances the member can read within the range; `pendingTaskCount` / `overdueTaskCount` count only the member's own to-dos — the same set as `listInboxTasks`, so sequential `WAITING` candidates and a settled countersign vote are not counted — narrowed to those instances |
 | `listTaskDecisions(taskId)` | All decisions on one task |
 | `listAttachments(instanceId)` | Attachment list |
