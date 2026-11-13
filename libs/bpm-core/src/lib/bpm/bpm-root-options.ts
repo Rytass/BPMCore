@@ -11,6 +11,7 @@ import { BPMAuthModuleOptions } from '../bpm-auth/bpm-auth.options';
 import { BPMBusinessCalendar } from '../calendar/business-calendar.token';
 import type { BPMExpressionFunction } from '../expression-function/expression-function.types';
 import { BPMFormDataSourceRegistry } from '../form-data-source/form-data-source.types';
+import type { BPMInstanceEventDeliveryOptions } from '../instance-event/instance-event.options';
 import type { BPMInstanceEventObserver } from '../instance-event/instance-event.token';
 import { BPMRootIdentityOptions } from '../identity/identity-options';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
@@ -178,6 +179,12 @@ export interface BPMRootRuntimeOptions
    * omitted, no outbox rows are written.
    */
   readonly instanceEventObserver?: BPMInstanceEventObserver;
+
+  /**
+   * Outbox tuning for instance lifecycle events (ADR 27 §1.4). Unset or
+   * non-positive fields take the webhook-matching defaults.
+   */
+  readonly instanceEventDelivery?: Partial<BPMInstanceEventDeliveryOptions>;
 
   /**
    * Host identity source, as a ready instance.

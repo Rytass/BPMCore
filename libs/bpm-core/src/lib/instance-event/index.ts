@@ -1,5 +1,7 @@
 export * from './approval-instance-event.entity';
+export * from './instance-event.delivery.service';
 export * from './instance-event.module';
+export * from './instance-event.options';
 export * from './instance-event.service';
 export * from './instance-event.token';
 export * from './instance-event.types';

@@ -1623,7 +1623,9 @@ Known limits of this round:
 Exported from the package root (`@rytass/bpm-core-nestjs-module`). A host
 registers a receiver with `instanceEventObserverProvider` (wiring) or
 `instanceEventObserver` (runtime); the provider wins when both are given. Without
-one, no outbox rows are written.
+one, no outbox rows are written. Delivery tuning goes in
+`BPMRootRuntimeOptions.instanceEventDelivery` (`Partial<BPMInstanceEventDeliveryOptions>`);
+unset or non-positive fields take the defaults below.
 
 Each event is one row in `approval_instance_events`, written in the same
 transaction as the state change. The observer is called after commit, at least
@@ -1639,6 +1641,10 @@ once per event. Hosts dedupe on `event.id`. Events never carry `formData`.
 | `ApprovalInstanceEventEntity` | entity | Outbox table `approval_instance_events` |
 | `InstanceEventService` | service | `observer` (bound or `null`) and `enabled` |
 | `InstanceEventWriter` | service | `record(manager, instanceId, snapshot, type, fields)`; writes one outbox row through the caller's `EntityManager`, no-op without an observer |
+| `InstanceEventDeliveryService` | service | `deliverDue(now?)` (scheduler scan, claims up to `batchSize`), `deliverByIds(ids, now?)` (after commit), `readRetryDelay(attempt)`; claims with `FOR UPDATE SKIP LOCKED` and a per-instance `seq` guard, dispatches under `dispatchTimeoutMs`, writes back conditional on `claimed_at`; no-op without an observer |
+| `BPMInstanceEventDeliveryOptions` | interface | `batchSize`, `dispatchTimeoutMs`, `maxAttempts`, `maxRetryDelayMs`, `retentionDays`, `retryBaseDelayMs`, `scanIntervalMs` (all readonly) |
+| `DEFAULT_BPM_INSTANCE_EVENT_DELIVERY_OPTIONS` | const | Defaults: `batchSize` 25, `dispatchTimeoutMs` 10 000, `maxAttempts` 6, `maxRetryDelayMs` 3 600 000, `retentionDays` 30, `retryBaseDelayMs` 30 000, `scanIntervalMs` 15 000 |
+| `resolveInstanceEventDeliveryOptions(overrides)` | function | Fills unset or non-positive fields from the defaults |
 | `InstanceEventModule` | NestJS Module | `forRoot({ imports, observerProvider })`; global |
 
 Event types: `INSTANCE_SUBMITTED`, `INSTANCE_RESUBMITTED`, `INSTANCE_APPROVED`,

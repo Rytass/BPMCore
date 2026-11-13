@@ -4,6 +4,10 @@ import {
   BPMRootRuntimeOptions,
 } from '../bpm/bpm-root-options';
 import {
+  BPMInstanceEventDeliveryOptions,
+  resolveInstanceEventDeliveryOptions,
+} from './instance-event.options';
+import {
   BPM_INSTANCE_EVENT_OBSERVER,
   BPMInstanceEventObserver,
 } from './instance-event.token';
@@ -14,10 +18,13 @@ import {
  *
  * Resolution: the Nest provider (`BPM_INSTANCE_EVENT_OBSERVER`) wins over the
  * runtime option `BPMRootRuntimeOptions.instanceEventObserver`.
+ *
+ * `delivery` is the resolved outbox tuning, with unset fields defaulted.
  */
 @Injectable()
 export class InstanceEventService {
   readonly observer: BPMInstanceEventObserver | null;
+  readonly delivery: BPMInstanceEventDeliveryOptions;
 
   constructor(
     @Optional()
@@ -29,6 +36,9 @@ export class InstanceEventService {
   ) {
     this.observer =
       injectedObserver ?? rootOptions?.instanceEventObserver ?? null;
+    this.delivery = resolveInstanceEventDeliveryOptions(
+      rootOptions?.instanceEventDelivery,
+    );
   }
 
   get enabled(): boolean {

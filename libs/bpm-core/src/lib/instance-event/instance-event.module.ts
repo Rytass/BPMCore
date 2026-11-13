@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApprovalInstanceEventEntity } from './approval-instance-event.entity';
+import { InstanceEventDeliveryService } from './instance-event.delivery.service';
 import {
   BPM_INSTANCE_EVENT_OBSERVER,
   BPMInstanceEventObserver,
@@ -33,9 +34,7 @@ export class InstanceEventModule {
       ? [options.observerProvider]
       : [];
     const observerExports: readonly (typeof BPM_INSTANCE_EVENT_OBSERVER)[] =
-      options.observerProvider
-      ? [BPM_INSTANCE_EVENT_OBSERVER]
-      : [];
+      options.observerProvider ? [BPM_INSTANCE_EVENT_OBSERVER] : [];
 
     return {
       exports: [InstanceEventService, ...observerExports],
@@ -45,7 +44,11 @@ export class InstanceEventModule {
         TypeOrmModule.forFeature([ApprovalInstanceEventEntity]),
       ],
       module: InstanceEventModule,
-      providers: [...observerProviders, InstanceEventService],
+      providers: [
+        ...observerProviders,
+        InstanceEventService,
+        InstanceEventDeliveryService,
+      ],
     };
   }
 }
