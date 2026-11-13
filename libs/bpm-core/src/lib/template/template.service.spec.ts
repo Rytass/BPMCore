@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 import { ConditionService } from '../condition/condition.service';
@@ -5177,5 +5181,174 @@ describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
     expect(store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId']).toBe(
       v2.templateVersion.id,
     );
+  });
+});
+
+describe('TemplateService.getApprovalTemplateByKey (ADR 27 §6.2)', () => {
+  it('returns the live template holding the key', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const composed = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+
+    const found = await service.getApprovalTemplateByKey('invoice.payment');
+
+    expect(found.id).toBe(composed.template.id);
+  });
+
+  it('does not match a soft-deleted template and throws NotFound', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const composed = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+    Object.assign(
+      store(ApprovalTemplateEntity).get(composed.template.id) as ObjectLiteral,
+      { deletedAt: new Date() },
+    );
+
+    await expect(
+      service.getApprovalTemplateByKey('invoice.payment'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('throws NotFound when no template holds the key', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    await expect(
+      service.getApprovalTemplateByKey('missing.key'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('TemplateService host-managed filtering (ADR 27 §9.2)', () => {
+  const createListService = (): {
+    readonly service: TemplateService;
+    readonly find: jest.Mock;
+    readonly count: jest.Mock;
+  } => {
+    const find = jest.fn().mockResolvedValue([]);
+    const count = jest.fn().mockResolvedValue(0);
+    const service = new TemplateService(
+      { count, find } as unknown as Repository<ApprovalTemplateEntity>,
+      {} as Repository<ApprovalTemplateCategoryEntity>,
+      {} as Repository<ApprovalTemplateVersionEntity>,
+      {} as Repository<FormDefinitionVersionEntity>,
+      new ConditionService(),
+      new FormService(
+        {} as Repository<FormDefinitionEntity>,
+        {} as Repository<FormDefinitionVersionEntity>,
+      ),
+      createTemplateModuleRef(),
+    );
+
+    return { count, find, service };
+  };
+
+  it('excludes host-managed templates from the list by default', async (): Promise<void> => {
+    const { find, service } = createListService();
+
+    await service.listApprovalTemplates();
+
+    expect(find.mock.calls[0][0].where).toEqual(
+      expect.objectContaining({ hostManaged: false }),
+    );
+  });
+
+  it('drops the host-managed filter from the list when includeHostManaged is true', async (): Promise<void> => {
+    const { find, service } = createListService();
+
+    await service.listApprovalTemplates({ includeHostManaged: true });
+
+    expect(find.mock.calls[0][0].where).not.toHaveProperty('hostManaged');
+  });
+
+  it('keeps the host-managed filter in every search clause', async (): Promise<void> => {
+    const { find, service } = createListService();
+
+    await service.listApprovalTemplates({ searchText: 'invoice' });
+
+    const clauses = find.mock.calls[0][0].where as readonly ObjectLiteral[];
+
+    expect(clauses).toHaveLength(3);
+    clauses.forEach((clause) => {
+      expect(clause).toEqual(expect.objectContaining({ hostManaged: false }));
+    });
+  });
+
+  it('excludes host-managed templates from the count by default', async (): Promise<void> => {
+    const { count, service } = createListService();
+
+    await service.countApprovalTemplates();
+
+    expect(count.mock.calls[0][0].where).toEqual(
+      expect.objectContaining({ hostManaged: false }),
+    );
+  });
+
+  it('drops the host-managed filter from the count when includeHostManaged is true', async (): Promise<void> => {
+    const { count, service } = createListService();
+
+    await service.countApprovalTemplates({ includeHostManaged: true });
+
+    expect(count.mock.calls[0][0].where).not.toHaveProperty('hostManaged');
+  });
+});
+
+describe('TemplateService compose host-managed flag (ADR 27 §6.2)', () => {
+  it('stores hostManaged on a new template and on its new form', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const result = await service.composeApprovalTemplateWithForm(
+      composeInput({ hostManaged: true, templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+
+    expect(result.template.hostManaged).toBe(true);
+    expect(
+      [...store(FormDefinitionEntity).values()].map(
+        (form) => form['hostManaged'],
+      ),
+    ).toEqual([true]);
+  });
+
+  it('keeps the stored hostManaged value when a later compose omits it', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    await service.composeApprovalTemplateWithForm(
+      composeInput({ hostManaged: true, templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+    const second = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+
+    expect(second.template.hostManaged).toBe(true);
+  });
+
+  it('sets hostManaged on an existing template when the compose input gives it', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const first = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+    const second = await service.composeApprovalTemplateWithForm(
+      composeInput({ hostManaged: true, templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+
+    expect(second.template.id).toBe(first.template.id);
+    expect(second.template.hostManaged).toBe(true);
   });
 });
