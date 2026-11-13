@@ -24087,6 +24087,19 @@ function createServiceFixture({
     find: taskCandidateFind,
     metadata: { schema: 'bpm', tableName: 'task_candidates' },
   });
+  // `listApproverFillUnits` reads candidates through the task repository's
+  // manager (the same lookup `readTaskActorContext` makes inside a transaction).
+  Object.assign(taskRepository, {
+    manager: {
+      getRepository: (target: unknown): unknown => {
+        if (target === TaskCandidateEntity) {
+          return taskCandidateRepository;
+        }
+
+        throw new Error('Unexpected repository in task manager fixture');
+      },
+    },
+  });
   // The SQL of `readOpenSeatHolderMemberIds`: assignees of open tasks and
   // members with an open candidate row on one, both on RUNNING instances.
   async function readOpenSeatHolderRows(
@@ -27506,5 +27519,140 @@ describe('instance event recording (ADR 27 P4)', (): void => {
         nodeId: 'task_finance',
       },
     ]);
+  });
+
+  describe('listApproverFillUnits (ADR 27 §4.2)', (): void => {
+    const createOpenFixture = ({
+      candidates = [],
+      fieldAccess,
+      instanceState = ApprovalInstanceStateEnum.RUNNING,
+      task = {},
+    }: {
+      readonly candidates?: readonly TaskCandidateEntity[];
+      readonly fieldAccess?: readonly FieldAccessEntry[];
+      readonly instanceState?: ApprovalInstanceStateEnum;
+      readonly task?: Partial<TaskEntity>;
+    } = {}): ReturnType<typeof createServiceFixture> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState,
+        processTaskCandidates: candidates,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createFieldAccessWorkflow({
+          financeFieldAccess: fieldAccess,
+        }),
+      });
+
+      fixture.rootTaskFind.mockResolvedValue([
+        createTask({
+          assigneeMemberId: 'member-finance',
+          id: 'task-1',
+          instanceId: 'instance-1',
+          nodeId: 'task_finance',
+          ...task,
+        }),
+      ]);
+
+      return fixture;
+    };
+
+    const expectedWholeFields = [
+      { columnKey: null, fieldKey: 'financeItems', fill: 'REQUIRED' },
+      { columnKey: null, fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
+    ];
+
+    it('grants the SHOW fill units of the open task to its assignee', async (): Promise<void> => {
+      const fixture = createOpenFixture();
+
+      await expect(
+        fixture.service.listApproverFillUnits('instance-1', 'member-finance'),
+      ).resolves.toEqual(expectedWholeFields);
+      expect(fixture.rootTaskFind).toHaveBeenCalledWith({
+        where: {
+          instanceId: 'instance-1',
+          isAdhoc: false,
+          status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
+        },
+      });
+    });
+
+    it('drops fields the node lists as HIDE even when they carry a fill', async (): Promise<void> => {
+      const fixture = createOpenFixture({
+        fieldAccess: [
+          { display: 'HIDE', fieldKey: 'financeItems', fill: 'REQUIRED' },
+          { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
+        ],
+      });
+
+      await expect(
+        fixture.service.listApproverFillUnits('instance-1', 'member-finance'),
+      ).resolves.toEqual([
+        { columnKey: null, fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
+      ]);
+    });
+
+    it('grants a PENDING or CLAIMED candidate of an open task', async (): Promise<void> => {
+      for (const status of [
+        TaskCandidateStatusEnum.PENDING,
+        TaskCandidateStatusEnum.CLAIMED,
+      ]) {
+        const fixture = createOpenFixture({
+          candidates: [
+            createTaskCandidate({
+              memberId: 'member-finance',
+              status,
+              taskId: 'task-1',
+            }),
+          ],
+          task: { assigneeMemberId: null },
+        });
+
+        await expect(
+          fixture.service.listApproverFillUnits('instance-1', 'member-finance'),
+        ).resolves.toEqual(expectedWholeFields);
+      }
+    });
+
+    it('grants nothing to a WAITING or already decided candidate, though the task is open', async (): Promise<void> => {
+      for (const status of [
+        TaskCandidateStatusEnum.WAITING,
+        TaskCandidateStatusEnum.COMPLETED,
+      ]) {
+        const fixture = createOpenFixture({
+          candidates: [
+            createTaskCandidate({
+              memberId: 'member-finance',
+              status,
+              taskId: 'task-1',
+            }),
+          ],
+          task: { assigneeMemberId: null },
+        });
+
+        await expect(
+          fixture.service.listApproverFillUnits('instance-1', 'member-finance'),
+        ).resolves.toEqual([]);
+      }
+    });
+
+    it('grants nothing to a member who is neither assignee nor candidate', async (): Promise<void> => {
+      const fixture = createOpenFixture();
+
+      await expect(
+        fixture.service.listApproverFillUnits('instance-1', 'member-stranger'),
+      ).resolves.toEqual([]);
+    });
+
+    it('grants nothing once the instance is no longer RUNNING', async (): Promise<void> => {
+      const fixture = createOpenFixture({
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+      });
+
+      await expect(
+        fixture.service.listApproverFillUnits('instance-1', 'member-finance'),
+      ).resolves.toEqual([]);
+      expect(fixture.rootTaskFind).not.toHaveBeenCalled();
+    });
   });
 });
