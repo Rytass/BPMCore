@@ -2160,6 +2160,7 @@ export class WorkflowEngineService {
             completedTask,
             returnToNodeId,
             decidedAt,
+            input.decidedByMemberId,
           );
 
           return decision;
@@ -2177,7 +2178,13 @@ export class WorkflowEngineService {
           return decision;
         }
 
-        await this.rejectInstance(manager, instance, completedTask, decidedAt);
+        await this.rejectInstance(
+          manager,
+          instance,
+          completedTask,
+          decidedAt,
+          input.decidedByMemberId,
+        );
 
         return decision;
       },
@@ -10022,6 +10029,7 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     task: TaskEntity,
     rejectedAt: Date,
+    decidedByMemberId: string,
   ): Promise<void> {
     const instanceRepository = manager.getRepository(ApprovalInstanceEntity);
 
@@ -10077,7 +10085,7 @@ export class WorkflowEngineService {
       rejectedInstance,
       ApprovalInstanceStateEnum.REJECTED,
       'INSTANCE_REJECTED',
-      { actorMemberId: task.assigneeMemberId },
+      { actorMemberId: decidedByMemberId },
     );
   }
 
@@ -10087,6 +10095,7 @@ export class WorkflowEngineService {
     task: TaskEntity,
     returnToNodeId: string | null,
     returnedAt: Date,
+    decidedByMemberId: string,
   ): Promise<void> {
     if (!returnToNodeId) {
       throw new ConflictException('Return target node is required');
@@ -10170,7 +10179,7 @@ export class WorkflowEngineService {
       returnedInstance,
       returnedInstance.state,
       'INSTANCE_RETURNED',
-      { actorMemberId: task.assigneeMemberId, nodeId: task.nodeId },
+      { actorMemberId: decidedByMemberId, nodeId: task.nodeId },
     );
 
     if (returnedInstance.state === ApprovalInstanceStateEnum.RUNNING) {
