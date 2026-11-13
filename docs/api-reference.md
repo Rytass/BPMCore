@@ -1638,6 +1638,7 @@ once per event. Hosts dedupe on `event.id`. Events never carry `formData`.
 | `BPM_INSTANCE_EVENT_STATUSES` / `BPMInstanceEventStatus` | const / type | Outbox row status: `PENDING`, `DELIVERED`, `FAILED` |
 | `ApprovalInstanceEventEntity` | entity | Outbox table `approval_instance_events` |
 | `InstanceEventService` | service | `observer` (bound or `null`) and `enabled` |
+| `InstanceEventWriter` | service | `record(manager, instanceId, snapshot, type, fields)`; writes one outbox row through the caller's `EntityManager`, no-op without an observer |
 | `InstanceEventModule` | NestJS Module | `forRoot({ imports, observerProvider })`; global |
 
 Event types: `INSTANCE_SUBMITTED`, `INSTANCE_RESUBMITTED`, `INSTANCE_APPROVED`,
