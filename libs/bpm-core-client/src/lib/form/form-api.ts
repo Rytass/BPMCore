@@ -12,6 +12,8 @@ export interface FormDefinitionRecord {
   readonly currentVersionNumber: number | null;
   readonly currentVersionPublishedAt: string | null;
   readonly description: string | null;
+  /** Read-only. Set by host code; forms with true are left out of lists by default. */
+  readonly hostManaged: boolean;
   readonly id: string;
   readonly name: string;
   readonly updatedAt: string;
@@ -97,6 +99,7 @@ export async function listFormDefinitions(): Promise<
         currentVersionNumber
         currentVersionPublishedAt
         description
+        hostManaged
         id
         name
         updatedAt
@@ -108,10 +111,13 @@ export async function listFormDefinitions(): Promise<
 }
 
 export async function listFormDefinitionsPage({
+  includeHostManaged,
   page,
   pageSize,
   status,
 }: {
+  /** Pass true to include host-managed forms. Omitted by default, so the server keeps its exclusion. */
+  readonly includeHostManaged?: boolean;
   readonly page: number;
   readonly pageSize: number;
   readonly status?: FormDefinitionListStatus | null;
@@ -124,20 +130,32 @@ export async function listFormDefinitionsPage({
       $page: Int!
       $pageSize: Int!
       $status: FormDefinitionListStatus
+      $includeHostManaged: Boolean
     ) {
-      formDefinitions(page: $page, pageSize: $pageSize, status: $status) {
+      formDefinitions(
+        page: $page
+        pageSize: $pageSize
+        status: $status
+        includeHostManaged: $includeHostManaged
+      ) {
         currentVersionCreatedAt
         currentVersionId
         currentVersionNumber
         currentVersionPublishedAt
         description
+        hostManaged
         id
         name
         updatedAt
       }
-      formDefinitionCount(status: $status)
+      formDefinitionCount(status: $status, includeHostManaged: $includeHostManaged)
     }`,
-    { page, pageSize, status: status ?? null },
+    {
+      page,
+      pageSize,
+      status: status ?? null,
+      ...(includeHostManaged === true ? { includeHostManaged: true } : {}),
+    },
   );
 
   return {

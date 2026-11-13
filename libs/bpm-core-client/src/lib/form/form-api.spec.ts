@@ -2,6 +2,7 @@ import {
   createFieldDefinition,
   createFormDefinition,
   listFormDefinitions,
+  listFormDefinitionsPage,
 } from './form-api';
 
 interface CapturedRequest {
@@ -77,6 +78,70 @@ describe('@rytass/bpm-core-client/form', () => {
           },
         });
         expect(id).toBe('form-1');
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
+  describe('listFormDefinitionsPage', () => {
+    it('omits includeHostManaged by default so the server exclusion applies', async (): Promise<void> => {
+      const harness = installFetchMock({
+        formDefinitionCount: 0,
+        formDefinitions: [],
+      });
+      try {
+        await listFormDefinitionsPage({ page: 1, pageSize: 10 });
+        const request = harness.capture();
+
+        expect(request.query).toContain('hostManaged');
+        expect(request.query).toContain(
+          'formDefinitionCount(status: $status, includeHostManaged: $includeHostManaged)',
+        );
+        expect(request.variables).not.toHaveProperty('includeHostManaged');
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('sends includeHostManaged only when it is true', async (): Promise<void> => {
+      const harness = installFetchMock({
+        formDefinitionCount: 0,
+        formDefinitions: [],
+      });
+      try {
+        await listFormDefinitionsPage({
+          includeHostManaged: true,
+          page: 2,
+          pageSize: 10,
+        });
+        const request = harness.capture();
+
+        expect(request.variables).toEqual({
+          includeHostManaged: true,
+          page: 2,
+          pageSize: 10,
+          status: null,
+        });
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('sends nothing extra when includeHostManaged is false', async (): Promise<void> => {
+      const harness = installFetchMock({
+        formDefinitionCount: 0,
+        formDefinitions: [],
+      });
+      try {
+        await listFormDefinitionsPage({
+          includeHostManaged: false,
+          page: 1,
+          pageSize: 10,
+        });
+        const request = harness.capture();
+
+        expect(request.variables).not.toHaveProperty('includeHostManaged');
       } finally {
         harness.restore();
       }
