@@ -19,6 +19,7 @@ import {
   isFormDataSourceFieldDefinition,
   isTableFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
+import type { FieldAccessFillUnit } from '@rytass/bpm-core-shared';
 import { Repository } from 'typeorm';
 import { BPMAuthContext } from '../bpm-auth';
 import { ConditionService } from '../condition/condition.service';
@@ -519,6 +520,7 @@ export class FormDataSourceService {
    */
   private async readRuntimeSchema(
     input: {
+      readonly fieldKey: string;
       readonly instanceId?: string | null;
       readonly templateId?: string | null;
     },
@@ -547,6 +549,7 @@ export class FormDataSourceService {
 
   private async readRuntimeSchemaContext(
     input: {
+      readonly fieldKey: string;
       readonly instanceId?: string | null;
       readonly templateId?: string | null;
     },
@@ -587,11 +590,17 @@ export class FormDataSourceService {
       instanceId as string,
       authContext,
     );
+    // The applicant of a returned instance reads the whole form. An approver
+    // of a RUNNING instance reads only what their open tasks let them fill
+    // (ADR 27 §4.2 gap 1), checked per field below.
+    const isApplicantReturn =
+      instance.initiatorMemberId === authContext.memberId &&
+      instance.state === ApprovalInstanceStateEnum.RETURNED;
+    const isApproverOpen =
+      !isApplicantReturn &&
+      instance.state === ApprovalInstanceStateEnum.RUNNING;
 
-    if (
-      instance.initiatorMemberId !== authContext.memberId ||
-      instance.state !== ApprovalInstanceStateEnum.RETURNED
-    ) {
+    if (!isApplicantReturn && !isApproverOpen) {
       throw new BPMFormDataSourceForbiddenException(
         BPM_FORM_DATA_SOURCE_ERROR_CODES.RUNTIME_CONTEXT_FORBIDDEN,
       );
@@ -607,7 +616,67 @@ export class FormDataSourceService {
       );
     }
 
-    return this.parseSchema(JSON.stringify(schema), JSON.stringify(uiSchema));
+    const runtime = this.parseSchema(
+      JSON.stringify(schema),
+      JSON.stringify(uiSchema),
+    );
+
+    if (isApplicantReturn) {
+      return runtime;
+    }
+
+    const units =
+      await this.workflowEngineService.listApproverFillUnits(
+        instanceId as string,
+        authContext.memberId,
+      );
+
+    if (!this.isFieldWithinFillUnits(runtime.schema, input.fieldKey, units)) {
+      throw new BPMFormDataSourceForbiddenException(
+        BPM_FORM_DATA_SOURCE_ERROR_CODES.RUNTIME_CONTEXT_FORBIDDEN,
+      );
+    }
+
+    return runtime;
+  }
+
+  /**
+   * Whether an approver's fill units cover the option field at `fieldKey`: a
+   * top-level field needs a whole-field unit; a table column (`table.column`)
+   * needs a whole-field unit on the table or a unit for that column.
+   */
+  private isFieldWithinFillUnits(
+    schema: FormDefinitionSchema,
+    fieldKey: string,
+    units: readonly FieldAccessFillUnit[],
+  ): boolean {
+    if (schema.fields.some((candidate) => candidate.fieldKey === fieldKey)) {
+      return units.some(
+        (unit) => unit.fieldKey === fieldKey && unit.columnKey === null,
+      );
+    }
+
+    const separatorIndex = fieldKey.indexOf('.');
+
+    if (separatorIndex < 0) {
+      return false;
+    }
+
+    const tableKey = fieldKey.slice(0, separatorIndex);
+    const columnKey = fieldKey.slice(separatorIndex + 1);
+    const isTable = schema.fields.some(
+      (candidate) =>
+        candidate.fieldKey === tableKey && isTableFieldDefinition(candidate),
+    );
+
+    return (
+      isTable &&
+      units.some(
+        (unit) =>
+          unit.fieldKey === tableKey &&
+          (unit.columnKey === null || unit.columnKey === columnKey),
+      )
+    );
   }
 
   private async readPublishedFormSchema(
