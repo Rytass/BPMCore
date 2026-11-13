@@ -2205,6 +2205,11 @@ export class WorkflowEngineService {
    * `cancelledByAdministrator`, so a host can tell this from the initiator
    * withdrawing) and sent to the initiator as an in-app notification. An
    * administrator ending their own instance is not told.
+   *
+   * Like the other administrator operations of this service it does not check
+   * who `cancelledByMemberId` is: the GraphQL mutation is guarded by
+   * `@BPMAdminOnly()`, and a host calling this directly must check first. That
+   * member is recorded as the actor of the INSTANCE_CANCELLED activity.
    */
   async adminCancelApprovalInstance(
     input: AdminCancelApprovalInstanceCommand,
