@@ -314,13 +314,16 @@ The designer's 欄位與關卡總覽, in `libs/shared/src/lib/field-access-matri
 | Name | Kind | Purpose |
 |---|---|---|
 | `readFieldAccessMatrix(definition, schema)` | function | `{ columns, rows, issues }`: one column per user task in flow order (topological; a loop is entered at the node the flow leads into first), one row per top-level form field (none without a form), and every publish-blocking field access issue apart from the early-read rule, in lint order |
-| `FieldAccessMatrix` / `FieldAccessMatrixColumn` / `FieldAccessMatrixRow` / `FieldAccessMatrixCell` | interface | A column carries `stage` (1-based), `label`, `branchLabel` (the label of an edge from an exclusive gateway straight into the node), `fillConflicts` and its node-level `issues`. A row carries the `applicant` value, one cell per column, `fillNodeIds`, `fillBlockers`, its `issues` and `notices`. A cell carries `explicit` (the node's entry or `null`), `choice`, `effective`, `reason` and `disabledChoices` |
-| `FieldAccessEffective` | type | `'FILL' \| 'READ_ONLY' \| 'NOT_SHOWN' \| 'HIDDEN' \| 'FILL_OPTIONAL' \| 'FILL_REQUIRED'`. Without an entry, an approver-filled field reads `READ_ONLY` at a node that a fill node earlier in the column order reaches, `NOT_SHOWN` otherwise; an ordinary field reads `READ_ONLY` |
+| `FieldAccessMatrix` / `FieldAccessMatrixColumn` / `FieldAccessMatrixRow` / `FieldAccessMatrixCell` | interface | A column carries `stage` (1-based), `label`, `branchLabel` (the label of an edge from an exclusive gateway straight into the node), `fillConflicts` and its node-level `issues`. A row carries the `applicant` value, one cell per column, `fillNodeIds`, `fillBlockers`, its `issues`, `notices` and `tableColumns` (a table field's columns, `[]` otherwise). A cell carries `explicit` (the node's entry or `null`), `choice`, `effective`, `reason`, `columnFills` (the per-column grants of a column-mode entry, `[]` otherwise) and `disabledChoices` |
+| `FieldAccessMatrixTableColumn` | interface | One column of a table field for the per-column rows: `columnKey` (the column's `fieldKey`) and `label` |
+| `FieldAccessEffective` | type | `'FILL' \| 'READ_ONLY' \| 'NOT_SHOWN' \| 'HIDDEN' \| 'FILL_OPTIONAL' \| 'FILL_REQUIRED' \| 'FILL_COLUMNS'` (`FILL_COLUMNS`: a column-mode entry with at least one column; an empty one reads `READ_ONLY`). Without an entry, an approver-filled field reads `READ_ONLY` at a node that a fill node earlier in the column order reaches, `NOT_SHOWN` otherwise; an ordinary field reads `READ_ONLY` |
 | `FieldAccessCellReason` | type | `'EXPLICIT' \| 'APPLICANT_FIELD' \| 'FILLED_EARLIER' \| 'NOT_YET_FILLED'` |
 | `FieldAccessNotice` | interface | A non-blocking hint: `shownBeforeFilled` (a node explicitly shows an approver-filled field before anybody filled it in) |
-| `FieldAccessChoice` / `FIELD_ACCESS_CHOICES` | type / const | What a cell offers: `DEFAULT` (no entry), `SHOW`, `HIDE`, `FILL_OPTIONAL`, `FILL_REQUIRED` |
-| `readFieldAccessChoice(entry)` | function | The choice an entry (or `null`) stands for; a hidden fill reads as the fill it asks for |
-| `readFieldAccessEntryForChoice(fieldKey, choice)` | function | The entry a choice writes, `null` for `DEFAULT`; a fill is always `display: 'SHOW'` |
+| `FieldAccessChoice` / `FIELD_ACCESS_CHOICES` | type / const | What a cell offers: `DEFAULT` (no entry), `SHOW`, `HIDE`, `FILL_OPTIONAL`, `FILL_REQUIRED`, `COLUMNS` (column mode, table fields only) |
+| `readFieldAccessChoice(entry)` | function | The choice an entry (or `null`) stands for; an entry with `columns` reads as `COLUMNS`, a hidden fill reads as the fill it asks for |
+| `readFieldAccessEntryForChoice(fieldKey, choice)` | function | The entry a choice writes, `null` for `DEFAULT`; a fill is always `display: 'SHOW'`; `COLUMNS` writes `{ display: 'SHOW', fill: 'NONE', columns: [] }` |
+| `updateFieldAccessColumnFill(entry, fieldKey, columnKey, fill)` | function | Sets one column's fill in a column-mode entry (`entry` may be `null`): `NONE` removes the column, any other fill replaces or appends it. Returns the new entry; the input is not mutated |
+| `readTableColumns(field)` | function | The `FieldAccessMatrixTableColumn[]` of a table field (`[]` for any other field) |
 
 Expression function contract (ADR 22 §3.5), root export only — released in v0.20.0:
 
