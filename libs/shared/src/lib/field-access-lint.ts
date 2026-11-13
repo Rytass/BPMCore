@@ -1,5 +1,12 @@
-import { FormDefinitionSchema, FormFieldDefinition } from './form';
 import {
+  FormDefinitionSchema,
+  FormFieldDefinition,
+  isFormDataSourceFieldDefinition,
+  isTableFieldDefinition,
+  TableFieldDefinition,
+} from './form';
+import {
+  FieldAccessFillUnit,
   readApproverFilledFieldKeys,
   readFormFieldPathTopLevelKey,
   readNodeFieldAccess,
@@ -478,15 +485,109 @@ export function referencesFormField(
   expression: string,
   fieldKey: string,
 ): boolean {
-  const escapedKey = fieldKey.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-  // Not preceded by an identifier character or a dot, so `myform` and
-  // `a.form` do not pass for the root.
-  const root = '(?<![\\p{L}\\p{N}_.])(?:formData|form)\\s*';
+  return referencesRootedKey(expression, '(?:formData|form)', fieldKey);
+}
+
+/**
+ * The same match as `referencesFormField`, for an arbitrary root: `root` is a
+ * regex alternation (`(?:formData|form)`, `row`) placed before `.key` or
+ * `["key"]`. The root may not be preceded by an identifier character or a dot.
+ */
+function referencesRootedKey(
+  expression: string,
+  root: string,
+  key: string,
+): boolean {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const rootPattern = `(?<![\\p{L}\\p{N}_.])${root}\\s*`;
 
   return [
-    new RegExp(`${root}\\.\\s*${escapedKey}(?![\\p{L}\\p{N}_])`, 'u'),
-    new RegExp(`${root}\\[\\s*["']${escapedKey}["']\\s*\\]`, 'u'),
+    new RegExp(`${rootPattern}\\.\\s*${escapedKey}(?![\\p{L}\\p{N}_])`, 'u'),
+    new RegExp(`${rootPattern}\\[\\s*["']${escapedKey}["']\\s*\\]`, 'u'),
   ].some((pattern) => pattern.test(expression));
+}
+
+/**
+ * A data-source column of a column-mode table that reads another column of the
+ * same table (ADR 27 §4.3) while the approver may fill in the read column but
+ * not this one. Once the read column changes, this column still holds the
+ * value its old source gave.
+ */
+export interface FieldAccessDependencyBreak {
+  readonly fieldKey: string;
+  readonly sourceColumnKey: string;
+  readonly dependentColumnKey: string;
+}
+
+const readDependentColumnKeys = (
+  table: TableFieldDefinition,
+  sourceColumnKey: string,
+): readonly string[] =>
+  table.columns
+    .filter(
+      (column): boolean =>
+        isFormDataSourceFieldDefinition(column) &&
+        column.dataSource.bindings.some(({ from }): boolean =>
+          from.kind === 'ROW_FIELD'
+            ? from.columnKey === sourceColumnKey
+            : from.kind === 'EXPRESSION' &&
+              referencesRootedKey(from.expression, 'row', sourceColumnKey),
+        ),
+    )
+    .map((column): string => column.fieldKey);
+
+/**
+ * Every column the approver may fill in that a data-source column of the same
+ * table reads, while that data-source column is not open to the same node.
+ * A table granted whole is skipped: every column of it is then open. An
+ * EXPRESSION source counts only through a `row` reference, the way the cell
+ * reads its own row. Empty when `schema` is null.
+ */
+export function readFieldAccessDependencyBreaks(
+  schema: FormDefinitionSchema | null,
+  units: readonly FieldAccessFillUnit[],
+): readonly FieldAccessDependencyBreak[] {
+  if (schema === null) {
+    return [];
+  }
+
+  const wholeFieldKeys = new Set(
+    units
+      .filter(({ columnKey }): boolean => columnKey === null)
+      .map(({ fieldKey }): string => fieldKey),
+  );
+
+  return schema.fields.flatMap(
+    (field): readonly FieldAccessDependencyBreak[] => {
+      if (!isTableFieldDefinition(field) || wholeFieldKeys.has(field.fieldKey)) {
+        return [];
+      }
+
+      const openColumnKeys = new Set(
+        units
+          .filter(
+            ({ fieldKey, columnKey }): boolean =>
+              fieldKey === field.fieldKey && columnKey !== null,
+          )
+          .map(({ columnKey }): string => columnKey ?? ''),
+      );
+
+      return [...openColumnKeys].flatMap(
+        (sourceColumnKey): readonly FieldAccessDependencyBreak[] =>
+          readDependentColumnKeys(field, sourceColumnKey)
+            .filter(
+              (dependentColumnKey): boolean =>
+                dependentColumnKey !== sourceColumnKey &&
+                !openColumnKeys.has(dependentColumnKey),
+            )
+            .map((dependentColumnKey) => ({
+              dependentColumnKey,
+              fieldKey: field.fieldKey,
+              sourceColumnKey,
+            })),
+      );
+    },
+  );
 }
 
 /**
