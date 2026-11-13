@@ -496,6 +496,16 @@ BPMRootModule.forRoot({ organizationTimeZone: 'UTC' });
   `<BPMNextProviders organizationTimeZone="UTC">`（或 `<Providers>`）；不設就兩邊都用 `Asia/Taipei`。
   前端遇到不存在的時區不會報錯，而是退回 `Asia/Taipei` 並在 console 警告一次。
 
+### 2e. 未填欄位當 null（選用）
+
+```typescript
+BPMRootModule.forRoot({ expressionMissingFormFieldsAsNull: true }); // 預設 false
+```
+
+- 開啟後，條件、閘道、resolver 等 CEL 運算式讀到尚未填寫的表單欄位時，視為 `null`，不再因缺鍵而丟錯。
+- 代價是未填欄位的 `has(form.x)` 會從 `false` 變成 `true`，模板若用 `has()` 判斷「未填」，要先改成 `form.x == null`。完整對照表見 `docs/05-conditions-cel.md` §5.1.2。
+- 補值只在評估時發生，不寫回 `form_data`。
+
 ### 3. Bootstrap（**不要** 用 `setGlobalPrefix`）
 
 ```ts
