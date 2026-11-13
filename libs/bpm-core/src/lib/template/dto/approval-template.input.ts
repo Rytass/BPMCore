@@ -6,14 +6,33 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
+  ValidateIf,
 } from 'class-validator';
+import { TEMPLATE_KEY_PATTERN } from '../template-key';
 import { ApprovalTemplateLaunchModeEnum } from '../template.enums';
+
+const TEMPLATE_KEY_DESCRIPTION =
+  'Stable key the host declares for a template it owns (ADR 27 §6). Starts with a letter or digit; then letters, digits, ".", "_" or "-"; at most 128 characters. Unique among live templates. An empty string clears it.';
 
 @InputType()
 export class CreateApprovalTemplateInput {
   @Field()
   @IsString()
   name!: string;
+
+  /** Stable host key (ADR 27 §6). Omitted or empty means no key. */
+  @Field(() => String, {
+    description: TEMPLATE_KEY_DESCRIPTION,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_object: object, value: unknown): boolean => value !== '')
+  @IsString()
+  @Matches(TEMPLATE_KEY_PATTERN, {
+    message: 'key must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$',
+  })
+  key?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
@@ -56,6 +75,22 @@ export class UpdateApprovalTemplateInput {
   @IsOptional()
   @IsString()
   description?: string | null;
+
+  /**
+   * Host key, as a three-state value: omitted keeps the key, `null` or an
+   * empty string clears it, anything else sets it.
+   */
+  @Field(() => String, {
+    description: TEMPLATE_KEY_DESCRIPTION,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_object: object, value: unknown): boolean => value !== '')
+  @IsString()
+  @Matches(TEMPLATE_KEY_PATTERN, {
+    message: 'key must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$',
+  })
+  key?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()

@@ -5,7 +5,10 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
+  ValidateIf,
 } from 'class-validator';
+import { TEMPLATE_KEY_PATTERN } from '../template-key';
 import { ApprovalTemplateLaunchModeEnum } from '../template.enums';
 
 @InputType()
@@ -50,6 +53,23 @@ export class ComposeApprovalTemplateWithFormInput {
   @IsOptional()
   @IsString()
   templateDescription!: string | null;
+
+  /**
+   * Host key for the template (ADR 27 §6). Applied on create; on an existing
+   * template it is set after the row lock. Absent keeps the current key.
+   */
+  @Field(() => String, {
+    description:
+      'Stable key the host declares for a template it owns (ADR 27 §6). Starts with a letter or digit; then letters, digits, ".", "_" or "-"; at most 128 characters. Unique among live templates. An empty string clears it. Absent keeps the current key.',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_object: object, value: unknown): boolean => value !== '')
+  @IsString()
+  @Matches(TEMPLATE_KEY_PATTERN, {
+    message: 'key must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$',
+  })
+  key?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()

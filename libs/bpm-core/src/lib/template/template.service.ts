@@ -80,6 +80,10 @@ import { FormService } from '../form/form.service';
 import { lintWorkflowWebhookTargets } from '../workflow-webhook/workflow-webhook.validator';
 import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
 import { assertTemplateFilterableFieldsEnabled } from './filterable-field-guard';
+import {
+  normalizeTemplateKey,
+  translateTemplateKeyConflict,
+} from './template-key';
 import { ComposeApprovalTemplateWithFormInput } from './dto/compose-approval-template.input';
 import { ComposeApprovalTemplateWithFormObject } from './compose-approval-template.object';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
@@ -190,7 +194,9 @@ export class TemplateService {
 
     return manager
       ? run(manager)
-      : this.templateRepository.manager.transaction(run);
+      : translateTemplateKeyConflict(
+          this.templateRepository.manager.transaction(run),
+        );
   }
 
   private async createApprovalTemplateWithManager(
@@ -222,6 +228,7 @@ export class TemplateService {
         // reads `isActive` back and a template that never carried the value
         // in memory would read as deactivated.
         isActive: true,
+        key: normalizeTemplateKey(input.key),
         name: input.name,
       }),
     );
@@ -258,86 +265,101 @@ export class TemplateService {
     input: ComposeApprovalTemplateWithFormInput,
     currentMemberId: string | null,
   ): Promise<ComposeApprovalTemplateWithFormObject> {
-    const { event, result } = await this.templateRepository.manager.transaction(
-      async (
-        manager,
-      ): Promise<{
-        readonly event: BPMTemplateChangedEvent;
-        readonly result: ComposeApprovalTemplateWithFormObject;
-      }> => {
-        // ADR 25 §15: an existing template's row is locked before anything
-        // else, so this compose takes the template lock before it forks or
-        // writes the draft row, the same order a standalone publish uses.
-        // Taking it later (after the draft write, inside publishVersion) let a
-        // concurrent publish of the same draft deadlock against this one.
-        if (input.templateId) {
-          await this.readLockedTemplateOrThrow(manager, input.templateId);
-        }
-
-        const formDefinitionVersion = await this.resolveComposedFormVersion(
+    // Validated before any lock is taken. `undefined` keeps the stored key.
+    const key =
+      input.key === undefined ? undefined : normalizeTemplateKey(input.key);
+    const { event, result } = await translateTemplateKeyConflict(
+      this.templateRepository.manager.transaction(
+        async (
           manager,
-          input,
-          currentMemberId,
-        );
-        const templateDraftVersion =
-          await this.resolveComposedTemplateDraftVersion(
+        ): Promise<{
+          readonly event: BPMTemplateChangedEvent;
+          readonly result: ComposeApprovalTemplateWithFormObject;
+        }> => {
+          // ADR 25 §15: an existing template's row is locked before anything
+          // else, so this compose takes the template lock before it forks or
+          // writes the draft row, the same order a standalone publish uses.
+          // Taking it later (after the draft write, inside publishVersion) let a
+          // concurrent publish of the same draft deadlock against this one.
+          if (input.templateId) {
+            const locked = await this.readLockedTemplateOrThrow(
+              manager,
+              input.templateId,
+            );
+
+            if (key !== undefined) {
+              await manager
+                .getRepository(ApprovalTemplateEntity)
+                .update({ id: locked.id }, { key });
+            }
+          }
+
+          const formDefinitionVersion = await this.resolveComposedFormVersion(
             manager,
             input,
             currentMemberId,
           );
+          const templateDraftVersion =
+            await this.resolveComposedTemplateDraftVersion(
+              manager,
+              input,
+              key,
+              currentMemberId,
+            );
 
-        let templateVersion = await this.updateApprovalTemplateDraft(
-          {
-            formDefinitionVersionId: formDefinitionVersion.id,
-            initiatorPolicyCel: input.initiatorPolicyCel,
-            launchMode: input.launchMode ?? null,
-            notificationConfigJson: input.notificationConfigJson,
-            slaDefaultsJson: input.slaDefaultsJson,
-            versionId: templateDraftVersion.id,
-            workflowDefinitionJson: input.workflowDefinitionJson,
-          },
-          manager,
-        );
-        let previousVersionId: string | null = null;
-
-        if (input.publish) {
-          const published = await this.publishVersion(
-            templateDraftVersion.id,
-            currentMemberId ?? undefined,
+          let templateVersion = await this.updateApprovalTemplateDraft(
+            {
+              formDefinitionVersionId: formDefinitionVersion.id,
+              initiatorPolicyCel: input.initiatorPolicyCel,
+              launchMode: input.launchMode ?? null,
+              notificationConfigJson: input.notificationConfigJson,
+              slaDefaultsJson: input.slaDefaultsJson,
+              versionId: templateDraftVersion.id,
+              workflowDefinitionJson: input.workflowDefinitionJson,
+            },
             manager,
           );
+          let previousVersionId: string | null = null;
 
-          previousVersionId = published.previousVersionId;
-          templateVersion = published.version;
-        }
+          if (input.publish) {
+            const published = await this.publishVersion(
+              templateDraftVersion.id,
+              currentMemberId ?? undefined,
+              manager,
+            );
 
-        const formDefinition = await manager
-          .getRepository(FormDefinitionEntity)
-          .findOneByOrFail({ id: formDefinitionVersion.formDefinitionId });
-        const template = await manager
-          .getRepository(ApprovalTemplateEntity)
-          .findOneByOrFail({ id: templateVersion.templateId });
+            previousVersionId = published.previousVersionId;
+            templateVersion = published.version;
+          }
 
-        return {
-          event: {
-            action: BPMTemplateChangeActionEnum.COMPOSED,
-            actorMemberId: currentMemberId,
-            previousVersionId: input.publish
-              ? previousVersionId
-              : template.currentVersionId,
-            published: input.publish,
-            template,
-            version: templateVersion,
-          },
-          result: {
-            formDefinition,
-            formDefinitionVersion,
-            published: input.publish,
-            template,
-            templateVersion,
-          },
-        };
-      },
+          const formDefinition = await manager
+            .getRepository(FormDefinitionEntity)
+            .findOneByOrFail({ id: formDefinitionVersion.formDefinitionId });
+          const template = await manager
+            .getRepository(ApprovalTemplateEntity)
+            .findOneByOrFail({ id: templateVersion.templateId });
+
+          return {
+            event: {
+              action: BPMTemplateChangeActionEnum.COMPOSED,
+              actorMemberId: currentMemberId,
+              previousVersionId: input.publish
+                ? previousVersionId
+                : template.currentVersionId,
+              published: input.publish,
+              template,
+              version: templateVersion,
+            },
+            result: {
+              formDefinition,
+              formDefinitionVersion,
+              published: input.publish,
+              template,
+              templateVersion,
+            },
+          };
+        },
+      ),
     );
 
     await this.notifyTemplateObserver(event);
@@ -422,6 +444,7 @@ export class TemplateService {
   private async resolveComposedTemplateDraftVersion(
     manager: EntityManager,
     input: ComposeApprovalTemplateWithFormInput,
+    key: string | null | undefined,
     currentMemberId: string | null,
   ): Promise<ApprovalTemplateVersionEntity> {
     if (!input.templateId) {
@@ -432,6 +455,7 @@ export class TemplateService {
           createdByMemberId: currentMemberId,
           description: input.templateDescription,
           formDefinitionVersionId: null,
+          key,
           name: input.templateName,
         },
         manager,
@@ -472,35 +496,41 @@ export class TemplateService {
       input.categoryId === undefined
         ? undefined
         : await this.validateOptionalTemplateCategory(input.categoryId);
+    // Validated before the lock is taken. `undefined` keeps the stored key.
+    const key =
+      input.key === undefined ? undefined : normalizeTemplateKey(input.key);
 
-    await this.templateRepository.manager.transaction(
-      async (manager): Promise<void> => {
-        const existing = await this.readLockedTemplateOrThrow(
-          manager,
-          input.id,
-        );
-        const templates = manager.getRepository(ApprovalTemplateEntity);
-        const next = templates.merge(existing, {
-          category:
-            input.category !== undefined
-              ? input.category
-              : category !== undefined
-                ? (category?.name ?? null)
-                : existing.category,
-          description: input.description ?? existing.description,
-          name: input.name ?? existing.name,
-        });
+    await translateTemplateKeyConflict(
+      this.templateRepository.manager.transaction(
+        async (manager): Promise<void> => {
+          const existing = await this.readLockedTemplateOrThrow(
+            manager,
+            input.id,
+          );
+          const templates = manager.getRepository(ApprovalTemplateEntity);
+          const next = templates.merge(existing, {
+            category:
+              input.category !== undefined
+                ? input.category
+                : category !== undefined
+                  ? (category?.name ?? null)
+                  : existing.category,
+            description: input.description ?? existing.description,
+            key: key !== undefined ? key : existing.key,
+            name: input.name ?? existing.name,
+          });
 
-        // Assigned outside `merge` because the relation, not the `categoryId`
-        // scalar, owns `category_id`. Leaving `categoryDetail` untouched when the
-        // caller omitted `categoryId` keeps the loaded relation, which persists
-        // the current category unchanged.
-        if (category !== undefined) {
-          next.categoryDetail = category;
-        }
+          // Assigned outside `merge` because the relation, not the `categoryId`
+          // scalar, owns `category_id`. Leaving `categoryDetail` untouched when
+          // the caller omitted `categoryId` keeps the loaded relation, which
+          // persists the current category unchanged.
+          if (category !== undefined) {
+            next.categoryDetail = category;
+          }
 
-        await templates.save(next);
-      },
+          await templates.save(next);
+        },
+      ),
     );
 
     // Re-read rather than returning the saved entity: `categoryId` is not

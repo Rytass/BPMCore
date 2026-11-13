@@ -4310,6 +4310,282 @@ function createInMemoryManager(): {
   };
 }
 
+const LIVE_KEY_UNIQUE_VIOLATION = Object.assign(
+  new Error('duplicate key value violates unique constraint'),
+  { code: '23505', constraint: 'UQ_approval_templates_key_live' },
+);
+
+/**
+ * Template repository for update tests. `saveError` makes `save` reject, the
+ * way a unique violation surfaces from inside the transaction.
+ */
+function createKeyedTemplateRepository(
+  existing: ApprovalTemplateEntity,
+  saveError?: Error,
+): {
+  readonly findOne: jest.Mock;
+  readonly repository: Repository<ApprovalTemplateEntity>;
+  readonly saved: ApprovalTemplateEntity[];
+} {
+  const saved: ApprovalTemplateEntity[] = [];
+  const findOne = jest.fn((): Promise<ApprovalTemplateEntity> =>
+    Promise.resolve(saved[0] ?? existing),
+  );
+  const repository = withTemplateTransaction({
+    findOne,
+    merge: jest.fn(
+      (
+        target: ApprovalTemplateEntity,
+        patch: Partial<ApprovalTemplateEntity>,
+      ): ApprovalTemplateEntity => Object.assign(target, patch),
+    ),
+    save: jest.fn(
+      (value: ApprovalTemplateEntity): Promise<ApprovalTemplateEntity> => {
+        if (saveError) {
+          return Promise.reject(saveError);
+        }
+
+        saved.push(value);
+
+        return Promise.resolve(value);
+      },
+    ),
+  } as unknown as Repository<ApprovalTemplateEntity>);
+
+  return { findOne, repository, saved };
+}
+
+function createKeyTemplateService(
+  repository: Repository<ApprovalTemplateEntity>,
+): TemplateService {
+  return new TemplateService(
+    repository,
+    createRepository<ApprovalTemplateCategoryEntity>(),
+    createRepository<ApprovalTemplateVersionEntity>(),
+    createRepository<FormDefinitionVersionEntity>(),
+    new ConditionService(),
+    {} as unknown as FormService,
+    createTemplateModuleRef(),
+  );
+}
+
+/**
+ * Create-path fixture: the outer repository's transaction hands back a manager
+ * that serves both the template and the version repositories.
+ */
+function createKeyedCreateFixture(saveError?: Error): {
+  readonly save: jest.Mock;
+  readonly service: TemplateService;
+  readonly templates: ApprovalTemplateEntity[];
+} {
+  const templates: ApprovalTemplateEntity[] = [];
+  const save = jest.fn(
+    (value: ApprovalTemplateEntity): Promise<ApprovalTemplateEntity> => {
+      if (saveError) {
+        return Promise.reject(saveError);
+      }
+
+      const persisted = Object.assign(value, {
+        categoryDetail: null,
+        deletedAt: null,
+        id: 'template-new',
+      });
+
+      templates.push(persisted);
+
+      return Promise.resolve(persisted);
+    },
+  );
+  const templateRepository = {
+    create: (value: Partial<ApprovalTemplateEntity>): ApprovalTemplateEntity =>
+      Object.assign(new ApprovalTemplateEntity(), value),
+    findOne: jest.fn((): Promise<ApprovalTemplateEntity | null> =>
+      Promise.resolve(templates[0] ?? null),
+    ),
+    save,
+  };
+  const versionRepository = {
+    create: (
+      value: Partial<ApprovalTemplateVersionEntity>,
+    ): ApprovalTemplateVersionEntity =>
+      Object.assign(new ApprovalTemplateVersionEntity(), value),
+    save: jest.fn(
+      (
+        value: ApprovalTemplateVersionEntity,
+      ): Promise<ApprovalTemplateVersionEntity> => Promise.resolve(value),
+    ),
+  };
+  const manager = {
+    getRepository: (target: unknown): unknown =>
+      target === ApprovalTemplateEntity
+        ? templateRepository
+        : versionRepository,
+  } as unknown as EntityManager;
+  const outer = {
+    manager: {
+      transaction: <TResult>(
+        run: (transactionManager: EntityManager) => Promise<TResult>,
+      ): Promise<TResult> => run(manager),
+    },
+  } as unknown as Repository<ApprovalTemplateEntity>;
+
+  return { save, service: createKeyTemplateService(outer), templates };
+}
+
+describe('TemplateService template key (ADR 27 §6)', () => {
+  const EXISTING_KEY = 'invoice.payment';
+
+  function createExisting(): ApprovalTemplateEntity {
+    return Object.assign(createApprovalTemplate('template-1'), {
+      key: EXISTING_KEY,
+    });
+  }
+
+  it('rejects a malformed key on update before the template row is locked', async (): Promise<void> => {
+    const { findOne, repository } =
+      createKeyedTemplateRepository(createExisting());
+
+    await expect(
+      createKeyTemplateService(repository).updateApprovalTemplate({
+        id: 'template-1',
+        key: 'bad key',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(findOne).not.toHaveBeenCalled();
+  });
+
+  it('keeps the stored key when an update omits it', async (): Promise<void> => {
+    const { repository, saved } =
+      createKeyedTemplateRepository(createExisting());
+
+    await createKeyTemplateService(repository).updateApprovalTemplate({
+      id: 'template-1',
+      name: '新名稱',
+    });
+
+    expect(saved[0]?.key).toBe(EXISTING_KEY);
+  });
+
+  it.each([
+    ['null', null],
+    ['an empty string', ''],
+  ] as const)(
+    'clears the stored key when given %s',
+    async (_label: string, key: string | null): Promise<void> => {
+      const { repository, saved } =
+        createKeyedTemplateRepository(createExisting());
+
+      await createKeyTemplateService(repository).updateApprovalTemplate({
+        id: 'template-1',
+        key,
+      });
+
+      expect(saved[0]?.key).toBeNull();
+    },
+  );
+
+  it('sets the key when given a valid string', async (): Promise<void> => {
+    const { repository, saved } =
+      createKeyedTemplateRepository(createExisting());
+
+    const updated = await createKeyTemplateService(
+      repository,
+    ).updateApprovalTemplate({
+      id: 'template-1',
+      key: 'purchase-order_v2',
+    });
+
+    expect(saved[0]?.key).toBe('purchase-order_v2');
+    expect(updated.key).toBe('purchase-order_v2');
+  });
+
+  it('maps a live-key unique violation on update to 409', async (): Promise<void> => {
+    const { repository } = createKeyedTemplateRepository(
+      createExisting(),
+      LIVE_KEY_UNIQUE_VIOLATION,
+    );
+
+    await expect(
+      createKeyTemplateService(repository).updateApprovalTemplate({
+        id: 'template-1',
+        key: 'taken',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('reads the live-key violation from the driver error TypeORM wraps', async (): Promise<void> => {
+    const wrapped = Object.assign(new Error('wrapped query failure'), {
+      driverError: LIVE_KEY_UNIQUE_VIOLATION,
+    });
+    const { repository } = createKeyedTemplateRepository(
+      createExisting(),
+      wrapped,
+    );
+
+    await expect(
+      createKeyTemplateService(repository).updateApprovalTemplate({
+        id: 'template-1',
+        key: 'taken',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('passes other update failures through unchanged', async (): Promise<void> => {
+    const { repository } = createKeyedTemplateRepository(
+      createExisting(),
+      new Error('connection lost'),
+    );
+
+    const attempt = createKeyTemplateService(repository).updateApprovalTemplate(
+      {
+        id: 'template-1',
+        key: 'taken',
+      },
+    );
+
+    await expect(attempt).rejects.toThrow('connection lost');
+    await expect(attempt).rejects.not.toBeInstanceOf(ConflictException);
+  });
+
+  it('stores an empty key on create as no key', async (): Promise<void> => {
+    const { service, templates } = createKeyedCreateFixture();
+
+    await service.createApprovalTemplate({ key: '', name: '請款簽核' });
+
+    expect(templates[0]?.key).toBeNull();
+  });
+
+  it('stores a valid key on create', async (): Promise<void> => {
+    const { service, templates } = createKeyedCreateFixture();
+
+    await service.createApprovalTemplate({
+      key: 'invoice.payment',
+      name: '請款簽核',
+    });
+
+    expect(templates[0]?.key).toBe('invoice.payment');
+  });
+
+  it('rejects a malformed key on create before anything is written', async (): Promise<void> => {
+    const { save, service } = createKeyedCreateFixture();
+
+    await expect(
+      service.createApprovalTemplate({
+        key: '-leading-dash',
+        name: '請款簽核',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('maps a live-key unique violation on create to 409', async (): Promise<void> => {
+    const { service } = createKeyedCreateFixture(LIVE_KEY_UNIQUE_VIOLATION);
+
+    await expect(
+      service.createApprovalTemplate({ key: 'taken', name: '請款簽核' }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+});
 describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
   const NOTE_TEXT_SCHEMA = {
     fields: [{ fieldKey: 'note', label: '備註', required: false, type: 'text' }],
