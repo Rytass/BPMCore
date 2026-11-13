@@ -175,7 +175,6 @@ interface FieldAccessEntry {
 | `SET_FORM_FIELD` 寫補填欄位 | 繞過「只有補填節點簽核人能寫」 | 無 |
 | 補填欄位是 DataSource 欄位、`file_upload`，或表格內含 DataSource 欄 | `decideTask` 不重解選項快照、不收附件 | 讓 decide 走與送出相同的快照與附件流程 |
 | 補填欄位在表單層設 `required`／`requiredWhen`／`visibleWhen`／`readonlyWhen`／`hidden`／`defaultValue` | 表單層規則在送出時評估，此時補填欄位一定沒有值 | 無；必填改由節點宣告 |
-| 節點 `required` 的補填欄位是 boolean | `false` 是有效答案，會被「為空」檢查擋下 | 改為「有被填過」語意 |
 | DYNAMIC_FORM 的 `formPath` 指向補填欄位 | 兩邊檢查互相衝突，怎麼設都擋 | 無 |
 | 同一個欄位在同一條流程路徑上有兩個以上補填節點 | 後填的會覆寫先填的值，簽章與責任歸屬不清 | 無；互斥分支（例如北區、南區財務各走一條）不受限。並行分支（parallelGateway 兩條分支）各自補填同一欄位視同同一路徑，會被擋 |
 | 條件、閘道、resolver、NOTIFY 收件人等在補填之前讀補填欄位 | 該鍵不存在，CEL 讀缺鍵會在上一關核准的交易中丟錯，案件卡死 | 無；請調整流程順序 |
