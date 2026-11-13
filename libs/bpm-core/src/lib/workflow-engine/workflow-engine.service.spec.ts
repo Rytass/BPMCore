@@ -2999,6 +2999,32 @@ describe('WorkflowEngineService', () => {
       expect((error as Error).message).toBe(message);
     };
 
+    // ADR 27 §4.2: the approver-fill VALUE_NOT_RESOLVED answers 400 with the
+    // failing field's path in `formDataErrors`, and keeps the code.
+    const expectValueNotResolved = async (
+      promise: Promise<unknown>,
+      path: string,
+    ): Promise<void> => {
+      const error = await promise.then(
+        (): unknown => undefined,
+        (rejection: unknown): unknown => rejection,
+      );
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toEqual(
+        expect.objectContaining({
+          formDataErrors: [
+            expect.objectContaining({
+              code: BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+              path,
+              reason: 'VALUE_NOT_RESOLVED',
+            }),
+          ],
+          statusCode: 400,
+        }),
+      );
+    };
+
     const readTaskCreatedNodeIds = (
       fixture: ServiceFixture,
     ): readonly string[] =>
@@ -4075,13 +4101,48 @@ describe('WorkflowEngineService', () => {
             }),
           });
 
-          await expectRejection(
+          await expectValueNotResolved(
             decide(fixture, {
               formDataJson: JSON.stringify({ costCenter: 'CC-999' }),
             }),
-            BPMFormDataSourceException,
-            BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+            'costCenter',
           );
+          expect(fixture.savedInstance).toBeNull();
+        });
+
+        it('answers 400 with formDataErrors on the field when the approver value is no longer offered (ADR 27 §4.2)', async (): Promise<void> => {
+          const fixture = createDecideFixture({
+            formData: { plant: 'TPE' },
+            formDataSourceValueResolver: createRealResolver(
+              createCostCenterSource(() => TPE_OPTIONS),
+            ),
+            formSchema: createDynamicOptionFormSchema(),
+            workflow: createFieldAccessWorkflow({
+              financeFieldAccess: costCenterAccess,
+            }),
+          });
+
+          const error = await decide(fixture, {
+            formDataJson: JSON.stringify({ costCenter: 'CC-999' }),
+          }).then(
+            (): unknown => undefined,
+            (rejection: unknown): unknown => rejection,
+          );
+
+          expect(error).toBeInstanceOf(BadRequestException);
+          expect((error as BadRequestException).getResponse()).toEqual({
+            error: 'Bad Request',
+            formDataErrors: [
+              {
+                code: BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+                message: expect.stringContaining('Cost center'),
+                path: 'costCenter',
+                reason: 'VALUE_NOT_RESOLVED',
+              },
+            ],
+            message: expect.stringContaining('Cost center'),
+            statusCode: 400,
+          });
           expect(fixture.savedInstance).toBeNull();
         });
 
@@ -4153,7 +4214,7 @@ describe('WorkflowEngineService', () => {
             }),
           });
 
-          await expectRejection(
+          await expectValueNotResolved(
             decide(fixture, {
               formDataJson: JSON.stringify({
                 items: [
@@ -4162,8 +4223,7 @@ describe('WorkflowEngineService', () => {
                 ],
               }),
             }),
-            BPMFormDataSourceException,
-            BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+            'items[1].costCenter',
           );
           expect(fixture.savedInstance).toBeNull();
         });
@@ -4248,6 +4308,51 @@ describe('WorkflowEngineService', () => {
             ).toEqual([{ label: 'Cost center TPE', value: 'CC-001' }]);
           });
 
+          it('answers 400 with formDataErrors on the cell of the row that failed (ADR 27 §4.2)', async (): Promise<void> => {
+            const fixture = createDecideFixture({
+              formData: {
+                items: [
+                  { plant: 'TPE', costCenter: null },
+                  { plant: 'KHH', costCenter: null },
+                ],
+              },
+              formDataSourceValueResolver: createRealResolver(
+                createCostCenterSource(optionsByPlant),
+              ),
+              formSchema: createPerRowCostCenterSchema(),
+              workflow: openCostCenterWorkflow,
+            });
+
+            const error = await decide(fixture, {
+              formDataJson: JSON.stringify({
+                items: [
+                  { plant: 'TPE', costCenter: 'CC-001' },
+                  { plant: 'KHH', costCenter: 'CC-001' },
+                ],
+              }),
+            }).then(
+              (): unknown => undefined,
+              (rejection: unknown): unknown => rejection,
+            );
+
+            expect(error).toBeInstanceOf(BadRequestException);
+            expect(
+              (error as BadRequestException).getResponse(),
+            ).toEqual(
+              expect.objectContaining({
+                formDataErrors: [
+                  expect.objectContaining({
+                    code: BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+                    path: 'items[1].costCenter',
+                    reason: 'VALUE_NOT_RESOLVED',
+                  }),
+                ],
+                statusCode: 400,
+              }),
+            );
+            expect(fixture.savedInstance).toBeNull();
+          });
+
           it('rejects a value that is not in the options of its row', async (): Promise<void> => {
             const fixture = createDecideFixture({
               formData: { items: [{ plant: 'TPE', costCenter: null }] },
@@ -4258,14 +4363,13 @@ describe('WorkflowEngineService', () => {
               workflow: openCostCenterWorkflow,
             });
 
-            await expectRejection(
+            await expectValueNotResolved(
               decide(fixture, {
                 formDataJson: JSON.stringify({
                   items: [{ plant: 'TPE', costCenter: 'CC-999' }],
                 }),
               }),
-              BPMFormDataSourceException,
-              BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+              'items[0].costCenter',
             );
             expect(fixture.savedInstance).toBeNull();
           });

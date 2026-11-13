@@ -90,6 +90,7 @@ import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
   BPMFormDataSourceException,
+  BPMFormDataSourceValueNotResolvedException,
 } from '../form-data-source/form-data-source.errors';
 import { readSubmittedMemberValueErrors } from '../form/form-member-value.validator';
 import {
@@ -749,6 +750,34 @@ type FormConditionOperator =
   | 'lessThan'
   | 'lessThanOrEqual'
   | 'notEquals';
+
+/**
+ * ADR 27 §4.2: an approver-filled value the provider no longer offers answers
+ * 400 with `formDataErrors` naming the field or table cell, `code` kept. Other
+ * failures pass through unchanged.
+ */
+async function answerValueNotResolved<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error: unknown) {
+    if (error instanceof BPMFormDataSourceValueNotResolvedException) {
+      const issue: FormDataIssue = {
+        ...createFormDataIssue(
+          error.location,
+          'VALUE_NOT_RESOLVED',
+          '的選項已不在可選範圍內，請重新選擇',
+        ),
+        code: BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+      };
+
+      throw createFormDataBadRequest(readFormDataIssueMessage([issue]), [
+        issue,
+      ]);
+    }
+
+    throw error;
+  }
+}
 
 const WORKFLOW_READ_ALL_PERMISSIONS = new Set([
   'bpm:*',
@@ -2031,12 +2060,14 @@ export class WorkflowEngineService {
         const refreshedFormDataOptionSnapshots =
           dataSourceRefreshKeys.size === 0
             ? null
-            : await this.refreshApproverFilledOptionSnapshots({
-                approverAuthContext,
-                fieldKeys: dataSourceRefreshKeys,
-                formData: mergedFormData,
-                instance,
-              });
+            : await answerValueNotResolved(() =>
+                this.refreshApproverFilledOptionSnapshots({
+                  approverAuthContext,
+                  fieldKeys: dataSourceRefreshKeys,
+                  formData: mergedFormData,
+                  instance,
+                }),
+              );
         const wholeFieldOptionSnapshot: FormDataSourceValueSnapshots =
           refreshedFormDataOptionSnapshots === null
             ? (instance.formDataOptionSnapshot ?? {})
@@ -2075,13 +2106,15 @@ export class WorkflowEngineService {
           openCellSchema.fields.length === 0 ||
           (!revalidateAllOpenCells && !hasChangedOpenCellTable)
             ? null
-            : await this.refreshApproverFilledOpenCellSnapshots({
-                approverAuthContext,
-                cellSchema: openCellSchema,
-                formData: mergedFormData,
-                instance,
-                revalidateAll: revalidateAllOpenCells,
-              });
+            : await answerValueNotResolved(() =>
+                this.refreshApproverFilledOpenCellSnapshots({
+                  approverAuthContext,
+                  cellSchema: openCellSchema,
+                  formData: mergedFormData,
+                  instance,
+                  revalidateAll: revalidateAllOpenCells,
+                }),
+              );
         const nextFormDataOptionSnapshot: FormDataSourceValueSnapshots =
           refreshedOpenCellSnapshots === null || openCellSchema === null
             ? wholeFieldOptionSnapshot
