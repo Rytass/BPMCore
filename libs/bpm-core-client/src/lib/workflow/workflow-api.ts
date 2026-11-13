@@ -700,6 +700,7 @@ interface InactiveMembersWithOpenTasksQueryData {
 }
 
 interface StuckApprovalInstancesQueryData {
+  readonly stuckApprovalInstanceCount: number;
   readonly stuckApprovalInstances: readonly StuckApprovalInstanceRecord[];
 }
 
@@ -2226,16 +2227,27 @@ export async function listInactiveMembersWithOpenTasks(): Promise<
   return data.inactiveMembersWithOpenTasks;
 }
 
+/** One page of {@link listStuckApprovalInstancesPage}. */
+export interface StuckApprovalInstancesPage {
+  readonly instances: readonly StuckApprovalInstanceRecord[];
+  readonly totalCount: number;
+}
+
 /**
- * Administrator: the running or returned instances that could not move on and
- * still cannot, newest failure first, one row each.
+ * Administrator: one page of the running or returned instances that could not
+ * move on and still cannot, newest failure first, one row each, with the total
+ * across every page. The server defaults to page 1 of 20 and caps a page at 100.
  */
-export async function listStuckApprovalInstances(): Promise<
-  readonly StuckApprovalInstanceRecord[]
-> {
+export async function listStuckApprovalInstancesPage({
+  page,
+  pageSize,
+}: {
+  readonly page: number;
+  readonly pageSize: number;
+}): Promise<StuckApprovalInstancesPage> {
   const data = await requestGraphQl<StuckApprovalInstancesQueryData>(
-    `query StuckApprovalInstances {
-      stuckApprovalInstances {
+    `query StuckApprovalInstancesPage($page: Int, $pageSize: Int) {
+      stuckApprovalInstances(page: $page, pageSize: $pageSize) {
         automatic
         failedActorMemberId
         failedAt
@@ -2251,10 +2263,15 @@ export async function listStuckApprovalInstances(): Promise<
         templateId
         templateName
       }
+      stuckApprovalInstanceCount
     }`,
+    { page, pageSize },
   );
 
-  return data.stuckApprovalInstances;
+  return {
+    instances: data.stuckApprovalInstances,
+    totalCount: data.stuckApprovalInstanceCount,
+  };
 }
 
 const TASK_REASSIGNMENT_RESULT_SELECTION = `

@@ -12,7 +12,7 @@ import {
   listInboxTasks,
   listInactiveMembersWithOpenTasks,
   listMemberOpenTasks,
-  listStuckApprovalInstances,
+  listStuckApprovalInstancesPage,
   reassignMemberTasks,
   reassignTask,
   readApprovalInstance,
@@ -835,14 +835,25 @@ describe('@rytass/bpm-core-client/workflow', () => {
         templateId: 'template-1',
         templateName: '出差申請單',
       };
-      const harness = installFetchMock({ stuckApprovalInstances: [row] });
+      const harness = installFetchMock({
+        stuckApprovalInstanceCount: 21,
+        stuckApprovalInstances: [row],
+      });
       try {
-        const rows = await listStuckApprovalInstances();
+        const result = await listStuckApprovalInstancesPage({
+          page: 2,
+          pageSize: 20,
+        });
         const request = harness.capture();
 
-        expect(request.query).toContain('query StuckApprovalInstances');
+        expect(request.query).toContain('query StuckApprovalInstancesPage');
+        expect(request.query).toContain(
+          'stuckApprovalInstances(page: $page, pageSize: $pageSize)',
+        );
+        expect(request.query).toContain('stuckApprovalInstanceCount');
         expect(request.query).toContain('pendingActorMemberIds');
-        expect(rows).toEqual([row]);
+        expect(request.variables).toEqual({ page: 2, pageSize: 20 });
+        expect(result).toEqual({ instances: [row], totalCount: 21 });
       } finally {
         harness.restore();
       }
