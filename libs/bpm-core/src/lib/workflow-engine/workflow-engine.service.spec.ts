@@ -3238,6 +3238,29 @@ describe('WorkflowEngineService', () => {
           ],
         };
       };
+      const taxFreeFormSchema = (): FormDefinitionSchema => {
+        const base = createFinanceTableFormSchema();
+
+        return {
+          ...base,
+          fields: [
+            ...base.fields,
+            {
+              fieldKey: 'taxFree',
+              label: '免稅',
+              required: false,
+              type: 'boolean',
+            },
+          ],
+        };
+      };
+      const requiredTaxFreeWorkflow = (): WorkflowDefinition =>
+        createFieldAccessWorkflow({
+          financeFieldAccess: [
+            financeItemsAccess,
+            { display: 'SHOW', fieldKey: 'taxFree', fill: 'REQUIRED' },
+          ],
+        });
       const reviewerWorkflow = (): WorkflowDefinition =>
         createFieldAccessWorkflow({
           financeFieldAccess: [
@@ -3338,6 +3361,36 @@ describe('WorkflowEngineService', () => {
           decide(fixture),
           BadRequestException,
           '缺少必填欄位：發票類型',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('accepts a required boolean the approver sends as false', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10, financeItems: FILLED_ROW },
+          formSchema: taxFreeFormSchema(),
+          workflow: requiredTaxFreeWorkflow(),
+        });
+
+        const decision = await decide(fixture, {
+          formDataJson: '{"taxFree":false}',
+        });
+
+        expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+        expect(fixture.savedInstance?.formData.taxFree).toBe(false);
+      });
+
+      it('refuses a required boolean the approver never sent', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: { amount: 10, financeItems: FILLED_ROW },
+          formSchema: taxFreeFormSchema(),
+          workflow: requiredTaxFreeWorkflow(),
+        });
+
+        await expectRejection(
+          decide(fixture),
+          BadRequestException,
+          '缺少必填欄位：免稅',
         );
         expect(fixture.savedInstance).toBeNull();
       });

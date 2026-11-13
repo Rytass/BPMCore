@@ -187,11 +187,6 @@ describe('workflow lint message wording', (): void => {
       'formData.items is filled in by an approver, so its table cannot have a data-source column',
     );
     expect(
-      WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean('n1', 'taxFree'),
-    ).toBe(
-      'workflow.nodes.n1.fieldAccess cannot require the boolean field: taxFree',
-    );
-    expect(
       WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(
         'workflow.edges.e1.data.condition',
         'amount',

@@ -1846,7 +1846,7 @@ describe('TemplateService', () => {
       },
     );
 
-    it('rejects requiring a boolean field the approver fills in', async (): Promise<void> => {
+    it('allows requiring a boolean field the approver fills in', async (): Promise<void> => {
       const service = createTableConditionPublishService({
         schema: fillSchema,
         workflowDefinition: createFieldAccessWorkflow([
@@ -1854,9 +1854,9 @@ describe('TemplateService', () => {
         ]),
       });
 
-      await expect(publishError(service)).resolves.toBe(
-        'workflow.nodes.task_1.fieldAccess cannot require the boolean field: taxFree',
-      );
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
     it('allows an optional boolean field the approver fills in', async (): Promise<void> => {
