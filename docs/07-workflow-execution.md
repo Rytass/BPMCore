@@ -988,7 +988,8 @@ task id 不變、不寫決策與簽章，也不受節點 `allowTransfer` 限制�
   - `DECISION`：該 task 仍是開著的，而且案件仍是 `RUNNING`。task 完成、被退回取消、案件終止，或一般 task 被轉簽（原 task 變
     `TRANSFERRED`，另開新 task），都算已解決；轉簽後先從清單消失，新持有人若再失敗會寫一筆新紀錄、重新出現。
   - `RESUBMIT`：案件仍是 `RETURNED`，而且之後沒有 `INSTANCE_RESUBMITTED`。
-  - 一個案件只取最新一筆未解決的紀錄，列在 `stuckApprovalInstances`（管理員專用）。
+  - 一個案件只取最新一筆未解決的紀錄，列在 `stuckApprovalInstances`（管理員專用）。一律分頁：`page` 預設 1、`pageSize`
+    預設 20、上限 100；總數由 `stuckApprovalInstanceCount` 提供。
 - **未涵蓋**：
   - 往下走時丟出一般 `Error`（快照畸形的 `TypeError`、host 掛進來的 provider 丟的錯）也會讓案件卡住，但不會被記錄。
   - 運算式時間預算超支（`EXPRESSION_BUDGET_EXCEEDED`）是 400，所以會被記成卡住；時間預算算的是實際經過時間，

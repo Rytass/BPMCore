@@ -1797,7 +1797,9 @@ error. Without a trace, nobody else would know the instance is stuck.
   with `stuckApprovalInstances`: one row per `RUNNING` or `RETURNED` instance,
   newest failure first, with the reason, the node, who has to press again now
   (read when the list loads, so it follows a later reassignment) and, for a
-  timeout approval the system made, `automatic: 'SLA_AUTO_APPROVE'`.
+  timeout approval the system made, `automatic: 'SLA_AUTO_APPROVE'`. The list
+  is always paged — `page` (default 1) and `pageSize` (default 20, at most
+  100) — and `stuckApprovalInstanceCount` gives the total.
 - `adminCancelApprovalInstance(input)` ends a running or returned instance
   whoever started it. `input.reason` is required. After it, the instance leaves
   the stuck list.

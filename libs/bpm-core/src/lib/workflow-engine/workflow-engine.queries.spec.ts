@@ -128,7 +128,29 @@ describe('WorkflowEngineQueries.stuckApprovalInstances', () => {
       {} as unknown as ModuleRef,
     );
 
-    await expect(queries.stuckApprovalInstances()).resolves.toBe(rows);
-    expect(listStuckApprovalInstances).toHaveBeenCalledTimes(1);
+    await expect(queries.stuckApprovalInstances(2, 50)).resolves.toBe(rows);
+    expect(listStuckApprovalInstances).toHaveBeenCalledWith({
+      page: 2,
+      pageSize: 50,
+    });
+
+    // Absent paging is left to the engine's defaults, not sent as null.
+    await queries.stuckApprovalInstances(null, null);
+    expect(listStuckApprovalInstances).toHaveBeenLastCalledWith({
+      page: undefined,
+      pageSize: undefined,
+    });
+  });
+
+  it('hands back the engine count', async (): Promise<void> => {
+    const countStuckApprovalInstances = jest.fn(
+      (): Promise<number> => Promise.resolve(7),
+    );
+    const queries = new WorkflowEngineQueries(
+      { countStuckApprovalInstances } as unknown as WorkflowEngineService,
+      {} as unknown as ModuleRef,
+    );
+
+    await expect(queries.stuckApprovalInstanceCount()).resolves.toBe(7);
   });
 });

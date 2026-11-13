@@ -499,6 +499,14 @@ export interface MemberOpenTaskRecord {
 }
 
 /** An instance that could not move on, as the administrator's stuck list reads it. */
+/** Paging of {@link WorkflowEngineService.listStuckApprovalInstances}. */
+export interface ListStuckApprovalInstancesOptions {
+  /** 1-based; defaults to 1. */
+  readonly page?: number;
+  /** Defaults to 20, at most 100. */
+  readonly pageSize?: number;
+}
+
 export interface StuckApprovalInstanceRecord {
   /** `'SLA_AUTO_APPROVE'` when the failed attempt was the timeout approving. */
   readonly automatic: 'SLA_AUTO_APPROVE' | null;
@@ -6939,55 +6947,17 @@ export class WorkflowEngineService {
    *   a single candidate row is a direct task, held by its assignee.
    * - `RESUBMIT`: the initiator.
    */
-  async listStuckApprovalInstances(): Promise<
-    readonly StuckApprovalInstanceRecord[]
-  > {
+  async listStuckApprovalInstances(
+    options: ListStuckApprovalInstancesOptions = {},
+  ): Promise<readonly StuckApprovalInstanceRecord[]> {
     return this.approvalInstanceRepository.manager.transaction(
       async (manager): Promise<readonly StuckApprovalInstanceRecord[]> => {
-        const failedInstanceIds = [
-          ...new Set(
-            (
-              await manager.getRepository(ActivityLogEntity).find({
-                select: { instanceId: true },
-                where: {
-                  eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
-                },
-              })
-            ).map((log): string => log.instanceId),
-          ),
-        ];
-
-        if (failedInstanceIds.length === 0) {
-          return [];
-        }
-
-        const instances = await manager
-          .getRepository(ApprovalInstanceEntity)
-          .find({
-            where: {
-              id: In(failedInstanceIds),
-              state: In([
-                ApprovalInstanceStateEnum.RUNNING,
-                ApprovalInstanceStateEnum.RETURNED,
-              ]),
-            },
-          });
-        // Batched: two queries however many instances are candidates.
-        const unresolvedByInstance =
-          await this.readUnresolvedAdvanceFailuresByInstance(
-            manager,
-            instances,
-          );
-        const found: StuckCandidates = instances.flatMap(
-          (instance): StuckCandidates => {
-            const unresolved = unresolvedByInstance.get(instance.id) ?? [];
-            const latest = unresolved[unresolved.length - 1];
-
-            return latest ? [{ failure: latest, instance }] : [];
-          },
-        );
-        const stuck = [...found].sort((left, right): number =>
-          compareFailuresNewestFirst(left.failure, right.failure),
+        // Who is stuck is decided over every candidate; only the page shown
+        // is decorated with its tasks, seats and template names.
+        const offset = readPageOffset(options.page, options.pageSize);
+        const stuck = (await this.readStuckCandidates(manager)).slice(
+          offset,
+          offset + normalizePageSize(options.pageSize),
         );
 
         if (stuck.length === 0) {
@@ -7041,6 +7011,70 @@ export class WorkflowEngineService {
             }),
         );
       },
+    );
+  }
+
+  /** How many instances {@link listStuckApprovalInstances} pages through. */
+  async countStuckApprovalInstances(): Promise<number> {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<number> =>
+        (await this.readStuckCandidates(manager)).length,
+    );
+  }
+
+  /**
+   * Every stuck instance with its latest unresolved failure, newest failure
+   * first: the candidates are the RUNNING or RETURNED instances with any
+   * `ADVANCE_FAILED` row, and {@link readUnresolvedAdvanceFailuresByInstance}
+   * decides which of them are still stuck, in two queries for all of them.
+   */
+  private async readStuckCandidates(
+    manager: EntityManager,
+  ): Promise<StuckCandidates> {
+    const failedInstanceIds = [
+      ...new Set(
+        (
+          await manager.getRepository(ActivityLogEntity).find({
+            select: { instanceId: true },
+            where: {
+              eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+            },
+          })
+        ).map((log): string => log.instanceId),
+      ),
+    ];
+
+    if (failedInstanceIds.length === 0) {
+      return [];
+    }
+
+    const instances = await manager
+      .getRepository(ApprovalInstanceEntity)
+      .find({
+        where: {
+          id: In(failedInstanceIds),
+          state: In([
+            ApprovalInstanceStateEnum.RUNNING,
+            ApprovalInstanceStateEnum.RETURNED,
+          ]),
+        },
+      });
+    // Batched: two queries however many instances are candidates.
+    const unresolvedByInstance =
+      await this.readUnresolvedAdvanceFailuresByInstance(
+        manager,
+        instances,
+      );
+    const found: StuckCandidates = instances.flatMap(
+      (instance): StuckCandidates => {
+        const unresolved = unresolvedByInstance.get(instance.id) ?? [];
+        const latest = unresolved[unresolved.length - 1];
+
+        return latest ? [{ failure: latest, instance }] : [];
+      },
+    );
+    return [...found].sort((left, right): number =>
+      compareFailuresNewestFirst(left.failure, right.failure),
     );
   }
 

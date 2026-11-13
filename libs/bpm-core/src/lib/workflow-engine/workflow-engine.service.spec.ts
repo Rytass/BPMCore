@@ -21196,6 +21196,82 @@ describe('WorkflowEngineService', () => {
         );
       });
 
+      describe('paging', (): void => {
+        const createTwoStuckFixture = (): ServiceFixture =>
+          createApprovalFixture({
+            additionalProcessInstances: [
+              createApprovalInstance({
+                id: 'instance-2',
+                title: '第二張',
+                workflowSnapshot: appendNextUserTask(
+                  createLinearUserTaskWorkflow(),
+                ),
+              }),
+            ],
+            additionalProcessTasks: [
+              createTask({
+                id: 'task-2',
+                instanceId: 'instance-2',
+                tokenId: 'token-2',
+              }),
+            ],
+            processActivityLogs: [
+              createLoggedFailure({ createdAt: EARLIER, id: 'f-one' }),
+              createLoggedFailure({
+                createdAt: LATER,
+                id: 'f-two',
+                instanceId: 'instance-2',
+                taskId: 'task-2',
+              }),
+            ],
+          });
+
+        it('returns the requested page, newest failure first', async (): Promise<void> => {
+          const fixture = createTwoStuckFixture();
+
+          const first = await fixture.service.listStuckApprovalInstances({
+            page: 1,
+            pageSize: 1,
+          });
+          const second = await fixture.service.listStuckApprovalInstances({
+            page: 2,
+            pageSize: 1,
+          });
+          const beyond = await fixture.service.listStuckApprovalInstances({
+            page: 3,
+            pageSize: 1,
+          });
+
+          expect(first.map((row): string => row.instanceId)).toEqual([
+            'instance-2',
+          ]);
+          expect(second.map((row): string => row.instanceId)).toEqual([
+            'instance-1',
+          ]);
+          expect(beyond).toEqual([]);
+        });
+
+        it('counts every stuck instance across pages', async (): Promise<void> => {
+          await expect(
+            createTwoStuckFixture().service.countStuckApprovalInstances(),
+          ).resolves.toBe(2);
+          await expect(
+            createApprovalFixture().service.countStuckApprovalInstances(),
+          ).resolves.toBe(0);
+        });
+
+        it('caps a page at 100 rows and falls back to page 1 of 20 for bad values', async (): Promise<void> => {
+          const fixture = createTwoStuckFixture();
+
+          await expect(
+            fixture.service.listStuckApprovalInstances({
+              page: 0,
+              pageSize: -5,
+            }),
+          ).resolves.toHaveLength(2);
+        });
+      });
+
       it('still lists a countersign whose last vote failed, though an earlier voter decided', async (): Promise<void> => {
         // The earlier voter's TASK_DECIDED stays on file. It says nothing about
         // this failure: the task is still open, and it is the last vote that

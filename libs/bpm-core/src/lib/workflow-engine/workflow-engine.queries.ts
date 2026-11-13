@@ -273,13 +273,30 @@ export class WorkflowEngineQueries {
     description:
       'Administrator: the RUNNING or RETURNED instances that could not move ' +
       'on to their next stage and still cannot, newest failure first, one ' +
-      'row each. Each row says who has to press again now.',
+      'row each. Each row says who has to press again now. Always paged: ' +
+      'page defaults to 1, pageSize to 20 (at most 100); ' +
+      'stuckApprovalInstanceCount gives the total.',
   })
   @BPMAdminOnly()
-  async stuckApprovalInstances(): Promise<
-    readonly StuckApprovalInstanceRecord[]
-  > {
-    return this.workflowEngineService.listStuckApprovalInstances();
+  async stuckApprovalInstances(
+    @Args('page', { nullable: true, type: () => Int })
+    page: number | null,
+    @Args('pageSize', { nullable: true, type: () => Int })
+    pageSize: number | null,
+  ): Promise<readonly StuckApprovalInstanceRecord[]> {
+    return this.workflowEngineService.listStuckApprovalInstances({
+      page: page ?? undefined,
+      pageSize: pageSize ?? undefined,
+    });
+  }
+
+  @Query(() => Int, {
+    description:
+      'Administrator: how many instances stuckApprovalInstances pages through.',
+  })
+  @BPMAdminOnly()
+  async stuckApprovalInstanceCount(): Promise<number> {
+    return this.workflowEngineService.countStuckApprovalInstances();
   }
 
   @Query(() => [ApprovalTemplateEntity])
