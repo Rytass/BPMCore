@@ -813,6 +813,57 @@ describe('@rytass/bpm-core-client/workflow', () => {
         harness.restore();
       }
     });
+
+    it('sends taskIds in the member-wide reassignment input when given', async (): Promise<void> => {
+      const harness = installFetchMock({ reassignMemberTasks: [] });
+      try {
+        await reassignMemberTasks({
+          fromMemberId: 'member-from',
+          reason: '請假',
+          taskIds: ['task-2', 'task-5'],
+          toMemberId: 'member-to',
+        });
+
+        expect(harness.capture().variables).toEqual({
+          input: {
+            dryRun: false,
+            fromMemberId: 'member-from',
+            reason: '請假',
+            taskIds: ['task-2', 'task-5'],
+            toMemberId: 'member-to',
+          },
+        });
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('leaves the taskIds key out of the input when none is given, so an older server is unaffected', async (): Promise<void> => {
+      const harness = installFetchMock({ reassignMemberTasks: [] });
+      try {
+        await reassignMemberTasks({
+          fromMemberId: 'member-from',
+          reason: '離職',
+          toMemberId: 'member-to',
+        });
+
+        const input = (
+          harness.capture().variables as {
+            readonly input: Readonly<Record<string, unknown>>;
+          }
+        ).input;
+
+        expect('taskIds' in input).toBe(false);
+        expect(input).toEqual({
+          dryRun: false,
+          fromMemberId: 'member-from',
+          reason: '離職',
+          toMemberId: 'member-to',
+        });
+      } finally {
+        harness.restore();
+      }
+    });
   });
 
   describe('readFormDataCaseTitle', () => {

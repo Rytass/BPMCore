@@ -966,6 +966,11 @@ async function handleTransfer(task, transferToMemberId) {
 **管理員改派**（未發佈，v0.16.2 之後）：`reassignTask`／`reassignMemberTasks` 由管理員把開放中的席位就地移給另一位成員，
 task id 不變、不寫決策與簽章，也不受節點 `allowTransfer` 限制（詳見 `docs/api-reference.md`）。
 
+`reassignMemberTasks` 可帶選填的 `taskIds`，只改派指定的那幾張；不帶（或 `null`）就是此人手上全部的開放待辦，跟原本一致。
+`taskIds` 為空陣列時，service 直接丟 `BadRequestException`、不讀也不寫任何東西（不靠 `ValidationPipe`），絕不會被當成「全部」。
+`taskIds` 裡不在此人手上的 id（已被處理、案件已結束、不存在）不產生結果列也不丟錯，其他張照常處理。
+先升 server，再升畫面：新畫面搭舊 server 時，帶 `taskIds` 的請求會被 GraphQL 拒絕（未知欄位）。
+
 ---
 
 ## 6. SLA 與 Boundary Timer Event

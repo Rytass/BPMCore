@@ -477,6 +477,14 @@ export interface ReassignTaskOptions {
   readonly toMemberId: string;
 }
 
+export interface ReassignMemberTasksOptions extends ReassignTaskOptions {
+  /**
+   * Only these tasks. Omitted or null means every open task the member holds;
+   * an empty list is refused, never read as "all".
+   */
+  readonly taskIds?: readonly string[] | null;
+}
+
 export interface MemberOpenTaskRecord {
   readonly candidateStatus: TaskCandidateStatusEnum | null;
   readonly createdAt: Date;
@@ -6411,11 +6419,29 @@ export class WorkflowEngineService {
    * its own transaction, and reports one result per task. A failing task does
    * not stop the others: a refusal is a REJECTED result, and an unexpected
    * error is reported as REJECTED with UNEXPECTED_ERROR for that task alone.
+   *
+   * `taskIds` narrows the batch to those tasks. Omitted or null keeps every
+   * open task. An empty list throws a BadRequestException before anything is
+   * read: it must never be taken for "all", the write is not reversible. An id
+   * the member does not hold (already moved, instance finished, unknown) yields
+   * no result row and no error; the others still run.
    */
   async reassignMemberTasks(
-    options: ReassignTaskOptions,
+    options: ReassignMemberTasksOptions,
   ): Promise<readonly TaskReassignmentResult[]> {
-    const held = await this.readRunningMemberTasks(options.fromMemberId);
+    const { taskIds } = options;
+
+    if (taskIds && taskIds.length === 0) {
+      throw new BadRequestException(
+        'taskIds must not be empty: omit it to reassign every open task',
+      );
+    }
+
+    const wanted = taskIds ? new Set(taskIds) : null;
+    const allHeld = await this.readRunningMemberTasks(options.fromMemberId);
+    const held = wanted
+      ? allHeld.filter(({ task }) => wanted.has(task.id))
+      : allHeld;
 
     return held.reduce<Promise<readonly TaskReassignmentResult[]>>(
       async (

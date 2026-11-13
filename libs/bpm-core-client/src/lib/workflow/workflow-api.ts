@@ -2232,18 +2232,21 @@ export async function reassignTask({
 }
 
 /**
- * Administrator: moves every open task `fromMemberId` holds to `toMemberId`,
- * one result per task. A refused task does not stop the others.
+ * Administrator: moves the open tasks `fromMemberId` holds (all of them, or
+ * only `taskIds`) to `toMemberId`, one result per task. A refused task does not stop the others. Pass
+ * `taskIds` to move only those tasks; leave it out for every open task.
  */
 export async function reassignMemberTasks({
   dryRun = false,
   fromMemberId,
   reason,
+  taskIds,
   toMemberId,
 }: {
   readonly dryRun?: boolean;
   readonly fromMemberId: string;
   readonly reason: string;
+  readonly taskIds?: readonly string[];
   readonly toMemberId: string;
 }): Promise<readonly TaskReassignmentResultRecord[]> {
   const data = await requestGraphQl<ReassignMemberTasksMutationData>(
@@ -2253,7 +2256,13 @@ export async function reassignMemberTasks({
       }
     }`,
     {
-      input: { dryRun, fromMemberId, reason, toMemberId },
+      input: {
+        dryRun,
+        fromMemberId,
+        reason,
+        ...(taskIds !== undefined ? { taskIds } : {}),
+        toMemberId,
+      },
     },
   );
 
