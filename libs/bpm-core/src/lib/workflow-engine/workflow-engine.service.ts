@@ -504,7 +504,6 @@ const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
  */
 const INACTIVE_MEMBER_COUNT_CONCURRENCY = 5;
 
-/** A deactivated member who still holds open tasks, for the reassignment screen. */
 /** Paging of a member's task list; both absent means unpaged. */
 export interface TaskListPageOptions {
   /** 1-based; defaults to 1 once paging is asked for. */
@@ -519,6 +518,7 @@ export interface ApprovalHistoryTaskListOptions extends TaskListPageOptions {
   readonly instanceState?: ApprovalInstanceStateEnum;
 }
 
+/** A deactivated member who still holds open tasks, for the reassignment screen. */
 export interface InactiveMemberOpenTasksRecord {
   readonly email: string;
   readonly memberId: string;
