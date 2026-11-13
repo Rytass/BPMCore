@@ -800,6 +800,103 @@ describe('FormRenderer table access (column-mode fill)', () => {
   });
 });
 
+describe('FormRenderer ROW_FIELD table column', () => {
+  function createRowFieldTableSchema(): FormDefinitionSchema {
+    return {
+      fields: [
+        {
+          columns: [
+            { fieldKey: 'unit', label: '單位', required: false, type: 'text' },
+            {
+              dataSource: {
+                bindings: [
+                  {
+                    from: { columnKey: 'unit', kind: 'ROW_FIELD' },
+                    parameter: 'unit',
+                  },
+                ],
+                key: 'demo.products',
+                version: 1,
+              },
+              fieldKey: 'product',
+              label: '品項',
+              mode: 'single',
+              required: false,
+              type: 'select',
+            },
+          ],
+          fieldKey: 'items',
+          label: '明細',
+          minRows: 1,
+          required: false,
+          type: 'table',
+        },
+      ],
+      schemaVersion: 1,
+    } as FormDefinitionSchema;
+  }
+
+  afterEach((): void => {
+    jest.clearAllMocks();
+  });
+
+  it('queries each row with its own ROW_FIELD value', async (): Promise<void> => {
+    previewOptionsMock.mockImplementation(
+      async (input): Promise<FormDataSourceOptionsResultRecord> => {
+        const unit = String(input.rowValues?.['unit'] ?? '');
+
+        return {
+          dataSourceKey: 'demo.products',
+          dataSourceVersion: 1,
+          nextCursor: null,
+          options: [{ label: `${unit} 品項 P1`, value: 'P1' }],
+          waitingForFieldKeys: [],
+        };
+      },
+    );
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async (): Promise<void> => {
+        root.render(
+          <FormRenderer
+            dataSourceContext={{ kind: 'preview' }}
+            onChange={(): void => undefined}
+            schema={createRowFieldTableSchema()}
+            uiSchema={createUiSchema()}
+            value={{
+              items: [
+                { product: 'P1', unit: 'BOX' },
+                { product: 'P1', unit: 'KG' },
+              ],
+            }}
+          />,
+        );
+      });
+
+      await waitForCondition(
+        (): boolean =>
+          container.textContent?.includes('BOX 品項 P1') === true &&
+          container.textContent?.includes('KG 品項 P1') === true,
+      );
+
+      const unitsQueried = previewOptionsMock.mock.calls.map(
+        ([input]) => input.rowValues?.['unit'],
+      );
+
+      expect(unitsQueried).toEqual(expect.arrayContaining(['BOX', 'KG']));
+    } finally {
+      await act(async (): Promise<void> => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+});
+
 describe('FormRenderer hidden fields', () => {
   const schema: FormDefinitionSchema = {
     fields: [
