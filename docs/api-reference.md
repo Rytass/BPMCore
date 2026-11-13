@@ -1648,6 +1648,12 @@ once per event. Hosts dedupe on `event.id`. Events never carry `formData`.
 | `DEFAULT_BPM_INSTANCE_EVENT_DELIVERY_OPTIONS` | const | Defaults: `batchSize` 25, `dispatchTimeoutMs` 10 000, `maxAttempts` 6, `maxRetryDelayMs` 3 600 000, `retentionDays` 30, `retryBaseDelayMs` 30 000, `scanIntervalMs` 15 000 |
 | `resolveInstanceEventDeliveryOptions(overrides)` | function | Fills unset or non-positive fields from the defaults |
 | `InstanceEventModule` | NestJS Module | `forRoot({ imports, observerProvider })`; global |
+| `InstanceEventDeliveryService.listEvents({ instanceId, page, pageSize, status })` | method | Admin list, newest `seq` first; `pageSize` clamped to 1..200 (default 50 at the GraphQL layer); returns `{ items, total }`; not gated by `enabled` |
+| `InstanceEventDeliveryService.retryFailedEvent(id, now?)` | method | Resets one `FAILED` row to `PENDING` with `attemptCount` 0, `lastError` null, due now; `NotFoundException` for an unknown id, `BadRequestException` for a row that is not `FAILED`; writes no audit row |
+| `ApprovalInstanceEventStatusEnum` | GraphQL enum | `BPMApprovalInstanceEventStatus`: `DELIVERED`, `FAILED`, `PENDING`; mapped one to one to `BPMInstanceEventStatus` |
+| `ApprovalInstanceEventObject` | GraphQL ObjectType | `BPMApprovalInstanceEvent`: `id`, `instanceId`, `seq` (string), `type`, `status`, `attemptCount`, `lastError`, `nextAttemptAt`, `occurredAt`, `deliveredAt`; no `payload`, no `claimedAt` |
+| `ApprovalInstanceEventPageObject` | GraphQL ObjectType | `BPMApprovalInstanceEventPage`: `items`, `total` |
+| `InstanceEventResolver` | resolver | `@BPMAdminOnly()`; query `approvalInstanceEvents(instanceId, status, page, pageSize)` and mutation `retryApprovalInstanceEvent(id)`; registered by `InstanceEventModule` |
 
 Event types: `INSTANCE_SUBMITTED`, `INSTANCE_RESUBMITTED`, `INSTANCE_APPROVED`,
 `INSTANCE_REJECTED`, `INSTANCE_RETURNED`, `INSTANCE_CANCELLED`,

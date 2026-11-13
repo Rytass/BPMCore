@@ -10,6 +10,7 @@ import { ApprovalInstanceEventEntity } from './approval-instance-event.entity';
 import { InstanceEventDeliveryService } from './instance-event.delivery.service';
 import { InstanceEventDeliverySchedulerService } from './instance-event.delivery-scheduler.service';
 import { InstanceEventDeliverySubscriber } from './instance-event.delivery.subscriber';
+import { InstanceEventResolver } from './instance-event.resolver';
 import {
   BPM_INSTANCE_EVENT_OBSERVER,
   BPMInstanceEventObserver,
@@ -52,6 +53,7 @@ export class InstanceEventModule {
         InstanceEventDeliveryService,
         InstanceEventDeliverySubscriber,
         InstanceEventDeliverySchedulerService,
+        InstanceEventResolver,
       ],
     };
   }

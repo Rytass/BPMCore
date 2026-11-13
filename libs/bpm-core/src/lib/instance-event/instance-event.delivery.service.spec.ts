@@ -1,3 +1,4 @@
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { LessThan } from 'typeorm';
 import type { EntityManager, Repository } from 'typeorm';
 import { ApprovalInstanceEventEntity } from './approval-instance-event.entity';
@@ -42,6 +43,8 @@ interface FakeHarness {
   readonly update: jest.Mock;
   readonly remove: jest.Mock;
   readonly find: jest.Mock;
+  readonly findOne: jest.Mock;
+  readonly findAndCount: jest.Mock;
   readonly service: InstanceEventDeliveryService;
 }
 
@@ -50,6 +53,8 @@ function createHarness(options: {
   readonly delivery?: Partial<BPMInstanceEventDeliveryOptions>;
   readonly claimBatches?: readonly (readonly ApprovalInstanceEventEntity[])[];
   readonly updateAffected?: number;
+  readonly existing?: ApprovalInstanceEventEntity | null;
+  readonly page?: readonly ApprovalInstanceEventEntity[];
 }): FakeHarness {
   const batches = [...(options.claimBatches ?? [])];
   let lastClaim: readonly ApprovalInstanceEventEntity[] = [];
@@ -76,8 +81,17 @@ function createHarness(options: {
   const remove = jest.fn((): Promise<{ readonly affected: number }> =>
     Promise.resolve({ affected: 2 }),
   );
+  const findOne = jest.fn((): Promise<ApprovalInstanceEventEntity | null> =>
+    Promise.resolve(options.existing ?? null),
+  );
+  const findAndCount = jest.fn(
+    (): Promise<[readonly ApprovalInstanceEventEntity[], number]> =>
+      Promise.resolve([options.page ?? [], options.page?.length ?? 0]),
+  );
   const repository = {
     delete: remove,
+    findAndCount,
+    findOne,
     manager: {
       transaction: (
         callback: (entityManager: EntityManager) => Promise<unknown>,
@@ -96,6 +110,8 @@ function createHarness(options: {
 
   return {
     find,
+    findAndCount,
+    findOne,
     query,
     remove,
     service: new InstanceEventDeliveryService(repository, events),
@@ -242,6 +258,90 @@ describe('InstanceEventDeliveryService', (): void => {
       deliveredAt: LessThan(new Date('2026-10-15T00:00:00.000Z')),
       status: 'DELIVERED',
     });
+  });
+
+  it('lists newest first, clamps pageSize, and applies the filters', async (): Promise<void> => {
+    const { findAndCount, service } = createHarness({
+      observer: null,
+      page: [createRow()],
+    });
+
+    const result = await service.listEvents({
+      instanceId: 'instance-1',
+      page: 2,
+      pageSize: 500,
+      status: 'FAILED',
+    });
+
+    expect(result).toEqual({ items: [expect.anything()], total: 1 });
+    expect(findAndCount).toHaveBeenCalledWith({
+      order: { seq: 'DESC' },
+      skip: 200,
+      take: 200,
+      where: { instanceId: 'instance-1', status: 'FAILED' },
+    });
+  });
+
+  it('lists without filters when none are given', async (): Promise<void> => {
+    const { findAndCount, service } = createHarness({ observer: null });
+
+    await service.listEvents({
+      instanceId: null,
+      page: 1,
+      pageSize: 50,
+      status: null,
+    });
+
+    expect(findAndCount).toHaveBeenCalledWith({
+      order: { seq: 'DESC' },
+      skip: 0,
+      take: 50,
+      where: {},
+    });
+  });
+
+  it('resets a FAILED row to PENDING, due now, with a fresh attempt budget', async (): Promise<void> => {
+    const failed = { ...createRow({ attemptCount: 6 }), status: 'FAILED' };
+    const { service, update } = createHarness({
+      existing: failed as unknown as ApprovalInstanceEventEntity,
+      observer: null,
+    });
+
+    await service.retryFailedEvent('event-1', NOW);
+
+    expect(update).toHaveBeenCalledWith(
+      { id: 'event-1', status: 'FAILED' },
+      {
+        attemptCount: 0,
+        lastError: null,
+        nextAttemptAt: NOW,
+        status: 'PENDING',
+      },
+    );
+  });
+
+  it('rejects a retry for an unknown id without writing', async (): Promise<void> => {
+    const { service, update } = createHarness({
+      existing: null,
+      observer: null,
+    });
+
+    await expect(service.retryFailedEvent('missing', NOW)).rejects.toThrow(
+      NotFoundException,
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects a retry for a row that is not FAILED', async (): Promise<void> => {
+    const { service } = createHarness({
+      existing: createRow(),
+      observer: null,
+      updateAffected: 0,
+    });
+
+    await expect(service.retryFailedEvent('event-1', NOW)).rejects.toThrow(
+      BadRequestException,
+    );
   });
 
   it('caps the retry delay at maxRetryDelayMs and grows it per attempt', (): void => {

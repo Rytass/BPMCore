@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, LessThan, Repository } from 'typeorm';
 import { readClaimedIds, withDispatchTimeout } from '../common/outbox';
@@ -12,6 +17,15 @@ import type {
 
 /** Dispatches in flight per claim, so one scan cannot saturate the host observer. */
 const MAX_CONCURRENT_DISPATCHES = 5;
+/** Admin list page size bounds; a larger request is clamped, not rejected. */
+const MAX_PAGE_SIZE = 200;
+
+export interface ListInstanceEventsInput {
+  readonly instanceId: string | null;
+  readonly page: number;
+  readonly pageSize: number;
+  readonly status: BPMInstanceEventStatus | null;
+}
 /** Stored error text is capped; host error messages are not trusted to be short. */
 const MAX_ERROR_LENGTH = 500;
 /** A claim older than this is treated as abandoned and may be taken over. */
@@ -117,6 +131,69 @@ export class InstanceEventDeliveryService {
     });
 
     return result.affected ?? 0;
+  }
+
+  /**
+   * Admin read: newest first, optionally filtered. Not gated by `enabled`, so
+   * rows left behind by an earlier deployment stay visible.
+   */
+  async listEvents(input: ListInstanceEventsInput): Promise<{
+    readonly items: readonly ApprovalInstanceEventEntity[];
+    readonly total: number;
+  }> {
+    const pageSize = clampPageSize(input.pageSize);
+    const page = Math.max(1, Math.floor(input.page));
+    const [items, total] = await this.repository.findAndCount({
+      order: { seq: 'DESC' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      where: {
+        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
+        ...(input.status ? { status: input.status } : {}),
+      },
+    });
+
+    return { items, total };
+  }
+
+  /**
+   * Admin retry of a `FAILED` row. Resets the attempt budget and makes the row
+   * due now; the next scan or commit kick delivers it. Only `FAILED` rows match,
+   * so a row that is already pending or delivered is rejected, not reset.
+   */
+  async retryFailedEvent(
+    id: string,
+    now: Date = new Date(),
+  ): Promise<ApprovalInstanceEventEntity> {
+    const existing = await this.repository.findOne({ where: { id } });
+
+    if (!existing) {
+      throw new NotFoundException(`Instance event ${id} not found`);
+    }
+
+    const result = await this.repository.update(
+      { id, status: 'FAILED' },
+      {
+        attemptCount: 0,
+        lastError: null,
+        nextAttemptAt: now,
+        status: 'PENDING',
+      },
+    );
+
+    if (!result.affected) {
+      throw new BadRequestException(
+        `Instance event ${id} is not FAILED and cannot be retried`,
+      );
+    }
+
+    const refreshed = await this.repository.findOne({ where: { id } });
+
+    if (!refreshed) {
+      throw new NotFoundException(`Instance event ${id} not found`);
+    }
+
+    return refreshed;
   }
 
   /**
@@ -297,6 +374,10 @@ function toObserverEvent(row: ApprovalInstanceEventEntity): BPMInstanceEvent {
     seq: row.seq,
     type: row.type,
   } as BPMInstanceEvent;
+}
+
+function clampPageSize(pageSize: number): number {
+  return Math.min(Math.max(Math.floor(pageSize), 1), MAX_PAGE_SIZE);
 }
 
 function readErrorName(error: unknown): string {
