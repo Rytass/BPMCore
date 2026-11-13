@@ -2037,13 +2037,20 @@ export class WorkflowEngineService {
 
         // ADR 27 §4(b): the open data-source cells of column-mode tables. An
         // APPROVED decision re-resolves all of them; any other decision only
-        // when a column-mode table's cells changed.
-        const openCellSchema = readOpenDataSourceCellSchema(
-          readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
-          nodeColumnFillMap,
-        );
+        // when a column-mode table's cells changed. The form schema is read
+        // only for a node that has column-mode fills, so other nodes never
+        // touch the snapshot's schema.
+        const openCellSchema: FormDefinitionSchema | null =
+          nodeColumnFillMap.size === 0
+            ? null
+            : readOpenDataSourceCellSchema(
+                readFormDefinitionSnapshotSchema(
+                  instance.formDefinitionSnapshot,
+                ),
+                nodeColumnFillMap,
+              );
         const openCellTableKeys = new Set(
-          openCellSchema.fields.map((field) => field.fieldKey),
+          (openCellSchema?.fields ?? []).map((field) => field.fieldKey),
         );
         const revalidateAllOpenCells =
           input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc;
@@ -2051,6 +2058,7 @@ export class WorkflowEngineService {
           openCellTableKeys.has(fieldKey),
         );
         const refreshedOpenCellSnapshots =
+          openCellSchema === null ||
           openCellSchema.fields.length === 0 ||
           (!revalidateAllOpenCells && !hasChangedOpenCellTable)
             ? null
@@ -2062,7 +2070,7 @@ export class WorkflowEngineService {
                 revalidateAll: revalidateAllOpenCells,
               });
         const nextFormDataOptionSnapshot: FormDataSourceValueSnapshots =
-          refreshedOpenCellSnapshots === null
+          refreshedOpenCellSnapshots === null || openCellSchema === null
             ? wholeFieldOptionSnapshot
             : {
                 ...readSnapshotWithoutOpenCells(
