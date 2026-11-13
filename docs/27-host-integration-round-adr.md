@@ -208,7 +208,7 @@ ADR 20 §3.4 與 §8 把以下三點列為延後項目，不是拒絕。本次�
 ### 4.2 (b) 可補填資料來源欄位
 
 - **現況**：
-  - 被擋的 lint：`approverFilledFieldDataSource`、`approverFilledTableDataSourceColumn`。
+  - 原本被擋的 lint：`approverFilledFieldDataSource`（已移除，不再發出）、`approverFilledTableDataSourceColumn`（已縮限為依賴欄未開放的情況，見 §4.3）。
   - `decideTask` 不重新解析選項，也不寫 `formDataOptionSnapshot`。補填的值不但沒有顯示名稱快照，也沒驗證是不是合法選項。
 - **做法**：仿重送路徑，抽出 `prepareDecisionFormDataOptions`：
   1. **鎖外**：以**簽核人**的 authContext 解析補填欄位的選項，並以既有快照做增量合併。
@@ -244,7 +244,11 @@ interface FieldAccessEntry {
 - **不採的替代案**：由引擎產生穩定的 row id。好處是能支援補填者增刪列；代價是舊的表格值沒有 id，要處理相容，而且 row id 會出現在 `form_data` 裡，所有讀表格的 host 都要認得它。需要時可在後續版本加上。
 - **申請人重送的還原規則**：退回後申請人可改自己的格、增刪或重排列，所以補填欄的已存值只在「該列申請人擁有的格與已存的同位置列完全相同」時還原；不同的列清空補填欄，由之後的補填節點重填。不拒絕重送。已知殘留：兩列內容完全相同且發生位移時，仍會誤沿用。
 
-**與 (b) 的交集**：逐欄模式允許補填有資料來源的欄（例如逐列選會計科目），解析流程同 §4.2，以 `ROW_FIELD` 綁定取同列的值。
+**與 (b) 的交集**：逐欄模式允許補填有資料來源的欄（例如逐列選會計科目），解析流程同 §4.2，以同一列的值解析（`ROW_FIELD` 或含 `row` 參照的 `EXPRESSION`）。依賴欄與來源欄的關係依下列規則處理：
+
+- **發布期**：某補填欄是資料來源欄的 `ROW_FIELD`／`EXPRESSION` 所讀取的欄，而依賴欄沒有開給同一個節點，發布被拒（`approverFilledTableDataSourceColumn`，每組表格、來源欄、依賴欄報一次）。
+- **決議期（fail closed）**：decide 端不信任範本已通過發布檢查。依賴欄未開給同一節點、而來源欄被補填者改動時，回 `FORM_FIELD_ACCESS_DEPENDENT_COLUMN_STALE` 並不寫入。選擇 fail closed 而非重新驗證，是因為發布規則上線前已發布的舊範本不會經過發布期檢查，decide 端無從得知它是否合法；重新驗證會把一個已在執行中的案件改成結果不明，拒絕則讓補填者與設計者明確知道要修範本。
+- 兩欄都開給同一節點時，decide 以補填後的來源值重新解析依賴欄，並更新其選項快照。
 
 **「同一路徑一個欄位只能有一個補填節點」**：
 

@@ -91,6 +91,9 @@ P6 docs sweep, /review, release prep
   - 補填者竄改非開放欄或增刪列時被拒。
   - 兩個節點各補同一張 table 的不同欄。
   - 補填的資料來源值有選項快照，且顯示名稱正確。
+  - 來源欄被補填、依賴欄未開給同一節點：發布被拒（ROW_FIELD 與 EXPRESSION 各測一次）。
+  - 兩欄都開給同一節點：decide 時依賴欄以補填後的值重新解析。
+  - 舊範本（發布規則上線前）依賴欄未開放而來源欄被改動：decide 回 `FORM_FIELD_ACCESS_DEPENDENT_COLUMN_STALE`。
 
 ## P6 — 收尾與發版準備
 
