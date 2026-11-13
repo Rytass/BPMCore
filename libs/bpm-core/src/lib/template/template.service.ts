@@ -224,6 +224,7 @@ export class TemplateService {
         createdByMemberId: input.createdByMemberId,
         currentVersionId: null,
         description: input.description,
+        hostManaged: input.hostManaged ?? false,
         // Stated rather than left to the column default, because publishing
         // reads `isActive` back and a template that never carried the value
         // in memory would read as deactivated.
@@ -317,10 +318,19 @@ export class TemplateService {
               targetTemplateId,
             );
 
-            if (writtenKey !== undefined) {
+            // Only the fields the caller supplied are written; absent keeps the
+            // stored value, as in `updateApprovalTemplate`.
+            const hostPatch = {
+              ...(writtenKey !== undefined ? { key: writtenKey } : {}),
+              ...(input.hostManaged !== undefined
+                ? { hostManaged: input.hostManaged }
+                : {}),
+            };
+
+            if (Object.keys(hostPatch).length > 0) {
               await manager
                 .getRepository(ApprovalTemplateEntity)
-                .update({ id: locked.id }, { key: writtenKey });
+                .update({ id: locked.id }, hostPatch);
             }
           }
 
@@ -408,6 +418,7 @@ export class TemplateService {
         {
           createdByMemberId: currentMemberId,
           description: input.formDescription,
+          hostManaged: input.hostManaged,
           name: input.formName,
           schemaJson: input.schemaJson,
           uiSchemaJson: input.uiSchemaJson,
@@ -432,6 +443,17 @@ export class TemplateService {
             manager,
           )
         : draft;
+    }
+
+    // Absent keeps the form's stored flag; a value is written under the same
+    // transaction as the draft below.
+    if (input.hostManaged !== undefined) {
+      await manager
+        .getRepository(FormDefinitionEntity)
+        .update(
+          { id: input.formDefinitionId },
+          { hostManaged: input.hostManaged },
+        );
     }
 
     const existingDraft = await this.formService.findDraftVersion(
@@ -487,6 +509,7 @@ export class TemplateService {
           createdByMemberId: currentMemberId,
           description: input.templateDescription,
           formDefinitionVersionId: null,
+          hostManaged: input.hostManaged,
           key,
           name: input.templateName,
         },
@@ -548,6 +571,7 @@ export class TemplateService {
                   ? (category?.name ?? null)
                   : existing.category,
             description: input.description ?? existing.description,
+            hostManaged: input.hostManaged ?? existing.hostManaged,
             key: key !== undefined ? key : existing.key,
             name: input.name ?? existing.name,
           });

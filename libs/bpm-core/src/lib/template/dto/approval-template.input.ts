@@ -58,6 +58,9 @@ export class CreateApprovalTemplateInput {
   @IsOptional()
   @IsUUID()
   formDefinitionVersionId?: string | null;
+
+  /** Host-owned flag (ADR 27 §6). Service-only: no `@Field`. Absent means `false`. */
+  hostManaged?: boolean;
 }
 
 @InputType()
@@ -112,6 +115,12 @@ export class UpdateApprovalTemplateInput {
   @IsOptional()
   @IsUUID()
   categoryId?: string | null;
+
+  /**
+   * Host-owned flag (ADR 27 §6). Service-only: no `@Field`, so GraphQL cannot
+   * set it. Absent keeps the stored value.
+   */
+  hostManaged?: boolean;
 }
 
 @InputType()

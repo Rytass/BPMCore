@@ -131,6 +131,13 @@ export class ComposeApprovalTemplateWithFormInput {
   @IsString()
   slaDefaultsJson!: string | null;
 
+  /**
+   * Host-owned flag (ADR 27 §6.2). Service-only: no `@Field`. Applied to the
+   * template (absent keeps the stored value) and to the form (absent creates
+   * it with `false`, keeps the stored value otherwise).
+   */
+  hostManaged?: boolean;
+
   // --- Behaviour flag ---
   @Field()
   @IsBoolean()

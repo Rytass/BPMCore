@@ -88,6 +88,7 @@ export class FormService {
         createdByMemberId: input.createdByMemberId,
         currentVersionId: null,
         description: input.description,
+        hostManaged: input.hostManaged ?? false,
         name: input.name,
       }),
     );
