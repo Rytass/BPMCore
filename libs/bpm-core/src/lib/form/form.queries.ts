@@ -7,6 +7,9 @@ import { LintFormSchemaInput } from './dto/form-definition.input';
 import { FormDefinitionListStatusEnum } from './form.enums';
 import { FormSchemaLintResultObject } from './form-schema-lint.object';
 
+const INCLUDE_HOST_MANAGED_DESCRIPTION =
+  'Also returns forms maintained by host code (hostManaged = true). Default false: they are left out. Not a lock: anyone who knows the id can still read or change them.';
+
 @Resolver()
 @BPMAuthenticated()
 export class FormQueries {
@@ -23,7 +26,11 @@ export class FormQueries {
       type: () => FormDefinitionListStatusEnum,
     })
     status?: FormDefinitionListStatusEnum | null,
-    @Args('includeHostManaged', { nullable: true, type: () => Boolean })
+    @Args('includeHostManaged', {
+      description: INCLUDE_HOST_MANAGED_DESCRIPTION,
+      nullable: true,
+      type: () => Boolean,
+    })
     includeHostManaged?: boolean | null,
   ): Promise<readonly FormDefinitionEntity[]> {
     return this.formService.listFormDefinitions({
@@ -41,7 +48,11 @@ export class FormQueries {
       type: () => FormDefinitionListStatusEnum,
     })
     status?: FormDefinitionListStatusEnum | null,
-    @Args('includeHostManaged', { nullable: true, type: () => Boolean })
+    @Args('includeHostManaged', {
+      description: INCLUDE_HOST_MANAGED_DESCRIPTION,
+      nullable: true,
+      type: () => Boolean,
+    })
     includeHostManaged?: boolean | null,
   ): Promise<number> {
     return this.formService.countFormDefinitions(
