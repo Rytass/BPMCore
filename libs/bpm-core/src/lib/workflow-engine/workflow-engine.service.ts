@@ -773,7 +773,6 @@ export class WorkflowEngineService {
     DeferredWebhookDispatch[]
   >();
 
-
   private readonly organizationTimeZone: string;
 
   /**
@@ -933,13 +932,12 @@ export class WorkflowEngineService {
     // confirms under the template lock that this version is still current
     // (ADR 25 §15), which is what makes this schema the one in force.
     assertFilterableFormDataValues(formDefinitionVersion.schema, formData);
-    const formDataOptionSnapshot =
-      await this.resolveFormDataOptionSnapshots({
-        authContext: submitAuthContext,
-        formData,
-        revalidateAll: true,
-        schema: formDefinitionVersion.schema,
-      });
+    const formDataOptionSnapshot = await this.resolveFormDataOptionSnapshots({
+      authContext: submitAuthContext,
+      formData,
+      revalidateAll: true,
+      schema: formDefinitionVersion.schema,
+    });
     const initiatorMetadataSnapshot = input.initiatorMetadataSnapshotJson
       ? parseJsonObject(
           input.initiatorMetadataSnapshotJson,
@@ -1216,55 +1214,52 @@ export class WorkflowEngineService {
       instance.templateId,
       formData,
     );
-    const formDataOptionSnapshot =
-      await this.resolveFormDataOptionSnapshots({
-        authContext,
-        formData,
-        previousFormData: instance.formData,
-        previousSnapshots: instance.formDataOptionSnapshot ?? {},
-        schema,
-      });
+    const formDataOptionSnapshot = await this.resolveFormDataOptionSnapshots({
+      authContext,
+      formData,
+      previousFormData: instance.formData,
+      previousSnapshots: instance.formDataOptionSnapshot ?? {},
+      schema,
+    });
 
     return { formDataOptionSnapshot, instance };
   }
 
   async processInstance(instanceId: string): Promise<void> {
-    await this.runEngineTransaction(
-      async (manager): Promise<void> => {
-        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-          instanceId,
-        ]);
+    await this.runEngineTransaction(async (manager): Promise<void> => {
+      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        instanceId,
+      ]);
 
-        const instance = await manager
-          .getRepository(ApprovalInstanceEntity)
-          .findOne({ where: { id: instanceId } });
+      const instance = await manager
+        .getRepository(ApprovalInstanceEntity)
+        .findOne({ where: { id: instanceId } });
 
-        if (!instance) {
-          throw new NotFoundException(
-            `Approval instance ${instanceId} was not found`,
-          );
-        }
-
-        await manager.getRepository(ActivityLogEntity).save(
-          manager.getRepository(ActivityLogEntity).create({
-            actorMemberId: null,
-            eventType: ActivityLogEventTypeEnum.ENGINE_PROCESS_REQUESTED,
-            instanceId,
-            nodeId: null,
-            payload: {
-              state: instance.state,
-            },
-            taskId: null,
-          }),
+      if (!instance) {
+        throw new NotFoundException(
+          `Approval instance ${instanceId} was not found`,
         );
+      }
 
-        if (instance.state !== ApprovalInstanceStateEnum.RUNNING) {
-          return;
-        }
+      await manager.getRepository(ActivityLogEntity).save(
+        manager.getRepository(ActivityLogEntity).create({
+          actorMemberId: null,
+          eventType: ActivityLogEventTypeEnum.ENGINE_PROCESS_REQUESTED,
+          instanceId,
+          nodeId: null,
+          payload: {
+            state: instance.state,
+          },
+          taskId: null,
+        }),
+      );
 
-        await this.processRunningInstance(manager, instance);
-      },
-    );
+      if (instance.state !== ApprovalInstanceStateEnum.RUNNING) {
+        return;
+      }
+
+      await this.processRunningInstance(manager, instance);
+    });
   }
 
   async decideTask(
@@ -1314,7 +1309,11 @@ export class WorkflowEngineService {
         }
 
         const { actorCandidate, taskCandidates } =
-          await this.readTaskActorContext(manager, task, input.decidedByMemberId);
+          await this.readTaskActorContext(
+            manager,
+            task,
+            input.decidedByMemberId,
+          );
 
         if (
           input.action !== TaskDecisionActionEnum.APPROVED &&
@@ -1595,7 +1594,9 @@ export class WorkflowEngineService {
                       fieldKey,
                     ) ||
                     computeStableValueFingerprint(filledFormData[fieldKey]) !==
-                      computeStableValueFingerprint(instance.formData[fieldKey]),
+                      computeStableValueFingerprint(
+                        instance.formData[fieldKey],
+                      ),
                 )
                 .sort();
 
@@ -1786,7 +1787,8 @@ export class WorkflowEngineService {
         // candidate's notification is superseded too; a non-completing approval
         // on a multi-approver task leaves the remaining approvers' open.
         const taskEnded =
-          input.action !== TaskDecisionActionEnum.APPROVED || shouldCompleteTask;
+          input.action !== TaskDecisionActionEnum.APPROVED ||
+          shouldCompleteTask;
 
         await this.notificationService.resolveTaskNotifications({
           actingMemberId: input.decidedByMemberId,
@@ -2032,8 +2034,7 @@ export class WorkflowEngineService {
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     finalState:
-      | ApprovalInstanceStateEnum.CANCELLED
-      | ApprovalInstanceStateEnum.EXPIRED,
+      ApprovalInstanceStateEnum.CANCELLED | ApprovalInstanceStateEnum.EXPIRED,
   ): Promise<ApprovalInstanceEntity> {
     const closedAt = new Date();
 
@@ -2322,57 +2323,55 @@ export class WorkflowEngineService {
     readonly target: AdhocTargetInput;
     readonly taskId: string;
   }): Promise<TaskEntity> {
-    return this.runEngineTransaction(
-      async (manager): Promise<TaskEntity> => {
-        const { instance, node, task } = await this.loadAdhocOperationContext(
-          manager,
-          taskId,
-          requestedByMemberId,
-          { requireAllowAddSigner: true },
-        );
-        const targetValue = buildAdhocTargetValue(target);
+    return this.runEngineTransaction(async (manager): Promise<TaskEntity> => {
+      const { instance, node, task } = await this.loadAdhocOperationContext(
+        manager,
+        taskId,
+        requestedByMemberId,
+        { requireAllowAddSigner: true },
+      );
+      const targetValue = buildAdhocTargetValue(target);
 
-        // Rejects WEBHOOK targets — pre-approvers must be members.
-        buildAdhocApproverResolver(targetValue);
+      // Rejects WEBHOOK targets — pre-approvers must be members.
+      buildAdhocApproverResolver(targetValue);
 
-        const now = new Date();
-        const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
-        const directive = await directiveRepository.save(
-          directiveRepository.create({
-            channels: null,
-            comment: comment?.trim() || null,
-            consumedAt: now,
-            createdByMemberId: requestedByMemberId,
-            instanceId: instance.id,
-            onReject,
-            originNodeId: task.nodeId,
-            originTaskId: task.id,
-            status: AdhocDirectiveStatusEnum.CONSUMED,
-            targetKind: targetValue.kind,
-            targetValue: { ...targetValue },
-            type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
-          }),
-        );
-        const adhocTask = await this.createAdhocTaskForDirective(
-          manager,
-          instance,
-          task.tokenId,
-          node,
-          directive,
-          now,
-        );
+      const now = new Date();
+      const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+      const directive = await directiveRepository.save(
+        directiveRepository.create({
+          channels: null,
+          comment: comment?.trim() || null,
+          consumedAt: now,
+          createdByMemberId: requestedByMemberId,
+          instanceId: instance.id,
+          onReject,
+          originNodeId: task.nodeId,
+          originTaskId: task.id,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          targetKind: targetValue.kind,
+          targetValue: { ...targetValue },
+          type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        }),
+      );
+      const adhocTask = await this.createAdhocTaskForDirective(
+        manager,
+        instance,
+        task.tokenId,
+        node,
+        directive,
+        now,
+      );
 
-        await this.recordAdhocDirectiveActivity(
-          manager,
-          directive,
-          ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CREATED,
-          requestedByMemberId,
-          { adhocTaskId: adhocTask.id, nodeLabel: node.data.label, onReject },
-        );
+      await this.recordAdhocDirectiveActivity(
+        manager,
+        directive,
+        ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CREATED,
+        requestedByMemberId,
+        { adhocTaskId: adhocTask.id, nodeLabel: node.data.label, onReject },
+      );
 
-        return adhocTask;
-      },
-    );
+      return adhocTask;
+    });
   }
 
   async configureAdhocNotification({
@@ -2586,7 +2585,10 @@ export class WorkflowEngineService {
       );
     }
 
-    const node = readWorkflowNodeOrThrow(instance.workflowSnapshot, task.nodeId);
+    const node = readWorkflowNodeOrThrow(
+      instance.workflowSnapshot,
+      task.nodeId,
+    );
 
     if (node.type !== 'userTask') {
       throw new ConflictException(
@@ -2950,7 +2952,10 @@ export class WorkflowEngineService {
       originTask,
       originCandidates,
     );
-    const node = readWorkflowNodeOrThrow(instance.workflowSnapshot, task.nodeId);
+    const node = readWorkflowNodeOrThrow(
+      instance.workflowSnapshot,
+      task.nodeId,
+    );
 
     if (!originTaskIsOpen && originTask.assigneeMemberId) {
       // The origin approver already decided — reopen a fresh decision task so
@@ -4027,7 +4032,10 @@ export class WorkflowEngineService {
     scope?: WorkflowReadScope,
     options: ListApprovalInstancesOptions = {},
   ): Promise<readonly ApprovalInstanceEntity[]> {
-    const query = await this.createFilteredApprovalInstanceQuery(scope, options);
+    const query = await this.createFilteredApprovalInstanceQuery(
+      scope,
+      options,
+    );
 
     if (!query) {
       return [];
@@ -4054,9 +4062,15 @@ export class WorkflowEngineService {
 
   async countApprovalInstances(
     scope?: WorkflowReadScope,
-    options: Omit<ListApprovalInstancesOptions, 'page' | 'pageSize' | 'sort'> = {},
+    options: Omit<
+      ListApprovalInstancesOptions,
+      'page' | 'pageSize' | 'sort'
+    > = {},
   ): Promise<number> {
-    const query = await this.createFilteredApprovalInstanceQuery(scope, options);
+    const query = await this.createFilteredApprovalInstanceQuery(
+      scope,
+      options,
+    );
 
     return query ? query.queryBuilder.getCount() : 0;
   }
@@ -4176,10 +4190,11 @@ export class WorkflowEngineService {
     return this.approvalInstanceFieldFilterCompiler.compile({
       alias: 'approvalInstance',
       fieldFilters,
-      paths: this.approvalInstanceFilterableFieldPolicy.readFilterableFieldPaths(
-        scope,
-        schema,
-      ),
+      paths:
+        this.approvalInstanceFilterableFieldPolicy.readFilterableFieldPaths(
+          scope,
+          schema,
+        ),
       sort,
       staticOptionsByPath,
     });
@@ -4636,11 +4651,9 @@ export class WorkflowEngineService {
       return inFlight;
     }
 
-    const read = this.readOpenInboxTasks(assigneeMemberId).finally(
-      (): void => {
-        this.openInboxReadsInFlight.delete(assigneeMemberId);
-      },
-    );
+    const read = this.readOpenInboxTasks(assigneeMemberId).finally((): void => {
+      this.openInboxReadsInFlight.delete(assigneeMemberId);
+    });
 
     this.openInboxReadsInFlight.set(assigneeMemberId, read);
 
@@ -5285,9 +5298,7 @@ export class WorkflowEngineService {
       where: { taskId: In(taskIds) },
     });
 
-    if (
-      decisions.some((decision) => decision.decidedByMemberId === memberId)
-    ) {
+    if (decisions.some((decision) => decision.decidedByMemberId === memberId)) {
       return true;
     }
 
@@ -5686,11 +5697,10 @@ export class WorkflowEngineService {
 
     const matchingEdges = (
       await Promise.all(
-        conditionalEdges.map(
-          async (edge): Promise<WorkflowEdge | null> =>
-            (await this.evaluateWorkflowEdge(manager, instance, node, edge))
-              ? edge
-              : null,
+        conditionalEdges.map(async (edge): Promise<WorkflowEdge | null> =>
+          (await this.evaluateWorkflowEdge(manager, instance, node, edge))
+            ? edge
+            : null,
         ),
       )
     ).filter((edge): edge is WorkflowEdge => edge !== null);
@@ -6005,8 +6015,7 @@ export class WorkflowEngineService {
 
     const primaryCandidate = candidates[0];
     // Legacy snapshots may carry no policy at all; they behave as before.
-    const decisionPolicy: DecisionPolicy | undefined =
-      node.data.decisionPolicy;
+    const decisionPolicy: DecisionPolicy | undefined = node.data.decisionPolicy;
     const isSequential =
       decisionPolicy?.type === 'SEQUENTIAL' && candidates.length > 1;
     // A sequential task is held by exactly one candidate at a time, so it
@@ -6028,10 +6037,7 @@ export class WorkflowEngineService {
         completedAt: null,
         createdAt: now,
         decisionPolicySnapshot: hasSeatExclusion(node)
-          ? capDecisionPolicyToCandidateCount(
-              decisionPolicy,
-              candidates.length,
-            )
+          ? capDecisionPolicyToCandidateCount(decisionPolicy, candidates.length)
           : decisionPolicy,
         delegationChain: assignedCandidate?.delegationChain ?? [],
         instanceId: instance.id,
@@ -6130,7 +6136,13 @@ export class WorkflowEngineService {
 
     // Pending ad-hoc countersign directives attach to the next user task
     // created after they were requested — spawn their parallel tasks now.
-    await this.spawnCountersignTasksForNode(manager, instance, token, node, now);
+    await this.spawnCountersignTasksForNode(
+      manager,
+      instance,
+      token,
+      node,
+      now,
+    );
   }
 
   /**
@@ -6498,11 +6510,10 @@ export class WorkflowEngineService {
 
     if (openPreApprovalsOnTransferredTask.length > 0) {
       await taskRepository.save(
-        openPreApprovalsOnTransferredTask.map(
-          (adhocTask): TaskEntity =>
-            Object.assign(new TaskEntity(), adhocTask, {
-              adhocOriginTaskId: nextTask.id,
-            }),
+        openPreApprovalsOnTransferredTask.map((adhocTask): TaskEntity =>
+          Object.assign(new TaskEntity(), adhocTask, {
+            adhocOriginTaskId: nextTask.id,
+          }),
         ),
       );
     }
@@ -6898,9 +6909,7 @@ export class WorkflowEngineService {
    * The open tasks `memberId` holds on RUNNING instances, with the instance
    * each belongs to. The instance filter is applied here, not only in the query.
    */
-  private async readRunningMemberTasks(
-    memberId: string,
-  ): Promise<
+  private async readRunningMemberTasks(memberId: string): Promise<
     readonly {
       readonly instance: ApprovalInstanceEntity;
       readonly task: TaskEntity;
@@ -8308,7 +8317,11 @@ export class WorkflowEngineService {
     nodeIds: readonly string[],
   ): Promise<readonly TaskDecisionEntity[]> {
     const tasks = await manager.getRepository(TaskEntity).find({
-      where: { instanceId: instance.id, isAdhoc: false, nodeId: In([...nodeIds]) },
+      where: {
+        instanceId: instance.id,
+        isAdhoc: false,
+        nodeId: In([...nodeIds]),
+      },
     });
 
     if (tasks.length === 0) {
@@ -8338,7 +8351,10 @@ export class WorkflowEngineService {
 
     const [decisions, decidedLogs] = await Promise.all([
       manager.getRepository(TaskDecisionEntity).find({
-        where: { action: TaskDecisionActionEnum.APPROVED, taskId: In(batchTaskIds) },
+        where: {
+          action: TaskDecisionActionEnum.APPROVED,
+          taskId: In(batchTaskIds),
+        },
       }),
       manager.getRepository(ActivityLogEntity).find({
         where: {
@@ -9421,8 +9437,7 @@ export class WorkflowEngineService {
     // publish lint already refuses a template that references an endpoint
     // in that case.
     const webhookDeliveryIds =
-      this.webhookDeliveryService &&
-      readNotifyWebhookTargets(action).length > 0
+      this.webhookDeliveryService && readNotifyWebhookTargets(action).length > 0
         ? await this.webhookDeliveryService.enqueueNotifyWebhooks(
             manager,
             {
@@ -9725,24 +9740,21 @@ export class WorkflowEngineService {
 
     if (openTokens.length > 0) {
       await tokenRepository.save(
-        openTokens.map(
-          (token): WorkflowTokenEntity => ({
-            ...token,
-            consumedAt,
-            status: WorkflowTokenStatusEnum.CONSUMED,
-          }),
-        ),
+        openTokens.map((token): WorkflowTokenEntity => ({
+          ...token,
+          consumedAt,
+          status: WorkflowTokenStatusEnum.CONSUMED,
+        })),
       );
     }
 
     if (openTasks.length > 0) {
       await taskRepository.save(
-        openTasks.map(
-          (openTask): TaskEntity =>
-            Object.assign(new TaskEntity(), openTask, {
-              completedAt: consumedAt,
-              status: taskStatus,
-            }),
+        openTasks.map((openTask): TaskEntity =>
+          Object.assign(new TaskEntity(), openTask, {
+            completedAt: consumedAt,
+            status: taskStatus,
+          }),
         ),
       );
       await this.closeTaskCandidates(
@@ -9764,13 +9776,11 @@ export class WorkflowEngineService {
     const consumedAt = new Date();
 
     await manager.getRepository(WorkflowTokenEntity).save(
-      tokens.map(
-        (token): WorkflowTokenEntity => ({
-          ...token,
-          consumedAt,
-          status: WorkflowTokenStatusEnum.CONSUMED,
-        }),
-      ),
+      tokens.map((token): WorkflowTokenEntity => ({
+        ...token,
+        consumedAt,
+        status: WorkflowTokenStatusEnum.CONSUMED,
+      })),
     );
   }
 
@@ -9817,23 +9827,20 @@ export class WorkflowEngineService {
     );
 
     await tokenRepository.save(
-      alternativeTokens.map(
-        (candidate): WorkflowTokenEntity => ({
-          ...candidate,
-          consumedAt,
-          status: WorkflowTokenStatusEnum.CONSUMED,
-        }),
-      ),
+      alternativeTokens.map((candidate): WorkflowTokenEntity => ({
+        ...candidate,
+        consumedAt,
+        status: WorkflowTokenStatusEnum.CONSUMED,
+      })),
     );
 
     if (cancellableTasks.length) {
       await taskRepository.save(
-        cancellableTasks.map(
-          (task): TaskEntity =>
-            Object.assign(new TaskEntity(), task, {
-              completedAt: consumedAt,
-              status: TaskStatusEnum.CANCELLED,
-            }),
+        cancellableTasks.map((task): TaskEntity =>
+          Object.assign(new TaskEntity(), task, {
+            completedAt: consumedAt,
+            status: TaskStatusEnum.CANCELLED,
+          }),
         ),
       );
       await this.closeTaskCandidates(
@@ -9868,9 +9875,8 @@ export class WorkflowEngineService {
     }
 
     await candidateRepository.save(
-      candidates.map(
-        (candidate): TaskCandidateEntity =>
-          Object.assign(new TaskCandidateEntity(), candidate, { status }),
+      candidates.map((candidate): TaskCandidateEntity =>
+        Object.assign(new TaskCandidateEntity(), candidate, { status }),
       ),
     );
   }
@@ -10107,7 +10113,8 @@ function isSameApprovalInstanceRevision(
   right: ApprovalInstanceEntity,
 ): boolean {
   return (
-    readApprovalInstanceRevision(left) === readApprovalInstanceRevision(right) &&
+    readApprovalInstanceRevision(left) ===
+      readApprovalInstanceRevision(right) &&
     JSON.stringify(left.formData) === JSON.stringify(right.formData)
   );
 }
@@ -10149,7 +10156,9 @@ function readDataSourceFieldKeyAtPath(
     (candidate) => isRecord(candidate) && candidate.fieldKey === fieldKey,
   );
 
-  return field && isFormDataSourceFieldDefinition(field) ? field.fieldKey : null;
+  return field && isFormDataSourceFieldDefinition(field)
+    ? field.fieldKey
+    : null;
 }
 
 /**
@@ -10366,7 +10375,9 @@ function assertNoUnresolvableDynamicValues(
   }
 }
 
-function readApprovalInstanceRevision(instance: ApprovalInstanceEntity): string {
+function readApprovalInstanceRevision(
+  instance: ApprovalInstanceEntity,
+): string {
   return instance.updatedAt instanceof Date
     ? instance.updatedAt.toISOString()
     : String(instance.updatedAt ?? '');
@@ -10745,8 +10756,7 @@ function isReturnCommentRequired(
   const node = readWorkflowNodeOrThrow(workflow, nodeId);
 
   return (
-    node.type === 'userTask' &&
-    node.data.returnBehavior.requireComment === true
+    node.type === 'userTask' && node.data.returnBehavior.requireComment === true
   );
 }
 
@@ -11628,8 +11638,7 @@ function readAdhocTargetValue(
   if (kind === AdhocTargetKindEnum.POSITION) {
     return {
       kind,
-      positionId:
-        typeof value.positionId === 'string' ? value.positionId : '',
+      positionId: typeof value.positionId === 'string' ? value.positionId : '',
     };
   }
 
@@ -11649,9 +11658,7 @@ function readAdhocTargetValue(
         >(
           (accumulator, [key, headerValue]) => ({
             ...accumulator,
-            ...(typeof headerValue === 'string'
-              ? { [key]: headerValue }
-              : {}),
+            ...(typeof headerValue === 'string' ? { [key]: headerValue } : {}),
           }),
           {},
         )
@@ -11799,8 +11806,7 @@ function readTopPriorityResolutions(
     );
 
     return sameTier.filter(
-      (resolution) =>
-        (orgUnitDepths.get(resolution.scopeId) ?? 0) === maxDepth,
+      (resolution) => (orgUnitDepths.get(resolution.scopeId) ?? 0) === maxDepth,
     );
   }
 
@@ -11843,10 +11849,7 @@ function readOrgUnitDepthMap(
   orgUnits: readonly OrgUnitEntity[],
 ): ReadonlyMap<string, number> {
   return new Map(
-    orgUnits.map((orgUnit) => [
-      orgUnit.id,
-      orgUnit.path.split('.').length,
-    ]),
+    orgUnits.map((orgUnit) => [orgUnit.id, orgUnit.path.split('.').length]),
   );
 }
 
@@ -12147,7 +12150,11 @@ function throwFirstFormDataFieldError({
         .map((field) => field.label || field.fieldKey)
         .join(', ')}`,
       missingFields.map((field) =>
-        createFormDataIssue(readFieldIssueLocation(field), 'REQUIRED', '為必填'),
+        createFormDataIssue(
+          readFieldIssueLocation(field),
+          'REQUIRED',
+          '為必填',
+        ),
       ),
     );
   }
@@ -12366,7 +12373,8 @@ function readSubmittedTextValueErrors(
     return [];
   }
 
-  const readIssue = (): ReturnType<typeof readTextFieldValueIssue> | 'timeout' => {
+  const readIssue = ():
+    ReturnType<typeof readTextFieldValueIssue> | 'timeout' => {
     try {
       return readTextFieldValueIssue(field, value, {
         testPattern: shapeOnly ? (): boolean => true : testPattern,
@@ -12442,7 +12450,9 @@ function readRowCellValue(
  * Columns carry no `requiredWhen`: row-scoped conditions are out of scope for
  * V1 and the structural lint rejects them (ADR 16 §3.1).
  */
-function isSubmittedTableColumnRequired(column: TableColumnDefinition): boolean {
+function isSubmittedTableColumnRequired(
+  column: TableColumnDefinition,
+): boolean {
   return column.required === true;
 }
 
@@ -12451,7 +12461,9 @@ function readTableMinRows(field: TableFieldDefinition): number {
 }
 
 function readTableMaxRows(field: TableFieldDefinition): number {
-  return typeof field.maxRows === 'number' ? field.maxRows : FORM_TABLE_MAX_ROWS;
+  return typeof field.maxRows === 'number'
+    ? field.maxRows
+    : FORM_TABLE_MAX_ROWS;
 }
 
 function readTableRequiredRowCount(field: TableFieldDefinition): number {

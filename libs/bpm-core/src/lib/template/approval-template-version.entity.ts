@@ -72,7 +72,9 @@ export class ApprovalTemplateVersionEntity {
 
   @Field(() => String, { nullable: true })
   get notificationConfigJson(): string | null {
-    return this.notificationConfig ? JSON.stringify(this.notificationConfig) : null;
+    return this.notificationConfig
+      ? JSON.stringify(this.notificationConfig)
+      : null;
   }
 
   @Field(() => String, { nullable: true })

@@ -655,7 +655,10 @@ describe('@rytass/bpm-core-client/workflow', () => {
     };
 
     it('asks for one inbox page and its total in one request', async (): Promise<void> => {
-      const harness = installFetchMock({ inboxTaskCount: 31, inboxTasks: [TASK] });
+      const harness = installFetchMock({
+        inboxTaskCount: 31,
+        inboxTasks: [TASK],
+      });
       try {
         const result = await listInboxTasksPage({
           assigneeMemberId: 'member-001',
