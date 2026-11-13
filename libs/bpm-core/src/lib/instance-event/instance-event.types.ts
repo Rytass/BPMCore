@@ -71,4 +71,5 @@ export const BPM_INSTANCE_EVENT_STATUSES = [
   'FAILED',
 ] as const;
 
-export type BPMInstanceEventStatus = (typeof BPM_INSTANCE_EVENT_STATUSES)[number];
+export type BPMInstanceEventStatus =
+  (typeof BPM_INSTANCE_EVENT_STATUSES)[number];

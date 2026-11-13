@@ -17,7 +17,9 @@ function createManager(): {
   readonly manager: EntityManager;
   readonly save: jest.Mock;
 } {
-  const save = jest.fn((row: unknown): Promise<unknown> => Promise.resolve(row));
+  const save = jest.fn((row: unknown): Promise<unknown> =>
+    Promise.resolve(row),
+  );
   const repository = {
     create: (value: unknown): unknown => value,
     save,
@@ -49,7 +51,13 @@ describe('InstanceEventWriter', (): void => {
     const { manager, save } = createManager();
     const writer = createWriter(null);
 
-    await writer.record(manager, 'instance-1', snapshot, 'INSTANCE_APPROVED', {});
+    await writer.record(
+      manager,
+      'instance-1',
+      snapshot,
+      'INSTANCE_APPROVED',
+      {},
+    );
 
     expect(save).not.toHaveBeenCalled();
   });
