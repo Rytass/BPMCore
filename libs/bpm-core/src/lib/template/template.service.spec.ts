@@ -30,6 +30,7 @@ import {
 import { TemplateService } from './template.service';
 import { EMPTY_WORKFLOW_DEFINITION } from './workflow-definition.validator';
 import {
+  FormDataSourceBindingSource,
   FormDefinitionSchema,
   FormFieldDefinition,
   isTableFieldDefinition,
@@ -66,8 +67,8 @@ describe('TemplateService', () => {
       }): Promise<readonly ApprovalTemplateEntity[]> =>
         Promise.resolve(templates.slice(skip, skip + take)),
     );
-    const count = jest.fn(
-      (): Promise<number> => Promise.resolve(templates.length),
+    const count = jest.fn((): Promise<number> =>
+      Promise.resolve(templates.length),
     );
     const service = new TemplateService(
       {
@@ -109,8 +110,8 @@ describe('TemplateService', () => {
   });
 
   it('filters approval templates by derived publication status', async (): Promise<void> => {
-    const find = jest.fn(
-      (): Promise<readonly ApprovalTemplateEntity[]> => Promise.resolve([]),
+    const find = jest.fn((): Promise<readonly ApprovalTemplateEntity[]> =>
+      Promise.resolve([]),
     );
     const count = jest.fn((): Promise<number> => Promise.resolve(0));
     const service = new TemplateService(
@@ -152,8 +153,8 @@ describe('TemplateService', () => {
   });
 
   it('pushes search text into server-side template filters', async (): Promise<void> => {
-    const find = jest.fn(
-      (): Promise<readonly ApprovalTemplateEntity[]> => Promise.resolve([]),
+    const find = jest.fn((): Promise<readonly ApprovalTemplateEntity[]> =>
+      Promise.resolve([]),
     );
     const count = jest.fn((): Promise<number> => Promise.resolve(0));
     const service = new TemplateService(
@@ -207,8 +208,8 @@ describe('TemplateService', () => {
   });
 
   it('filters approval templates by category id', async (): Promise<void> => {
-    const find = jest.fn(
-      (): Promise<readonly ApprovalTemplateEntity[]> => Promise.resolve([]),
+    const find = jest.fn((): Promise<readonly ApprovalTemplateEntity[]> =>
+      Promise.resolve([]),
     );
     const count = jest.fn((): Promise<number> => Promise.resolve(0));
     const service = new TemplateService(
@@ -250,8 +251,8 @@ describe('TemplateService', () => {
   });
 
   it('keeps deactivated approval templates listed unless activation is filtered', async (): Promise<void> => {
-    const find = jest.fn(
-      (): Promise<readonly ApprovalTemplateEntity[]> => Promise.resolve([]),
+    const find = jest.fn((): Promise<readonly ApprovalTemplateEntity[]> =>
+      Promise.resolve([]),
     );
     const count = jest.fn((): Promise<number> => Promise.resolve(0));
     const service = new TemplateService(
@@ -289,8 +290,8 @@ describe('TemplateService', () => {
   });
 
   it('filters approval templates by activation status', async (): Promise<void> => {
-    const find = jest.fn(
-      (): Promise<readonly ApprovalTemplateEntity[]> => Promise.resolve([]),
+    const find = jest.fn((): Promise<readonly ApprovalTemplateEntity[]> =>
+      Promise.resolve([]),
     );
     const count = jest.fn((): Promise<number> => Promise.resolve(0));
     const service = new TemplateService(
@@ -339,9 +340,8 @@ describe('TemplateService', () => {
     );
     const service = new TemplateService(
       withTemplateTransaction({
-        findOne: jest.fn(
-          (): Promise<ApprovalTemplateEntity | null> =>
-            Promise.resolve(template),
+        findOne: jest.fn((): Promise<ApprovalTemplateEntity | null> =>
+          Promise.resolve(template),
         ),
         merge: jest.fn(
           (
@@ -423,8 +423,8 @@ describe('TemplateService', () => {
   it('rejects activation toggles for unknown approval templates', async (): Promise<void> => {
     const service = new TemplateService(
       withTemplateTransaction({
-        findOne: jest.fn(
-          (): Promise<ApprovalTemplateEntity | null> => Promise.resolve(null),
+        findOne: jest.fn((): Promise<ApprovalTemplateEntity | null> =>
+          Promise.resolve(null),
         ),
       } as unknown as Repository<ApprovalTemplateEntity>),
       createRepository<ApprovalTemplateCategoryEntity>(),
@@ -519,16 +519,15 @@ describe('TemplateService', () => {
     // `createApprovalTemplate` re-reads the row it just wrote, because
     // `categoryId` is a read-only projection of the column `categoryDetail`
     // owns and so is absent from the in-memory entity after `save()`.
-    const templateFindOne = jest.fn(
-      (): Promise<ApprovalTemplateEntity> =>
-        Promise.resolve(
-          Object.assign(new ApprovalTemplateEntity(), {
-            category: '財務',
-            categoryDetail: category,
-            categoryId: category.id,
-            id: 'template-1',
-          }),
-        ),
+    const templateFindOne = jest.fn((): Promise<ApprovalTemplateEntity> =>
+      Promise.resolve(
+        Object.assign(new ApprovalTemplateEntity(), {
+          category: '財務',
+          categoryDetail: category,
+          categoryId: category.id,
+          id: 'template-1',
+        }),
+      ),
     );
     const manager = {
       getRepository: jest.fn((entity: unknown): unknown => {
@@ -548,9 +547,8 @@ describe('TemplateService', () => {
 
         if (entity === FormDefinitionVersionEntity) {
           return {
-            findOne: jest.fn(
-              (): Promise<FormDefinitionVersionEntity | null> =>
-                Promise.resolve(null),
+            findOne: jest.fn((): Promise<FormDefinitionVersionEntity | null> =>
+              Promise.resolve(null),
             ),
           };
         }
@@ -616,16 +614,15 @@ describe('TemplateService', () => {
       id: 'template-1',
     });
     const saved: ApprovalTemplateEntity[] = [];
-    const templateFindOne = jest.fn(
-      (): Promise<ApprovalTemplateEntity> =>
-        Promise.resolve(
-          saved.length > 0
-            ? Object.assign(new ApprovalTemplateEntity(), {
-                ...saved[0],
-                categoryId: saved[0]?.categoryDetail?.id ?? null,
-              })
-            : existing,
-        ),
+    const templateFindOne = jest.fn((): Promise<ApprovalTemplateEntity> =>
+      Promise.resolve(
+        saved.length > 0
+          ? Object.assign(new ApprovalTemplateEntity(), {
+              ...saved[0],
+              categoryId: saved[0]?.categoryDetail?.id ?? null,
+            })
+          : existing,
+      ),
     );
     const templateRepository = {
       findOne: templateFindOne,
@@ -646,9 +643,8 @@ describe('TemplateService', () => {
     const service = new TemplateService(
       withTemplateTransaction(templateRepository),
       {
-        findOne: jest.fn(
-          (): Promise<ApprovalTemplateCategoryEntity> =>
-            Promise.resolve(nextCategory),
+        findOne: jest.fn((): Promise<ApprovalTemplateCategoryEntity> =>
+          Promise.resolve(nextCategory),
         ),
       } as unknown as Repository<ApprovalTemplateCategoryEntity>,
       createRepository<ApprovalTemplateVersionEntity>(),
@@ -713,15 +709,13 @@ describe('TemplateService', () => {
       } as unknown as Repository<ApprovalTemplateEntity>,
       createRepository<ApprovalTemplateCategoryEntity>(),
       {
-        findOne: jest.fn(
-          (): Promise<ApprovalTemplateVersionEntity | null> =>
-            Promise.resolve(draftVersion),
+        findOne: jest.fn((): Promise<ApprovalTemplateVersionEntity | null> =>
+          Promise.resolve(draftVersion),
         ),
       } as unknown as Repository<ApprovalTemplateVersionEntity>,
       {
-        findOne: jest.fn(
-          (): Promise<FormDefinitionVersionEntity | null> =>
-            Promise.resolve(formVersion),
+        findOne: jest.fn((): Promise<FormDefinitionVersionEntity | null> =>
+          Promise.resolve(formVersion),
         ),
       } as unknown as Repository<FormDefinitionVersionEntity>,
       new ConditionService(),
@@ -766,8 +760,18 @@ describe('TemplateService', () => {
   describe('DYNAMIC_FORM member references', (): void => {
     const memberSchema: FormDefinitionSchema = {
       fields: [
-        { fieldKey: 'reviewer', label: '審核人', required: true, type: 'member' },
-        { fieldKey: 'backup', label: '代理人', required: false, type: 'member' },
+        {
+          fieldKey: 'reviewer',
+          label: '審核人',
+          required: true,
+          type: 'member',
+        },
+        {
+          fieldKey: 'backup',
+          label: '代理人',
+          required: false,
+          type: 'member',
+        },
         {
           fieldKey: 'auditor',
           label: '稽核',
@@ -849,9 +853,8 @@ describe('TemplateService', () => {
             { formPath, type: 'DYNAMIC_FORM' },
           ),
         });
-        const publish = service.publishApprovalTemplateVersion(
-          'template-version-1',
-        );
+        const publish =
+          service.publishApprovalTemplateVersion('template-version-1');
 
         await expect(publish).rejects.toThrow(
           `workflow.nodes.task_manager.approverResolver.formPath must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
@@ -888,7 +891,12 @@ describe('TemplateService', () => {
           required: true,
           type: 'member',
         },
-        { fieldKey: 'optionalBoss', label: '選填', required: false, type: 'member' },
+        {
+          fieldKey: 'optionalBoss',
+          label: '選填',
+          required: false,
+          type: 'member',
+        },
         {
           fieldKey: 'shownBoss',
           label: '條件顯示',
@@ -904,7 +912,12 @@ describe('TemplateService', () => {
           type: 'member',
         },
         { fieldKey: 'unit', label: '部門', required: true, type: 'org_unit' },
-        { fieldKey: 'optionalUnit', label: '選填部門', required: false, type: 'org_unit' },
+        {
+          fieldKey: 'optionalUnit',
+          label: '選填部門',
+          required: false,
+          type: 'org_unit',
+        },
         {
           fieldKey: 'shownUnit',
           label: '條件部門',
@@ -995,7 +1008,9 @@ describe('TemplateService', () => {
 
     describe('an org_unit field that an approver fills in (Q-U3)', (): void => {
       const unitField = (required: boolean): FormDefinitionSchema => ({
-        fields: [{ fieldKey: 'unit', label: '部門', required, type: 'org_unit' }],
+        fields: [
+          { fieldKey: 'unit', label: '部門', required, type: 'org_unit' },
+        ],
         schemaVersion: 1,
       });
       // task_1 lets the approver fill `unit`; task_2 reads it as the source.
@@ -1011,7 +1026,10 @@ describe('TemplateService', () => {
                 ...node,
                 data: {
                   ...node.data,
-                  approverResolver: { formPath: 'unit', type: 'FORM_ORG_UNIT_MANAGER' },
+                  approverResolver: {
+                    formPath: 'unit',
+                    type: 'FORM_ORG_UNIT_MANAGER',
+                  },
                 },
               }
             : node,
@@ -1027,14 +1045,21 @@ describe('TemplateService', () => {
         }).publishApprovalTemplateVersion('template-version-1');
 
       it('refuses a source field that is non-required because an approver fills it', async (): Promise<void> => {
-        await expect(publishWith(unitField(false), readingWorkflow)).rejects.toThrow(
+        await expect(
+          publishWith(unitField(false), readingWorkflow),
+        ).rejects.toThrow(
           'workflow.nodes.task_2.approverResolver.formPath must reference a required org unit field that no visibility rule or hidden flag can leave empty: unit',
         );
       });
 
       it('refuses a required field that an approver also fills in', async (): Promise<void> => {
-        await expect(publishWith(unitField(true), readingWorkflow)).rejects.toThrow(
-          WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule('unit', 'required'),
+        await expect(
+          publishWith(unitField(true), readingWorkflow),
+        ).rejects.toThrow(
+          WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(
+            'unit',
+            'required',
+          ),
         );
       });
 
@@ -1048,7 +1073,9 @@ describe('TemplateService', () => {
           ),
         } as WorkflowDefinition;
 
-        await expect(publishWith(unitField(true), plain)).resolves.toMatchObject({
+        await expect(
+          publishWith(unitField(true), plain),
+        ).resolves.toMatchObject({
           id: 'template-version-1',
         });
       });
@@ -1081,7 +1108,9 @@ describe('TemplateService', () => {
         }),
       } as WorkflowDefinition;
     };
-    const publish = (workflowDefinition: WorkflowDefinition): Promise<unknown> =>
+    const publish = (
+      workflowDefinition: WorkflowDefinition,
+    ): Promise<unknown> =>
       createTableConditionPublishService({
         workflowDefinition,
       }).publishApprovalTemplateVersion('template-version-1');
@@ -1225,7 +1254,7 @@ describe('TemplateService', () => {
     const path =
       'workflow.nodes.task_manager.approverResolver.startFrom.formPath';
 
-    it('publishes a chain that sets neither setting (control: today\'s templates)', async (): Promise<void> => {
+    it("publishes a chain that sets neither setting (control: today's templates)", async (): Promise<void> => {
       await expect(
         createTableConditionPublishService({
           schema,
@@ -1309,9 +1338,9 @@ describe('TemplateService', () => {
       });
 
       it('rejects a source that is not upstream of the chain node', async (): Promise<void> => {
-        await expect(
-          publishStageStart('task_1', ['task_2']),
-        ).rejects.toThrow(/不在 .* 的上游/);
+        await expect(publishStageStart('task_1', ['task_2'])).rejects.toThrow(
+          /不在 .* 的上游/,
+        );
       });
 
       it('reports an empty stage start once, not once per lint', async (): Promise<void> => {
@@ -1449,7 +1478,9 @@ describe('TemplateService', () => {
         }),
       } as WorkflowDefinition;
     };
-    const publish = (workflowDefinition: WorkflowDefinition): Promise<unknown> =>
+    const publish = (
+      workflowDefinition: WorkflowDefinition,
+    ): Promise<unknown> =>
       createTableConditionPublishService({
         workflowDefinition,
       }).publishApprovalTemplateVersion('template-version-1');
@@ -1481,7 +1512,7 @@ describe('TemplateService', () => {
         '排除對象的前面關卡 「補填 1」 設有逾時自動核准',
       ],
     ])(
-      'rejects an earlier node with %s: when it is skipped the node would read the previous round\'s approver',
+      "rejects an earlier node with %s: when it is skipped the node would read the previous round's approver",
       async (_name, firstNodeData, wording): Promise<void> => {
         // The same node is refused as a NODE_ACTOR source for the same reason.
         await expect(
@@ -1554,7 +1585,12 @@ describe('TemplateService', () => {
         },
         { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
         { fieldKey: 'note', label: '備註', required: false, type: 'text' },
-        { fieldKey: 'taxFree', label: '免稅', required: false, type: 'boolean' },
+        {
+          fieldKey: 'taxFree',
+          label: '免稅',
+          required: false,
+          type: 'boolean',
+        },
         {
           dataSource,
           fieldKey: 'taxCode',
@@ -1602,11 +1638,10 @@ describe('TemplateService', () => {
       rule: Readonly<Record<string, unknown>>,
     ): FormDefinitionSchema => ({
       ...fillSchema,
-      fields: fillSchema.fields.map(
-        (field): FormFieldDefinition =>
-          field.fieldKey === fieldKey
-            ? ({ ...field, ...rule } as FormFieldDefinition)
-            : field,
+      fields: fillSchema.fields.map((field): FormFieldDefinition =>
+        field.fieldKey === fieldKey
+          ? ({ ...field, ...rule } as FormFieldDefinition)
+          : field,
       ),
     });
 
@@ -1624,9 +1659,7 @@ describe('TemplateService', () => {
       fill: 'NONE',
     });
 
-    const publishError = async (
-      service: TemplateService,
-    ): Promise<string> => {
+    const publishError = async (service: TemplateService): Promise<string> => {
       try {
         await service.publishApprovalTemplateVersion('template-version-1');
       } catch (error) {
@@ -1730,9 +1763,7 @@ describe('TemplateService', () => {
     it('leaves form rules alone on a field no approver fills in', async (): Promise<void> => {
       const service = createTableConditionPublishService({
         schema: withFieldRule('invoiceKind', { hidden: true, required: false }),
-        workflowDefinition: createFieldAccessWorkflow([
-          [shown('invoiceKind')],
-        ]),
+        workflowDefinition: createFieldAccessWorkflow([[shown('invoiceKind')]]),
       });
 
       await expect(
@@ -1822,10 +1853,7 @@ describe('TemplateService', () => {
       const service = createTableConditionPublishService({
         schema: fillSchema,
         workflowDefinition: createFieldAccessWorkflow([
-          [
-            fillable('missing'),
-            shown('alsoMissing'),
-          ],
+          [fillable('missing'), shown('alsoMissing')],
         ]),
       });
       const lines = (await publishError(service)).split('; ');
@@ -1878,11 +1906,14 @@ describe('TemplateService', () => {
       ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
-    // Known limit: an applicant-filled data-source cell that reads an
-    // approver-filled column through ROW_FIELD now publishes. Its stored value
-    // is resolved before the approver fills the source (see ADR 27 §4.3).
-    it('publishes a data-source column whose ROW_FIELD source is approver-filled', async (): Promise<void> => {
-      const rowFieldSchema: FormDefinitionSchema = {
+    // A data-source column reads its source column (ROW_FIELD or EXPRESSION)
+    // from the same row. Re-resolution at decide (ADR 27 §4(b)) is only safe
+    // when both columns are opened to the same node, so publish refuses a
+    // lone opened source (ADR 27 §4.3).
+    const withDataSourceFrom = (
+      from: FormDataSourceBindingSource,
+    ): FormDefinitionSchema =>
+      ({
         ...fillSchema,
         fields: fillSchema.fields.map((field): FormFieldDefinition =>
           field.fieldKey === 'sourcedLines' && isTableFieldDefinition(field)
@@ -1893,12 +1924,7 @@ describe('TemplateService', () => {
                     ? ({
                         ...column,
                         dataSource: {
-                          bindings: [
-                            {
-                              from: { kind: 'ROW_FIELD', columnKey: 'name' },
-                              parameter: 'name',
-                            },
-                          ],
+                          bindings: [{ from, parameter: 'name' }],
                           key: 'invoice_kinds',
                           version: 1,
                         },
@@ -1908,11 +1934,35 @@ describe('TemplateService', () => {
               }
             : field,
         ),
-      } as FormDefinitionSchema;
+      }) as FormDefinitionSchema;
+
+    it.each<[string, FormDataSourceBindingSource]>([
+      ['ROW_FIELD', { kind: 'ROW_FIELD', columnKey: 'name' }],
+      ['EXPRESSION', { kind: 'EXPRESSION', expression: 'row.name' }],
+    ])(
+      'refuses an approver-filled %s source whose data-source column is not opened to the same node',
+      async (
+        _kind: string,
+        from: FormDataSourceBindingSource,
+      ): Promise<void> => {
+        const service = createTableConditionPublishService({
+          schema: withDataSourceFrom(from),
+          workflowDefinition: createFieldAccessWorkflow([
+            [columnFillable('sourcedLines', ['name'])],
+          ]),
+        });
+
+        await expect(publishError(service)).resolves.toBe(
+          'workflow.nodes.task_1 fills in column name of formData.sourcedLines, and the data-source column kind reads it, so the same node must also fill in kind',
+        );
+      },
+    );
+
+    it('publishes an approver-filled source when its data-source column is opened to the same node', async (): Promise<void> => {
       const service = createTableConditionPublishService({
-        schema: rowFieldSchema,
+        schema: withDataSourceFrom({ kind: 'ROW_FIELD', columnKey: 'name' }),
         workflowDefinition: createFieldAccessWorkflow([
-          [columnFillable('sourcedLines', ['name'])],
+          [columnFillable('sourcedLines', ['name', 'kind'])],
         ]),
       });
 
@@ -1951,9 +2001,7 @@ describe('TemplateService', () => {
     it('allows an optional boolean field the approver fills in', async (): Promise<void> => {
       const service = createTableConditionPublishService({
         schema: fillSchema,
-        workflowDefinition: createFieldAccessWorkflow([
-          [fillable('taxFree')],
-        ]),
+        workflowDefinition: createFieldAccessWorkflow([[fillable('taxFree')]]),
       });
 
       await expect(
@@ -2120,9 +2168,7 @@ describe('TemplateService', () => {
         schema: readEarlySchema,
         workflowDefinition,
       });
-    const publishError = async (
-      service: TemplateService,
-    ): Promise<string> => {
+    const publishError = async (service: TemplateService): Promise<string> => {
       try {
         await service.publishApprovalTemplateVersion('template-version-1');
       } catch (error) {
@@ -2166,7 +2212,9 @@ describe('TemplateService', () => {
       );
 
     it('refuses an edge condition read before the approver fills the field in', async (): Promise<void> => {
-      const service = publishService(linear({ beforeFinance: { condition: B2B } }));
+      const service = publishService(
+        linear({ beforeFinance: { condition: B2B } }),
+      );
 
       await expect(publishError(service)).resolves.toBe(
         readEarlyLine('workflow.edges.edge_manager_finance.data.condition'),
@@ -2200,7 +2248,9 @@ describe('TemplateService', () => {
     });
 
     it('accepts the same condition on an edge that leaves the filling node', async (): Promise<void> => {
-      const service = publishService(linear({ afterFinance: { condition: B2B } }));
+      const service = publishService(
+        linear({ afterFinance: { condition: B2B } }),
+      );
 
       await expect(
         service.publishApprovalTemplateVersion('template-version-1'),
@@ -2697,7 +2747,9 @@ describe('TemplateService', () => {
             type: 'NOTIFY',
           },
         });
-      const toNotify = [edge('edge_manager_notify', 'task_manager', 'notify_bad')];
+      const toNotify = [
+        edge('edge_manager_notify', 'task_manager', 'notify_bad'),
+      ];
 
       it.each([
         [
@@ -2853,7 +2905,13 @@ describe('TemplateService', () => {
       createWebhookService([
         { key: 'amount', label: 'Amount', required: true, type: 'number' },
       ]),
-      [{ bindings: 'x', endpoint: { key: 'erp.purchase-approved', version: 1 }, id: 'w' }],
+      [
+        {
+          bindings: 'x',
+          endpoint: { key: 'erp.purchase-approved', version: 1 },
+          id: 'w',
+        },
+      ],
     );
 
     await expect(
@@ -2872,7 +2930,9 @@ describe('TemplateService', () => {
 
     await expect(
       service.publishApprovalTemplateVersion('template-version-1'),
-    ).resolves.toMatchObject({ status: ApprovalTemplateVersionStatusEnum.PUBLISHED });
+    ).resolves.toMatchObject({
+      status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
   });
 
   it('rejects publishing a structured edge condition that indexes a table row', async (): Promise<void> => {
@@ -3027,9 +3087,8 @@ describe('TemplateService', () => {
         count: jest.fn((): Promise<number> => Promise.resolve(2)),
       } as unknown as Repository<ApprovalTemplateEntity>,
       {
-        findOne: jest.fn(
-          (): Promise<ApprovalTemplateCategoryEntity | null> =>
-            Promise.resolve(category),
+        findOne: jest.fn((): Promise<ApprovalTemplateCategoryEntity | null> =>
+          Promise.resolve(category),
         ),
         merge: jest.fn(
           (
@@ -3073,9 +3132,8 @@ describe('TemplateService', () => {
         count: jest.fn((): Promise<number> => Promise.resolve(0)),
       } as unknown as Repository<ApprovalTemplateEntity>,
       {
-        findOne: jest.fn(
-          (): Promise<ApprovalTemplateCategoryEntity | null> =>
-            Promise.resolve(category),
+        findOne: jest.fn((): Promise<ApprovalTemplateCategoryEntity | null> =>
+          Promise.resolve(category),
         ),
         remove: categoryRemove,
       } as unknown as Repository<ApprovalTemplateCategoryEntity>,
@@ -3256,7 +3314,9 @@ describe('TemplateService.composeApprovalTemplateWithForm', () => {
         }
 
         if (target === ApprovalTemplateVersionEntity) {
-          const save = repository['save'] as (value: unknown) => Promise<unknown>;
+          const save = repository['save'] as (
+            value: unknown,
+          ) => Promise<unknown>;
 
           return {
             ...repository,
@@ -3698,25 +3758,27 @@ function createFieldAccessWorkflow(
         position: { x: 80, y: 160 },
         type: 'startEvent',
       },
-      ...fieldAccessPerNode.map((fieldAccess, index): Record<string, unknown> => ({
-        data: {
-          allowAddSigner: false,
-          allowReject: true,
-          allowTransfer: true,
-          approverResolver: {
-            baseFromInitiator: true,
-            levelsUp: 1,
-            type: 'ORG_MANAGER',
+      ...fieldAccessPerNode.map(
+        (fieldAccess, index): Record<string, unknown> => ({
+          data: {
+            allowAddSigner: false,
+            allowReject: true,
+            allowTransfer: true,
+            approverResolver: {
+              baseFromInitiator: true,
+              levelsUp: 1,
+              type: 'ORG_MANAGER',
+            },
+            decisionPolicy: { type: 'SINGLE' },
+            fieldAccess,
+            label: `補填 ${index + 1}`,
+            returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
           },
-          decisionPolicy: { type: 'SINGLE' },
-          fieldAccess,
-          label: `補填 ${index + 1}`,
-          returnBehavior: { allowReturn: true, allowedTargets: 'INITIATOR' },
-        },
-        id: nodeIds[index],
-        position: { x: 300 + index * 200, y: 160 },
-        type: 'userTask',
-      })),
+          id: nodeIds[index],
+          position: { x: 300 + index * 200, y: 160 },
+          type: 'userTask',
+        }),
+      ),
       {
         data: { endState: 'APPROVED', label: '完成' },
         id: 'end',
@@ -3881,8 +3943,8 @@ function createTableConditionPublishService({
     getRepository: (target: unknown): ObjectLiteral =>
       target === ApprovalTemplateEntity
         ? {
-            findOne: jest.fn(
-              (): Promise<ApprovalTemplateEntity> => Promise.resolve(template),
+            findOne: jest.fn((): Promise<ApprovalTemplateEntity> =>
+              Promise.resolve(template),
             ),
             merge: jest.fn(
               (
@@ -3937,15 +3999,13 @@ function createTableConditionPublishService({
     } as unknown as Repository<ApprovalTemplateEntity>,
     createRepository<ApprovalTemplateCategoryEntity>(),
     {
-      findOne: jest.fn(
-        (): Promise<ApprovalTemplateVersionEntity | null> =>
-          Promise.resolve(draftVersion),
+      findOne: jest.fn((): Promise<ApprovalTemplateVersionEntity | null> =>
+        Promise.resolve(draftVersion),
       ),
     } as unknown as Repository<ApprovalTemplateVersionEntity>,
     {
-      findOne: jest.fn(
-        (): Promise<FormDefinitionVersionEntity | null> =>
-          Promise.resolve(formVersion),
+      findOne: jest.fn((): Promise<FormDefinitionVersionEntity | null> =>
+        Promise.resolve(formVersion),
       ),
     } as unknown as Repository<FormDefinitionVersionEntity>,
     new ConditionService(),
@@ -4086,8 +4146,8 @@ function createWebhookPublishService(
     getRepository: (target: unknown): ObjectLiteral =>
       target === ApprovalTemplateEntity
         ? {
-            findOne: jest.fn(
-              (): Promise<ApprovalTemplateEntity> => Promise.resolve(template),
+            findOne: jest.fn((): Promise<ApprovalTemplateEntity> =>
+              Promise.resolve(template),
             ),
             merge: jest.fn(
               (
@@ -4143,15 +4203,13 @@ function createWebhookPublishService(
     } as unknown as Repository<ApprovalTemplateEntity>,
     createRepository<ApprovalTemplateCategoryEntity>(),
     {
-      findOne: jest.fn(
-        (): Promise<ApprovalTemplateVersionEntity | null> =>
-          Promise.resolve(draftVersion),
+      findOne: jest.fn((): Promise<ApprovalTemplateVersionEntity | null> =>
+        Promise.resolve(draftVersion),
       ),
     } as unknown as Repository<ApprovalTemplateVersionEntity>,
     {
-      findOne: jest.fn(
-        (): Promise<FormDefinitionVersionEntity | null> =>
-          Promise.resolve(formVersion),
+      findOne: jest.fn((): Promise<FormDefinitionVersionEntity | null> =>
+        Promise.resolve(formVersion),
       ),
     } as unknown as Repository<FormDefinitionVersionEntity>,
     new ConditionService(),
@@ -4166,7 +4224,9 @@ function createWebhookService(
   return new WorkflowWebhookService(
     new StaticBPMWorkflowWebhookRegistry([
       {
-        buildRequest: async () => ({ url: 'https://erp.example.com/hooks/bpm' }),
+        buildRequest: async () => ({
+          url: 'https://erp.example.com/hooks/bpm',
+        }),
         descriptor: {
           key: 'erp.purchase-approved',
           label: 'ERP purchase order',
@@ -4832,7 +4892,9 @@ describe('TemplateService compose template key (ADR 27 §6.2)', () => {
 
 describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
   const NOTE_TEXT_SCHEMA = {
-    fields: [{ fieldKey: 'note', label: '備註', required: false, type: 'text' }],
+    fields: [
+      { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+    ],
     schemaVersion: 1,
   };
   const NOTE_MONEY_FILTERABLE_SCHEMA = {
@@ -4889,7 +4951,10 @@ describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
     instances: readonly InstanceRow[],
   ): {
     readonly manager: EntityManager;
-    readonly state: { history: readonly HistoryRow[]; instances: readonly InstanceRow[] };
+    readonly state: {
+      history: readonly HistoryRow[];
+      instances: readonly InstanceRow[];
+    };
     readonly store: (entity: unknown) => Map<string, ObjectLiteral>;
   } {
     const state = { history, instances };
@@ -4972,9 +5037,9 @@ describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
       ),
     ).rejects.toThrow(/無法啟用篩選/u);
 
-    expect(store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId']).toBe(
-      v1.templateVersion.id,
-    );
+    expect(
+      store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId'],
+    ).toBe(v1.templateVersion.id);
   });
 
   it('refuses the same change when publishing an existing draft directly', async (): Promise<void> => {
@@ -5137,9 +5202,9 @@ describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
           return repository;
         }
 
-        const findOne = repository['findOne'] as (
-          options: { readonly lock?: { readonly mode: string } },
-        ) => Promise<unknown>;
+        const findOne = repository['findOne'] as (options: {
+          readonly lock?: { readonly mode: string };
+        }) => Promise<unknown>;
 
         return {
           ...repository,
@@ -5216,9 +5281,10 @@ describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
   });
 
   it('refuses a rollback to a filterable version whose stored values now conflict', async (): Promise<void> => {
-    const { manager, state, store } = createFilterableManager([], [
-      { formData: { note: null }, id: 'instance-1' },
-    ]);
+    const { manager, state, store } = createFilterableManager(
+      [],
+      [{ formData: { note: null }, id: 'instance-1' }],
+    );
     const service = createStoreBackedService(manager);
 
     const v1 = await service.composeApprovalTemplateWithForm(
@@ -5252,9 +5318,9 @@ describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
     await expect(
       service.rollbackApprovalTemplateVersion(v2.templateVersion.id),
     ).rejects.toThrow(ConflictException);
-    expect(store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId']).toBe(
-      v3.templateVersion.id,
-    );
+    expect(
+      store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId'],
+    ).toBe(v3.templateVersion.id);
 
     // The check is about instances sitting under a version of another type,
     // not about their values. Once none sit under the text version, the same
@@ -5263,9 +5329,9 @@ describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
     state.history = [];
 
     await service.rollbackApprovalTemplateVersion(v2.templateVersion.id);
-    expect(store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId']).toBe(
-      v2.templateVersion.id,
-    );
+    expect(
+      store(ApprovalTemplateEntity).get(templateId)?.['currentVersionId'],
+    ).toBe(v2.templateVersion.id);
   });
 });
 

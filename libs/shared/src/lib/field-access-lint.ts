@@ -53,6 +53,7 @@ export type FieldAccessIssueCode =
   | 'approverFilledFieldFileUpload'
   | 'approverFilledFieldFormRule'
   | 'approverFilledMultipleFillNodesOnPath'
+  | 'approverFilledTableDataSourceColumn'
   | 'fieldAccessAutoApprove'
   | 'fieldAccessDuplicate'
   | 'fieldAccessFillHidden'
@@ -559,17 +560,17 @@ export function readFieldAccessDependencyBreaks(
 
   return schema.fields.flatMap(
     (field): readonly FieldAccessDependencyBreak[] => {
-      if (!isTableFieldDefinition(field) || wholeFieldKeys.has(field.fieldKey)) {
+      if (
+        !isTableFieldDefinition(field) ||
+        wholeFieldKeys.has(field.fieldKey)
+      ) {
         return [];
       }
 
       const openColumnKeys = new Set(
-        units
-          .filter(
-            ({ fieldKey, columnKey }): boolean =>
-              fieldKey === field.fieldKey && columnKey !== null,
-          )
-          .map(({ columnKey }): string => columnKey ?? ''),
+        units.flatMap(({ fieldKey, columnKey }): readonly string[] =>
+          fieldKey === field.fieldKey && columnKey !== null ? [columnKey] : [],
+        ),
       );
 
       return [...openColumnKeys].flatMap(
@@ -664,5 +665,30 @@ export function readFormFieldAccessIssues(
     },
   );
 
-  return [...unknownFieldIssues, ...fieldIssues, ...applicantRuleIssues];
+  // A column the approver fills in whose data-source dependent the same node
+  // leaves open would keep its upstream value after the approver changes its
+  // source, so the publish refuses it (ADR 27 §4.3).
+  const dependencyIssues = userTasks.flatMap(
+    (node): readonly FieldAccessIssue[] =>
+      readFieldAccessDependencyBreaks(schema, readNodeFillUnits(node)).map(
+        ({ fieldKey, sourceColumnKey, dependentColumnKey }) => ({
+          code: 'approverFilledTableDataSourceColumn',
+          fieldKeys: [fieldKey],
+          message: WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(
+            node.id,
+            fieldKey,
+            sourceColumnKey,
+            dependentColumnKey,
+          ),
+          nodeIds: [node.id],
+        }),
+      ),
+  );
+
+  return [
+    ...unknownFieldIssues,
+    ...fieldIssues,
+    ...dependencyIssues,
+    ...applicantRuleIssues,
+  ];
 }

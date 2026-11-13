@@ -18,6 +18,7 @@ const FORM_CODES: ReadonlySet<string> = new Set([
   'approverFilledFieldDataSource',
   'approverFilledFieldFileUpload',
   'approverFilledFieldFormRule',
+  'approverFilledTableDataSourceColumn',
   'fieldAccessUnknownField',
 ]);
 

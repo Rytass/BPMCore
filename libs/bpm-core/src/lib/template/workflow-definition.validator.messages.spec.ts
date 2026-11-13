@@ -98,15 +98,15 @@ describe('workflow lint message wording', (): void => {
     expect(WORKFLOW_EXPRESSION_LABELS.nodeActionPayload('n1')).toBe(
       'workflow.nodes.n1.data.action.payload',
     );
-    expect(WORKFLOW_EXPRESSION_LABELS.nodeActionRecipientsExpression('n1')).toBe(
-      'workflow.nodes.n1.data.action.recipients.expression',
-    );
+    expect(
+      WORKFLOW_EXPRESSION_LABELS.nodeActionRecipientsExpression('n1'),
+    ).toBe('workflow.nodes.n1.data.action.recipients.expression');
     expect(WORKFLOW_EXPRESSION_LABELS.nodeActionValue('n1')).toBe(
       'workflow.nodes.n1.data.action.value',
     );
-    expect(WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression('n1')).toBe(
-      'workflow.nodes.n1.data.approverResolver.expression',
-    );
+    expect(
+      WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression('n1'),
+    ).toBe('workflow.nodes.n1.data.approverResolver.expression');
     expect(WORKFLOW_EXPRESSION_LABELS.nodeEntryCondition('n1')).toBe(
       'workflow.nodes.n1.data.entryCondition',
     );
@@ -182,9 +182,14 @@ describe('workflow lint message wording', (): void => {
       'formData.amount is filled in by an approver, so it cannot be a file upload field',
     );
     expect(
-      WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn('items'),
+      WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(
+        'fill-items',
+        'items',
+        'name',
+        'label',
+      ),
     ).toBe(
-      'formData.items is filled in by an approver, so its table cannot have a data-source column',
+      'workflow.nodes.fill-items fills in column name of formData.items, and the data-source column label reads it, so the same node must also fill in label',
     );
     expect(
       WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(
