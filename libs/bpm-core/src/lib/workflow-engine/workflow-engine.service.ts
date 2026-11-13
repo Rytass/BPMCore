@@ -513,8 +513,25 @@ export interface TaskListPageOptions {
   readonly pageSize?: number;
 }
 
+/**
+ * Narrows a member's task list to the tasks of some templates. Absent fields
+ * do not filter. An empty `templateIds` matches nothing, as `IN ()` would.
+ * When both fields are given a task must satisfy both.
+ */
+export interface TaskTemplateFilter {
+  /** Only tasks whose instance was started from one of these templates. */
+  readonly templateIds?: readonly string[];
+  /** Only tasks whose instance's template carries this key (ADR 27 §6). */
+  readonly templateKey?: string;
+}
+
+/** Options of {@link WorkflowEngineService.listInboxTasks}. */
+export interface InboxTaskListOptions
+  extends TaskListPageOptions, TaskTemplateFilter {}
+
 /** Options of {@link WorkflowEngineService.listApprovalHistoryTasks}. */
-export interface ApprovalHistoryTaskListOptions extends TaskListPageOptions {
+export interface ApprovalHistoryTaskListOptions
+  extends TaskListPageOptions, TaskTemplateFilter {
   /** Only tasks of instances in this state. */
   readonly instanceState?: ApprovalInstanceStateEnum;
 }
@@ -4614,9 +4631,12 @@ export class WorkflowEngineService {
    */
   async listInboxTasks(
     assigneeMemberId: string,
-    options: TaskListPageOptions = {},
+    options: InboxTaskListOptions = {},
   ): Promise<readonly TaskEntity[]> {
-    const openTasks = await this.readSharedOpenInboxTasks(assigneeMemberId);
+    const openTasks = await this.filterTasksByTemplate(
+      await this.readSharedOpenInboxTasks(assigneeMemberId),
+      options,
+    );
 
     if (!isTaskListPaged(options)) {
       return this.attachTaskCandidateSummaries(openTasks);
@@ -4630,8 +4650,91 @@ export class WorkflowEngineService {
   }
 
   /** How many tasks {@link listInboxTasks} pages through. */
-  async countInboxTasks(assigneeMemberId: string): Promise<number> {
-    return (await this.readSharedOpenInboxTasks(assigneeMemberId)).length;
+  async countInboxTasks(
+    assigneeMemberId: string,
+    filter: TaskTemplateFilter = {},
+  ): Promise<number> {
+    return (
+      await this.filterTasksByTemplate(
+        await this.readSharedOpenInboxTasks(assigneeMemberId),
+        filter,
+      )
+    ).length;
+  }
+
+  /**
+   * The template ids a {@link TaskTemplateFilter} allows, or `null` when it
+   * does not filter. A `templateKey` that names no template allows nothing.
+   */
+  private async readTaskTemplateFilterIds(
+    filter: TaskTemplateFilter,
+  ): Promise<readonly string[] | null> {
+    const byKey =
+      filter.templateKey === undefined
+        ? null
+        : await this.readTemplateIdsByKey(filter.templateKey);
+
+    if (filter.templateIds === undefined) {
+      return byKey;
+    }
+
+    if (byKey === null) {
+      return filter.templateIds;
+    }
+
+    return filter.templateIds.filter((id: string): boolean =>
+      byKey.includes(id),
+    );
+  }
+
+  /**
+   * The id of the live template carrying `key`, as a list so a key that names
+   * nothing filters everything out. At most one live template holds a key.
+   */
+  private async readTemplateIdsByKey(key: string): Promise<readonly string[]> {
+    const template = await this.approvalTemplateRepository.findOne({
+      select: { id: true },
+      where: { key },
+    });
+
+    return template ? [template.id] : [];
+  }
+
+  /**
+   * Keeps the tasks whose instance belongs to the filter's templates. The open
+   * task read is shared with the dashboard counters, so the filter is applied
+   * to its result rather than pushed into it.
+   */
+  private async filterTasksByTemplate(
+    tasks: readonly TaskEntity[],
+    filter: TaskTemplateFilter,
+  ): Promise<readonly TaskEntity[]> {
+    const templateIds = await this.readTaskTemplateFilterIds(filter);
+
+    if (templateIds === null) {
+      return tasks;
+    }
+
+    if (!templateIds.length || !tasks.length) {
+      return [];
+    }
+
+    const instances = await this.approvalInstanceRepository.find({
+      select: { id: true },
+      where: {
+        id: In([
+          ...new Set(tasks.map((task: TaskEntity): string => task.instanceId)),
+        ]),
+        templateId: In([...templateIds]),
+      },
+    });
+    const instanceIds = new Set(
+      instances.map((instance: ApprovalInstanceEntity): string => instance.id),
+    );
+
+    return tasks.filter((task: TaskEntity): boolean =>
+      instanceIds.has(task.instanceId),
+    );
   }
 
   /**
@@ -4746,9 +4849,16 @@ export class WorkflowEngineService {
     options: ApprovalHistoryTaskListOptions = {},
   ): Promise<readonly TaskEntity[]> {
     const paged = isTaskListPaged(options);
+    const templateIds = await this.readTaskTemplateFilterIds(options);
+
+    if (templateIds?.length === 0) {
+      return [];
+    }
+
     const tasks = await this.createApprovalHistoryTaskQuery(
       assigneeMemberId,
       options.instanceState,
+      templateIds,
     )
       .orderBy(this.readApprovalHistoryActedAtExpression(), 'DESC')
       .addOrderBy('"task"."id"', 'DESC')
@@ -4766,11 +4876,18 @@ export class WorkflowEngineService {
   /** How many tasks {@link listApprovalHistoryTasks} pages through. */
   async countApprovalHistoryTasks(
     assigneeMemberId: string,
-    options: Pick<ApprovalHistoryTaskListOptions, 'instanceState'> = {},
+    options: Omit<ApprovalHistoryTaskListOptions, 'page' | 'pageSize'> = {},
   ): Promise<number> {
+    const templateIds = await this.readTaskTemplateFilterIds(options);
+
+    if (templateIds?.length === 0) {
+      return 0;
+    }
+
     return this.createApprovalHistoryTaskQuery(
       assigneeMemberId,
       options.instanceState,
+      templateIds,
     ).getCount();
   }
 
@@ -4778,6 +4895,7 @@ export class WorkflowEngineService {
   private createApprovalHistoryTaskQuery(
     assigneeMemberId: string,
     instanceState: ApprovalInstanceStateEnum | undefined,
+    templateIds: readonly string[] | null = null,
   ): SelectQueryBuilder<TaskEntity> {
     const candidateTable = this.readQualifiedTableName(
       this.taskCandidateRepository,
@@ -4818,6 +4936,20 @@ export class WorkflowEngineService {
           )
         `,
         { historyInstanceState: instanceState },
+      );
+    }
+
+    if (templateIds) {
+      queryBuilder.andWhere(
+        `
+          EXISTS (
+            SELECT 1
+            FROM ${this.readQualifiedTableName(this.approvalInstanceRepository)} "historyTemplateInstance"
+            WHERE "historyTemplateInstance"."id" = "task"."instance_id"
+              AND "historyTemplateInstance"."template_id" IN (:...historyTemplateIds)
+          )
+        `,
+        { historyTemplateIds: [...templateIds] },
       );
     }
 

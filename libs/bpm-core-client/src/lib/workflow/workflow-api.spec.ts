@@ -667,15 +667,19 @@ describe('@rytass/bpm-core-client/workflow', () => {
         });
         const request = harness.capture();
 
-        expect(request.query).toContain(
-          'inboxTasks(assigneeMemberId: $assigneeMemberId, page: $page, pageSize: $pageSize)',
+        expect(request.query.replace(/\s+/gu, ' ')).toContain(
+          'inboxTasks( assigneeMemberId: $assigneeMemberId page: $page pageSize: $pageSize templateIds: $templateIds templateKey: $templateKey )',
         );
-        expect(request.query).toContain('inboxTaskCount');
+        expect(request.query).toContain(
+          'inboxTaskCount(templateIds: $templateIds, templateKey: $templateKey)',
+        );
         expect(request.query).toContain('openCandidateMemberIds');
         expect(request.variables).toEqual({
           assigneeMemberId: 'member-001',
           page: 2,
           pageSize: 10,
+          templateIds: null,
+          templateKey: null,
         });
         expect(result.totalCount).toBe(31);
         expect(result.tasks.map((task) => task.id)).toEqual(['task-1']);
@@ -699,16 +703,41 @@ describe('@rytass/bpm-core-client/workflow', () => {
         const request = harness.capture();
 
         expect(request.query).toContain('instanceState: $instanceState');
-        expect(request.query).toContain(
-          'approvalHistoryTaskCount(instanceState: $instanceState)',
+        expect(request.query.replace(/\s+/gu, ' ')).toContain(
+          'approvalHistoryTaskCount( instanceState: $instanceState templateIds: $templateIds templateKey: $templateKey )',
         );
         expect(request.variables).toEqual({
           assigneeMemberId: 'member-001',
           instanceState: 'RUNNING',
           page: 1,
           pageSize: 20,
+          templateIds: null,
+          templateKey: null,
         });
         expect(result.totalCount).toBe(4);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('passes the template filter to both the list and its count', async (): Promise<void> => {
+      const harness = installFetchMock({
+        inboxTaskCount: 1,
+        inboxTasks: [TASK],
+      });
+      try {
+        await listInboxTasksPage({
+          assigneeMemberId: 'member-001',
+          page: 1,
+          pageSize: 10,
+          templateIds: ['template-a'],
+          templateKey: 'expense',
+        });
+
+        expect(harness.capture().variables).toMatchObject({
+          templateIds: ['template-a'],
+          templateKey: 'expense',
+        });
       } finally {
         harness.restore();
       }

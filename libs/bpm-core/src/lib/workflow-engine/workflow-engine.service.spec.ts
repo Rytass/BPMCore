@@ -15300,6 +15300,43 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  it('narrows approval history to templates in SQL and answers an empty filter without a query', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.listApprovalHistoryTasks('member-finance', {
+      templateIds: ['template-a', 'template-b'],
+    });
+
+    const builder = fixture.rootTaskQueryBuilder;
+
+    expect(builder.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '"historyTemplateInstance"."template_id" IN (:...historyTemplateIds)',
+      ),
+      { historyTemplateIds: ['template-a', 'template-b'] },
+    );
+
+    builder.getMany.mockClear();
+    builder.getCount.mockClear();
+
+    await expect(
+      fixture.service.listApprovalHistoryTasks('member-finance', {
+        templateIds: [],
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      fixture.service.countApprovalHistoryTasks('member-finance', {
+        templateIds: [],
+      }),
+    ).resolves.toBe(0);
+    expect(builder.getMany).not.toHaveBeenCalled();
+    expect(builder.getCount).not.toHaveBeenCalled();
+  });
+
   it('counts approval history with the same filter and no paging', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
@@ -22029,6 +22066,118 @@ describe('WorkflowEngineService task node labels', () => {
     await expect(
       fixture.service.countInboxTasks('member-finance'),
     ).resolves.toBe(4);
+  });
+
+  describe('template filter (ADR 27 §7)', (): void => {
+    function routeTemplateReads(
+      fixture: ReturnType<typeof createLabelFixture>,
+    ): void {
+      const read = fixture.rootInstanceFind.getMockImplementation();
+      const all = [
+        Object.assign(createApprovalInstance({ id: 'instance-1' }), {
+          templateId: 'template-a',
+        }),
+        Object.assign(createApprovalInstance({ id: 'instance-2' }), {
+          templateId: 'template-b',
+        }),
+      ];
+
+      fixture.rootInstanceFind.mockImplementation(
+        async (options?: unknown): Promise<ApprovalInstanceEntity[]> => {
+          const where = (options as { where?: { templateId?: unknown } })
+            ?.where;
+
+          if (where?.templateId === undefined) {
+            return read
+              ? ((await read(options as never)) as ApprovalInstanceEntity[])
+              : [];
+          }
+
+          const allowed = JSON.stringify(where.templateId);
+
+          return all.filter((instance) =>
+            allowed.includes(`"${instance.templateId}"`),
+          );
+        },
+      );
+    }
+
+    it('keeps the tasks of the given templates in both the list and the count', async (): Promise<void> => {
+      const fixture = createLabelFixture();
+      routeTemplateReads(fixture);
+
+      const tasks = await fixture.service.listInboxTasks('member-finance', {
+        templateIds: ['template-a'],
+      });
+
+      expect(tasks.map((task) => task.id)).toEqual(['task-a', 'task-c']);
+      await expect(
+        fixture.service.countInboxTasks('member-finance', {
+          templateIds: ['template-a'],
+        }),
+      ).resolves.toBe(2);
+    });
+
+    it('pages after filtering', async (): Promise<void> => {
+      const fixture = createLabelFixture();
+      routeTemplateReads(fixture);
+
+      const page = await fixture.service.listInboxTasks('member-finance', {
+        page: 2,
+        pageSize: 1,
+        templateIds: ['template-a'],
+      });
+
+      expect(page.map((task) => task.id)).toEqual(['task-c']);
+    });
+
+    it('matches nothing for an empty templateIds or an unknown templateKey', async (): Promise<void> => {
+      const fixture = createLabelFixture();
+      routeTemplateReads(fixture);
+      fixture.templateFindOne.mockResolvedValueOnce(null);
+
+      await expect(
+        fixture.service.listInboxTasks('member-finance', { templateIds: [] }),
+      ).resolves.toEqual([]);
+      await expect(
+        fixture.service.countInboxTasks('member-finance', {
+          templateKey: 'no-such-key',
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it('resolves templateKey to the live template and intersects it with templateIds', async (): Promise<void> => {
+      const fixture = createLabelFixture();
+      routeTemplateReads(fixture);
+      fixture.templateFindOne.mockResolvedValue(
+        createTemplate('template-version-1', true),
+      );
+
+      const byKey = await fixture.service.listInboxTasks('member-finance', {
+        templateKey: 'expense',
+      });
+      const disjoint = await fixture.service.listInboxTasks('member-finance', {
+        templateIds: ['template-b'],
+        templateKey: 'expense',
+      });
+
+      expect(fixture.templateFindOne).toHaveBeenCalledWith({
+        select: { id: true },
+        where: { key: 'expense' },
+      });
+      // createTemplate() has id 'template-1', which owns no instance here.
+      expect(byKey).toEqual([]);
+      expect(disjoint).toEqual([]);
+    });
+
+    it('does not filter when neither field is given', async (): Promise<void> => {
+      const fixture = createLabelFixture();
+      routeTemplateReads(fixture);
+
+      await expect(
+        fixture.service.countInboxTasks('member-finance', {}),
+      ).resolves.toBe(4);
+    });
   });
 
   it('reads the open tasks once when the list and its count are asked together', async (): Promise<void> => {

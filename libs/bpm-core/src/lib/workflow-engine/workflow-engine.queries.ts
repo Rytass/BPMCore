@@ -224,10 +224,26 @@ export class WorkflowEngineQueries {
     page: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
     pageSize: number | null,
+    @Args('templateIds', {
+      description:
+        'Only tasks of instances started from these templates. An empty list matches nothing.',
+      nullable: true,
+      type: () => [String],
+    })
+    templateIds: readonly string[] | null,
+    @Args('templateKey', {
+      description:
+        'Only tasks of instances whose template carries this key. Combined with templateIds, both must match.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
   ): Promise<readonly TaskEntity[]> {
     return this.workflowEngineService.listInboxTasks(currentMemberId, {
       page: page ?? undefined,
       pageSize: pageSize ?? undefined,
+      templateIds: templateIds ?? undefined,
+      templateKey: templateKey ?? undefined,
     });
   }
 
@@ -236,8 +252,25 @@ export class WorkflowEngineQueries {
   })
   async inboxTaskCount(
     @BPMCurrentMemberId() currentMemberId: string,
+    @Args('templateIds', {
+      description:
+        'Only tasks of instances started from these templates. An empty list matches nothing.',
+      nullable: true,
+      type: () => [String],
+    })
+    templateIds: readonly string[] | null,
+    @Args('templateKey', {
+      description:
+        'Only tasks of instances whose template carries this key. Combined with templateIds, both must match.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
   ): Promise<number> {
-    return this.workflowEngineService.countInboxTasks(currentMemberId);
+    return this.workflowEngineService.countInboxTasks(currentMemberId, {
+      templateIds: templateIds ?? undefined,
+      templateKey: templateKey ?? undefined,
+    });
   }
 
   @Query(() => [TaskEntity])
@@ -253,6 +286,20 @@ export class WorkflowEngineQueries {
       type: () => ApprovalInstanceStateEnum,
     })
     instanceState: ApprovalInstanceStateEnum | null,
+    @Args('templateIds', {
+      description:
+        'Only tasks of instances started from these templates. An empty list matches nothing.',
+      nullable: true,
+      type: () => [String],
+    })
+    templateIds: readonly string[] | null,
+    @Args('templateKey', {
+      description:
+        'Only tasks of instances whose template carries this key. Combined with templateIds, both must match.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
   ): Promise<readonly TaskEntity[]> {
     return this.workflowEngineService.listApprovalHistoryTasks(
       currentMemberId,
@@ -260,6 +307,8 @@ export class WorkflowEngineQueries {
         instanceState: instanceState ?? undefined,
         page: page ?? undefined,
         pageSize: pageSize ?? undefined,
+        templateIds: templateIds ?? undefined,
+        templateKey: templateKey ?? undefined,
       },
     );
   }
@@ -275,10 +324,28 @@ export class WorkflowEngineQueries {
       type: () => ApprovalInstanceStateEnum,
     })
     instanceState: ApprovalInstanceStateEnum | null,
+    @Args('templateIds', {
+      description:
+        'Only tasks of instances started from these templates. An empty list matches nothing.',
+      nullable: true,
+      type: () => [String],
+    })
+    templateIds: readonly string[] | null,
+    @Args('templateKey', {
+      description:
+        'Only tasks of instances whose template carries this key. Combined with templateIds, both must match.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
   ): Promise<number> {
     return this.workflowEngineService.countApprovalHistoryTasks(
       currentMemberId,
-      { instanceState: instanceState ?? undefined },
+      {
+        instanceState: instanceState ?? undefined,
+        templateIds: templateIds ?? undefined,
+        templateKey: templateKey ?? undefined,
+      },
     );
   }
 
