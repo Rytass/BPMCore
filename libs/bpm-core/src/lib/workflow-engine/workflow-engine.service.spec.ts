@@ -5189,6 +5189,108 @@ describe('WorkflowEngineService', () => {
     );
   });
 
+  describe('expressionMissingFormFieldsAsNull (ADR 27 §3)', (): void => {
+    const FORM_SCHEMA: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'amount', label: '金額', required: false, type: 'number' },
+        {
+          columns: [
+            { fieldKey: 'qty', label: '數量', required: false, type: 'number' },
+          ],
+          fieldKey: 'items',
+          label: '明細',
+          required: false,
+          type: 'table',
+        },
+      ],
+      schemaVersion: 1,
+    };
+    const readEntryConditionForms = (
+      evaluateBoolean: jest.SpyInstance,
+    ): readonly unknown[] =>
+      evaluateBoolean.mock.calls
+        .filter(
+          (call: readonly unknown[]): boolean =>
+            call[0] === 'form.amount > 1000',
+        )
+        .map(
+          (call: readonly unknown[]): unknown =>
+            (call[1] as Readonly<Record<string, unknown>>)['form'],
+        );
+    const runCase = async (
+      expressionMissingFormFieldsAsNull: boolean,
+    ): Promise<{
+      readonly fixture: ServiceFixture;
+      readonly forms: readonly unknown[];
+    }> => {
+      const conditionService = new ConditionService();
+      const evaluateBoolean = jest.spyOn(conditionService, 'evaluateBoolean');
+      const fixture = createServiceFixture({
+        conditionService,
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processFormData: { note: 'x' },
+        processFormDefinitionSnapshot: { schema: FORM_SCHEMA },
+        processWorkflowSnapshot: createEntryConditionNotifyWorkflow(),
+        rootOptions: { expressionMissingFormFieldsAsNull },
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      await fixture.service.processInstance('instance-1');
+
+      return { fixture, forms: readEntryConditionForms(evaluateBoolean) };
+    };
+
+    it('lets a workflow expression read unfilled top-level fields as null and [] when on', async (): Promise<void> => {
+      const { forms } = await runCase(true);
+
+      expect(forms).toEqual([{ amount: null, items: [], note: 'x' }]);
+    });
+
+    it('reads the stored form data as it is when off', async (): Promise<void> => {
+      const { forms } = await runCase(false);
+
+      expect(forms).toEqual([{ note: 'x' }]);
+    });
+
+    it('never writes the filled fields back to the case', async (): Promise<void> => {
+      const { fixture } = await runCase(true);
+
+      expect(fixture.savedInstance?.formData).toEqual({ note: 'x' });
+    });
+
+    it('fills a dry run the same way only when it is given the form schema', (): void => {
+      const conditionService = new ConditionService();
+      const evaluateBoolean = jest.spyOn(conditionService, 'evaluateBoolean');
+      const fixture = createServiceFixture({
+        conditionService,
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        rootOptions: { expressionMissingFormFieldsAsNull: true },
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+      const dryRun = (formSchemaJson: string | null): void => {
+        fixture.service.dryRunApprovalWorkflow({
+          formDataJson: '{"note":"x"}',
+          formSchemaJson,
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          workflowDefinitionJson: JSON.stringify(
+            createEntryConditionNotifyWorkflow(),
+          ),
+        });
+      };
+
+      dryRun(JSON.stringify(FORM_SCHEMA));
+      dryRun(null);
+
+      expect(readEntryConditionForms(evaluateBoolean)).toEqual([
+        { amount: null, items: [], note: 'x' },
+        { note: 'x' },
+      ]);
+    });
+  });
+
   describe('NOTIFY node skipped by its entry condition', (): void => {
     const skippedFormData = { amount: 100 };
     const matchedFormData = { amount: 5000 };

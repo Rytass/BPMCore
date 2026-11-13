@@ -140,6 +140,7 @@ import { DecideTaskInput } from './dto/decide-task.input';
 import { DryRunApprovalWorkflowInput } from './dto/dry-run-approval-workflow.input';
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
+import { fillMissingFormFields } from './missing-form-fields';
 import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
 import {
@@ -344,6 +345,12 @@ interface DeferredWebhookDispatch {
 }
 
 interface DryRunSimulationInput {
+  /**
+   * What expressions read as `form`: `formData`, or with
+   * `expressionMissingFormFieldsAsNull` on and a schema given, a copy with the
+   * unfilled top-level fields present (ADR 27 §3).
+   */
+  readonly expressionFormData: Readonly<Record<string, unknown>>;
   readonly formData: Readonly<Record<string, unknown>>;
   readonly initiatorMemberId: string;
   readonly initiatorMetadataSnapshot: Readonly<Record<string, unknown>>;
@@ -790,7 +797,12 @@ export class WorkflowEngineService {
     this.organizationTimeZone = resolveBPMOrganizationTimeZone(
       rootOptions?.organizationTimeZone,
     );
+    this.expressionMissingFormFieldsAsNull =
+      rootOptions?.expressionMissingFormFieldsAsNull === true;
   }
+
+  /** ADR 27 §3; see `BPMRootRuntimeOptions.expressionMissingFormFieldsAsNull`. */
+  private readonly expressionMissingFormFieldsAsNull: boolean;
 
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
 
@@ -3535,6 +3547,7 @@ export class WorkflowEngineService {
         input.workflowDefinitionJson,
         input.formDataJson,
         input.initiatorMetadataSnapshotJson ?? '',
+        input.formSchemaJson ?? '',
       ].some((json) => json.length > MAX_DRY_RUN_INPUT_LENGTH)
     ) {
       return createFailedDryRunResult(
@@ -3546,6 +3559,7 @@ export class WorkflowEngineService {
       input.workflowDefinitionJson,
     );
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const formSchema = readDryRunFormSchema(input.formSchemaJson);
     // The snapshot here is the caller's own sample (the designer always sends
     // one) or a bare `{ customFields: {}, memberId }`. It is not the one a real
     // submission builds, and a dry run has no template version to hand the
@@ -3572,6 +3586,10 @@ export class WorkflowEngineService {
           runWithinTimeBudget(
             () =>
               this.simulateWorkflow({
+                expressionFormData:
+                  this.expressionMissingFormFieldsAsNull && formSchema
+                    ? fillMissingFormFields(formData, formSchema)
+                    : formData,
                 formData,
                 initiatorMemberId: input.initiatorMemberId,
                 initiatorMetadataSnapshot,
@@ -5786,7 +5804,7 @@ export class WorkflowEngineService {
 
     return this.conditionService.evaluateBoolean(
       entryCondition,
-      buildWorkflowExpressionContext(instance),
+      this.buildExpressionContext(instance),
       `workflow.nodes.${node.id}.data.entryCondition`,
       readExpressionDialectOptions(entryCondition, instance.workflowSnapshot),
     );
@@ -5931,7 +5949,7 @@ export class WorkflowEngineService {
     }
 
     const context = {
-      ...buildWorkflowExpressionContext(instance),
+      ...this.buildExpressionContext(instance),
       lastDecision: await this.readLastDecisionContext(
         manager,
         instance.id,
@@ -7975,12 +7993,37 @@ export class WorkflowEngineService {
     };
   }
 
+  /**
+   * The context workflow expressions on `instance` read. Its `form` is the
+   * stored data, or with `expressionMissingFormFieldsAsNull` on, a copy with
+   * every unfilled top-level field present (ADR 27 §3).
+   */
+  private buildExpressionContext(
+    instance: ApprovalInstanceEntity,
+  ): Readonly<Record<string, unknown>> {
+    return buildWorkflowExpressionContext(
+      instance,
+      this.readExpressionFormData(instance),
+    );
+  }
+
+  private readExpressionFormData(
+    instance: ApprovalInstanceEntity,
+  ): Readonly<Record<string, unknown>> {
+    return this.expressionMissingFormFieldsAsNull
+      ? fillMissingFormFields(
+          instance.formData,
+          readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+        )
+      : instance.formData;
+  }
+
   private buildDelegationContext(
     instance: ApprovalInstanceEntity,
     nodeId: string,
   ): Parameters<DelegationService['resolveAssignee']>[1] {
     return {
-      formData: instance.formData,
+      formData: this.readExpressionFormData(instance),
       initiatorMemberId: instance.initiatorMemberId,
       initiatorMetadataSnapshot: instance.initiatorMetadataSnapshot,
       instanceId: instance.id,
@@ -8185,7 +8228,7 @@ export class WorkflowEngineService {
       return readMemberIdsFromValue(
         this.conditionService.evaluateValue(
           resolver.expression,
-          buildWorkflowExpressionContext(instance),
+          this.buildExpressionContext(instance),
           `${label}.expression`,
           { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
         ),
@@ -9468,7 +9511,7 @@ export class WorkflowEngineService {
         typeof action.payload === 'string' && action.payload.trim()
           ? this.conditionService.evaluateValue(
               action.payload,
-              buildWorkflowExpressionContext(instance),
+              this.buildExpressionContext(instance),
               `workflow.nodes.${node.id}.data.action.payload`,
               {
                 dialect: readWorkflowExpressionDialect(
@@ -9477,7 +9520,7 @@ export class WorkflowEngineService {
               },
             )
           : {
-              instance: buildWorkflowExpressionContext(instance).instance,
+              instance: this.buildExpressionContext(instance).instance,
               triggeredAt: new Date().toISOString(),
             };
       await this.dispatchWebhookAfterCommit(manager, {
@@ -9514,7 +9557,7 @@ export class WorkflowEngineService {
     if (action.type === 'SET_FORM_FIELD') {
       const value = this.conditionService.evaluateValue(
         action.value,
-        buildWorkflowExpressionContext(instance),
+        this.buildExpressionContext(instance),
         `workflow.nodes.${node.id}.data.action.value`,
         { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
       );
@@ -10173,6 +10216,27 @@ function readDefaultInitiatorMetadataSnapshot(
 }
 
 /**
+ * The form schema a dry run was given to fill unfilled fields with (ADR 27
+ * §3), or `null` when it was given none. A schema that does not parse is a
+ * 400, like the other inputs.
+ */
+function readDryRunFormSchema(
+  json: string | null | undefined,
+): FormDefinitionSchema | null {
+  if (!json) {
+    return null;
+  }
+
+  const schema = parseJsonObject(json, 'formSchemaJson');
+
+  if (!isFormDefinitionSchema(schema)) {
+    throw new BadRequestException('formSchemaJson is not a form schema');
+  }
+
+  return schema;
+}
+
+/**
  * Refuses a submission or resubmission through GraphQL on a `HOST_ONLY`
  * version (ADR 27 §5). Only the host's backend, calling the service, may start
  * or resubmit such a case.
@@ -10684,13 +10748,14 @@ function buildInitiatorPolicyContext(
 
 function buildWorkflowExpressionContext(
   instance: ApprovalInstanceEntity,
+  formData: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
   return {
     env: {
       now: new Date().toISOString(),
     },
-    form: instance.formData,
-    formData: instance.formData,
+    form: formData,
+    formData,
     initiator: {
       ...instance.initiatorMetadataSnapshot,
       memberId: instance.initiatorMemberId,
@@ -10745,8 +10810,8 @@ function buildDryRunExpressionContext(
     env: {
       now: new Date().toISOString(),
     },
-    form: input.formData,
-    formData: input.formData,
+    form: input.expressionFormData,
+    formData: input.expressionFormData,
     initiator: {
       ...input.initiatorMetadataSnapshot,
       memberId: input.initiatorMemberId,

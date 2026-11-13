@@ -101,6 +101,29 @@ export interface BPMRootRuntimeOptions
   readonly expressionFunctions?: readonly BPMExpressionFunction[];
 
   /**
+   * Reads a form field the case has no value for as `null` (a table as `[]`)
+   * instead of failing the expression with a missing key (ADR 27 §3). Only
+   * top-level fields of the case's form schema are filled; table columns are
+   * not, and nothing is written back to `form_data`. Applies to every
+   * workflow expression on a case (entry conditions, gateways, approver
+   * expressions, WEBHOOK payloads, `SET_FORM_FIELD`), to delegation
+   * `scopeConditionCel`, and to dry runs given the form schema.
+   *
+   * Defaults to `false`. Turning it on changes what existing expressions mean
+   * for an unfilled field `x`:
+   *
+   * | expression       | off                 | on                       |
+   * | ---------------- | ------------------- | ------------------------ |
+   * | `has(form.x)`    | `false`             | `true`                   |
+   * | `form.x == null` | missing-key error   | `true`                   |
+   * | `form.x > 5`     | missing-key error   | type error (still fails) |
+   *
+   * A template that tests "not filled" with `has(form.x)` must switch to
+   * `form.x == null` before the host turns this on.
+   */
+  readonly expressionMissingFormFieldsAsNull?: boolean;
+
+  /**
    * Versioned form option DataSource catalog, as a ready instance. When
    * omitted, BPM exposes an empty catalog.
    */
