@@ -550,29 +550,32 @@ describe('MemberTaskReassignModal', () => {
       expect(container.textContent).not.toContain('task-2');
     });
 
-    it('selects the reloaded list again after a commit and sends all of it next time', async (): Promise<void> => {
+    it('keeps only the chosen tasks that remain selected after a commit, never one left out', async (): Promise<void> => {
+      // task-1 and task-2 are sent, task-3 is left out. task-2 stays with the
+      // member (not moved), so the reload lists task-2 and task-3.
       api.listMemberOpenTasks
         .mockResolvedValueOnce(THREE)
         .mockResolvedValueOnce([TASK_2, TASK_3]);
       api.reassignMemberTasks
-        .mockResolvedValueOnce([WOULD_REASSIGN])
+        .mockResolvedValueOnce([WOULD_REASSIGN, WOULD_REASSIGN_2])
         .mockResolvedValueOnce([REASSIGNED])
         .mockResolvedValueOnce([WOULD_REASSIGN_2]);
       await render();
-      await toggleRow('task-2');
       await toggleRow('task-3');
       await chooseTargetAndReason();
       await clickButton('預覽');
 
-      expect(container.textContent).toContain('已選 1／3 筆');
+      expect(container.textContent).toContain('已選 2／3 筆');
 
       await clickButton('確認改派');
 
-      expect(container.textContent).toContain('已選 2／2 筆');
+      expect(container.textContent).toContain('已選 1／2 筆');
+      expect(rowCheckbox('task-2').checked).toBe(true);
+      expect(rowCheckbox('task-3').checked).toBe(false);
 
       await clickButton('預覽');
 
-      expect(sentTaskIds(2)).toEqual(['task-2', 'task-3']);
+      expect(sentTaskIds(2)).toEqual(['task-2']);
     });
 
     it('selects the other member tasks after switching members', async (): Promise<void> => {

@@ -105,29 +105,45 @@ export function MemberTaskReassignModal({
   // listing is in flight must not let its late answer replace the current one.
   const latestRequestRef = useRef(0);
 
-  const loadTasks = useCallback(async (memberId: string): Promise<void> => {
-    const request = latestRequestRef.current + 1;
+  // `keepCheckedIds` is the selection to carry over after a reassignment;
+  // without it (a fresh member) every task starts selected.
+  const loadTasks = useCallback(
+    async (
+      memberId: string,
+      keepCheckedIds?: readonly string[],
+    ): Promise<void> => {
+      const request = latestRequestRef.current + 1;
 
-    latestRequestRef.current = request;
-    setTasksLoading(true);
+      latestRequestRef.current = request;
+      setTasksLoading(true);
 
-    try {
-      const loaded = await listMemberOpenTasks(memberId);
+      try {
+        const loaded = await listMemberOpenTasks(memberId);
 
-      if (latestRequestRef.current === request) {
-        setTasks(loaded);
-        setCheckedIds(loaded.map((task) => task.taskId));
+        if (latestRequestRef.current === request) {
+          const kept = keepCheckedIds ? new Set(keepCheckedIds) : null;
+
+          setTasks(loaded);
+          // Never select a task the administrator had left out: after a partial
+          // reassignment only what they chose and still holds stays selected.
+          setCheckedIds(
+            loaded
+              .map((task) => task.taskId)
+              .filter((taskId) => !kept || kept.has(taskId)),
+          );
+        }
+      } catch (requestError: unknown) {
+        if (latestRequestRef.current === request) {
+          setError(readErrorMessage(requestError));
+        }
+      } finally {
+        if (latestRequestRef.current === request) {
+          setTasksLoading(false);
+        }
       }
-    } catch (requestError: unknown) {
-      if (latestRequestRef.current === request) {
-        setError(readErrorMessage(requestError));
-      }
-    } finally {
-      if (latestRequestRef.current === request) {
-        setTasksLoading(false);
-      }
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect((): void => {
     setTarget(null);
@@ -194,7 +210,7 @@ export function MemberTaskReassignModal({
           titleById: sentTitleById,
         });
         setPreview(null);
-        await loadTasks(member.memberId);
+        await loadTasks(member.memberId, sentTaskIds);
       }
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
