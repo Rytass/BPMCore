@@ -1,8 +1,20 @@
 import type {
+  FieldAccessColumnEntry,
   FieldAccessEntry,
+  FieldAccessFill,
   UserTaskNode,
   WorkflowDefinition,
 } from './workflow';
+
+/**
+ * One unit an approver may fill at a user task: a whole top-level field
+ * (`columnKey: null`) or one column of a table field (ADR 27 §4(a)).
+ */
+export interface FieldAccessFillUnit {
+  readonly fieldKey: string;
+  readonly columnKey: string | null;
+  readonly fill: Exclude<FieldAccessFill, 'NONE'>;
+}
 
 /** What a viewer may do with one top-level form field (`resolveFieldAccess`). */
 export interface ResolvedFieldAccess {
@@ -36,6 +48,11 @@ const findUserTaskNode = (
  * wins, so every reader agrees on which one counts. An unknown `fill` reads as
  * `NONE`, so a malformed entry never lets anyone write, and an unknown
  * `display` reads as `SHOW`. The deprecated `fieldPermissions` is never read.
+ *
+ * `columns` (ADR 27 §4(a)) is read the same way, per column: an entry without a
+ * non-empty `columnKey` or with an unknown `fill` is skipped, and the first
+ * entry for a `columnKey` wins. Once `columns` is an array it stays in column
+ * mode even when every column was skipped, so a malformed list opens nothing.
  */
 export const readNodeFieldAccess = (
   node: UserTaskNode,
@@ -58,6 +75,7 @@ export const readNodeFieldAccess = (
       }
 
       const fill = entry['fill'];
+      const columns = readFieldAccessColumns(entry['columns']);
 
       return [
         ...collected,
@@ -65,12 +83,63 @@ export const readNodeFieldAccess = (
           display: entry['display'] === 'HIDE' ? 'HIDE' : 'SHOW',
           fieldKey: entry['fieldKey'],
           fill: fill === 'OPTIONAL' || fill === 'REQUIRED' ? fill : 'NONE',
+          ...(columns === undefined ? {} : { columns }),
         },
       ];
     },
     [],
   );
 };
+
+const readFieldAccessColumns = (
+  raw: unknown,
+): readonly FieldAccessColumnEntry[] | undefined => {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+
+  return raw.reduce<readonly FieldAccessColumnEntry[]>(
+    (collected, column: unknown) => {
+      if (
+        !isRecord(column) ||
+        typeof column['columnKey'] !== 'string' ||
+        column['columnKey'] === '' ||
+        (column['fill'] !== 'OPTIONAL' && column['fill'] !== 'REQUIRED') ||
+        collected.some((existing) => existing.columnKey === column['columnKey'])
+      ) {
+        return collected;
+      }
+
+      return [
+        ...collected,
+        { columnKey: column['columnKey'], fill: column['fill'] },
+      ];
+    },
+    [],
+  );
+};
+
+/**
+ * Every fill unit a user task grants. An entry in column mode contributes one
+ * unit per open column and its own `fill` is ignored; otherwise it contributes
+ * one whole-field unit unless `fill` is `NONE`.
+ */
+export const readNodeFillUnits = (
+  node: UserTaskNode,
+): readonly FieldAccessFillUnit[] =>
+  readNodeFieldAccess(node).flatMap((entry): readonly FieldAccessFillUnit[] => {
+    if (entry.columns !== undefined) {
+      return entry.columns.map((column) => ({
+        fieldKey: entry.fieldKey,
+        columnKey: column.columnKey,
+        fill: column.fill,
+      }));
+    }
+
+    return entry.fill === 'NONE'
+      ? []
+      : [{ fieldKey: entry.fieldKey, columnKey: null, fill: entry.fill }];
+  });
 
 /**
  * The top-level form field a field path addresses: `items.price` and
@@ -97,22 +166,20 @@ export const readFormFieldPathTopLevelKey = (fieldPath: string): string => {
   return readTopLevelFieldKey(fieldSegments.join('.'));
 };
 
+/** Top-level fields with at least one fill unit at this node, whole or per column. */
 export const readNodeFillableFieldKeys = (
   node: UserTaskNode,
 ): ReadonlySet<string> =>
-  new Set(
-    readNodeFieldAccess(node)
-      .filter((entry) => entry.fill !== 'NONE')
-      .map((entry) => entry.fieldKey),
-  );
+  new Set(readNodeFillUnits(node).map((unit) => unit.fieldKey));
 
+/** Top-level fields granted whole at `REQUIRED`. Per-column REQUIRED is not enforced. */
 export const readNodeRequiredFieldKeys = (
   node: UserTaskNode,
 ): ReadonlySet<string> =>
   new Set(
-    readNodeFieldAccess(node)
-      .filter((entry) => entry.fill === 'REQUIRED')
-      .map((entry) => entry.fieldKey),
+    readNodeFillUnits(node)
+      .filter((unit) => unit.columnKey === null && unit.fill === 'REQUIRED')
+      .map((unit) => unit.fieldKey),
   );
 
 /** Every field some user task lets its approver fill in. */
@@ -169,6 +236,8 @@ export const resolveFieldAccess = (input: {
     ),
   );
   const approverFilled = readApproverFilledFieldKeys(input.definition);
+  const fillable =
+    node === undefined ? new Set<string>() : readNodeFillableFieldKeys(node);
 
   return Object.fromEntries(
     input.fieldKeys.map((fieldKey): readonly [string, ResolvedFieldAccess] => {
@@ -178,7 +247,7 @@ export const resolveFieldAccess = (input: {
         return [
           fieldKey,
           {
-            editable: !input.isAdhocTask && entry.fill !== 'NONE',
+            editable: !input.isAdhocTask && fillable.has(fieldKey),
             visible: entry.display === 'SHOW',
           },
         ];
