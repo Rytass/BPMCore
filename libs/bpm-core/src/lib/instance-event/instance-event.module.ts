@@ -16,6 +16,7 @@ import {
   BPMInstanceEventObserver,
 } from './instance-event.token';
 import { InstanceEventService } from './instance-event.service';
+import { InstanceEventWriter } from './instance-event.writer';
 
 export interface InstanceEventModuleOptions extends Pick<
   ModuleMetadata,
@@ -40,7 +41,7 @@ export class InstanceEventModule {
       options.observerProvider ? [BPM_INSTANCE_EVENT_OBSERVER] : [];
 
     return {
-      exports: [InstanceEventService, ...observerExports],
+      exports: [InstanceEventService, InstanceEventWriter, ...observerExports],
       global: true,
       imports: [
         ...(options.imports ?? []),
@@ -50,6 +51,7 @@ export class InstanceEventModule {
       providers: [
         ...observerProviders,
         InstanceEventService,
+        InstanceEventWriter,
         InstanceEventDeliveryService,
         InstanceEventDeliverySubscriber,
         InstanceEventDeliverySchedulerService,

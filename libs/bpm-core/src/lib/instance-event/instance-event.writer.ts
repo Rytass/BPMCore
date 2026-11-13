@@ -20,6 +20,14 @@ import type {
 export class InstanceEventWriter {
   constructor(private readonly events: InstanceEventService) {}
 
+  /**
+   * Whether a host observer is bound. Callers use this to skip building a
+   * snapshot (for example a template lookup) when no row would be written.
+   */
+  get enabled(): boolean {
+    return this.events.enabled;
+  }
+
   async record<K extends BPMInstanceEventType>(
     manager: EntityManager,
     instanceId: string,
