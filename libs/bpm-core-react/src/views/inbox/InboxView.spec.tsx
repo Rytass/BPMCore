@@ -33,9 +33,19 @@ jest.mock('@mezzanine-ui/react', () => {
       readonly title: string;
     }[];
     const rows = props.dataSource as readonly Record<string, unknown>[];
+    const pagination = props.pagination as
+      | Readonly<{ current: number; onChange: (page: number) => void }>
+      | undefined;
 
     return (
       <div>
+        {pagination ? (
+          <button
+            data-next-page=""
+            onClick={(): void => pagination.onChange(pagination.current + 1)}
+            type="button"
+          />
+        ) : null}
         {rows.map((row): ReactElement => (
           <div data-row={row['key'] as string} key={row['key'] as string}>
             {columns.map((column): ReactElement => (
@@ -244,6 +254,11 @@ describe('InboxView node column', () => {
 
       await renderInbox();
 
+      // History has no badge: nothing is read until its tab is opened.
+      expect(api.listApprovalHistoryTasksPage).toHaveBeenCalledTimes(1);
+
+      await openTab('history');
+
       expect(api.listInboxTasksPage).toHaveBeenCalledWith({
         assigneeMemberId: 'member-001',
         page: 1,
@@ -267,21 +282,43 @@ describe('InboxView node column', () => {
         tasks: [task({ id: 'task-1' })],
         totalCount: 57,
       });
-      // Once each: the implementation would otherwise outlive this test.
-      api.listApprovalHistoryTasksPage
-        .mockImplementationOnce(async ({ instanceState }) => ({
-          tasks: [],
-          totalCount: instanceState === 'RUNNING' ? 8 : 300,
-        }))
-        .mockImplementationOnce(async ({ instanceState }) => ({
-          tasks: [],
-          totalCount: instanceState === 'RUNNING' ? 8 : 300,
-        }));
+      // Only the tracking tab reads on mount; history waits for its tab.
+      api.listApprovalHistoryTasksPage.mockResolvedValueOnce({
+        tasks: [],
+        totalCount: 8,
+      });
 
       await renderInbox();
 
       expect(badge('pending')).toBe('57');
       expect(badge('tracking')).toBe('8');
+    });
+
+    it('moves to the last page when the chosen one has emptied', async (): Promise<void> => {
+      api.listInboxTasksPage
+        .mockResolvedValueOnce({
+          tasks: [task({ id: 'task-1' })],
+          totalCount: 25,
+        })
+        // Page 2 came back empty: the list shrank to one page meanwhile.
+        .mockResolvedValueOnce({ tasks: [], totalCount: 15 })
+        .mockResolvedValueOnce({
+          tasks: [task({ id: 'task-9' })],
+          totalCount: 15,
+        });
+
+      await renderInbox();
+      await act(async (): Promise<void> => {
+        container
+          .querySelector<HTMLButtonElement>('[data-next-page]')
+          ?.click();
+      });
+
+      expect(
+        api.listInboxTasksPage.mock.calls.map(([input]) => input.page),
+      ).toEqual([1, 2, 1]);
+      expect(container.querySelector('[data-row="task-9"]')).not.toBeNull();
+      expect(badge('pending')).toBe('15');
     });
   });
 

@@ -120,7 +120,7 @@ export function InboxView(): ReactElement {
   const [historyPaging, setHistoryPaging] = useState<TabPaging>(FIRST_PAGE);
   const pending = useTabPage<InboxTaskRow>(
     currentMemberId,
-    pendingPaging,
+    { enabled: true, paging: pendingPaging, setPaging: setPendingPaging },
     setError,
     async (memberId, paging) => {
       const page = await listInboxTasksPage({
@@ -135,7 +135,7 @@ export function InboxView(): ReactElement {
   // server so the badge and the pages count every such task, not one page.
   const tracking = useTabPage<ApprovalHistoryRow>(
     currentMemberId,
-    trackingPaging,
+    { enabled: true, paging: trackingPaging, setPaging: setTrackingPaging },
     setError,
     async (memberId, paging) => {
       const page = await listApprovalHistoryTasksPage({
@@ -147,9 +147,14 @@ export function InboxView(): ReactElement {
       return readRows(page, (tasks) => readApprovalHistoryRows(tasks, memberId));
     },
   );
+  // History has no badge, so it is read only once its tab is opened.
   const history = useTabPage<ApprovalHistoryRow>(
     currentMemberId,
-    historyPaging,
+    {
+      enabled: activeTab === 'history',
+      paging: historyPaging,
+      setPaging: setHistoryPaging,
+    },
     setError,
     async (memberId, paging) => {
       const page = await listApprovalHistoryTasksPage({
@@ -477,11 +482,21 @@ export function InboxView(): ReactElement {
 /**
  * One tab's rows for the current member and paging. Only the latest request
  * may write, so paging quickly cannot let an earlier page's late answer
- * replace the one asked for last.
+ * replace the one asked for last. Nothing is read while `enabled` is false.
+ * A page past the end (the list shrank since it was chosen) moves to the last
+ * page instead of showing an empty table.
  */
 function useTabPage<TRow>(
   memberId: string | null,
-  paging: TabPaging,
+  {
+    enabled,
+    paging,
+    setPaging,
+  }: Readonly<{
+    enabled: boolean;
+    paging: TabPaging;
+    setPaging: (paging: TabPaging) => void;
+  }>,
   onError: (message: string | null) => void,
   load: (
     memberId: string,
@@ -514,20 +529,32 @@ function useTabPage<TRow>(
     try {
       const loaded = await loadRef.current(memberId, paging);
 
-      if (latestRequestRef.current === request) {
-        setState({ loading: false, ...loaded });
+      if (latestRequestRef.current !== request) {
+        return;
       }
+
+      const lastPage = Math.max(1, Math.ceil(loaded.total / paging.pageSize));
+
+      if (!loaded.rows.length && paging.page > lastPage) {
+        setPaging({ ...paging, page: lastPage });
+
+        return;
+      }
+
+      setState({ loading: false, ...loaded });
     } catch (requestError: unknown) {
       if (latestRequestRef.current === request) {
         onError(readErrorMessage(requestError));
         setState((previous) => ({ ...previous, loading: false }));
       }
     }
-  }, [memberId, onError, paging]);
+  }, [memberId, onError, paging, setPaging]);
 
   useEffect((): void => {
-    void refresh();
-  }, [refresh]);
+    if (enabled) {
+      void refresh();
+    }
+  }, [enabled, refresh]);
 
   return state;
 }
