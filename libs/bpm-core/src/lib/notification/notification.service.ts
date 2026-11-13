@@ -5,6 +5,7 @@ import {
 } from '@rytass/bpm-core-shared/workflow';
 import {
   BadRequestException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -32,6 +33,7 @@ import {
 } from '../calendar/business-calendar.token';
 import { parseIsoDurationToMilliseconds } from '../common/iso-duration';
 import { readClaimedIds, withDispatchTimeout } from '../common/outbox';
+import { isInstanceGuardError } from '../workflow-engine/instance-guard.runner';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
 import { IdentityService } from '../identity/identity.service';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
@@ -1354,17 +1356,37 @@ export class NotificationService {
     if (timeoutAction === 'AUTO_APPROVE') {
       const actorMemberId = await this.resolveTaskActorMemberId(task);
 
-      // Marked so a later "who actually signed" node does not count a
-      // timeout as someone's approval.
-      await workflowEngine.decideTask(
-        {
-          action: TaskDecisionActionEnum.APPROVED,
-          comment: 'SLA timeout auto-approved this task.',
-          decidedByMemberId: actorMemberId,
+      try {
+        // Marked so a later "who actually signed" node does not count a
+        // timeout as someone's approval.
+        await workflowEngine.decideTask(
+          {
+            action: TaskDecisionActionEnum.APPROVED,
+            comment: 'SLA timeout auto-approved this task.',
+            decidedByMemberId: actorMemberId,
+            taskId: task.id,
+          },
+          { automatic: 'SLA_AUTO_APPROVE' },
+        );
+      } catch (error: unknown) {
+        // The decision's transaction has rolled back, so the task stays open.
+        // Only a guard refusal or guard timeout is absorbed here; anything else
+        // keeps its original behavior.
+        if (!isInstanceGuardError(error)) {
+          throw error;
+        }
+
+        const reason = readInstanceGuardFailureReason(error);
+
+        this.logger.warn(
+          `SLA auto-approve blocked by instance guard for task ${task.id}: ${reason}`,
+        );
+        await workflowEngine.recordTaskAutoDecisionFailed({
+          instanceId: instance.id,
+          reason,
           taskId: task.id,
-        },
-        { automatic: 'SLA_AUTO_APPROVE' },
-      );
+        });
+      }
 
       return;
     }
@@ -1648,6 +1670,39 @@ function resolveChannelDelivery({
     record: options.webhookEnabled,
     silenced: false,
   };
+}
+
+function readInstanceGuardFailureReason(error: unknown): string {
+  if (!(error instanceof HttpException)) {
+    return 'UNKNOWN';
+  }
+
+  const response: unknown = error.getResponse();
+
+  if (typeof response !== 'object' || response === null) {
+    return `HTTP_${error.getStatus()}`;
+  }
+
+  if ('code' in response && typeof response.code === 'string') {
+    return response.code;
+  }
+
+  if ('formDataErrors' in response && Array.isArray(response.formDataErrors)) {
+    const firstIssue: unknown = response.formDataErrors[0];
+
+    if (
+      typeof firstIssue === 'object' &&
+      firstIssue !== null &&
+      'code' in firstIssue &&
+      typeof firstIssue.code === 'string'
+    ) {
+      return firstIssue.code;
+    }
+
+    return 'HOST_RULE';
+  }
+
+  return `HTTP_${error.getStatus()}`;
 }
 
 function hasSlaEscalationStep(task: TaskEntity): boolean {
