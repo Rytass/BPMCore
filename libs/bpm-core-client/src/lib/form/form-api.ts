@@ -197,6 +197,7 @@ export async function updateFormDefinition(
         currentVersionNumber
         currentVersionPublishedAt
         description
+        hostManaged
         id
         name
         updatedAt
@@ -225,6 +226,7 @@ export async function readFormBuilder(
         currentVersionNumber
         currentVersionPublishedAt
         description
+        hostManaged
         id
         name
         updatedAt
