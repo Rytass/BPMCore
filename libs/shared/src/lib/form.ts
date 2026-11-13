@@ -779,6 +779,7 @@ export const FORM_DATA_ISSUE_REASONS = [
   'UNKNOWN_COLUMN',
   'MAX_FILES',
   'HOST_RULE',
+  'VALUE_NOT_RESOLVED',
 ] as const;
 
 export type FormDataIssueReason = (typeof FORM_DATA_ISSUE_REASONS)[number];
@@ -788,8 +789,9 @@ export type FormDataIssueReason = (typeof FORM_DATA_ISSUE_REASONS)[number];
  * keys its errors: a top-level field key (`note`), a table row (`items[1]`),
  * or a table cell (`items[1].qty`). Rows are 0-based. `limit` is set for
  * MIN_LENGTH / MAX_LENGTH / MIN_ROWS / MAX_ROWS / MAX_FILES. `code` is set
- * only for HOST_RULE: the host's own machine-readable reason, passed through
- * unchanged from the decision guard.
+ * for HOST_RULE (the host's own machine-readable reason, passed through
+ * unchanged from the decision guard) and for VALUE_NOT_RESOLVED (the
+ * `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` error code).
  */
 export interface FormDataIssue {
   readonly path: string;
