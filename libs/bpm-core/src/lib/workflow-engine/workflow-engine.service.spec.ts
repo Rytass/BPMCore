@@ -3440,6 +3440,267 @@ describe('WorkflowEngineService', () => {
       );
     });
 
+    describe('column-mode table on decide (approver owns seq only)', () => {
+      const APPLICANT_ROW_STORED = {
+        amount: 10,
+        financeItems: [{ taxAmount: 5 }],
+      } as const;
+      const TWO_ROWS_STORED = {
+        amount: 10,
+        financeItems: [
+          { seq: 1, taxAmount: 5 },
+          { seq: 2, taxAmount: 6 },
+        ],
+      } as const;
+      const seqOpenWorkflow = (
+        seqFill: 'OPTIONAL' | 'REQUIRED' = 'OPTIONAL',
+      ): WorkflowDefinition =>
+        createFieldAccessWorkflow({
+          financeFieldAccess: [
+            {
+              display: 'SHOW',
+              fieldKey: 'financeItems',
+              fill: 'NONE',
+              columns: [{ columnKey: 'seq', fill: seqFill }],
+            },
+            { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
+          ],
+        });
+      // Column-mode entries are not writable as a whole, so a conflict code
+      // on the thrown ConflictException is what a host branches on.
+      const expectConflictCode = async (
+        promise: Promise<unknown>,
+        code: string,
+      ): Promise<void> => {
+        const error = await promise.then(
+          (): unknown => undefined,
+          (rejection: unknown): unknown => rejection,
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect((error as ConflictException).getResponse()).toEqual(
+          expect.objectContaining({ code }),
+        );
+      };
+
+      it('refuses a changed applicant cell from an approver who owns only seq', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: APPLICANT_ROW_STORED,
+          workflow: seqOpenWorkflow(),
+        });
+
+        await expectConflictCode(
+          decide(fixture, {
+            formDataJson: '{"financeItems":[{"seq":1,"taxAmount":6}]}',
+          }),
+          'FORM_FIELD_ACCESS_CELL_LOCKED',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('lets the approver fill the open column and keeps the applicant cells', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: APPLICANT_ROW_STORED,
+          workflow: seqOpenWorkflow(),
+        });
+
+        await decide(fixture, {
+          formDataJson: '{"financeItems":[{"seq":1,"taxAmount":5}]}',
+        });
+
+        expect(fixture.savedInstance?.formData).toEqual({
+          amount: 10,
+          financeItems: [{ seq: 1, taxAmount: 5 }],
+        });
+      });
+
+      it('refuses an added row', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: TWO_ROWS_STORED,
+          workflow: seqOpenWorkflow(),
+        });
+
+        await expectConflictCode(
+          decide(fixture, {
+            formDataJson:
+              '{"financeItems":[{"seq":1,"taxAmount":5},{"seq":2,"taxAmount":6},{"seq":3,"taxAmount":7}]}',
+          }),
+          'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('refuses a deleted row', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: TWO_ROWS_STORED,
+          workflow: seqOpenWorkflow(),
+        });
+
+        await expectConflictCode(
+          decide(fixture, {
+            formDataJson: '{"financeItems":[{"seq":1,"taxAmount":5}]}',
+          }),
+          'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('refuses reordered rows', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: TWO_ROWS_STORED,
+          workflow: seqOpenWorkflow(),
+        });
+
+        await expectConflictCode(
+          decide(fixture, {
+            formDataJson:
+              '{"financeItems":[{"seq":2,"taxAmount":6},{"seq":1,"taxAmount":5}]}',
+          }),
+          'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('requires a column the approver owns as REQUIRED on APPROVED', async (): Promise<void> => {
+        const fixture = createDecideFixture({
+          formData: APPLICANT_ROW_STORED,
+          workflow: seqOpenWorkflow('REQUIRED'),
+        });
+
+        await expect(
+          decide(fixture, {
+            formDataJson: '{"financeItems":[{"taxAmount":5}]}',
+          }),
+        ).rejects.toThrow(/必填/);
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('refuses an approver-filled data-source column in a table', async (): Promise<void> => {
+        const baseSchema = createFinanceTableFormSchema();
+        const formSchema: FormDefinitionSchema = {
+          ...baseSchema,
+          fields: baseSchema.fields.map((field) =>
+            field.fieldKey === 'financeItems' && field.type === 'table'
+              ? {
+                  ...field,
+                  columns: [
+                    {
+                      fieldKey: 'seq',
+                      label: '序號',
+                      required: false,
+                      type: 'number',
+                    },
+                    {
+                      dataSource: {
+                        bindings: [
+                          {
+                            from: { columnKey: 'seq', kind: 'ROW_FIELD' },
+                            parameter: 'seq',
+                          },
+                        ],
+                        key: 'demo.cost-centers',
+                        version: 1,
+                      },
+                      fieldKey: 'costCenter',
+                      label: '成本中心',
+                      mode: 'single',
+                      required: false,
+                      type: 'select',
+                    },
+                    {
+                      fieldKey: 'taxAmount',
+                      label: '稅額',
+                      required: true,
+                      type: 'number',
+                    },
+                  ],
+                }
+              : field,
+          ),
+        };
+        const fixture = createDecideFixture({
+          formData: APPLICANT_ROW_STORED,
+          formSchema,
+          workflow: createFieldAccessWorkflow({
+            financeFieldAccess: [
+              {
+                display: 'SHOW',
+                fieldKey: 'financeItems',
+                fill: 'NONE',
+                columns: [{ columnKey: 'costCenter', fill: 'OPTIONAL' }],
+              },
+            ],
+          }),
+        });
+
+        await expectRejection(
+          decide(fixture, {
+            formDataJson:
+              '{"financeItems":[{"seq":1,"costCenter":"CC-1","taxAmount":5}]}',
+          }),
+          ForbiddenException,
+          'Workflow node task_finance does not let approvers fill in data-source columns: financeItems.costCenter',
+        );
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('lets a later node fill a different column and keeps the earlier approver cell', async (): Promise<void> => {
+        const first = createDecideFixture({
+          formData: APPLICANT_ROW_STORED,
+          workflow: seqOpenWorkflow(),
+        });
+
+        await decide(first, {
+          formDataJson: '{"financeItems":[{"seq":1,"taxAmount":5}]}',
+        });
+
+        const storedAfterFinance = first.savedInstance?.formData;
+
+        expect(storedAfterFinance).toBeDefined();
+
+        const headWorkflow: WorkflowDefinition = {
+          ...seqOpenWorkflow(),
+          nodes: seqOpenWorkflow().nodes.map((node) =>
+            node.id === 'task_head' && node.type === 'userTask'
+              ? {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    fieldAccess: [
+                      {
+                        display: 'SHOW',
+                        fieldKey: 'financeItems',
+                        fill: 'NONE',
+                        columns: [{ columnKey: 'taxAmount', fill: 'OPTIONAL' }],
+                      },
+                    ],
+                  },
+                }
+              : node,
+          ),
+        };
+        const second = createDecideFixture({
+          formData: storedAfterFinance ?? {},
+          task: {
+            assigneeMemberId: 'member-head',
+            nodeId: 'task_head',
+          },
+          token: { currentNodeId: 'task_head' },
+          workflow: headWorkflow,
+        });
+
+        await decide(second, {
+          decidedByMemberId: 'member-head',
+          formDataJson: '{"financeItems":[{"seq":1,"taxAmount":9}]}',
+        });
+
+        expect(second.savedInstance?.formData).toEqual({
+          amount: 10,
+          financeItems: [{ seq: 1, taxAmount: 9 }],
+        });
+      });
+    });
+
     describe('field access: node validation', () => {
       const FILLED_ROW = [{ seq: 1, taxAmount: 5 }] as const;
       const financeItemsAccess: FieldAccessEntry = {

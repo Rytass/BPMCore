@@ -1,4 +1,9 @@
+import { ConflictException } from '@nestjs/common';
+
 import {
+  FieldAccessFillUnit,
+  FormDataSourceBinding,
+  FormDataSourceReference,
   FormDefinitionSchema,
   FormFieldDefinition,
   isTableFieldDefinition,
@@ -181,3 +186,267 @@ export const applyOpenColumnCells = (
       ];
     }),
   );
+
+export const APPROVER_FILL_ERROR_CODES = {
+  CELL_LOCKED: 'FORM_FIELD_ACCESS_CELL_LOCKED',
+  TABLE_ROWS_LOCKED: 'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED',
+} as const;
+
+type ColumnFill = FieldAccessFillUnit['fill'];
+
+/**
+ * The table columns one user task lets its approver fill (ADR 27 §4(a)), keyed
+ * by table, each with its fill. A table granted whole in the same node is left
+ * out: that grant is the whole-field path and is checked as before.
+ */
+export type NodeColumnFillMap = ReadonlyMap<
+  string,
+  ReadonlyMap<string, ColumnFill>
+>;
+
+export const readNodeColumnFillMap = (
+  node: UserTaskNode,
+): NodeColumnFillMap => {
+  const units = readNodeFillUnits(node);
+  const wholeKeys = new Set(
+    units
+      .filter((unit) => unit.columnKey === null)
+      .map((unit) => unit.fieldKey),
+  );
+  const columnUnits = units.filter(
+    (unit): unit is FieldAccessFillUnit & { readonly columnKey: string } =>
+      unit.columnKey !== null && !wholeKeys.has(unit.fieldKey),
+  );
+
+  return new Map(
+    [...new Set(columnUnits.map((unit) => unit.fieldKey))].map(
+      (fieldKey): readonly [string, ReadonlyMap<string, ColumnFill>] => [
+        fieldKey,
+        new Map(
+          columnUnits
+            .filter((unit) => unit.fieldKey === fieldKey)
+            .map((unit): readonly [string, ColumnFill] => [
+              unit.columnKey,
+              unit.fill,
+            ]),
+        ),
+      ],
+    ),
+  );
+};
+
+/**
+ * The schema the decide path validates against: each open column this node
+ * grants REQUIRED is required. Its own `required` flag is kept as well, so a
+ * column the template already requires stays required.
+ */
+export const projectNodeOpenColumnsRequired = (
+  schema: FormDefinitionSchema,
+  columnFillMap: NodeColumnFillMap,
+): FormDefinitionSchema => ({
+  ...schema,
+  fields: schema.fields.map((field): FormFieldDefinition => {
+    const columnFills = isTableFieldDefinition(field)
+      ? columnFillMap.get(field.fieldKey)
+      : undefined;
+
+    if (!isTableFieldDefinition(field) || columnFills === undefined) {
+      return field;
+    }
+
+    return {
+      ...field,
+      columns: field.columns.map((column): TableColumnDefinition =>
+        columnFills.get(column.fieldKey) === 'REQUIRED' && !column.required
+          ? { ...column, required: true }
+          : column,
+      ),
+    };
+  }),
+});
+
+const cellValue = (row: FormRow, columnKey: string): unknown =>
+  row[columnKey] ?? null;
+
+/**
+ * The first applicant cell of `row` that differs from the stored row's, or
+ * `null` when every applicant cell is the same. A missing cell counts as null.
+ */
+const readFirstMismatchedApplicantCell = (
+  row: FormRow,
+  storedRow: FormRow,
+  openColumns: ReadonlySet<string>,
+): string | null => {
+  const applicant = readApplicantCells(row, openColumns);
+  const storedApplicant = readApplicantCells(storedRow, openColumns);
+
+  return (
+    [
+      ...new Set([...Object.keys(applicant), ...Object.keys(storedApplicant)]),
+    ].find(
+      (columnKey) =>
+        computeStableValueFingerprint(cellValue(applicant, columnKey)) !==
+        computeStableValueFingerprint(cellValue(storedApplicant, columnKey)),
+    ) ?? null
+  );
+};
+
+const rowsLocked = (fieldKey: string): ConflictException =>
+  new ConflictException({
+    code: APPROVER_FILL_ERROR_CODES.TABLE_ROWS_LOCKED,
+    message: `Table ${fieldKey} has fixed rows at this step; an approver may only fill its open columns`,
+  });
+
+const settleTableRows = (
+  fieldKey: string,
+  rows: unknown,
+  storedValue: unknown,
+  openColumns: ReadonlySet<string>,
+): unknown => {
+  const storedRows: readonly unknown[] = Array.isArray(storedValue)
+    ? storedValue
+    : [];
+
+  if (rows === null) {
+    if (storedRows.length === 0) {
+      return null;
+    }
+
+    throw rowsLocked(fieldKey);
+  }
+
+  // Not an array: the shape check in validation answers it with TYPE.
+  if (!Array.isArray(rows)) {
+    return rows;
+  }
+
+  if (rows.length !== storedRows.length) {
+    throw rowsLocked(fieldKey);
+  }
+
+  return rows.map((row: unknown, index: number): unknown => {
+    const storedRow = storedRows[index];
+
+    if (!isFormRow(row) || !isFormRow(storedRow)) {
+      throw rowsLocked(fieldKey);
+    }
+
+    const mismatch = readFirstMismatchedApplicantCell(
+      row,
+      storedRow,
+      openColumns,
+    );
+
+    if (mismatch !== null) {
+      // A row whose applicant cells match another stored row was moved, which
+      // changes the row order. Reporting it as a changed cell would hide that.
+      const movedElsewhere = storedRows.some(
+        (other, otherIndex) =>
+          otherIndex !== index &&
+          isFormRow(other) &&
+          readFirstMismatchedApplicantCell(row, other, openColumns) === null,
+      );
+
+      if (movedElsewhere) {
+        throw rowsLocked(fieldKey);
+      }
+
+      throw new ConflictException({
+        code: APPROVER_FILL_ERROR_CODES.CELL_LOCKED,
+        message: `Column ${mismatch} of table ${fieldKey} row ${index + 1} is not open to approvers`,
+      });
+    }
+
+    // The applicant's cells come from the stored row, so a payload can only
+    // change the open cells. Any other key the payload sent is dropped.
+    return {
+      ...readApplicantCells(storedRow, openColumns),
+      ...Object.fromEntries(
+        [...openColumns].map((columnKey) => [
+          columnKey,
+          cellValue(row, columnKey),
+        ]),
+      ),
+    };
+  });
+};
+
+/**
+ * Settles an approver's payload against the stored form data, table by table
+ * (ADR 27 §4(a)). The row count and order must match the stored rows, and each
+ * row's applicant cells must match the stored row at that position. Only the
+ * open cells are taken from the payload. Other fields pass through unchanged.
+ */
+export const settleColumnFillPayload = (
+  payload: FormRow,
+  stored: FormRow,
+  columnFillMap: NodeColumnFillMap,
+): FormRow =>
+  Object.fromEntries(
+    Object.entries(payload).map(
+      ([fieldKey, value]): readonly [string, unknown] => {
+        const columnFills = columnFillMap.get(fieldKey);
+
+        return columnFills === undefined
+          ? [fieldKey, value]
+          : [
+              fieldKey,
+              settleTableRows(
+                fieldKey,
+                value,
+                hasOwn(stored, fieldKey) ? stored[fieldKey] : undefined,
+                new Set(columnFills.keys()),
+              ),
+            ];
+      },
+    ),
+  );
+
+const readColumnDataSource = (
+  column: TableColumnDefinition,
+): FormDataSourceReference | undefined =>
+  'dataSource' in column ? column.dataSource : undefined;
+
+/**
+ * The open data-source columns a payload would fill, as `table.column`. An
+ * open column that has a data source, or that another column of the table
+ * reads through ROW_FIELD, cannot be filled by an approver: its value would
+ * need a per-row resolution that the decide path does not run yet.
+ */
+export const readRefusedOpenDataSourceColumns = (
+  schema: FormDefinitionSchema,
+  columnFillMap: NodeColumnFillMap,
+  payloadFieldKeys: readonly string[],
+): readonly string[] =>
+  schema.fields.flatMap((field): readonly string[] => {
+    const columnFills = isTableFieldDefinition(field)
+      ? columnFillMap.get(field.fieldKey)
+      : undefined;
+
+    if (
+      !isTableFieldDefinition(field) ||
+      columnFills === undefined ||
+      !payloadFieldKeys.includes(field.fieldKey)
+    ) {
+      return [];
+    }
+
+    const rowFieldReaders = new Set(
+      field.columns.flatMap(
+        (column): readonly string[] =>
+          readColumnDataSource(column)?.bindings.flatMap(
+            (binding: FormDataSourceBinding): readonly string[] =>
+              binding.from.kind === 'ROW_FIELD' ? [binding.from.columnKey] : [],
+          ) ?? [],
+      ),
+    );
+
+    return field.columns
+      .filter(
+        (column) =>
+          columnFills.has(column.fieldKey) &&
+          (readColumnDataSource(column) !== undefined ||
+            rowFieldReaders.has(column.fieldKey)),
+      )
+      .map((column) => `${field.fieldKey}.${column.fieldKey}`);
+  });

@@ -134,8 +134,12 @@ import { ApprovalTemplateVersionEntity } from '../template/approval-template-ver
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import {
   applyOpenColumnCells,
+  projectNodeOpenColumnsRequired,
   projectOpenColumnsOptional,
   readApproverFilledDeferral,
+  readNodeColumnFillMap,
+  readRefusedOpenDataSourceColumns,
+  settleColumnFillPayload,
 } from './approver-filled-table-columns';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
 import {
@@ -1870,15 +1874,34 @@ export class WorkflowEngineService {
           );
         }
 
+        // ADR 27 §4(a): column-mode tables are accepted here and settled
+        // cell by cell below. Their open columns that carry a data source are
+        // refused until per-row resolution runs on this path.
+        const nodeColumnFillMap = readNodeColumnFillMap(taskNode);
+
         if (filledFormData !== null) {
           const fillableFieldKeys = readNodeFillableFieldKeys(taskNode);
           const refusedFieldKeys = Object.keys(filledFormData).filter(
-            (fieldKey) => !fillableFieldKeys.has(fieldKey),
+            (fieldKey) =>
+              !fillableFieldKeys.has(fieldKey) &&
+              !nodeColumnFillMap.has(fieldKey),
           );
 
           if (refusedFieldKeys.length > 0) {
             throw new ForbiddenException(
               `Workflow node ${task.nodeId} does not let approvers fill in: ${refusedFieldKeys.join(', ')}`,
+            );
+          }
+
+          const refusedDataSourceColumns = readRefusedOpenDataSourceColumns(
+            readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+            nodeColumnFillMap,
+            Object.keys(filledFormData),
+          );
+
+          if (refusedDataSourceColumns.length > 0) {
+            throw new ForbiddenException(
+              `Workflow node ${task.nodeId} does not let approvers fill in data-source columns: ${refusedDataSourceColumns.join(', ')}`,
             );
           }
         }
@@ -1896,37 +1919,59 @@ export class WorkflowEngineService {
           );
         }
 
+        // ADR 27 §4(a): each column-mode table is merged per cell against the
+        // stored rows. A changed row count, row order or applicant cell is
+        // refused before anything below sees the payload.
+        const settledFormData =
+          filledFormData === null
+            ? null
+            : settleColumnFillPayload(
+                filledFormData,
+                instance.formData,
+                nodeColumnFillMap,
+              );
+
         // Only keys whose value really changes are written and reported. A key
         // the form data does not have yet counts as changed even when the new
         // value is null.
         const changedFieldKeys =
-          filledFormData === null
+          settledFormData === null
             ? []
-            : Object.keys(filledFormData)
+            : Object.keys(settledFormData)
                 .filter(
                   (fieldKey) =>
                     !Object.prototype.hasOwnProperty.call(
                       instance.formData,
                       fieldKey,
                     ) ||
-                    computeStableValueFingerprint(filledFormData[fieldKey]) !==
+                    computeStableValueFingerprint(settledFormData[fieldKey]) !==
                       computeStableValueFingerprint(
                         instance.formData[fieldKey],
                       ),
                 )
                 .sort();
 
-        const mergedFormData = { ...instance.formData, ...filledFormData };
+        const mergedFormData = { ...instance.formData, ...settledFormData };
 
         // Every approval at a node that lets its approver fill in fields is
         // held to those fields, whether or not this request sent any: the host
-        // may have pre-filled a table the approver then leaves as is.
+        // may have pre-filled a table the approver then leaves as is. A column
+        // this node grants REQUIRED is required in the check, not only in the
+        // template.
         if (input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc) {
-          const nodeFillableFieldKeys = readNodeFillableFieldKeys(taskNode);
+          const nodeFillableFieldKeys = new Set<string>([
+            ...readNodeFillableFieldKeys(taskNode),
+            ...nodeColumnFillMap.keys(),
+          ]);
 
           if (nodeFillableFieldKeys.size > 0) {
             validateFilledFormFields(
-              readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+              projectNodeOpenColumnsRequired(
+                readFormDefinitionSnapshotSchema(
+                  instance.formDefinitionSnapshot,
+                ),
+                nodeColumnFillMap,
+              ),
               mergedFormData,
               nodeFillableFieldKeys,
               readNodeRequiredFieldKeys(taskNode),
@@ -1995,7 +2040,7 @@ export class WorkflowEngineService {
         }
 
         const formDataChanged =
-          filledFormData !== null && changedFieldKeys.length > 0;
+          settledFormData !== null && changedFieldKeys.length > 0;
         const formDataOptionSnapshotChanged =
           computeStableValueFingerprint(nextFormDataOptionSnapshot) !==
           computeStableValueFingerprint(instance.formDataOptionSnapshot ?? {});
