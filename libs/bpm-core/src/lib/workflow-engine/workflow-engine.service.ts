@@ -203,6 +203,15 @@ import {
   BPMInitiatorCustomFieldsResolver,
 } from './initiator-custom-fields-resolver.token';
 import {
+  BPM_INSTANCE_GUARD,
+  BPMInstanceGuard,
+  BPMInstanceGuardInput,
+} from './instance-guard.token';
+import {
+  BPM_INSTANCE_GUARD_DEFAULT_TIMEOUT_MS,
+  runInstanceGuard,
+} from './instance-guard.runner';
+import {
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
   BPMWorkflowServiceTaskDispatcher,
   BPMWorkflowWebhookDispatchResult,
@@ -778,6 +787,9 @@ export class WorkflowEngineService {
     @Optional()
     @Inject(BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER)
     injectedInitiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver,
+    @Optional()
+    @Inject(BPM_INSTANCE_GUARD)
+    injectedInstanceGuard?: BPMInstanceGuard,
   ) {
     // A binding under the token wins: that is either the host's own provider
     // or `workflowServiceTaskDispatcherProvider`, both of them deliberate. The
@@ -799,6 +811,13 @@ export class WorkflowEngineService {
       injectedInitiatorCustomFieldsResolver ??
       rootOptions?.initiatorCustomFieldsResolver ??
       null;
+    // Same three-way order as the initiator resolver: a host binding under the
+    // token, then the runtime instance, then no guard at all.
+    this.instanceGuard =
+      injectedInstanceGuard ?? rootOptions?.instanceGuard ?? null;
+    this.instanceGuardTimeoutMs =
+      rootOptions?.instanceGuardTimeoutMs ??
+      BPM_INSTANCE_GUARD_DEFAULT_TIMEOUT_MS;
     this.organizationTimeZone = resolveBPMOrganizationTimeZone(
       rootOptions?.organizationTimeZone,
     );
@@ -812,6 +831,52 @@ export class WorkflowEngineService {
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
 
   private readonly initiatorCustomFieldsResolver: BPMInitiatorCustomFieldsResolver | null;
+
+  /** ADR 27 §2; `null` means no guard is bound and no guard code runs. */
+  private readonly instanceGuard: BPMInstanceGuard | null;
+
+  private readonly instanceGuardTimeoutMs: number;
+
+  /**
+   * Runs the bound guard for one engine path inside its transaction. A no-op
+   * when no guard is bound, so a host without one sees no behavior change.
+   */
+  private async guardInstanceChange(
+    input: BPMInstanceGuardInput,
+  ): Promise<void> {
+    if (this.instanceGuard === null) {
+      return;
+    }
+
+    await runInstanceGuard(
+      this.instanceGuard,
+      input,
+      this.instanceGuardTimeoutMs,
+    );
+  }
+
+  /**
+   * Reads the template version a case runs on, inside the engine transaction,
+   * so the guard sees the same snapshot as the decision. A missing row fails
+   * the change rather than handing the guard a partial input.
+   */
+  private async readBoundTemplateVersionOrThrow(
+    manager: EntityManager,
+    instance: Readonly<ApprovalInstanceEntity>,
+  ): Promise<ApprovalTemplateVersionEntity> {
+    const version = await manager
+      .getRepository(ApprovalTemplateVersionEntity)
+      .findOne({ where: { id: instance.templateVersionId } });
+
+    if (!version) {
+      throw new ConflictException({
+        code: 'TEMPLATE_VERSION_NOT_FOUND',
+        message: 'The template version of this instance no longer exists.',
+      });
+    }
+
+    return version;
+  }
 
   /** Webhooks each open engine transaction will send once it has committed. */
   private readonly deferredWebhookDispatches = new WeakMap<
@@ -1080,29 +1145,44 @@ export class WorkflowEngineService {
         );
         const tokenRepository = manager.getRepository(WorkflowTokenEntity);
         const activityRepository = manager.getRepository(ActivityLogEntity);
-        const instance = await instanceRepository.save(
-          instanceRepository.create({
-            completedAt: null,
-            formData,
-            formDataOptionSnapshot,
-            formDefinitionSnapshot: {
-              formDefinitionVersionId: formDefinitionVersion.id,
-              schema: formDefinitionVersion.schema,
-              uiSchema: formDefinitionVersion.uiSchema,
-              version: formDefinitionVersion.version,
-            },
-            businessKey,
-            initiatorMemberId: input.initiatorMemberId,
-            initiatorMetadataSnapshot,
-            startedAt,
-            state: ApprovalInstanceStateEnum.RUNNING,
-            submittedByMemberId,
-            templateId: template.id,
-            templateVersionId: templateVersion.id,
-            title: input.title?.trim() || template.name,
-            workflowSnapshot: templateVersion.workflowDefinition,
-          }),
-        );
+        const instanceDraft = instanceRepository.create({
+          completedAt: null,
+          formData,
+          formDataOptionSnapshot,
+          formDefinitionSnapshot: {
+            formDefinitionVersionId: formDefinitionVersion.id,
+            schema: formDefinitionVersion.schema,
+            uiSchema: formDefinitionVersion.uiSchema,
+            version: formDefinitionVersion.version,
+          },
+          businessKey,
+          initiatorMemberId: input.initiatorMemberId,
+          initiatorMetadataSnapshot,
+          startedAt,
+          state: ApprovalInstanceStateEnum.RUNNING,
+          submittedByMemberId,
+          templateId: template.id,
+          templateVersionId: templateVersion.id,
+          title: input.title?.trim() || template.name,
+          workflowSnapshot: templateVersion.workflowDefinition,
+        });
+        // ADR 27 §2: the host guard sees the case as it is about to be saved,
+        // under the template lock. A refusal throws here, before any insert.
+        await this.guardInstanceChange({
+          action: null,
+          actorMemberId: submittedByMemberId,
+          authContext: authContext ?? null,
+          automatic: null,
+          changedFieldKeys: Object.keys(formData),
+          formData,
+          instance: instanceDraft,
+          kind: 'SUBMIT',
+          manager,
+          node: null,
+          task: null,
+          templateVersion,
+        });
+        const instance = await instanceRepository.save(instanceDraft);
         await this.attachmentService.bindFormDataAttachmentsToInstance(
           manager,
           {
@@ -1700,6 +1780,30 @@ export class WorkflowEngineService {
           }
         }
 
+        // ADR 27 §2: the host guard judges the decision as it will be
+        // committed, after the form checks and before anything is written.
+        // The version is read only when a guard is bound, so an engine
+        // without one issues exactly the queries it did before.
+        if (this.instanceGuard !== null) {
+          await this.guardInstanceChange({
+            action: input.action,
+            actorMemberId: input.decidedByMemberId,
+            authContext: null,
+            automatic: options.automatic ?? null,
+            changedFieldKeys,
+            formData: mergedFormData,
+            instance,
+            kind: 'DECIDE',
+            manager,
+            node: taskNode,
+            task,
+            templateVersion: await this.readBoundTemplateVersionOrThrow(
+              manager,
+              instance,
+            ),
+          });
+        }
+
         if (filledFormData !== null && changedFieldKeys.length > 0) {
           await this.assertCurrentFilterableFormDataValues(
             instance.templateId,
@@ -2247,6 +2351,28 @@ export class WorkflowEngineService {
 
         if (!preparation) {
           assertNoUnresolvableDynamicValues(resubmitSchema, formData);
+        }
+
+        // ADR 27 §2: the host guard judges the resubmission as it will be
+        // committed, after every form check and before the write.
+        if (this.instanceGuard !== null) {
+          await this.guardInstanceChange({
+            action: null,
+            actorMemberId: input.initiatorMemberId,
+            authContext: authContext ?? null,
+            automatic: null,
+            changedFieldKeys: Object.keys(formData),
+            formData,
+            instance,
+            kind: 'RESUBMIT',
+            manager,
+            node: null,
+            task: null,
+            templateVersion: await this.readBoundTemplateVersionOrThrow(
+              manager,
+              instance,
+            ),
+          });
         }
 
         const resubmittedInstance = await instanceRepository.save({

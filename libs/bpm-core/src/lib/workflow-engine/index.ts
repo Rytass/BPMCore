@@ -13,6 +13,7 @@ export * from './dto/reassign-task.input';
 export * from './dto/resubmit-approval-instance.input';
 export * from './dto/submit-approval-instance.input';
 export * from './initiator-custom-fields-resolver.token';
+export * from './instance-guard.token';
 export * from './task-candidate.entity';
 export * from './task-decision.entity';
 export * from './task.entity';

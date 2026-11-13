@@ -20,6 +20,7 @@ import {
 } from '../organization/organization-time-zone';
 import { BPMRootSignatureOptions } from '../signature/signature-options';
 import { BPMInitiatorCustomFieldsResolver } from '../workflow-engine/initiator-custom-fields-resolver.token';
+import { BPMInstanceGuard } from '../workflow-engine/instance-guard.token';
 import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
 import { BPMRootWorkflowWebhookOptions } from '../workflow-webhook/workflow-webhook-options';
 import { BPMWorkflowWebhookRegistry } from '../workflow-webhook/workflow-webhook.types';
@@ -146,6 +147,25 @@ export interface BPMRootRuntimeOptions
    * given. When omitted, `customFields` is `{}`.
    */
   readonly initiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver;
+
+  /**
+   * Pre-decision guard that can refuse a submit, resubmit or decide before the
+   * engine commits it, as a ready instance. Refusals come back as a 400 with
+   * `formDataErrors` (reason `HOST_RULE`); a timeout or a failing guard comes
+   * back as a 503. The guard runs inside the engine transaction, so a refusal
+   * rolls the whole change back.
+   *
+   * `instanceGuardProvider` takes precedence when both are given. When omitted,
+   * no guard runs.
+   */
+  readonly instanceGuard?: BPMInstanceGuard;
+
+  /**
+   * Time the guard gets to answer, in milliseconds. Default 5000. A guard that
+   * does not answer in time fails closed (503 `BPM_INSTANCE_GUARD_TIMEOUT`).
+   * Only read when a guard is bound.
+   */
+  readonly instanceGuardTimeoutMs?: number;
 
   /**
    * Host identity source, as a ready instance.

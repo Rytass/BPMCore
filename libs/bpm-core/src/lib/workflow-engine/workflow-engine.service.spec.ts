@@ -29,6 +29,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { FormService } from '../form/form.service';
@@ -133,6 +134,15 @@ import {
 } from './initiator-custom-fields-resolver.token';
 import { BPMWorkflowServiceTaskDispatcher } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
+import type {
+  BPMInstanceGuard,
+  BPMInstanceGuardInput,
+  BPMInstanceGuardIssue,
+} from './instance-guard.token';
+import {
+  BPM_INSTANCE_GUARD_FAILED_CODE,
+  BPM_INSTANCE_GUARD_TIMEOUT_CODE,
+} from './instance-guard.runner';
 
 describe('WorkflowEngineService', () => {
   it('submits an approval instance with snapshots, start token, and activity logs', async (): Promise<void> => {
@@ -25886,3 +25896,279 @@ function answerTaskQueriesFromSavedTasks(fixture: ServiceFixture): void {
     );
   });
 }
+
+describe('instance guard (ADR 27 §2)', (): void => {
+  const AMOUNT_ISSUE: BPMInstanceGuardIssue = {
+    code: 'AMOUNT_OVER_LIMIT',
+    message: '金額超過上限',
+    path: 'amount',
+    reason: 'HOST_RULE',
+  };
+  const STORED_FORM_DATA = {
+    amount: 10,
+    financeItems: [{ seq: 1, taxAmount: 5 }],
+  } as const;
+
+  const guardAnswering = (
+    issues: readonly BPMInstanceGuardIssue[],
+  ): {
+    readonly calls: BPMInstanceGuardInput[];
+    readonly guard: BPMInstanceGuard;
+  } => {
+    const calls: BPMInstanceGuardInput[] = [];
+
+    return {
+      calls,
+      guard: {
+        check: async (
+          input: BPMInstanceGuardInput,
+        ): Promise<readonly BPMInstanceGuardIssue[]> => {
+          calls.push(input);
+
+          return issues;
+        },
+      },
+    };
+  };
+
+  const captureRejection = (promise: Promise<unknown>): Promise<unknown> =>
+    promise.then(
+      (): unknown => undefined,
+      (rejection: unknown): unknown => rejection,
+    );
+
+  const recordTransactionOutcomes = (
+    fixture: ServiceFixture,
+  ): readonly string[] => {
+    const { transaction } = (
+      fixture.service as unknown as {
+        readonly approvalInstanceRepository: {
+          readonly manager: { readonly transaction: jest.Mock };
+        };
+      }
+    ).approvalInstanceRepository.manager;
+    const runTransaction = transaction.getMockImplementation() as (
+      work: unknown,
+    ) => Promise<unknown>;
+    const outcomes: string[] = [];
+
+    transaction.mockImplementation(
+      async (work: unknown): Promise<unknown> => {
+        try {
+          const result = await runTransaction(work);
+
+          outcomes.push('commit');
+
+          return result;
+        } catch (error: unknown) {
+          outcomes.push('rollback');
+
+          throw error;
+        }
+      },
+    );
+
+    return outcomes;
+  };
+
+  const createSubmitFixture = (
+    rootOptions?: BPMRootRuntimeOptions,
+  ): ServiceFixture =>
+    createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema: createFinanceTableFormSchema(),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      rootOptions,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      templateWorkflowDefinition: createFieldAccessWorkflow(),
+    });
+
+  const submitRequest = (
+    fixture: ServiceFixture,
+  ): Promise<ApprovalInstanceEntity> =>
+    fixture.service.submitApprovalInstance({
+      formDataJson: '{"amount":5000}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      templateId: 'template-1',
+      title: 'Request',
+    });
+
+  const createResubmitFixture = (
+    rootOptions?: BPMRootRuntimeOptions,
+  ): ServiceFixture => {
+    const formSchema = createFinanceTableFormSchema();
+
+    return createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formSchema,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+      processFormData: STORED_FORM_DATA,
+      processFormDefinitionSnapshot: { schema: formSchema },
+      processWorkflowSnapshot: createFieldAccessWorkflow(),
+      rootOptions,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+  };
+
+  const resubmitRequest = (
+    fixture: ServiceFixture,
+  ): Promise<ApprovalInstanceEntity> =>
+    fixture.service.resubmitApprovalInstance({
+      formDataJson: '{"amount":5000}',
+      initiatorMemberId: 'member-001',
+      instanceId: 'instance-1',
+      title: null,
+    });
+
+  const createDecideFixture = (
+    rootOptions?: BPMRootRuntimeOptions,
+  ): ServiceFixture =>
+    createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processFormData: STORED_FORM_DATA,
+      processFormDefinitionSnapshot: {
+        schema: createFinanceTableFormSchema(),
+      },
+      processWorkflowSnapshot: createFieldAccessWorkflow(),
+      rootOptions,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+  const decideRequest = (fixture: ServiceFixture): Promise<TaskDecisionEntity> =>
+    fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+  it('lets a submit through when the guard answers with no issues', async (): Promise<void> => {
+    const { calls, guard } = guardAnswering([]);
+    const fixture = createSubmitFixture({ instanceGuard: guard });
+    const outcomes = recordTransactionOutcomes(fixture);
+
+    await submitRequest(fixture);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ kind: 'SUBMIT', automatic: null });
+    expect(outcomes).toEqual(['commit']);
+    expect(fixture.savedInstance).not.toBeNull();
+  });
+
+  it('refuses a submit with 400 formDataErrors and saves nothing', async (): Promise<void> => {
+    const { guard } = guardAnswering([AMOUNT_ISSUE]);
+    const fixture = createSubmitFixture({ instanceGuard: guard });
+    const outcomes = recordTransactionOutcomes(fixture);
+
+    const error = await captureRejection(submitRequest(fixture));
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error).toMatchObject({
+      response: {
+        formDataErrors: [
+          {
+            code: 'AMOUNT_OVER_LIMIT',
+            message: '金額超過上限',
+            path: 'amount',
+            reason: 'HOST_RULE',
+          },
+        ],
+        statusCode: 400,
+      },
+    });
+    expect(outcomes).toEqual(['rollback']);
+    expect(fixture.savedInstance).toBeNull();
+  });
+
+  it('refuses a resubmit with 400 and leaves the returned case unchanged', async (): Promise<void> => {
+    const { guard } = guardAnswering([AMOUNT_ISSUE]);
+    const fixture = createResubmitFixture({ instanceGuard: guard });
+    const outcomes = recordTransactionOutcomes(fixture);
+
+    const error = await captureRejection(resubmitRequest(fixture));
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error).toMatchObject({
+      response: { formDataErrors: [{ reason: 'HOST_RULE' }], statusCode: 400 },
+    });
+    expect(outcomes).toEqual(['rollback']);
+    expect(fixture.savedInstance).toBeNull();
+  });
+
+  it('refuses a decide with 400, rolls back and writes no decision', async (): Promise<void> => {
+    const { calls, guard } = guardAnswering([AMOUNT_ISSUE]);
+    const fixture = createDecideFixture({ instanceGuard: guard });
+    const outcomes = recordTransactionOutcomes(fixture);
+
+    const error = await captureRejection(decideRequest(fixture));
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error).toMatchObject({
+      response: { formDataErrors: [{ reason: 'HOST_RULE' }], statusCode: 400 },
+    });
+    expect(calls[0]).toMatchObject({ kind: 'DECIDE', action: 'APPROVED' });
+    expect(outcomes).toEqual(['rollback']);
+    expect(fixture.savedDecision).toBeNull();
+  });
+
+  it('fails closed with 503 BPM_INSTANCE_GUARD_TIMEOUT when the guard never answers', async (): Promise<void> => {
+    const guard: BPMInstanceGuard = {
+      check: (): Promise<readonly BPMInstanceGuardIssue[]> =>
+        new Promise<never>((): void => undefined),
+    };
+    const fixture = createDecideFixture({
+      instanceGuard: guard,
+      instanceGuardTimeoutMs: 20,
+    });
+    const outcomes = recordTransactionOutcomes(fixture);
+
+    const error = await captureRejection(decideRequest(fixture));
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(error).toMatchObject({
+      response: { code: BPM_INSTANCE_GUARD_TIMEOUT_CODE, statusCode: 503 },
+    });
+    expect(outcomes).toEqual(['rollback']);
+    expect(fixture.savedDecision).toBeNull();
+  });
+
+  it('turns a failing guard into 503 BPM_INSTANCE_GUARD_FAILED and rolls back', async (): Promise<void> => {
+    const guard: BPMInstanceGuard = {
+      check: async (): Promise<readonly BPMInstanceGuardIssue[]> => {
+        throw new Error('database is gone');
+      },
+    };
+    const fixture = createDecideFixture({ instanceGuard: guard });
+    const outcomes = recordTransactionOutcomes(fixture);
+
+    const error = await captureRejection(decideRequest(fixture));
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(error).toMatchObject({
+      response: { code: BPM_INSTANCE_GUARD_FAILED_CODE, statusCode: 503 },
+    });
+    expect(outcomes).toEqual(['rollback']);
+    expect(fixture.savedDecision).toBeNull();
+  });
+
+  it('runs a decide as before when no guard is bound', async (): Promise<void> => {
+    const fixture = createDecideFixture();
+    const outcomes = recordTransactionOutcomes(fixture);
+
+    await decideRequest(fixture);
+
+    expect(outcomes).toEqual(['commit']);
+    expect(fixture.savedDecision).not.toBeNull();
+  });
+});
