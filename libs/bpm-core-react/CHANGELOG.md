@@ -1,3 +1,31 @@
+## 0.22.0 (2026-11-13)
+
+### 🚀 Features
+
+- **form-data-source:** judge form options per template with a FORM_OPTIONS purpose ([290fc320](https://github.com/Rytass/BPMCore/commit/290fc320))
+- **inbox:** page every inbox tab on the server ([79d8c222](https://github.com/Rytass/BPMCore/commit/79d8c222))
+- **client:** add paged inbox and approval history lists ([6a4e2735](https://github.com/Rytass/BPMCore/commit/6a4e2735))
+- ⚠️  **workflow:** page the inbox and approval history queries ([796fdb04](https://github.com/Rytass/BPMCore/commit/796fdb04))
+
+### 🩹 Fixes
+
+- **inbox:** read history on demand and leave a page that has emptied ([8fd65278](https://github.com/Rytass/BPMCore/commit/8fd65278))
+
+### 🔥 Performance
+
+- **workflow:** share one open-task read between inboxTasks and its count ([1663f503](https://github.com/Rytass/BPMCore/commit/1663f503))
+
+### ⚠️  Breaking Changes
+
+- **workflow:** page the inbox and approval history queries  ([796fdb04](https://github.com/Rytass/BPMCore/commit/796fdb04))
+  the cachedMembers GraphQL query and the
+  MemberMetadataCache GraphQL type are removed.
+  IdentityService.listCachedMembers stays.
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.21.4 (2026-11-12)
 
 ### 🩹 Fixes
