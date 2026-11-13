@@ -1,11 +1,13 @@
 import { Field, ID, InputType, Int } from '@nestjs/graphql';
 import {
   IsBoolean,
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
   IsUUID,
 } from 'class-validator';
+import { ApprovalTemplateLaunchModeEnum } from '../template.enums';
 
 @InputType()
 export class CreateApprovalTemplateInput {
@@ -145,6 +147,20 @@ export class UpdateApprovalTemplateDraftInput {
   @IsOptional()
   @IsString()
   initiatorPolicyCel?: string | null;
+
+  /**
+   * `HOST_ONLY` keeps the template off the launch page and refuses submission
+   * and resubmission through GraphQL; the host's backend submits it through
+   * the service (ADR 27 §5). Absent keeps the draft's current value.
+   */
+  @Field(() => ApprovalTemplateLaunchModeEnum, {
+    description:
+      'OPEN (default): members start it from the launch page. HOST_ONLY: only the host backend submits it; it is left out of the launchable list and GraphQL submit and resubmit are refused with 403. Absent keeps the draft value.',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsEnum(ApprovalTemplateLaunchModeEnum)
+  launchMode?: ApprovalTemplateLaunchModeEnum | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()

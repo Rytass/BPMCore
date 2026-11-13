@@ -19,6 +19,7 @@ import {
 import {
   ApprovalTemplateActivationStatusEnum,
   ApprovalTemplateCategoryStatusEnum,
+  ApprovalTemplateLaunchModeEnum,
   ApprovalTemplateListStatusEnum,
   ApprovalTemplateVersionStatusEnum,
 } from './template.enums';
@@ -3204,6 +3205,65 @@ describe('TemplateService.composeApprovalTemplateWithForm', () => {
 
     expect(lockAt).toBeGreaterThanOrEqual(0);
     expect(firstWriteAt).toBeGreaterThan(lockAt);
+  });
+
+  it('keeps a draft launchMode unless the caller sets one, and carries it into the next draft (ADR 27 §5)', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+    const readVersion = (id: string): ApprovalTemplateVersionEntity =>
+      store(ApprovalTemplateVersionEntity).get(
+        id,
+      ) as ApprovalTemplateVersionEntity;
+    const drafted = await service.composeApprovalTemplateWithForm(
+      composeInput({ launchMode: ApprovalTemplateLaunchModeEnum.HOST_ONLY }),
+      'member-admin',
+    );
+    const draftId = drafted.templateVersion.id;
+
+    expect(readVersion(draftId).launchMode).toBe(
+      ApprovalTemplateLaunchModeEnum.HOST_ONLY,
+    );
+
+    await service.updateApprovalTemplateDraft({
+      formDefinitionVersionId: drafted.formDefinitionVersion.id,
+      initiatorPolicyCel: null,
+      notificationConfigJson: null,
+      slaDefaultsJson: null,
+      versionId: draftId,
+      workflowDefinitionJson: JSON.stringify(VALID_WORKFLOW_DEFINITION),
+    });
+
+    expect(readVersion(draftId).launchMode).toBe(
+      ApprovalTemplateLaunchModeEnum.HOST_ONLY,
+    );
+
+    const published = await service.composeApprovalTemplateWithForm(
+      composeInput({
+        formDefinitionId: drafted.formDefinitionVersion.formDefinitionId,
+        publish: true,
+        templateId: drafted.templateVersion.templateId,
+      }),
+      'member-admin',
+    );
+    const fork = await service.forkApprovalTemplate(
+      published.templateVersion.templateId,
+    );
+
+    expect(fork.launchMode).toBe(ApprovalTemplateLaunchModeEnum.HOST_ONLY);
+
+    await service.updateApprovalTemplateDraft({
+      formDefinitionVersionId: drafted.formDefinitionVersion.id,
+      initiatorPolicyCel: null,
+      launchMode: ApprovalTemplateLaunchModeEnum.OPEN,
+      notificationConfigJson: null,
+      slaDefaultsJson: null,
+      versionId: fork.id,
+      workflowDefinitionJson: JSON.stringify(VALID_WORKFLOW_DEFINITION),
+    });
+
+    expect(readVersion(fork.id).launchMode).toBe(
+      ApprovalTemplateLaunchModeEnum.OPEN,
+    );
   });
 
   it('refuses a draft update when the draft was published before the update got the template lock', async (): Promise<void> => {

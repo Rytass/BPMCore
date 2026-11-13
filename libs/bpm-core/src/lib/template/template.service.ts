@@ -101,6 +101,7 @@ import {
 import {
   ApprovalTemplateActivationStatusEnum,
   ApprovalTemplateCategoryStatusEnum,
+  ApprovalTemplateLaunchModeEnum,
   ApprovalTemplateListStatusEnum,
   ApprovalTemplateVersionStatusEnum,
 } from './template.enums';
@@ -230,6 +231,7 @@ export class TemplateService {
         archivedAt: null,
         formDefinitionVersionId: input.formDefinitionVersionId,
         initiatorPolicyCel: null,
+        launchMode: ApprovalTemplateLaunchModeEnum.OPEN,
         notificationConfig: null,
         publishedAt: null,
         publishedByMemberId: null,
@@ -288,6 +290,7 @@ export class TemplateService {
           {
             formDefinitionVersionId: formDefinitionVersion.id,
             initiatorPolicyCel: input.initiatorPolicyCel,
+            launchMode: input.launchMode ?? null,
             notificationConfigJson: input.notificationConfigJson,
             slaDefaultsJson: input.slaDefaultsJson,
             versionId: templateDraftVersion.id,
@@ -730,6 +733,9 @@ export class TemplateService {
         const next = versionRepository.merge(existing, {
           formDefinitionVersionId: input.formDefinitionVersionId,
           initiatorPolicyCel: input.initiatorPolicyCel,
+          // Absent keeps the draft's: a caller that predates the field must
+          // not turn a HOST_ONLY draft back to OPEN by saving it.
+          launchMode: input.launchMode ?? existing.launchMode,
           notificationConfig: parseOptionalJsonObject(
             input.notificationConfigJson,
           ),
@@ -799,6 +805,7 @@ export class TemplateService {
         archivedAt: null,
         formDefinitionVersionId: source?.formDefinitionVersionId ?? null,
         initiatorPolicyCel: source?.initiatorPolicyCel ?? null,
+        launchMode: source?.launchMode ?? ApprovalTemplateLaunchModeEnum.OPEN,
         notificationConfig: source?.notificationConfig ?? null,
         publishedAt: null,
         publishedByMemberId: null,

@@ -1553,6 +1553,110 @@ describe('WorkflowEngineService', () => {
     });
   });
 
+  describe('HOST_ONLY launch mode (ADR 27 §5)', (): void => {
+    const createFixture = (
+      launchMode: ApprovalTemplateLaunchModeEnum,
+      instanceState?: ApprovalInstanceStateEnum,
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState,
+        templateLaunchMode: launchMode,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    const submit = (
+      fixture: ServiceFixture,
+      endUserSubmission: boolean,
+    ): Promise<ApprovalInstanceEntity> =>
+      fixture.service.submitApprovalInstance({
+        endUserSubmission,
+        formDataJson: '{"amount":1000}',
+        initiatorMemberId: 'member-001',
+        initiatorMetadataSnapshotJson: null,
+        templateId: 'template-1',
+        title: null,
+      });
+    const resubmit = (
+      fixture: ServiceFixture,
+      endUserSubmission: boolean,
+    ): Promise<ApprovalInstanceEntity> =>
+      fixture.service.resubmitApprovalInstance({
+        endUserSubmission,
+        formDataJson: '{"amount":2000}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      });
+
+    it('refuses a GraphQL submission with 403 and saves nothing', async (): Promise<void> => {
+      const fixture = createFixture(ApprovalTemplateLaunchModeEnum.HOST_ONLY);
+
+      await expect(submit(fixture, true)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('lets the host submit through the service', async (): Promise<void> => {
+      const fixture = createFixture(ApprovalTemplateLaunchModeEnum.HOST_ONLY);
+
+      await expect(submit(fixture, false)).resolves.toMatchObject({
+        id: 'instance-1',
+      });
+    });
+
+    it('refuses a GraphQL resubmission of an instance bound to a HOST_ONLY version', async (): Promise<void> => {
+      const fixture = createFixture(
+        ApprovalTemplateLaunchModeEnum.HOST_ONLY,
+        ApprovalInstanceStateEnum.RETURNED,
+      );
+
+      await expect(resubmit(fixture, true)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(fixture.savedInstance).toBeNull();
+    });
+
+    it('lets the host resubmit through the service', async (): Promise<void> => {
+      const fixture = createFixture(
+        ApprovalTemplateLaunchModeEnum.HOST_ONLY,
+        ApprovalInstanceStateEnum.RETURNED,
+      );
+
+      await expect(resubmit(fixture, false)).resolves.toMatchObject({
+        id: 'instance-1',
+      });
+    });
+
+    it('keeps an OPEN template open to GraphQL submission and resubmission', async (): Promise<void> => {
+      await expect(
+        submit(createFixture(ApprovalTemplateLaunchModeEnum.OPEN), true),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+      await expect(
+        resubmit(
+          createFixture(
+            ApprovalTemplateLaunchModeEnum.OPEN,
+            ApprovalInstanceStateEnum.RETURNED,
+          ),
+          true,
+        ),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('leaves a HOST_ONLY template out of the launchable list', async (): Promise<void> => {
+      const hostOnly = createFixture(ApprovalTemplateLaunchModeEnum.HOST_ONLY);
+      const open = createFixture(ApprovalTemplateLaunchModeEnum.OPEN);
+
+      await expect(
+        hostOnly.service.listLaunchableApprovalTemplates('member-001'),
+      ).resolves.toEqual([]);
+      await expect(
+        open.service.listLaunchableApprovalTemplates('member-001'),
+      ).resolves.toHaveLength(1);
+    });
+  });
+
   describe('business key', () => {
     const TEMPLATE_UUID = '3f1c2a9e-5b7d-4e8a-9c01-2d4f6a8b0c1e';
     const submitWithBusinessKey = (
@@ -22578,6 +22682,7 @@ function createServiceFixture({
   submittedByMemberId,
   templateInitiatorPolicyCel = null,
   templateIsActive = true,
+  templateLaunchMode = ApprovalTemplateLaunchModeEnum.OPEN,
   templateVersionStatus,
   templateWorkflowDefinition,
   transactionalInstanceUpdatedAt,
@@ -22632,6 +22737,7 @@ function createServiceFixture({
   readonly submittedByMemberId?: string | null;
   // The published template version's initiator policy; defaults to none.
   readonly templateInitiatorPolicyCel?: string | null;
+  readonly templateLaunchMode?: ApprovalTemplateLaunchModeEnum;
   readonly templateIsActive?: boolean;
   readonly templateVersionStatus: ApprovalTemplateVersionStatusEnum;
   // The published template version's workflow; defaults to start -> end.
@@ -22672,10 +22778,13 @@ function createServiceFixture({
     ...processTaskDecisions,
   ];
   const template = createTemplate(currentVersionId, templateIsActive);
-  const templateVersion = createTemplateVersion(
-    templateVersionStatus,
-    templateWorkflowDefinition,
-    templateInitiatorPolicyCel,
+  const templateVersion = Object.assign(
+    createTemplateVersion(
+      templateVersionStatus,
+      templateWorkflowDefinition,
+      templateInitiatorPolicyCel,
+    ),
+    { launchMode: templateLaunchMode },
   );
   const formVersion = createFormVersion(formVersionStatus, formSchema);
   const rootInstanceFind = jest.fn<

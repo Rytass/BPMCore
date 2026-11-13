@@ -132,7 +132,10 @@ import {
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
-import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
+import {
+  ApprovalTemplateLaunchModeEnum,
+  ApprovalTemplateVersionStatusEnum,
+} from '../template/template.enums';
 import { DecideTaskInput } from './dto/decide-task.input';
 import { DryRunApprovalWorkflowInput } from './dto/dry-run-approval-workflow.input';
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
@@ -934,6 +937,11 @@ export class WorkflowEngineService {
     const templateVersion = await this.getPublishedTemplateVersionOrThrow(
       template.currentVersionId,
     );
+
+    if (input.endUserSubmission === true) {
+      assertEndUserMayLaunch(templateVersion);
+    }
+
     const formDefinitionVersion = await this.getPublishedFormVersionOrThrow(
       templateVersion.formDefinitionVersionId,
     );
@@ -1188,6 +1196,33 @@ export class WorkflowEngineService {
       revalidateAll,
       schema,
     });
+  }
+
+  /**
+   * Refuses an end user's resubmission of an instance bound to a `HOST_ONLY`
+   * version (ADR 27 §5). Checked before any data source is called and outside
+   * the lock: an instance never changes version and a published version never
+   * changes `launchMode`, so the answer cannot go stale. An instance that does
+   * not exist is left to the locked read, which reports it.
+   */
+  private async assertEndUserMayResubmit(instanceId: string): Promise<void> {
+    const instance = await this.approvalInstanceRepository.findOne({
+      select: { id: true, templateVersionId: true },
+      where: { id: instanceId },
+    });
+
+    if (!instance) {
+      return;
+    }
+
+    const version = await this.approvalTemplateVersionRepository.findOne({
+      select: { id: true, launchMode: true },
+      where: { id: instance.templateVersionId },
+    });
+
+    if (version) {
+      assertEndUserMayLaunch(version);
+    }
   }
 
   private async prepareResubmitFormDataOptions(
@@ -2108,6 +2143,11 @@ export class WorkflowEngineService {
       input.formDataJson,
       'formDataJson',
     );
+
+    if (input.endUserSubmission === true) {
+      await this.assertEndUserMayResubmit(input.instanceId);
+    }
+
     const preparation = this.formDataSourceValueResolver
       ? await this.prepareResubmitFormDataOptions(
           input,
@@ -4474,16 +4514,23 @@ export class WorkflowEngineService {
       },
     );
 
-    return templates.filter((template) =>
-      this.isInitiatorPolicyMet(
-        template,
-        template.currentVersionId
-          ? (versionById.get(template.currentVersionId) ?? null)
-          : null,
-        initiatorMetadataSnapshot,
-        'launchable templates',
-      ),
-    );
+    return templates.filter((template): boolean => {
+      const version = template.currentVersionId
+        ? (versionById.get(template.currentVersionId) ?? null)
+        : null;
+
+      // A HOST_ONLY template is started by the host's backend, never from the
+      // launch page (ADR 27 §5), so it is not offered there at all.
+      return (
+        version?.launchMode !== ApprovalTemplateLaunchModeEnum.HOST_ONLY &&
+        this.isInitiatorPolicyMet(
+          template,
+          version,
+          initiatorMetadataSnapshot,
+          'launchable templates',
+        )
+      );
+    });
   }
 
   /**
@@ -10123,6 +10170,21 @@ function readDefaultInitiatorMetadataSnapshot(
     customFields: {},
     memberId,
   };
+}
+
+/**
+ * Refuses a submission or resubmission through GraphQL on a `HOST_ONLY`
+ * version (ADR 27 §5). Only the host's backend, calling the service, may start
+ * or resubmit such a case.
+ */
+function assertEndUserMayLaunch(
+  version: Pick<ApprovalTemplateVersionEntity, 'launchMode'>,
+): void {
+  if (version.launchMode === ApprovalTemplateLaunchModeEnum.HOST_ONLY) {
+    throw new ForbiddenException(
+      'This approval template can only be submitted by the host system',
+    );
+  }
 }
 
 /**
