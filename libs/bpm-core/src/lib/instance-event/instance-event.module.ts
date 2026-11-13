@@ -8,6 +8,7 @@ import {
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApprovalInstanceEventEntity } from './approval-instance-event.entity';
 import { InstanceEventDeliveryService } from './instance-event.delivery.service';
+import { InstanceEventDeliverySubscriber } from './instance-event.delivery.subscriber';
 import {
   BPM_INSTANCE_EVENT_OBSERVER,
   BPMInstanceEventObserver,
@@ -48,6 +49,7 @@ export class InstanceEventModule {
         ...observerProviders,
         InstanceEventService,
         InstanceEventDeliveryService,
+        InstanceEventDeliverySubscriber,
       ],
     };
   }
