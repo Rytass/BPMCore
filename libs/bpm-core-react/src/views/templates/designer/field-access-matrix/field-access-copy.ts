@@ -43,9 +43,6 @@ export const FIELD_ACCESS_FILL_BLOCKER_LABELS: Readonly<
   approverFilledTableDataSourceColumn: '表格含資料來源欄，不能補填',
 };
 
-export const FIELD_ACCESS_BOOLEAN_REQUIRED_NOTE =
-  '開關欄位只能選填補填：開關關著也是答案，不能要求必填。';
-
 export const FIELD_ACCESS_HIDE_NOTE =
   '「隱藏」只影響這一關的畫面，不是權限：資料查詢仍拿得到值，不能用來保密。';
 

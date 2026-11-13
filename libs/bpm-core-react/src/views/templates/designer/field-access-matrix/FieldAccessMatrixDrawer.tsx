@@ -36,7 +36,6 @@ import type {
 import { readWorkflowLintMessage } from '@rytass/bpm-core-client/template';
 import type { BPMLanguage } from '../../../../lib/language-provider';
 import {
-  FIELD_ACCESS_BOOLEAN_REQUIRED_NOTE,
   FIELD_ACCESS_CHOICE_LABELS,
   FIELD_ACCESS_EFFECTIVE_LABELS,
   FIELD_ACCESS_FILL_BLOCKER_LABELS,
@@ -566,9 +565,6 @@ export function FieldAccessMatrixDrawer({
 
               return label ? [label] : [];
             }),
-            ...(row.field.type === 'boolean'
-              ? [FIELD_ACCESS_BOOLEAN_REQUIRED_NOTE]
-              : []),
           ]
         : [];
 
