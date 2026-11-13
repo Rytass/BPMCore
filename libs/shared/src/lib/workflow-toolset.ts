@@ -12,6 +12,7 @@ import {
   ExcludeNodeActorsConfig,
   OrgManagerChainStart,
   ReturnResubmitStrategy,
+  FieldAccessColumnEntry,
   ServiceAction,
   SlaCalendarMode,
   SlaConfig,
@@ -81,6 +82,7 @@ export interface WorkflowTool {
 
 // ── Reusable schema fragments ──────────────────────────────────────────────
 
+const FIELD_ACCESS_COLUMN_FILLS = ['OPTIONAL', 'REQUIRED'] as const;
 const NODE_TYPE_ENUM = ['userTask', 'serviceTask', 'exclusiveGateway'] as const;
 const TRIGGER_MODE_ENUM: readonly WorkflowNodeTriggerMode[] = ['AND', 'OR'];
 const RESUBMIT_STRATEGY_ENUM: readonly ReturnResubmitStrategy[] = [
@@ -432,6 +434,7 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
     name: 'set_field_access_matrix',
     description:
       '設定簽核節點的「欄位顯示與補填」。nodeIds 列出這次要改寫的簽核節點，只有它們會被改寫，其他節點的設定不變。' +
+      '欄位補填可以只開放表格的部分欄位：entry 帶 columns（每筆 columnKey＋fill=OPTIONAL 或 REQUIRED），表格列數不變，只有列出的欄可補填。' +
       '每個列在 nodeIds 的節點，設定會換成 entries 裡屬於它的那幾筆：要保留的既有設定（見 get_workflow_snapshot 的「欄位設定」）也必須一併傳入，沒有任何一筆的節點會清空設定。entries 的 nodeId 必須在 nodeIds 裡。' +
       'display：SHOW=顯示、HIDE=在這一關的畫面上隱藏。fill：NONE=不補填、OPTIONAL=這一關的簽核人可補填（選填）、REQUIRED=必須補填才能核准。fill 不是 NONE 時 display 必須是 SHOW。' +
       '隱藏只影響畫面，不是權限：資料查詢仍拿得到值，不能拿來保密。同一個欄位不要讓同一條路徑上的兩個關卡都補填；補填節點不能是會簽（PARALLEL_ALL）或過半（QUORUM）、逾時自動核准，或排除申請人後跳過此關。',
@@ -442,6 +445,19 @@ export const WORKFLOW_TOOLSET: readonly WorkflowTool[] = [
             {
               display: { enum: [...FIELD_ACCESS_DISPLAYS], type: 'string' },
               fieldKey: { type: 'string' },
+              columns: {
+                items: objectSchema(
+                  {
+                    columnKey: { type: 'string' },
+                    fill: {
+                      enum: [...FIELD_ACCESS_COLUMN_FILLS],
+                      type: 'string',
+                    },
+                  },
+                  ['columnKey', 'fill'],
+                ),
+                type: 'array',
+              },
               fill: { enum: [...FIELD_ACCESS_FILLS], type: 'string' },
               nodeId: { type: 'string' },
             },
@@ -665,7 +681,16 @@ function readFieldAccessSummary(node: UserTaskNode): string {
 
   return entries.length
     ? `；欄位設定=${entries
-        .map((entry) => `${entry.fieldKey}:${entry.display}/${entry.fill}`)
+        .map(
+          (entry) =>
+            `${entry.fieldKey}:${entry.display}/${entry.fill}${
+              entry.columns
+                ? `[${entry.columns
+                    .map((column) => `${column.columnKey}:${column.fill}`)
+                    .join(',')}]`
+                : ''
+            }`,
+        )
         .join(',')}`
     : '';
 }
@@ -1497,6 +1522,30 @@ function parseFieldAccessMatrixEntries(
       fieldKey: readString(entry, 'fieldKey'),
       fill: readEnum(entry, 'fill', FIELD_ACCESS_FILLS),
       nodeId: readString(entry, 'nodeId'),
+      ...(entry['columns'] === undefined
+        ? {}
+        : { columns: parseFieldAccessColumns(entry['columns']) }),
+    };
+  });
+}
+
+// Column mode: each listed column is granted OPTIONAL or REQUIRED. Absent
+// `columns` keeps the whole-field grant.
+function parseFieldAccessColumns(
+  value: unknown,
+): readonly FieldAccessColumnEntry[] {
+  if (!Array.isArray(value)) {
+    throw new Error('entries 的 columns 必須為陣列。');
+  }
+
+  return value.map((column: unknown): FieldAccessColumnEntry => {
+    if (!isRecord(column)) {
+      throw new Error('columns 的每一筆都必須為物件。');
+    }
+
+    return {
+      columnKey: readString(column, 'columnKey'),
+      fill: readEnum(column, 'fill', FIELD_ACCESS_COLUMN_FILLS),
     };
   });
 }
