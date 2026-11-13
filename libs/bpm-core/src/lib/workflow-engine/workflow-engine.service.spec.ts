@@ -89,7 +89,10 @@ import { SignatureEntity } from '../signature/signature.entity';
 import { SignatureService } from '../signature/signature.service';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
-import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
+import {
+  ApprovalTemplateLaunchModeEnum,
+  ApprovalTemplateVersionStatusEnum,
+} from '../template/template.enums';
 import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
 import {
@@ -23571,8 +23574,10 @@ function createTemplate(
     currentVersionId,
     deletedAt: null,
     description: null,
+    hostManaged: false,
     id: 'template-1',
     isActive,
+    key: null,
     name: '費用申請',
     updatedAt: new Date('2026-05-04T09:00:00.000Z'),
   };
@@ -23589,6 +23594,7 @@ function createTemplateVersion(
     formDefinitionVersionId: 'form-version-1',
     id: 'template-version-1',
     initiatorPolicyCel,
+    launchMode: ApprovalTemplateLaunchModeEnum.OPEN,
     notificationConfig: null,
     notificationConfigJson: null,
     publishedAt: new Date('2026-05-04T09:00:00.000Z'),

@@ -7,7 +7,10 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { ApprovalTemplateVersionStatusEnum } from './template.enums';
+import {
+  ApprovalTemplateLaunchModeEnum,
+  ApprovalTemplateVersionStatusEnum,
+} from './template.enums';
 
 @Entity('approval_template_versions')
 @ObjectType('ApprovalTemplateVersion')
@@ -38,6 +41,20 @@ export class ApprovalTemplateVersionEntity {
   @Column('text', { name: 'initiator_policy_cel', nullable: true })
   @Field(() => String, { nullable: true })
   initiatorPolicyCel!: string | null;
+
+  /**
+   * Who may start an instance of this version (ADR 27 §5). `HOST_ONLY`
+   * refuses submission and resubmission through GraphQL and leaves the
+   * template out of the launchable list; the host's own backend still submits
+   * through `WorkflowEngineService`. Judged on the version an instance was
+   * started from.
+   */
+  @Column('text', {
+    default: ApprovalTemplateLaunchModeEnum.OPEN,
+    name: 'launch_mode',
+  })
+  @Field(() => ApprovalTemplateLaunchModeEnum)
+  launchMode!: ApprovalTemplateLaunchModeEnum;
 
   @Column('jsonb', { name: 'notification_config', nullable: true })
   notificationConfig!: Readonly<Record<string, unknown>> | null;
