@@ -1004,6 +1004,27 @@ export class WorkflowEngineService {
       return [];
     }
 
+    const byInstance = await this.readUnresolvedAdvanceFailuresByInstance(
+      manager,
+      [instance],
+    );
+
+    return byInstance.get(instance.id) ?? [];
+  }
+
+  /**
+   * {@link readUnresolvedAdvanceFailures} for many instances at once, in two
+   * queries whatever their number: one for their activity rows, one for the
+   * tasks those rows name. Instances with nothing unresolved are absent.
+   */
+  private async readUnresolvedAdvanceFailuresByInstance(
+    manager: EntityManager,
+    instances: readonly ApprovalInstanceEntity[],
+  ): Promise<ReadonlyMap<string, readonly ActivityLogEntity[]>> {
+    if (instances.length === 0) {
+      return new Map();
+    }
+
     const logs = await manager.getRepository(ActivityLogEntity).find({
       order: { seq: 'ASC' },
       where: {
@@ -1011,17 +1032,16 @@ export class WorkflowEngineService {
           ActivityLogEventTypeEnum.ADVANCE_FAILED,
           ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
         ]),
-        instanceId,
+        instanceId: In(instances.map((instance): string => instance.id)),
       },
     });
-    const failures = logs.filter(
-      (log): boolean =>
-        log.eventType === ActivityLogEventTypeEnum.ADVANCE_FAILED,
-    );
     const decidedTaskIds = [
       ...new Set(
-        failures.flatMap((failure): readonly string[] =>
-          failure.taskId ? [failure.taskId] : [],
+        logs.flatMap((log): readonly string[] =>
+          log.eventType === ActivityLogEventTypeEnum.ADVANCE_FAILED &&
+          log.taskId
+            ? [log.taskId]
+            : [],
         ),
       ),
     ];
@@ -1038,31 +1058,21 @@ export class WorkflowEngineService {
           ).map((task): string => task.id),
     );
 
-    return failures.filter((failure): boolean => {
-      const kind = readStringPayloadValue(failure.payload, 'kind');
+    return new Map(
+      instances.flatMap(
+        (
+          instance,
+        ): readonly (readonly [string, readonly ActivityLogEntity[]])[] => {
+          const unresolved = readUnresolvedInstanceFailures(
+            instance,
+            logs.filter((log): boolean => log.instanceId === instance.id),
+            openTaskIds,
+          );
 
-      if (kind === 'DECISION') {
-        return (
-          instance.state === ApprovalInstanceStateEnum.RUNNING &&
-          failure.taskId !== null &&
-          openTaskIds.has(failure.taskId)
-        );
-      }
-
-      if (kind === 'RESUBMIT') {
-        return (
-          instance.state === ApprovalInstanceStateEnum.RETURNED &&
-          !logs
-            .slice(logs.indexOf(failure) + 1)
-            .some(
-              (log): boolean =>
-                log.eventType === ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
-            )
-        );
-      }
-
-      return false;
-    });
+          return unresolved.length === 0 ? [] : [[instance.id, unresolved]];
+        },
+      ),
+    );
   }
 
   /**
@@ -6962,21 +6972,19 @@ export class WorkflowEngineService {
               ]),
             },
           });
-        // One after another: they share the transaction's one connection.
-        const found = await instances.reduce<Promise<StuckCandidates>>(
-          async (previous, instance): Promise<StuckCandidates> => {
-            const soFar = await previous;
-            const unresolved = await this.readUnresolvedAdvanceFailures(
-              manager,
-              instance.id,
-            );
+        // Batched: two queries however many instances are candidates.
+        const unresolvedByInstance =
+          await this.readUnresolvedAdvanceFailuresByInstance(
+            manager,
+            instances,
+          );
+        const found: StuckCandidates = instances.flatMap(
+          (instance): StuckCandidates => {
+            const unresolved = unresolvedByInstance.get(instance.id) ?? [];
             const latest = unresolved[unresolved.length - 1];
 
-            return latest
-              ? [...soFar, { failure: latest, instance }]
-              : soFar;
+            return latest ? [{ failure: latest, instance }] : [];
           },
-          Promise.resolve([]),
         );
         const stuck = [...found].sort((left, right): number =>
           compareFailuresNewestFirst(left.failure, right.failure),
@@ -11053,6 +11061,47 @@ function isSameAdvanceFailure(
       logged.actorMemberId === context.actorMemberId &&
       readStringPayloadValue(logged.payload, 'action') === context.action)
   );
+}
+
+/**
+ * The rule of `readUnresolvedAdvanceFailures` for one instance, given its
+ * `ADVANCE_FAILED` and `INSTANCE_RESUBMITTED` rows in `seq` order and the ids
+ * of the tasks among them that are still open.
+ */
+function readUnresolvedInstanceFailures(
+  instance: ApprovalInstanceEntity,
+  logs: readonly ActivityLogEntity[],
+  openTaskIds: ReadonlySet<string>,
+): readonly ActivityLogEntity[] {
+  return logs.filter((failure, index): boolean => {
+    if (failure.eventType !== ActivityLogEventTypeEnum.ADVANCE_FAILED) {
+      return false;
+    }
+
+    const kind = readStringPayloadValue(failure.payload, 'kind');
+
+    if (kind === 'DECISION') {
+      return (
+        instance.state === ApprovalInstanceStateEnum.RUNNING &&
+        failure.taskId !== null &&
+        openTaskIds.has(failure.taskId)
+      );
+    }
+
+    if (kind === 'RESUBMIT') {
+      return (
+        instance.state === ApprovalInstanceStateEnum.RETURNED &&
+        !logs
+          .slice(index + 1)
+          .some(
+            (log): boolean =>
+              log.eventType === ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+          )
+      );
+    }
+
+    return false;
+  });
 }
 
 /**

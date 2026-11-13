@@ -21179,12 +21179,19 @@ describe('WorkflowEngineService', () => {
               ],
             });
 
+            fixture.transactionalActivityLogFind.mockClear();
+
             const rows = await listStuck(fixture);
 
             expect(rows.map((row): string => row.instanceId)).toEqual(
               expectedOrder,
             );
             expect(rows[0]?.failedAt).toEqual(LATER);
+            // The candidates, then every candidate's rows in one batch: not
+            // one read per instance.
+            expect(fixture.transactionalActivityLogFind).toHaveBeenCalledTimes(
+              2,
+            );
           },
         );
       });
