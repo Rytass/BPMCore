@@ -167,9 +167,10 @@ export const readFormFieldPathTopLevelKey = (fieldPath: string): string => {
 };
 
 /**
- * Top-level fields this node lets its approver write, as a whole field. Column
- * mode (ADR 27 §4(a)) is fail closed until the engine merges per cell: a field
- * granted only per column is not in this set, so no write path accepts it.
+ * Top-level fields this node lets its approver write, as a whole field. A field
+ * granted only per column (ADR 27 §4(a)) is not in this set: the decide path
+ * merges column-mode fills per cell through `readNodeFillUnits` and its own
+ * column map, so no whole-field write path accepts it.
  */
 export const readNodeFillableFieldKeys = (
   node: UserTaskNode,
@@ -190,7 +191,10 @@ export const readNodeFillGrantFieldKeys = (
 ): ReadonlySet<string> =>
   new Set(readNodeFillUnits(node).map((unit) => unit.fieldKey));
 
-/** Top-level fields granted whole at `REQUIRED`. Per-column REQUIRED is not enforced. */
+/**
+ * Top-level fields granted whole at `REQUIRED`. Per-column REQUIRED is not in
+ * this set; the engine projects it onto the open cells on APPROVED instead.
+ */
 export const readNodeRequiredFieldKeys = (
   node: UserTaskNode,
 ): ReadonlySet<string> =>

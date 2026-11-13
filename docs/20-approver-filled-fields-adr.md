@@ -173,7 +173,7 @@ interface FieldAccessEntry {
 | 補填節點設 `sla.onTimeout: 'AUTO_APPROVE'` | 自動核准每次都會被「一律驗證」擋下，SLA 實際上失效 | 自動核准改為「必填已有值才自動核准」 |
 | 補填節點設 `excludeInitiator.whenEmpty: 'SKIP_NODE'` | 該關被跳過就沒人補填，案件卻照樣核准 | 無，請改用會指派到別人的選項 |
 | `SET_FORM_FIELD` 寫補填欄位 | 繞過「只有補填節點簽核人能寫」 | 無 |
-| 補填欄位是 DataSource 欄位、`file_upload`，或表格內含 DataSource 欄 | `decideTask` 不重解選項快照、不收附件 | 讓 decide 走與送出相同的快照與附件流程 |
+| 補填欄位是 `file_upload` | `decideTask` 不收附件 | 讓 decide 走與送出相同的附件流程 |
 | 補填欄位在表單層設 `required`／`requiredWhen`／`visibleWhen`／`readonlyWhen`／`hidden`／`defaultValue` | 表單層規則在送出時評估，此時補填欄位一定沒有值 | 無；必填改由節點宣告 |
 | DYNAMIC_FORM 的 `formPath` 指向補填欄位 | 兩邊檢查互相衝突，怎麼設都擋 | 無 |
 | 同一個欄位在同一條流程路徑上有兩個以上補填節點 | 後填的會覆寫先填的值，簽章與責任歸屬不清 | 無；互斥分支（例如北區、南區財務各走一條）不受限。並行分支（parallelGateway 兩條分支）各自補填同一欄位視同同一路徑，會被擋 |
@@ -183,7 +183,7 @@ interface FieldAccessEntry {
 另有兩項行為限制，不擋發布：
 
 - `SEQUENTIAL` 節點每位候選人核准都驗，所以**第一位就必須填**。
-- 表格補填是**整張可改**（增刪列、改任何欄）。需要「只填某幾欄」的 host 自行比對。
+- 表格補填若未逐欄宣告，是**整張可改**（增刪列、改任何欄）。需要「只填某幾欄」時改用逐欄宣告（`columns`，ADR 27 §4(a)）：只有宣告的欄可改，列數與順序鎖定，見 `docs/27-host-integration-round-adr.md`。
 
 ### 3.5 早讀檢查以圖可達性判斷
 
