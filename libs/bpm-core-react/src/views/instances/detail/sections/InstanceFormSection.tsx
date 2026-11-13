@@ -240,12 +240,13 @@ export function InstanceFormSection({
           <FormRenderer
             attachments={attachments}
             dataSourceContext={
-              canResubmitInstance
+              canResubmitInstance || filling
                 ? {
                     // Instance-scoped only: the runtime query rejects a context
-                    // that names both, and a returned instance must resolve its
-                    // options against its own form definition snapshot rather
-                    // than whatever version the template publishes today.
+                    // that names both. A returned instance resolves against its
+                    // own form definition snapshot, and an approver filling in a
+                    // node resolves under the approver's identity on the same
+                    // snapshot (ADR 27 §4.2).
                     instanceId: instance.id,
                     kind: 'runtime',
                   }
@@ -276,7 +277,9 @@ export function InstanceFormSection({
               canResubmitInstance ? onUploadAttachment : undefined
             }
             optionSnapshots={instance.formDataOptionSnapshot}
-            readonly={!canResubmitInstance}
+            // A fill node opens only the fields and columns the viewer may
+            // fill (`fieldAccess`, `tableAccess`); every other cell stays locked.
+            readonly={!canResubmitInstance && !filling}
             schema={displayedSchema}
             uiSchema={instance.formDefinitionSnapshot.uiSchema}
             value={

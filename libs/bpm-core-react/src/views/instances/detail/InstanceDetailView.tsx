@@ -121,6 +121,7 @@ import {
 } from './sections/shared';
 import { readSubmittedOnBehalfLabel } from './submitted-by';
 import {
+  FILL_TABLE_ROWS_LOCKED_CODE,
   isFillConflictMessage,
   readApplicantFormSchema,
   readApplicantSubmission,
@@ -142,6 +143,9 @@ import {
 } from '../../forms/renderer/form-data-source-field';
 import { useFileUploadFieldStates } from '../../forms/renderer/file-upload-field';
 import type { FormRendererTableAccess } from '../../forms/renderer/FormRendererView';
+
+const FILL_TABLE_ROWS_LOCKED_MESSAGE =
+  '補填時不能新增、刪除或調整明細列的順序，請只修改開放的欄位。';
 
 /** Counts fields, not cells: a table with three bad cells is one field. */
 function readFillIncompleteMessage(
@@ -689,9 +693,17 @@ export function InstanceDetailView({
   function handleFillApproveError(
     message: string,
     formDataIssues: readonly FormDataIssue[] = [],
+    code: string | null = null,
   ): boolean {
     if (!fillNode || !schemaSnapshot) {
       return false;
+    }
+
+    // The server's message is English; the code is what identifies it.
+    if (code === FILL_TABLE_ROWS_LOCKED_CODE) {
+      Message.warning(FILL_TABLE_ROWS_LOCKED_MESSAGE);
+
+      return true;
     }
 
     if (isFillConflictMessage(message)) {

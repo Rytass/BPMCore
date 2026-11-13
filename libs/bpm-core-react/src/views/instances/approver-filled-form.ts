@@ -465,6 +465,14 @@ export function isFillConflictMessage(message: string): boolean {
   return message.includes('form data changed; refresh and retry');
 }
 
+/**
+ * The stable code the server answers when an approver's fill adds, removes or
+ * reorders rows of a column-only table (ADR 27 §4(a)). Its message is English;
+ * callers show their own copy from this code.
+ */
+export const FILL_TABLE_ROWS_LOCKED_CODE =
+  'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED';
+
 // The server names a field by its label: `欄位「標籤」`, a table row as
 // `「表格」第 N 列` (1-based), and a cell as `「表格」第 N 列的「欄位」`.
 // Each part of a message is separated by `；`. This is the fallback for a
