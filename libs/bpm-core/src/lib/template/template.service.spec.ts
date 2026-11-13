@@ -1836,8 +1836,9 @@ describe('TemplateService', () => {
       ]);
     });
 
-    // Column mode (`columns`) is fail-closed until per-cell enforcement lands,
-    // so a data-source column opened to an approver stays a publish error.
+    // Column mode (`columns`) opens cells one by one; the decide path
+    // re-resolves approver-filled data-source cells (ADR 27 §4(b)), so publish
+    // no longer refuses a data-source column opened to an approver.
     const columnFillable = (
       fieldKey: string,
       columnKeys: readonly string[],
@@ -1851,7 +1852,7 @@ describe('TemplateService', () => {
       })),
     });
 
-    it('rejects a column-mode data-source column opened to an approver', async (): Promise<void> => {
+    it('publishes a column-mode data-source column opened to an approver', async (): Promise<void> => {
       const service = createTableConditionPublishService({
         schema: fillSchema,
         workflowDefinition: createFieldAccessWorkflow([
@@ -1859,9 +1860,9 @@ describe('TemplateService', () => {
         ]),
       });
 
-      await expect(publishError(service)).resolves.toBe(
-        'formData.sourcedLines is filled in by an approver, so its table cannot have a data-source column',
-      );
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
     it('publishes a column-mode table whose opened columns are plain columns', async (): Promise<void> => {
@@ -1877,7 +1878,10 @@ describe('TemplateService', () => {
       ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
-    it('rejects a column-mode column that another data-source column reads through ROW_FIELD', async (): Promise<void> => {
+    // Known limit: an applicant-filled data-source cell that reads an
+    // approver-filled column through ROW_FIELD now publishes. Its stored value
+    // is resolved before the approver fills the source (see ADR 27 §4.3).
+    it('publishes a data-source column whose ROW_FIELD source is approver-filled', async (): Promise<void> => {
       const rowFieldSchema: FormDefinitionSchema = {
         ...fillSchema,
         fields: fillSchema.fields.map((field): FormFieldDefinition =>
@@ -1912,9 +1916,9 @@ describe('TemplateService', () => {
         ]),
       });
 
-      await expect(publishError(service)).resolves.toBe(
-        'formData.sourcedLines is filled in by an approver, so its table cannot have a data-source column',
-      );
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
     it.each(['lines.name', 'lines[0]', 'lines[0].name'])(

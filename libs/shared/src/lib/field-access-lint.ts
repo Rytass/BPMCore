@@ -1,10 +1,4 @@
-import {
-  FormDefinitionSchema,
-  FormFieldDefinition,
-  isFormDataSourceFieldDefinition,
-  isTableFieldDefinition,
-  TableFieldDefinition,
-} from './form';
+import { FormDefinitionSchema, FormFieldDefinition } from './form';
 import {
   readApproverFilledFieldKeys,
   readFormFieldPathTopLevelKey,
@@ -52,7 +46,6 @@ export type FieldAccessIssueCode =
   | 'approverFilledFieldFileUpload'
   | 'approverFilledFieldFormRule'
   | 'approverFilledMultipleFillNodesOnPath'
-  | 'approverFilledTableDataSourceColumn'
   | 'fieldAccessAutoApprove'
   | 'fieldAccessDuplicate'
   | 'fieldAccessFillHidden'
@@ -570,67 +563,5 @@ export function readFormFieldAccessIssues(
     },
   );
 
-  const dataSourceColumnIssues = userTasks.flatMap(
-    (node): readonly FieldAccessIssue[] =>
-      [
-        ...new Set(
-          readNodeFillUnits(node).flatMap(
-            ({ columnKey, fieldKey }): readonly string[] => {
-              const table = fieldsByKey.get(fieldKey);
-
-              return columnKey !== null &&
-                table !== undefined &&
-                isTableFieldDefinition(table) &&
-                readIsOpenDataSourceColumn(table, columnKey)
-                ? [fieldKey]
-                : [];
-            },
-          ),
-        ),
-      ].map((fieldKey) => ({
-        code: 'approverFilledTableDataSourceColumn',
-        fieldKeys: [fieldKey],
-        message:
-          WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(fieldKey),
-        nodeIds: [node.id],
-      })),
-  );
-
-  return [
-    ...unknownFieldIssues,
-    ...fieldIssues,
-    ...applicantRuleIssues,
-    ...dataSourceColumnIssues,
-  ];
-}
-
-/**
- * True when an approver's open column in column mode is a data-source column,
- * or is the `ROW_FIELD` source of a data-source column in the same table: the
- * approver would be picking a value the provider resolves per row, which the
- * decide path cannot yet resolve for a single cell.
- */
-function readIsOpenDataSourceColumn(
-  table: TableFieldDefinition,
-  columnKey: string,
-): boolean {
-  const column = table.columns.find(
-    (candidate): boolean => candidate.fieldKey === columnKey,
-  );
-
-  if (column === undefined) {
-    return false;
-  }
-  if (isFormDataSourceFieldDefinition(column)) {
-    return true;
-  }
-
-  return table.columns.some(
-    (candidate): boolean =>
-      isFormDataSourceFieldDefinition(candidate) &&
-      candidate.dataSource.bindings.some(
-        ({ from }): boolean =>
-          from.kind === 'ROW_FIELD' && from.columnKey === columnKey,
-      ),
-  );
+  return [...unknownFieldIssues, ...fieldIssues, ...applicantRuleIssues];
 }
