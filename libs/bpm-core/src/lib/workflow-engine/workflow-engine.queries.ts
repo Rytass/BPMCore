@@ -64,6 +64,13 @@ export class WorkflowEngineQueries {
     state: readonly ApprovalInstanceStateEnum[] | null,
     @Args('templateId', { nullable: true, type: () => String })
     templateId: string | null,
+    @Args('templateKey', {
+      description:
+        'The template key (ADR 27 §6). With templateId as well, both must name the same template; an unknown key matches nothing.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
     @Args('page', { nullable: true, type: () => Int })
     page: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
@@ -87,6 +94,7 @@ export class WorkflowEngineQueries {
         sort: toApprovalInstanceSorts(sort),
         state: state ?? undefined,
         templateId: templateId ?? undefined,
+        templateKey: templateKey ?? undefined,
         view: view ?? undefined,
       },
     );
@@ -108,6 +116,13 @@ export class WorkflowEngineQueries {
     state: readonly ApprovalInstanceStateEnum[] | null,
     @Args('templateId', { nullable: true, type: () => String })
     templateId: string | null,
+    @Args('templateKey', {
+      description:
+        'The template key (ADR 27 §6). With templateId as well, both must name the same template; an unknown key matches nothing.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
     @Args('fieldFilters', {
       nullable: true,
       type: () => [ApprovalInstanceFieldFilterInput],
@@ -122,6 +137,7 @@ export class WorkflowEngineQueries {
         searchText: searchText ?? undefined,
         state: state ?? undefined,
         templateId: templateId ?? undefined,
+        templateKey: templateKey ?? undefined,
         view: view ?? undefined,
       },
     );
@@ -143,6 +159,13 @@ export class WorkflowEngineQueries {
     state: readonly ApprovalInstanceStateEnum[] | null,
     @Args('templateId', { nullable: true, type: () => String })
     templateId: string | null,
+    @Args('templateKey', {
+      description:
+        'The template key (ADR 27 §6). With templateId as well, both must name the same template; an unknown key matches nothing.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
     @Args('page', { nullable: true, type: () => Int })
     page: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
@@ -166,6 +189,7 @@ export class WorkflowEngineQueries {
         sort: toApprovalInstanceSorts(sort),
         state: state ?? undefined,
         templateId: templateId ?? undefined,
+        templateKey: templateKey ?? undefined,
         view: view ?? undefined,
       },
     );

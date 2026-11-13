@@ -15757,6 +15757,58 @@ describe('WorkflowEngineService', () => {
     expect(fixture.notificationFind).not.toHaveBeenCalled();
   });
 
+  it('narrows approval instances to the template a templateKey names (ADR 27 §6)', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    fixture.templateFindOne.mockResolvedValue(
+      createTemplate('template-version-1', true),
+    );
+    await fixture.service.listApprovalInstances(undefined, {
+      templateKey: ' expense ',
+    });
+
+    expect(fixture.templateFindOne).toHaveBeenCalledWith({
+      select: { id: true },
+      where: { key: 'expense' },
+    });
+    expect(fixture.rootInstanceQueryBuilder.andWhere).toHaveBeenCalledWith(
+      '"approvalInstance"."template_id" = :templateId',
+      { templateId: 'template-1' },
+    );
+  });
+
+  it('matches nothing for an unknown templateKey or one that names another template than templateId', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    fixture.templateFindOne.mockResolvedValueOnce(null);
+    await expect(
+      fixture.service.listApprovalInstances(undefined, {
+        templateKey: 'no-such-key',
+      }),
+    ).resolves.toEqual([]);
+    fixture.templateFindOne.mockResolvedValueOnce(
+      createTemplate('template-version-1', true),
+    );
+    await expect(
+      fixture.service.countApprovalInstances(undefined, {
+        templateId: 'template-other',
+        templateKey: 'expense',
+      }),
+    ).resolves.toBe(0);
+    expect(fixture.rootInstanceQueryBuilder.andWhere).not.toHaveBeenCalledWith(
+      '"approvalInstance"."template_id" = :templateId',
+      expect.anything(),
+    );
+  });
+
   it('filters CC approval instances with a notification EXISTS condition', async (): Promise<void> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',

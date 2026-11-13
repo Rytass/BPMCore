@@ -688,6 +688,11 @@ export interface ListApprovalInstancesOptions {
   readonly sort?: readonly ApprovalInstanceSort[];
   readonly state?: readonly ApprovalInstanceStateEnum[];
   readonly templateId?: string;
+  /**
+   * ADR 27 §6: the template's `key`. Resolved to its id; with `templateId`
+   * as well, both must name the same template. An unknown key matches nothing.
+   */
+  readonly templateKey?: string;
   readonly view?: ApprovalInstanceListViewEnum;
 }
 
@@ -4191,8 +4196,14 @@ export class WorkflowEngineService {
 
   private async createFilteredApprovalInstanceQuery(
     scope?: WorkflowReadScope,
-    options: ListApprovalInstancesOptions = {},
+    requested: ListApprovalInstancesOptions = {},
   ): Promise<FilteredApprovalInstanceQuery | null> {
+    const options = await this.resolveApprovalInstanceTemplateKey(requested);
+
+    if (!options) {
+      return null;
+    }
+
     const queryBuilder =
       this.approvalInstanceRepository.createQueryBuilder('approvalInstance');
     const hasReadableInstances = this.applyReadableInstanceFilter(
@@ -4769,6 +4780,30 @@ export class WorkflowEngineService {
    * The id of the live template carrying `key`, as a list so a key that names
    * nothing filters everything out. At most one live template holds a key.
    */
+  /**
+   * Turns `templateKey` into `templateId` (ADR 27 §6), or `null` when the
+   * options can match nothing: an unknown key, or a key naming another
+   * template than `templateId` does.
+   */
+  private async resolveApprovalInstanceTemplateKey(
+    options: ListApprovalInstancesOptions,
+  ): Promise<ListApprovalInstancesOptions | null> {
+    const key = normalizeText(options.templateKey);
+
+    if (!key) {
+      return options;
+    }
+
+    const [templateId] = await this.readTemplateIdsByKey(key);
+    const requestedId = normalizeText(options.templateId);
+
+    if (!templateId || (requestedId && requestedId !== templateId)) {
+      return null;
+    }
+
+    return { ...options, templateId };
+  }
+
   private async readTemplateIdsByKey(key: string): Promise<readonly string[]> {
     const template = await this.approvalTemplateRepository.findOne({
       select: { id: true },
