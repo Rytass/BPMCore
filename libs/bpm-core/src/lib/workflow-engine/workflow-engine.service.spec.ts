@@ -3575,75 +3575,6 @@ describe('WorkflowEngineService', () => {
         expect(fixture.savedInstance).toBeNull();
       });
 
-      it('refuses an approver-filled data-source column in a table', async (): Promise<void> => {
-        const baseSchema = createFinanceTableFormSchema();
-        const formSchema: FormDefinitionSchema = {
-          ...baseSchema,
-          fields: baseSchema.fields.map((field) =>
-            field.fieldKey === 'financeItems' && field.type === 'table'
-              ? {
-                  ...field,
-                  columns: [
-                    {
-                      fieldKey: 'seq',
-                      label: '序號',
-                      required: false,
-                      type: 'number',
-                    },
-                    {
-                      dataSource: {
-                        bindings: [
-                          {
-                            from: { columnKey: 'seq', kind: 'ROW_FIELD' },
-                            parameter: 'seq',
-                          },
-                        ],
-                        key: 'demo.cost-centers',
-                        version: 1,
-                      },
-                      fieldKey: 'costCenter',
-                      label: '成本中心',
-                      mode: 'single',
-                      required: false,
-                      type: 'select',
-                    },
-                    {
-                      fieldKey: 'taxAmount',
-                      label: '稅額',
-                      required: true,
-                      type: 'number',
-                    },
-                  ],
-                }
-              : field,
-          ),
-        };
-        const fixture = createDecideFixture({
-          formData: APPLICANT_ROW_STORED,
-          formSchema,
-          workflow: createFieldAccessWorkflow({
-            financeFieldAccess: [
-              {
-                display: 'SHOW',
-                fieldKey: 'financeItems',
-                fill: 'NONE',
-                columns: [{ columnKey: 'costCenter', fill: 'OPTIONAL' }],
-              },
-            ],
-          }),
-        });
-
-        await expectRejection(
-          decide(fixture, {
-            formDataJson:
-              '{"financeItems":[{"seq":1,"costCenter":"CC-1","taxAmount":5}]}',
-          }),
-          ForbiddenException,
-          'Workflow node task_finance does not let approvers fill in data-source columns: financeItems.costCenter',
-        );
-        expect(fixture.savedInstance).toBeNull();
-      });
-
       it('lets a later node fill a different column and keeps the earlier approver cell', async (): Promise<void> => {
         const first = createDecideFixture({
           formData: APPLICANT_ROW_STORED,
@@ -4277,6 +4208,141 @@ describe('WorkflowEngineService', () => {
               (option) => option.label,
             ),
           ).toEqual(['Cost center for member-finance']);
+        });
+
+        describe('an approver-filled data-source column in a table (ADR 27 §4(b))', () => {
+          const openCostCenterWorkflow = createFieldAccessWorkflow({
+            financeFieldAccess: [
+              {
+                display: 'SHOW',
+                fieldKey: 'items',
+                fill: 'NONE',
+                columns: [{ columnKey: 'costCenter', fill: 'OPTIONAL' }],
+              },
+            ],
+          });
+
+          it('accepts a provider option on an open cell and snapshots its label under the cell key', async (): Promise<void> => {
+            const fixture = createDecideFixture({
+              formData: { items: [{ plant: 'TPE', costCenter: null }] },
+              formDataSourceValueResolver: createRealResolver(
+                createCostCenterSource(optionsByPlant),
+              ),
+              formSchema: createPerRowCostCenterSchema(),
+              workflow: openCostCenterWorkflow,
+            });
+
+            await decide(fixture, {
+              formDataJson: JSON.stringify({
+                items: [{ plant: 'TPE', costCenter: 'CC-001' }],
+              }),
+            });
+
+            expect(fixture.savedInstance?.formData).toEqual({
+              items: [{ plant: 'TPE', costCenter: 'CC-001' }],
+            });
+            expect(
+              fixture.savedInstance?.formDataOptionSnapshot['items[0].costCenter']?.options.map(
+                (option) => ({ label: option.label, value: option.value }),
+              ),
+            ).toEqual([{ label: 'Cost center TPE', value: 'CC-001' }]);
+          });
+
+          it('rejects a value that is not in the options of its row', async (): Promise<void> => {
+            const fixture = createDecideFixture({
+              formData: { items: [{ plant: 'TPE', costCenter: null }] },
+              formDataSourceValueResolver: createRealResolver(
+                createCostCenterSource(optionsByPlant),
+              ),
+              formSchema: createPerRowCostCenterSchema(),
+              workflow: openCostCenterWorkflow,
+            });
+
+            await expectRejection(
+              decide(fixture, {
+                formDataJson: JSON.stringify({
+                  items: [{ plant: 'TPE', costCenter: 'CC-999' }],
+                }),
+              }),
+              BPMFormDataSourceException,
+              BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+            );
+            expect(fixture.savedInstance).toBeNull();
+          });
+
+          it('resolves each row through its own plant with two rows and different options', async (): Promise<void> => {
+            const fixture = createDecideFixture({
+              formData: {
+                items: [
+                  { plant: 'TPE', costCenter: null },
+                  { plant: 'KHH', costCenter: null },
+                ],
+              },
+              formDataSourceValueResolver: createRealResolver(
+                createCostCenterSource(optionsByPlant),
+              ),
+              formSchema: createPerRowCostCenterSchema(),
+              workflow: openCostCenterWorkflow,
+            });
+
+            await decide(fixture, {
+              formDataJson: JSON.stringify({
+                items: [
+                  { plant: 'TPE', costCenter: 'CC-001' },
+                  { plant: 'KHH', costCenter: 'CC-002' },
+                ],
+              }),
+            });
+
+            const snapshot = fixture.savedInstance?.formDataOptionSnapshot ?? {};
+            expect(
+              snapshot['items[0].costCenter']?.options.map(
+                (option) => option.label,
+              ),
+            ).toEqual(['Cost center TPE']);
+            expect(
+              snapshot['items[1].costCenter']?.options.map(
+                (option) => option.label,
+              ),
+            ).toEqual(['Cost center KHH']);
+          });
+
+          it('keeps an applicant cell that is not granted to the approver locked', async (): Promise<void> => {
+            const fixture = createDecideFixture({
+              formData: { items: [{ plant: 'TPE', costCenter: 'CC-001' }] },
+              formDataSourceValueResolver: createRealResolver(
+                createCostCenterSource(optionsByPlant),
+              ),
+              formSchema: createPerRowCostCenterSchema(),
+              workflow: createFieldAccessWorkflow({
+                financeFieldAccess: [
+                  {
+                    display: 'SHOW',
+                    fieldKey: 'items',
+                    fill: 'NONE',
+                    columns: [{ columnKey: 'plant', fill: 'OPTIONAL' }],
+                  },
+                ],
+              }),
+            });
+
+            const error = await decide(fixture, {
+              formDataJson: JSON.stringify({
+                items: [{ plant: 'TPE', costCenter: 'CC-002' }],
+              }),
+            }).then(
+              (): unknown => undefined,
+              (rejection: unknown): unknown => rejection,
+            );
+
+            expect(error).toBeInstanceOf(ConflictException);
+            expect((error as ConflictException).getResponse()).toEqual(
+              expect.objectContaining({
+                code: 'FORM_FIELD_ACCESS_CELL_LOCKED',
+              }),
+            );
+            expect(fixture.savedInstance).toBeNull();
+          });
         });
       });
 

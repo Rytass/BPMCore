@@ -13,7 +13,6 @@ import {
   NodeColumnFillMap,
   projectNodeOpenColumnsRequired,
   readNodeColumnFillMap,
-  readRefusedOpenDataSourceColumns,
   settleColumnFillPayload,
 } from './approver-filled-table-columns';
 
@@ -322,68 +321,6 @@ describe('projectNodeOpenColumnsRequired', () => {
       return;
     }
     expect(field.columns[0].required).toBe(false);
-  });
-});
-
-describe('readRefusedOpenDataSourceColumns', () => {
-  const schema: FormDefinitionSchema = {
-    fields: [
-      {
-        columns: [
-          { fieldKey: 'plant', label: 'Plant', required: true, type: 'text' },
-          {
-            dataSource: {
-              bindings: [
-                {
-                  from: { columnKey: 'plant', kind: 'ROW_FIELD' },
-                  parameter: 'plant',
-                },
-              ],
-              key: 'demo.cost-centers',
-              version: 1,
-            },
-            fieldKey: 'costCenter',
-            label: 'Cost center',
-            mode: 'single',
-            required: false,
-            type: 'select',
-          },
-          { fieldKey: 'note', label: 'Note', required: false, type: 'text' },
-        ],
-        fieldKey: 'items',
-        label: '明細',
-        minRows: 1,
-        required: false,
-        type: 'table',
-      },
-    ],
-    schemaVersion: 1,
-  };
-  const openAll: NodeColumnFillMap = new Map([
-    [
-      'items',
-      new Map<string, 'OPTIONAL'>([
-        ['plant', 'OPTIONAL'],
-        ['costCenter', 'OPTIONAL'],
-        ['note', 'OPTIONAL'],
-      ]),
-    ],
-  ]);
-
-  it('refuses an open data-source column and the column its ROW_FIELD reads', (): void => {
-    expect(
-      readRefusedOpenDataSourceColumns(schema, openAll, ['items']),
-    ).toEqual(['items.plant', 'items.costCenter']);
-  });
-
-  it('refuses nothing when the payload does not touch the table', (): void => {
-    expect(readRefusedOpenDataSourceColumns(schema, openAll, [])).toEqual([]);
-  });
-
-  it('refuses nothing for a table with no open column', (): void => {
-    expect(
-      readRefusedOpenDataSourceColumns(schema, new Map(), ['items']),
-    ).toEqual([]);
   });
 });
 

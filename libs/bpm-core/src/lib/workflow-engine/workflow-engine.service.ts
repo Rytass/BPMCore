@@ -138,7 +138,9 @@ import {
   projectOpenColumnsOptional,
   readApproverFilledDeferral,
   readNodeColumnFillMap,
-  readRefusedOpenDataSourceColumns,
+  readOpenCellSnapshots,
+  readOpenDataSourceCellSchema,
+  readSnapshotWithoutOpenCells,
   settleColumnFillPayload,
 } from './approver-filled-table-columns';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
@@ -1414,6 +1416,35 @@ export class WorkflowEngineService {
   }
 
   /**
+   * ADR 27 §4(b): asks the data-source providers again, as the approver, for
+   * the open data-source cells of column-mode tables. `revalidateAll` false lets
+   * the resolver reuse the stored options of cells whose value and bindings did
+   * not move. Returns snapshots for the cells of `cellSchema` only.
+   */
+  private async refreshApproverFilledOpenCellSnapshots({
+    approverAuthContext,
+    cellSchema,
+    formData,
+    instance,
+    revalidateAll,
+  }: {
+    readonly approverAuthContext: BPMAuthContext;
+    readonly cellSchema: FormDefinitionSchema;
+    readonly formData: Readonly<Record<string, unknown>>;
+    readonly instance: ApprovalInstanceEntity;
+    readonly revalidateAll: boolean;
+  }): Promise<FormDataSourceValueSnapshots> {
+    return this.resolveFormDataOptionSnapshots({
+      authContext: approverAuthContext,
+      formData,
+      previousFormData: instance.formData,
+      previousSnapshots: instance.formDataOptionSnapshot ?? {},
+      revalidateAll,
+      schema: cellSchema,
+    });
+  }
+
+  /**
    * Refuses an end user's resubmission of an instance bound to a `HOST_ONLY`
    * version (ADR 27 §5). Checked before any data source is called and outside
    * the lock: an instance never changes version and a published version never
@@ -1875,8 +1906,8 @@ export class WorkflowEngineService {
         }
 
         // ADR 27 §4(a): column-mode tables are accepted here and settled
-        // cell by cell below. Their open columns that carry a data source are
-        // refused until per-row resolution runs on this path.
+        // cell by cell below. Their open data-source columns are re-resolved per
+        // row as the approver (ADR 27 §4(b)).
         const nodeColumnFillMap = readNodeColumnFillMap(taskNode);
 
         if (filledFormData !== null) {
@@ -1890,18 +1921,6 @@ export class WorkflowEngineService {
           if (refusedFieldKeys.length > 0) {
             throw new ForbiddenException(
               `Workflow node ${task.nodeId} does not let approvers fill in: ${refusedFieldKeys.join(', ')}`,
-            );
-          }
-
-          const refusedDataSourceColumns = readRefusedOpenDataSourceColumns(
-            readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
-            nodeColumnFillMap,
-            Object.keys(filledFormData),
-          );
-
-          if (refusedDataSourceColumns.length > 0) {
-            throw new ForbiddenException(
-              `Workflow node ${task.nodeId} does not let approvers fill in data-source columns: ${refusedDataSourceColumns.join(', ')}`,
             );
           }
         }
@@ -1993,18 +2012,19 @@ export class WorkflowEngineService {
                   fillableFieldKeys.has(fieldKey),
                 ),
               );
+        const approverAuthContext =
+          options.approverAuthContext ??
+          createWorkflowAuthContext(input.decidedByMemberId);
         const refreshedFormDataOptionSnapshots =
           dataSourceRefreshKeys.size === 0
             ? null
             : await this.refreshApproverFilledOptionSnapshots({
-                approverAuthContext:
-                  options.approverAuthContext ??
-                  createWorkflowAuthContext(input.decidedByMemberId),
+                approverAuthContext,
                 fieldKeys: dataSourceRefreshKeys,
                 formData: mergedFormData,
                 instance,
               });
-        const nextFormDataOptionSnapshot: FormDataSourceValueSnapshots =
+        const wholeFieldOptionSnapshot: FormDataSourceValueSnapshots =
           refreshedFormDataOptionSnapshots === null
             ? (instance.formDataOptionSnapshot ?? {})
             : {
@@ -2013,6 +2033,46 @@ export class WorkflowEngineService {
                   dataSourceRefreshKeys,
                 ),
                 ...refreshedFormDataOptionSnapshots,
+              };
+
+        // ADR 27 §4(b): the open data-source cells of column-mode tables. An
+        // APPROVED decision re-resolves all of them; any other decision only
+        // when a column-mode table's cells changed.
+        const openCellSchema = readOpenDataSourceCellSchema(
+          readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+          nodeColumnFillMap,
+        );
+        const openCellTableKeys = new Set(
+          openCellSchema.fields.map((field) => field.fieldKey),
+        );
+        const revalidateAllOpenCells =
+          input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc;
+        const hasChangedOpenCellTable = changedFieldKeys.some((fieldKey) =>
+          openCellTableKeys.has(fieldKey),
+        );
+        const refreshedOpenCellSnapshots =
+          openCellSchema.fields.length === 0 ||
+          (!revalidateAllOpenCells && !hasChangedOpenCellTable)
+            ? null
+            : await this.refreshApproverFilledOpenCellSnapshots({
+                approverAuthContext,
+                cellSchema: openCellSchema,
+                formData: mergedFormData,
+                instance,
+                revalidateAll: revalidateAllOpenCells,
+              });
+        const nextFormDataOptionSnapshot: FormDataSourceValueSnapshots =
+          refreshedOpenCellSnapshots === null
+            ? wholeFieldOptionSnapshot
+            : {
+                ...readSnapshotWithoutOpenCells(
+                  wholeFieldOptionSnapshot,
+                  openCellSchema,
+                ),
+                ...readOpenCellSnapshots(
+                  refreshedOpenCellSnapshots,
+                  openCellSchema,
+                ),
               };
 
         // ADR 27 §2: the host guard judges the decision as it will be

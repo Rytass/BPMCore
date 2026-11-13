@@ -2,10 +2,10 @@ import { ConflictException } from '@nestjs/common';
 
 import {
   FieldAccessFillUnit,
-  FormDataSourceBinding,
-  FormDataSourceReference,
+  FormDataSourceValueSnapshots,
   FormDefinitionSchema,
   FormFieldDefinition,
+  isFormDataSourceFieldDefinition,
   isTableFieldDefinition,
   readNodeFillUnits,
   TableColumnDefinition,
@@ -402,51 +402,89 @@ export const settleColumnFillPayload = (
     ),
   );
 
-const readColumnDataSource = (
-  column: TableColumnDefinition,
-): FormDataSourceReference | undefined =>
-  'dataSource' in column ? column.dataSource : undefined;
-
 /**
- * The open data-source columns a payload would fill, as `table.column`. An
- * open column that has a data source, or that another column of the table
- * reads through ROW_FIELD, cannot be filled by an approver: its value would
- * need a per-row resolution that the decide path does not run yet.
+ * The schema narrowed to the open cells an approver fills that take a data
+ * source (ADR 27 §4(b)): one table per column-mode table with at least one such
+ * cell, keeping only those columns. A ROW_FIELD binding reads its value from
+ * the same row of the form data, so the narrowed schema needs no other column.
  */
-export const readRefusedOpenDataSourceColumns = (
+export const readOpenDataSourceCellSchema = (
   schema: FormDefinitionSchema,
   columnFillMap: NodeColumnFillMap,
-  payloadFieldKeys: readonly string[],
-): readonly string[] =>
-  schema.fields.flatMap((field): readonly string[] => {
+): FormDefinitionSchema => ({
+  ...schema,
+  fields: schema.fields.flatMap((field): readonly FormFieldDefinition[] => {
     const columnFills = isTableFieldDefinition(field)
       ? columnFillMap.get(field.fieldKey)
       : undefined;
 
-    if (
-      !isTableFieldDefinition(field) ||
-      columnFills === undefined ||
-      !payloadFieldKeys.includes(field.fieldKey)
-    ) {
+    if (!isTableFieldDefinition(field) || columnFills === undefined) {
       return [];
     }
 
-    const rowFieldReaders = new Set(
-      field.columns.flatMap(
-        (column): readonly string[] =>
-          readColumnDataSource(column)?.bindings.flatMap(
-            (binding: FormDataSourceBinding): readonly string[] =>
-              binding.from.kind === 'ROW_FIELD' ? [binding.from.columnKey] : [],
-          ) ?? [],
-      ),
+    const columns = field.columns.flatMap(
+      (column): readonly TableColumnDefinition[] =>
+        columnFills.has(column.fieldKey) &&
+        isFormDataSourceFieldDefinition(column)
+          ? [column]
+          : [],
     );
 
-    return field.columns
-      .filter(
-        (column) =>
-          columnFills.has(column.fieldKey) &&
-          (readColumnDataSource(column) !== undefined ||
-            rowFieldReaders.has(column.fieldKey)),
-      )
-      .map((column) => `${field.fieldKey}.${column.fieldKey}`);
-  });
+    return columns.length === 0 ? [] : [{ ...field, columns }];
+  }),
+});
+
+/** Matches a cell snapshot key, `<tableKey>[<rowIndex>].<columnKey>`. */
+const CELL_SNAPSHOT_KEY_PATTERN = /^([^[\].]+)\[\d+\]\.([^[\].]+)$/;
+
+const readOpenCellKeys = (cellSchema: FormDefinitionSchema): ReadonlySet<string> =>
+  new Set(
+    cellSchema.fields.flatMap((field) =>
+      isTableFieldDefinition(field)
+        ? field.columns.map((column) => `${field.fieldKey}.${column.fieldKey}`)
+        : [],
+    ),
+  );
+
+const isOpenCellSnapshotKey = (
+  key: string,
+  openCellKeys: ReadonlySet<string>,
+): boolean => {
+  const match = CELL_SNAPSHOT_KEY_PATTERN.exec(key);
+
+  return match !== null && openCellKeys.has(`${match[1]}.${match[2]}`);
+};
+
+/**
+ * The snapshots without the cells of `cellSchema`: the open data-source cells
+ * are re-resolved at decide time, so their stored snapshots must not survive
+ * into the merge. Other rows, other columns and whole-field snapshots are kept.
+ * This is not `readSnapshotWithoutFields`, which would also drop the applicant's
+ * own cells of the same table.
+ */
+export const readSnapshotWithoutOpenCells = (
+  snapshots: FormDataSourceValueSnapshots | null | undefined,
+  cellSchema: FormDefinitionSchema,
+): FormDataSourceValueSnapshots => {
+  const openCellKeys = readOpenCellKeys(cellSchema);
+
+  return Object.fromEntries(
+    Object.entries(snapshots ?? {}).filter(
+      ([key]) => !isOpenCellSnapshotKey(key, openCellKeys),
+    ),
+  );
+};
+
+/** Only the snapshots of the open cells of `cellSchema`, the complement of the above. */
+export const readOpenCellSnapshots = (
+  snapshots: FormDataSourceValueSnapshots,
+  cellSchema: FormDefinitionSchema,
+): FormDataSourceValueSnapshots => {
+  const openCellKeys = readOpenCellKeys(cellSchema);
+
+  return Object.fromEntries(
+    Object.entries(snapshots).filter(([key]) =>
+      isOpenCellSnapshotKey(key, openCellKeys),
+    ),
+  );
+};
