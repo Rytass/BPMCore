@@ -10,6 +10,9 @@ import {
 } from './template.enums';
 import { TemplateService } from './template.service';
 
+const INCLUDE_HOST_MANAGED_DESCRIPTION =
+  'Also returns templates maintained by host code (hostManaged = true). Default false: they are left out. Not a lock: anyone who knows the id can still read or change them.';
+
 @Resolver()
 @BPMAuthenticated()
 export class TemplateQueries {
@@ -35,7 +38,11 @@ export class TemplateQueries {
       type: () => ApprovalTemplateActivationStatusEnum,
     })
     activationStatus?: ApprovalTemplateActivationStatusEnum | null,
-    @Args('includeHostManaged', { nullable: true, type: () => Boolean })
+    @Args('includeHostManaged', {
+      description: INCLUDE_HOST_MANAGED_DESCRIPTION,
+      nullable: true,
+      type: () => Boolean,
+    })
     includeHostManaged?: boolean | null,
   ): Promise<readonly ApprovalTemplateEntity[]> {
     return this.templateService.listApprovalTemplates({
@@ -65,7 +72,11 @@ export class TemplateQueries {
       type: () => ApprovalTemplateActivationStatusEnum,
     })
     activationStatus?: ApprovalTemplateActivationStatusEnum | null,
-    @Args('includeHostManaged', { nullable: true, type: () => Boolean })
+    @Args('includeHostManaged', {
+      description: INCLUDE_HOST_MANAGED_DESCRIPTION,
+      nullable: true,
+      type: () => Boolean,
+    })
     includeHostManaged?: boolean | null,
   ): Promise<number> {
     return this.templateService.countApprovalTemplates({
@@ -122,7 +133,10 @@ export class TemplateQueries {
     return this.templateService.getApprovalTemplate(id);
   }
 
-  @Query(() => ApprovalTemplateEntity)
+  @Query(() => ApprovalTemplateEntity, {
+    description:
+      'Returns the live approval template with this host key. Soft-deleted templates are not matched. Host-managed templates are returned too; this query is not filtered by includeHostManaged.',
+  })
   async approvalTemplateByKey(
     @Args('key', { type: () => String }) key: string,
   ): Promise<ApprovalTemplateEntity> {
