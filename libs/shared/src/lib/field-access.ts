@@ -166,8 +166,26 @@ export const readFormFieldPathTopLevelKey = (fieldPath: string): string => {
   return readTopLevelFieldKey(fieldSegments.join('.'));
 };
 
-/** Top-level fields with at least one fill unit at this node, whole or per column. */
+/**
+ * Top-level fields this node lets its approver write, as a whole field. Column
+ * mode (ADR 27 §4(a)) is fail closed until the engine merges per cell: a field
+ * granted only per column is not in this set, so no write path accepts it.
+ */
 export const readNodeFillableFieldKeys = (
+  node: UserTaskNode,
+): ReadonlySet<string> =>
+  new Set(
+    readNodeFillUnits(node)
+      .filter((unit) => unit.columnKey === null)
+      .map((unit) => unit.fieldKey),
+  );
+
+/**
+ * Top-level fields with at least one fill unit at this node, whole or per
+ * column. For "does this node grant anything" and visibility, never for
+ * writes; use `readNodeFillableFieldKeys` to decide what is writable.
+ */
+export const readNodeFillGrantFieldKeys = (
   node: UserTaskNode,
 ): ReadonlySet<string> =>
   new Set(readNodeFillUnits(node).map((unit) => unit.fieldKey));
@@ -189,7 +207,7 @@ export const readApproverFilledFieldKeys = (
   new Set(
     definition.nodes
       .filter(isUserTaskNode)
-      .flatMap((node) => [...readNodeFillableFieldKeys(node)]),
+      .flatMap((node) => [...readNodeFillGrantFieldKeys(node)]),
   );
 
 /**
@@ -205,7 +223,7 @@ export const readRevealedFieldKeys = (
     [...new Set(nodeIdsWithNonAdhocTask)].flatMap((nodeId) => {
       const node = findUserTaskNode(definition, nodeId);
 
-      return node === undefined ? [] : [...readNodeFillableFieldKeys(node)];
+      return node === undefined ? [] : [...readNodeFillGrantFieldKeys(node)];
     }),
   );
 

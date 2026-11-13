@@ -3,7 +3,7 @@ import {
   readApproverFilledFieldKeys,
   readFormFieldPathTopLevelKey,
   readNodeFieldAccess,
-  readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
   readNodeFillUnits,
 } from './field-access';
 import type {
@@ -254,7 +254,7 @@ export function readNodeFieldAccessIssues(
   }
 
   const fieldKeys = entries.map((entry) => entry.fieldKey);
-  const fillableFieldKeys = readNodeFillableFieldKeys(node);
+  const fillableFieldKeys = readNodeFillGrantFieldKeys(node);
 
   return [
     ...legacyIssues,

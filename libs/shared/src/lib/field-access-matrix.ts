@@ -8,7 +8,7 @@ import {
   readUserTaskFillConflicts,
   UserTaskFillConflict,
 } from './field-access-lint';
-import { readNodeFieldAccess, readNodeFillableFieldKeys } from './field-access';
+import { readNodeFieldAccess, readNodeFillGrantFieldKeys } from './field-access';
 import type { FormDefinitionSchema, FormFieldDefinition } from './form';
 import type {
   FieldAccessEntry,
@@ -329,7 +329,7 @@ export function readFieldAccessMatrix(
   const rows = (schema?.fields ?? []).map((field): FieldAccessMatrixRow => {
     const { fieldKey } = field;
     const fillNodeIds = userTasks
-      .filter((node) => readNodeFillableFieldKeys(node).has(fieldKey))
+      .filter((node) => readNodeFillGrantFieldKeys(node).has(fieldKey))
       .map((node) => node.id);
     const isApproverFilled = fillNodeIds.length > 0;
     const fillBlockers = readFormFieldFillIssues(field);

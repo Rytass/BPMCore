@@ -4,6 +4,7 @@ import {
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
   readNodeFieldAccess,
+  readNodeFillGrantFieldKeys,
   readNodeFillUnits,
   readNodeFillableFieldKeys,
   readNodeRequiredFieldKeys,
@@ -321,7 +322,8 @@ describe('table column fill readers (ADR 27 §4(a))', () => {
       { columnKey: 'note', fieldKey: 'items', fill: 'REQUIRED' },
       { columnKey: 'price', fieldKey: 'items', fill: 'OPTIONAL' },
     ]);
-    expect(readNodeFillableFieldKeys(node)).toEqual(new Set(['items']));
+    expect(readNodeFillableFieldKeys(node)).toEqual(new Set());
+    expect(readNodeFillGrantFieldKeys(node)).toEqual(new Set(['items']));
     expect(readNodeRequiredFieldKeys(node)).toEqual(new Set());
   });
 
@@ -336,7 +338,7 @@ describe('table column fill readers (ADR 27 §4(a))', () => {
     ).toEqual([{ columnKey: null, fieldKey: 'amount', fill: 'REQUIRED' }]);
   });
 
-  it('lets the node that fills a column edit the table', () => {
+  it('keeps a column-only table non-editable until per-cell merge lands (fail closed)', () => {
     const definition = columnDefinition([
       {
         columns: [{ columnKey: 'price', fill: 'REQUIRED' }],
@@ -354,16 +356,29 @@ describe('table column fill readers (ADR 27 §4(a))', () => {
         nodeId: 'task_col',
         revealedFieldKeys: new Set(),
       }),
-    ).toEqual({ items: { editable: true, visible: true } });
+    ).toEqual({ items: { editable: false, visible: true } });
+    expect(
+      readNodeFillableFieldKeys(definition.nodes[0] as UserTaskNode).has('items'),
+    ).toBe(false);
+    expect(
+      readNodeFillGrantFieldKeys(definition.nodes[0] as UserTaskNode).has('items'),
+    ).toBe(true);
+  });
+
+  it('keeps a whole-field fill on the same entry editable and writable', () => {
+    const definition = columnDefinition([
+      { display: 'SHOW', fieldKey: 'amount', fill: 'OPTIONAL' },
+    ]);
+
     expect(
       resolveFieldAccess({
         definition,
-        fieldKeys: ['items'],
-        isAdhocTask: true,
+        fieldKeys: ['amount'],
+        isAdhocTask: false,
         nodeId: 'task_col',
         revealedFieldKeys: new Set(),
       }),
-    ).toEqual({ items: { editable: false, visible: true } });
+    ).toEqual({ amount: { editable: true, visible: true } });
   });
 });
 

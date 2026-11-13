@@ -35,7 +35,7 @@ import {
   readUnsupportedApproverResolverType,
   readUnsupportedOrgManagerChainStartType,
 } from './workflow';
-import { readNodeFillableFieldKeys } from './field-access';
+import { readNodeFillGrantFieldKeys } from './field-access';
 import {
   isOnOwnParallelBranch,
   readReachableWorkflowNodeIds,
@@ -1317,7 +1317,7 @@ export function readExcludeNodeActorsIssues(
 
   return config.whenEmpty === 'SKIP_NODE' &&
     self?.type === 'userTask' &&
-    readNodeFillableFieldKeys(self).size > 0
+    readNodeFillGrantFieldKeys(self).size > 0
     ? [
         `簽核節點 ${labelOf(nodeId)} 有可由簽核人填寫的欄位，「不可與前面關卡同一人」不能選擇略過此節點。`,
       ]
