@@ -631,8 +631,9 @@ Cross-platform typed GraphQL/REST client. All functions ultimately use `fetch`.
 |---|---|---|
 | `requestGraphQl<T>(query, variables?, options?)` | async function | Generic GraphQL POST, returns typed data |
 | `GraphQlRequestOptions` | interface | Per-request transport options; currently `signal?: AbortSignal` |
-| `BPMGraphQLRequestError` | class | The `Error` `requestGraphQl` throws when the host answers with GraphQL errors. `message` joins the host messages with `; ` as before. `formDataIssues` (`readonly FormDataIssue[]`, `[]` when none) lists the refused form values, read from `extensions.originalError.formDataErrors` of each error. Released in v0.21.0 |
+| `BPMGraphQLRequestError` | class | The `Error` `requestGraphQl` throws when the host answers with GraphQL errors. `message` joins the host messages with `; ` as before. `formDataIssues` (`readonly FormDataIssue[]`, `[]` when none) lists the refused form values, read from `extensions.originalError.formDataErrors` of each error. `code` (`string \| null`, `null` when none) is the host error code, read from `extensions.originalError.code` of the first error that carries one. Released in v0.21.0; `code` added, Unreleased |
 | `readFormDataIssues(error)` | function | The `formDataIssues` of an error from `requestGraphQl`, or `[]`. Duck-typed, so it also reads an error from another copy of this package. All or nothing: when any entry has a reason this client does not know, it answers `[]`, so the caller falls back to the message rather than placing only some errors. Released in v0.21.0 |
+| `readRequestErrorCode(error)` | function | The `code` of an error from `requestGraphQl`, or `null`. Duck-typed like `readFormDataIssues`. Lets a caller branch on a host code such as `FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED` without parsing the prose message. Unreleased |
 | `readGraphQlEndpoint()` | function | Resolve current GraphQL endpoint URL |
 | `resolveDefaultGraphQlEndpoint(hostname)` | function | Pure helper to derive endpoint from hostname |
 | `readApiBaseUrl()` | function | Resolve REST auth base URL |
