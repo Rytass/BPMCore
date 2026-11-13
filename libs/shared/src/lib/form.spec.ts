@@ -1,6 +1,7 @@
 import {
   compileTextFieldPattern,
   FormDefinitionSchema,
+  isFormDataIssue,
   isFormIdentifierKey,
   isFormMemberValue,
   isFormTableCellValue,
@@ -433,5 +434,41 @@ describe('org unit field contracts', () => {
     expect(isFormOrgUnitValue(['a'])).toBe(false);
     expect(isFormOrgUnitValue(1)).toBe(false);
     expect(isFormOrgUnitValue(null)).toBe(false);
+  });
+});
+
+describe('isFormDataIssue', () => {
+  it('accepts a HOST_RULE issue with a host code', (): void => {
+    expect(
+      isFormDataIssue({
+        path: 'amount',
+        reason: 'HOST_RULE',
+        message: '金額超過上限',
+        code: 'AMOUNT_LIMIT',
+      }),
+    ).toBe(true);
+  });
+
+  it('accepts an issue without a code, as every older reason is', (): void => {
+    expect(
+      isFormDataIssue({ path: 'note', reason: 'REQUIRED', message: '為必填' }),
+    ).toBe(true);
+  });
+
+  it('rejects a code that is not a string', (): void => {
+    expect(
+      isFormDataIssue({
+        path: 'amount',
+        reason: 'HOST_RULE',
+        message: '金額超過上限',
+        code: 42,
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects an unknown reason', (): void => {
+    expect(
+      isFormDataIssue({ path: 'amount', reason: 'HOST_UNKNOWN', message: 'x' }),
+    ).toBe(false);
   });
 });

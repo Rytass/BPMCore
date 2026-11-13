@@ -778,6 +778,7 @@ export const FORM_DATA_ISSUE_REASONS = [
   'MAX_ROWS',
   'UNKNOWN_COLUMN',
   'MAX_FILES',
+  'HOST_RULE',
 ] as const;
 
 export type FormDataIssueReason = (typeof FORM_DATA_ISSUE_REASONS)[number];
@@ -786,13 +787,16 @@ export type FormDataIssueReason = (typeof FORM_DATA_ISSUE_REASONS)[number];
  * One refused form data value. `path` addresses it the way the form renderer
  * keys its errors: a top-level field key (`note`), a table row (`items[1]`),
  * or a table cell (`items[1].qty`). Rows are 0-based. `limit` is set for
- * MIN_LENGTH / MAX_LENGTH / MIN_ROWS / MAX_ROWS / MAX_FILES.
+ * MIN_LENGTH / MAX_LENGTH / MIN_ROWS / MAX_ROWS / MAX_FILES. `code` is set
+ * only for HOST_RULE: the host's own machine-readable reason, passed through
+ * unchanged from the decision guard.
  */
 export interface FormDataIssue {
   readonly path: string;
   readonly reason: FormDataIssueReason;
   readonly message: string;
   readonly limit?: number;
+  readonly code?: string;
 }
 
 export function isFormDataIssue(value: unknown): value is FormDataIssue {
@@ -800,11 +804,12 @@ export function isFormDataIssue(value: unknown): value is FormDataIssue {
     return false;
   }
 
-  const { path, message, reason, limit } = value as {
+  const { path, message, reason, limit, code } = value as {
     readonly path?: unknown;
     readonly message?: unknown;
     readonly reason?: unknown;
     readonly limit?: unknown;
+    readonly code?: unknown;
   };
 
   return (
@@ -812,6 +817,7 @@ export function isFormDataIssue(value: unknown): value is FormDataIssue {
     typeof message === 'string' &&
     typeof reason === 'string' &&
     (FORM_DATA_ISSUE_REASONS as readonly string[]).includes(reason) &&
-    (limit === undefined || typeof limit === 'number')
+    (limit === undefined || typeof limit === 'number') &&
+    (code === undefined || typeof code === 'string')
   );
 }
