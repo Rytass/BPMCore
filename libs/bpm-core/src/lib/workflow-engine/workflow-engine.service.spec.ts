@@ -18761,26 +18761,66 @@ describe('WorkflowEngineService', () => {
       expect(call?.payload.nodeLabel?.trim()).toBeTruthy();
     });
 
-    it('sends the notice as the last step, after the cancellation is recorded', async (): Promise<void> => {
+    it('tells the initiator only after the cancellation has committed, outside its transaction', async (): Promise<void> => {
       const fixture = createCancelFixture();
-      let logsWhenNotified: readonly ActivityLogEntity[] = [];
-      let instanceStateWhenNotified: ApprovalInstanceStateEnum | undefined;
+      const runTransaction = fixture.transaction.getMockImplementation();
 
+      if (!runTransaction) {
+        throw new Error('The fixture transaction has no implementation.');
+      }
+
+      let committed = false;
+      let committedWhenNotified: boolean | undefined;
+      let logsWhenNotified: readonly ActivityLogEntity[] = [];
+
+      fixture.transaction.mockImplementationOnce(
+        async (...args: unknown[]): Promise<unknown> => {
+          const result: unknown = await (
+            runTransaction as (...inner: unknown[]) => Promise<unknown>
+          )(...args);
+
+          committed = true;
+
+          return result;
+        },
+      );
       (
         fixture.notificationService
           .createAdhocWorkflowNotifications as unknown as jest.Mock
       ).mockImplementationOnce((): Promise<readonly unknown[]> => {
+        committedWhenNotified = committed;
         logsWhenNotified = readCancellationLogs(fixture);
-        instanceStateWhenNotified = fixture.savedInstance?.state;
 
         return Promise.resolve([]);
       });
 
       await adminCancel(fixture);
 
+      expect(committedWhenNotified).toBe(true);
       expect(logsWhenNotified).toHaveLength(1);
-      expect(instanceStateWhenNotified).toBe(
-        ApprovalInstanceStateEnum.CANCELLED,
+      // No manager: the rows are written on their own, as committed ones.
+      expect(
+        fixture.notificationService.createAdhocWorkflowNotifications,
+      ).toHaveBeenCalledWith(expect.not.objectContaining({ manager: expect.anything() }));
+    });
+
+    it('keeps the cancellation when the notice cannot be written, and logs it', async (): Promise<void> => {
+      const error = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockReturnValue(undefined);
+      const fixture = createCancelFixture();
+
+      (
+        fixture.notificationService
+          .createAdhocWorkflowNotifications as unknown as jest.Mock
+      ).mockRejectedValueOnce(new Error('notifications is unavailable'));
+
+      const cancelled = await adminCancel(fixture);
+
+      expect(cancelled.state).toBe(ApprovalInstanceStateEnum.CANCELLED);
+      expect(readCancellationLogs(fixture)).toHaveLength(1);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('could not be notified'),
       );
     });
 

@@ -568,11 +568,6 @@ export interface AdminCancelApprovalInstanceCommand {
  */
 interface InstanceCancellation {
   readonly actorMemberId: string;
-  /** Runs as the last step, in the same transaction. */
-  readonly afterCancelled?: (
-    manager: EntityManager,
-    instance: ApprovalInstanceEntity,
-  ) => Promise<void>;
   /** Runs once the instance is read; throws to refuse. */
   readonly authorize: (instance: ApprovalInstanceEntity) => void;
   readonly instanceId: string;
@@ -2224,6 +2219,10 @@ export class WorkflowEngineService {
    * withdrawing) and sent to the initiator as an in-app notification. An
    * administrator ending their own instance is not told.
    *
+   * The notification is written only after the cancellation has committed,
+   * so nobody is told of a cancellation that then rolled back. A failure to
+   * write it is logged and does not undo the cancellation.
+   *
    * Like the other administrator operations of this service it does not check
    * who `cancelledByMemberId` is: the GraphQL mutation is guarded by
    * `@BPMAdminOnly()`, and a host calling this directly must check first. That
@@ -2242,29 +2241,8 @@ export class WorkflowEngineService {
       );
     }
 
-    return this.cancelApprovalInstanceInTransaction({
+    const cancelled = await this.cancelApprovalInstanceInTransaction({
       actorMemberId: input.cancelledByMemberId,
-      afterCancelled: async (manager, instance): Promise<void> => {
-        if (instance.initiatorMemberId === input.cancelledByMemberId) {
-          return;
-        }
-
-        // The last step: the notification observers run inside this
-        // transaction, so a failure after it would roll back a push that has
-        // already gone out.
-        await this.notificationService.createAdhocWorkflowNotifications({
-          channels: null,
-          instance,
-          manager,
-          message: `案件「${instance.title}」已由管理員撤銷：${reason}`,
-          payload: {
-            nodeLabel: '管理員撤銷',
-            reason,
-            type: 'INSTANCE_CANCELLED_BY_ADMINISTRATOR',
-          },
-          recipientMemberIds: [instance.initiatorMemberId],
-        });
-      },
       authorize: (): void => undefined,
       instanceId: input.instanceId,
       payload: {
@@ -2272,12 +2250,47 @@ export class WorkflowEngineService {
         comment: reason,
       },
     });
+
+    if (cancelled.initiatorMemberId !== input.cancelledByMemberId) {
+      await this.notifyInitiatorOfAdminCancel(cancelled, reason);
+    }
+
+    return cancelled;
+  }
+
+  /**
+   * Tells the initiator, after the commit, that an administrator ended their
+   * instance. Written outside any transaction, so external channels go out
+   * straight away and an observer is told the rows are committed.
+   */
+  private async notifyInitiatorOfAdminCancel(
+    instance: ApprovalInstanceEntity,
+    reason: string,
+  ): Promise<void> {
+    try {
+      await this.notificationService.createAdhocWorkflowNotifications({
+        channels: null,
+        instance,
+        message: `案件「${instance.title}」已由管理員撤銷：${reason}`,
+        payload: {
+          nodeLabel: '管理員撤銷',
+          reason,
+          type: 'INSTANCE_CANCELLED_BY_ADMINISTRATOR',
+        },
+        recipientMemberIds: [instance.initiatorMemberId],
+      });
+    } catch (error: unknown) {
+      this.logger.error(
+        `Instance ${instance.id} was cancelled by an administrator, but its initiator ${instance.initiatorMemberId} could not be notified: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+    }
   }
 
   /**
    * The cancel transaction both paths share. The order is part of the
-   * contract: read, authorize, check the state, close, record, then the
-   * path's own last step. A non-initiator who tries to withdraw an already
+   * contract: read, authorize, check the state, close, record. A non-initiator who tries to withdraw an already
    * approved instance must keep getting the "initiator" refusal, not
    * "not cancellable".
    */
@@ -2330,8 +2343,6 @@ export class WorkflowEngineService {
             taskId: null,
           }),
         );
-
-        await cancellation.afterCancelled?.(manager, cancelledInstance);
 
         return cancelledInstance;
       },

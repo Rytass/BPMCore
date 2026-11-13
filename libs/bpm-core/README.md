@@ -1804,8 +1804,9 @@ error. Without a trace, nobody else would know the instance is stuck.
   whoever started it. `input.reason` is required. After it, the instance leaves
   the stuck list.
 - The initiator is sent an in-app notification with the reason, unless the
-  administrator is the initiator. It is created inside the cancel transaction,
-  as its last step.
+  administrator is the initiator. It is written only after the cancellation
+  has committed; if writing it fails, the failure is logged and the
+  cancellation stands.
 - The `INSTANCE_CANCELLED` activity record of that cancellation carries
   `cancelledByAdministrator: true` in its payload, and the reason as `comment`.
   A host that reads `INSTANCE_CANCELLED` can tell it from the initiator
