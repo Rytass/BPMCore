@@ -15,7 +15,10 @@ import {
   type FormDataSourceOptionsResultRecord,
   type FormRendererValues,
 } from '@rytass/bpm-core-client/form';
-import { FormRenderer } from './FormRendererView';
+import {
+  FormRenderer,
+  type FormRendererTableAccess,
+} from './FormRendererView';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -694,6 +697,109 @@ describe('FormRenderer table field', () => {
   });
 });
 
+describe('FormRenderer table access (column-mode fill)', () => {
+  function createTextTableSchema(): FormDefinitionSchema {
+    return {
+      fields: [
+        {
+          columns: [
+            { fieldKey: 'name', label: '品項', required: false, type: 'text' },
+            { fieldKey: 'note', label: '備註', required: false, type: 'text' },
+          ],
+          fieldKey: 'items',
+          label: '請購明細',
+          minRows: 1,
+          required: false,
+          type: 'table',
+        },
+      ],
+      schemaVersion: 1,
+    };
+  }
+
+  function readCellInput(
+    container: HTMLElement,
+    columnKey: string,
+  ): HTMLInputElement {
+    const input = container.querySelector<HTMLInputElement>(
+      `[data-mock-table-row="0"] [data-mock-table-cell="${columnKey}"] input`,
+    );
+
+    if (!input) {
+      throw new Error(`Cell ${columnKey} of row 0 was not rendered.`);
+    }
+
+    return input;
+  }
+
+  it('opens only the granted columns for editing', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      schema: createTextTableSchema(),
+      tableAccess: {
+        items: { editableColumns: ['name'], lockRows: true },
+      },
+    });
+
+    try {
+      expect(readCellInput(harness.container, 'name').readOnly).toBe(false);
+      expect(readCellInput(harness.container, 'note').readOnly).toBe(true);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('hides row actions and the add button when rows are locked', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      schema: createTextTableSchema(),
+      tableAccess: {
+        items: { editableColumns: ['name', 'note'], lockRows: true },
+      },
+    });
+
+    try {
+      expect(readRowCount(harness.container)).toBe(1);
+      expect(readAddRowButton(harness.container)).toBeNull();
+      expect(readTableAction(harness.container, '刪除此列', 0)).toBeNull();
+      expect(readCellInput(harness.container, 'note').readOnly).toBe(false);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('keeps row actions when rows are not locked', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      schema: createTextTableSchema(),
+      tableAccess: {
+        items: { editableColumns: ['name'], lockRows: false },
+      },
+    });
+
+    try {
+      expect(readAddRowButton(harness.container)).not.toBeNull();
+      expect(readCellInput(harness.container, 'note').readOnly).toBe(true);
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+
+  it('lets form-wide readonly win over table access', async (): Promise<void> => {
+    const harness = await mountRenderer({
+      readonly: true,
+      schema: createTextTableSchema(),
+      tableAccess: {
+        items: { editableColumns: ['name'], lockRows: false },
+      },
+    });
+
+    try {
+      expect(readCellInput(harness.container, 'name').readOnly).toBe(true);
+      expect(readAddRowButton(harness.container)).toBeNull();
+    } finally {
+      await unmountRenderer(harness);
+    }
+  });
+});
+
 describe('FormRenderer hidden fields', () => {
   const schema: FormDefinitionSchema = {
     fields: [
@@ -1245,6 +1351,7 @@ async function mountRenderer({
   readonly,
   schema,
   singleColumn,
+  tableAccess,
   value,
 }: {
   readonly errors?: Readonly<Record<string, string>>;
@@ -1255,6 +1362,7 @@ async function mountRenderer({
   readonly readonly?: boolean;
   readonly schema: FormDefinitionSchema;
   readonly singleColumn?: boolean;
+  readonly tableAccess?: Readonly<Record<string, FormRendererTableAccess>>;
   readonly value?: FormRendererValues;
 }): Promise<RendererHarness> {
   const container = document.createElement('div');
@@ -1274,6 +1382,7 @@ async function mountRenderer({
         readonly={readonly ?? false}
         schema={schema}
         {...(singleColumn ? { singleColumn: true } : {})}
+        {...(tableAccess ? { tableAccess } : {})}
         uiSchema={createUiSchema()}
         {...(value ? { value } : {})}
       />,
