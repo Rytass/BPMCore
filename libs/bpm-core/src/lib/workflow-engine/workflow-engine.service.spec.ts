@@ -4270,6 +4270,81 @@ describe('WorkflowEngineService', () => {
             expect(fixture.savedInstance).toBeNull();
           });
 
+          it('fails closed when an approver changes the source column of an unopened dependent (ADR 27 §4.3)', async (): Promise<void> => {
+            const fixture = createDecideFixture({
+              formData: { items: [{ plant: 'TPE', costCenter: 'CC-001' }] },
+              formDataSourceValueResolver: createRealResolver(
+                createCostCenterSource(optionsByPlant),
+              ),
+              formSchema: createPerRowCostCenterSchema(),
+              workflow: createFieldAccessWorkflow({
+                financeFieldAccess: [
+                  {
+                    display: 'SHOW',
+                    fieldKey: 'items',
+                    fill: 'NONE',
+                    columns: [{ columnKey: 'plant', fill: 'OPTIONAL' }],
+                  },
+                ],
+              }),
+            });
+
+            const error = await decide(fixture, {
+              formDataJson: JSON.stringify({
+                items: [{ plant: 'KHH', costCenter: 'CC-001' }],
+              }),
+            }).then(
+              (): unknown => undefined,
+              (rejection: unknown): unknown => rejection,
+            );
+
+            expect(error).toBeInstanceOf(ConflictException);
+            expect((error as ConflictException).getResponse()).toEqual(
+              expect.objectContaining({
+                code: 'FORM_FIELD_ACCESS_DEPENDENT_COLUMN_STALE',
+              }),
+            );
+            expect(fixture.savedInstance).toBeNull();
+          });
+
+          it('re-resolves an unopened-by-approver dependent when both columns are open to the same node', async (): Promise<void> => {
+            const fixture = createDecideFixture({
+              formData: { items: [{ plant: 'KHH', costCenter: 'CC-002' }] },
+              formDataSourceValueResolver: createRealResolver(
+                createCostCenterSource(optionsByPlant),
+              ),
+              formSchema: createPerRowCostCenterSchema(),
+              workflow: createFieldAccessWorkflow({
+                financeFieldAccess: [
+                  {
+                    display: 'SHOW',
+                    fieldKey: 'items',
+                    fill: 'NONE',
+                    columns: [
+                      { columnKey: 'plant', fill: 'OPTIONAL' },
+                      { columnKey: 'costCenter', fill: 'OPTIONAL' },
+                    ],
+                  },
+                ],
+              }),
+            });
+
+            await decide(fixture, {
+              formDataJson: JSON.stringify({
+                items: [{ plant: 'TPE', costCenter: 'CC-001' }],
+              }),
+            });
+
+            expect(fixture.savedInstance?.formData).toEqual({
+              items: [{ plant: 'TPE', costCenter: 'CC-001' }],
+            });
+            expect(
+              fixture.savedInstance?.formDataOptionSnapshot['items[0].costCenter']?.options.map(
+                (option) => option.label,
+              ),
+            ).toEqual(['Cost center TPE']);
+          });
+
           it('resolves each row through its own plant with two rows and different options', async (): Promise<void> => {
             const fixture = createDecideFixture({
               formData: {

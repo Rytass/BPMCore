@@ -7,6 +7,7 @@ import {
   FormFieldDefinition,
   isFormDataSourceFieldDefinition,
   isTableFieldDefinition,
+  readFieldAccessDependencyBreaks,
   readNodeFillUnits,
   TableColumnDefinition,
   UserTaskNode,
@@ -189,8 +190,57 @@ export const applyOpenColumnCells = (
 
 export const APPROVER_FILL_ERROR_CODES = {
   CELL_LOCKED: 'FORM_FIELD_ACCESS_CELL_LOCKED',
+  DEPENDENT_COLUMN_STALE: 'FORM_FIELD_ACCESS_DEPENDENT_COLUMN_STALE',
   TABLE_ROWS_LOCKED: 'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED',
 } as const;
+
+const readColumnFingerprints = (
+  rows: unknown,
+  columnKey: string,
+): readonly string[] =>
+  Array.isArray(rows)
+    ? rows.map(
+        (row: unknown): string =>
+          computeStableValueFingerprint(
+            isFormRow(row) ? row[columnKey] : undefined,
+          ),
+      )
+    : [];
+
+/**
+ * Fails closed when an approver changes a column that a column the approver
+ * may not fill reads (ADR 27 §4.3). The dependent column keeps its stored value
+ * and is not re-resolved, so a changed source would leave it stale. Current
+ * publish lint rejects such a template; this guards templates published before
+ * that rule. A dependent that is open to the same node is re-resolved at
+ * decide, so it is not a break.
+ */
+export const assertDependentColumnsFrozen = (
+  schema: FormDefinitionSchema | null,
+  node: UserTaskNode,
+  storedFormData: Readonly<Record<string, unknown>>,
+  mergedFormData: Readonly<Record<string, unknown>>,
+): void => {
+  const stale = readFieldAccessDependencyBreaks(
+    schema,
+    readNodeFillUnits(node),
+  ).find(
+    ({ fieldKey, sourceColumnKey }): boolean =>
+      readColumnFingerprints(storedFormData[fieldKey], sourceColumnKey).join(
+        '\n',
+      ) !==
+      readColumnFingerprints(mergedFormData[fieldKey], sourceColumnKey).join(
+        '\n',
+      ),
+  );
+
+  if (stale !== undefined) {
+    throw new ConflictException({
+      code: APPROVER_FILL_ERROR_CODES.DEPENDENT_COLUMN_STALE,
+      message: `Column ${stale.sourceColumnKey} of table ${stale.fieldKey} is read by column ${stale.dependentColumnKey}, which an approver may not change at this step`,
+    });
+  }
+};
 
 type ColumnFill = FieldAccessFillUnit['fill'];
 

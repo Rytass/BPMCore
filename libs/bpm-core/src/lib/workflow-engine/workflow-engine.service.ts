@@ -134,6 +134,7 @@ import { ApprovalTemplateVersionEntity } from '../template/approval-template-ver
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
 import {
   applyOpenColumnCells,
+  assertDependentColumnsFrozen,
   projectNodeOpenColumnsRequired,
   projectOpenColumnsOptional,
   readApproverFilledDeferral,
@@ -1971,6 +1972,18 @@ export class WorkflowEngineService {
                 .sort();
 
         const mergedFormData = { ...instance.formData, ...settledFormData };
+
+        // ADR 27 §4.3: an approver may change a column only if no column this
+        // approver may not fill reads it. Such a dependent keeps its stored value
+        // here, so a changed source would leave it stale. Fail closed.
+        if (nodeColumnFillMap.size > 0) {
+          assertDependentColumnsFrozen(
+            readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+            taskNode,
+            instance.formData,
+            mergedFormData,
+          );
+        }
 
         // Every approval at a node that lets its approver fill in fields is
         // held to those fields, whether or not this request sent any: the host
