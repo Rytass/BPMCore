@@ -20833,6 +20833,41 @@ describe('WorkflowEngineService', () => {
     });
 
     it('throws the original error even when the record cannot be written', async (): Promise<void> => {
+      jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+      const error = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockReturnValue(undefined);
+      const fixture = createApprovalFixture();
+      const runTransaction = fixture.transaction.getMockImplementation();
+
+      if (!runTransaction) {
+        throw new Error('The fixture transaction has no implementation.');
+      }
+
+      const refuse = (): Promise<never> =>
+        Promise.reject(new Error('activity_logs is unavailable'));
+
+      // The first transaction is the decision, which runs for real; both tries
+      // of the record are refused by the database.
+      fixture.transaction
+        .mockImplementationOnce(runTransaction)
+        .mockImplementationOnce(refuse)
+        .mockImplementationOnce(refuse);
+
+      const rejection = await readRejection(approve(fixture));
+
+      expect(rejection).toBeInstanceOf(ConflictException);
+      expect((rejection as Error).message).toBe(NO_NEXT_APPROVER);
+      expect(readAdvanceFailures(fixture)).toHaveLength(0);
+      expect(fixture.transaction).toHaveBeenCalledTimes(3);
+      // Logged as an error, with what the row would have held.
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('ADVANCE_FAILED for instance instance-1'),
+        expect.stringContaining(`"taskId":"task-1"`),
+      );
+    });
+
+    it('tries the record again once when the first write fails', async (): Promise<void> => {
       const warn = jest
         .spyOn(Logger.prototype, 'warn')
         .mockReturnValue(undefined);
@@ -20843,22 +20878,19 @@ describe('WorkflowEngineService', () => {
         throw new Error('The fixture transaction has no implementation.');
       }
 
-      // The first transaction is the decision, which runs for real; the second
-      // is the record, which the database refuses.
       fixture.transaction
         .mockImplementationOnce(runTransaction)
         .mockImplementationOnce(
           (): Promise<never> =>
-            Promise.reject(new Error('activity_logs is unavailable')),
+            Promise.reject(new Error('lock timeout')),
         );
 
       const rejection = await readRejection(approve(fixture));
 
-      expect(rejection).toBeInstanceOf(ConflictException);
       expect((rejection as Error).message).toBe(NO_NEXT_APPROVER);
-      expect(readAdvanceFailures(fixture)).toHaveLength(0);
+      expect(readAdvanceFailures(fixture)).toHaveLength(1);
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('ADVANCE_FAILED for instance instance-1'),
+        expect.stringContaining('trying again'),
       );
     });
 

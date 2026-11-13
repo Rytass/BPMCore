@@ -529,6 +529,13 @@ const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
  */
 const INACTIVE_MEMBER_COUNT_CONCURRENCY = 5;
 
+/**
+ * How many times an `ADVANCE_FAILED` row is tried before giving up. A missed
+ * row hides the instance from the stuck list, and a second try is safe: the
+ * duplicate check runs under the instance lock.
+ */
+const ADVANCE_FAILURE_RECORD_ATTEMPTS = 2;
+
 /** A deactivated member who still holds open tasks, for the reassignment screen. */
 export interface InactiveMemberOpenTasksRecord {
   readonly email: string;
@@ -877,65 +884,96 @@ export class WorkflowEngineService {
   }
 
   /**
-   * Writes the `ADVANCE_FAILED` row for a rolled-back attempt. A failure to
-   * write is logged and swallowed: the caller must see the error that stopped
-   * the case, not the one that stopped its record.
+   * Writes the `ADVANCE_FAILED` row for a rolled-back attempt, trying again
+   * once if the write fails. If every try fails the failure is logged as an
+   * error with what the row would have held, and swallowed: the caller must
+   * see the error that stopped the case, not the one that stopped its record.
+   * Such an instance is missing from the stuck list, so the log is the only
+   * trace of it.
    */
   private async recordAdvanceFailure(
     failure: InstanceAdvanceFailure,
+    attempt = 1,
   ): Promise<void> {
     const { context, message } = failure;
 
     try {
-      await this.approvalInstanceRepository.manager.transaction(
-        async (manager): Promise<void> => {
-          // The same per-instance lock every decision takes, so two attempts
-          // failing together cannot both pass the check below and write twice.
-          await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-            context.instanceId,
-          ]);
-
-          const unresolved = await this.readUnresolvedAdvanceFailures(
-            manager,
-            context.instanceId,
-          );
-
-          if (
-            unresolved.some((logged): boolean =>
-              isSameAdvanceFailure(logged, context, message),
-            )
-          ) {
-            return;
-          }
-
-          const activityRepository = manager.getRepository(ActivityLogEntity);
-
-          await activityRepository.save(
-            activityRepository.create({
-              actorMemberId: context.actorMemberId,
-              eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
-              instanceId: context.instanceId,
-              nodeId: context.nodeId,
-              payload: {
-                action: context.action,
-                automatic: context.automatic,
-                kind: context.kind,
-                message,
-                nodeId: context.nodeId,
-                taskId: context.taskId,
-              },
-              taskId: context.taskId,
-            }),
-          );
-        },
-      );
+      await this.writeAdvanceFailure(failure);
     } catch (recordError) {
-      this.logger.warn(
-        `Could not record ADVANCE_FAILED for instance ${context.instanceId}: ${
-          recordError instanceof Error ? recordError.message : 'unknown error'
-        }`,
+      const reason =
+        recordError instanceof Error ? recordError.message : 'unknown error';
+
+      if (attempt < ADVANCE_FAILURE_RECORD_ATTEMPTS) {
+        this.logger.warn(
+          `Could not record ADVANCE_FAILED for instance ${context.instanceId} (attempt ${attempt}), trying again: ${reason}`,
+        );
+
+        return this.recordAdvanceFailure(failure, attempt + 1);
+      }
+
+      this.logger.error(
+        `Could not record ADVANCE_FAILED for instance ${context.instanceId}; it will not appear in the stuck list: ${reason}`,
+        JSON.stringify({
+          action: context.action,
+          actorMemberId: context.actorMemberId,
+          automatic: context.automatic,
+          kind: context.kind,
+          message,
+          nodeId: context.nodeId,
+          taskId: context.taskId,
+        }),
       );
     }
+  }
+
+  /** One try of {@link recordAdvanceFailure}, in a transaction of its own. */
+  private async writeAdvanceFailure(
+    failure: InstanceAdvanceFailure,
+  ): Promise<void> {
+    const { context, message } = failure;
+
+    await this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<void> => {
+        // The same per-instance lock every decision takes, so two attempts
+        // failing together cannot both pass the check below and write twice.
+        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          context.instanceId,
+        ]);
+
+        const unresolved = await this.readUnresolvedAdvanceFailures(
+          manager,
+          context.instanceId,
+        );
+
+        if (
+          unresolved.some((logged): boolean =>
+            isSameAdvanceFailure(logged, context, message),
+          )
+        ) {
+          return;
+        }
+
+        const activityRepository = manager.getRepository(ActivityLogEntity);
+
+        await activityRepository.save(
+          activityRepository.create({
+            actorMemberId: context.actorMemberId,
+            eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+            instanceId: context.instanceId,
+            nodeId: context.nodeId,
+            payload: {
+              action: context.action,
+              automatic: context.automatic,
+              kind: context.kind,
+              message,
+              nodeId: context.nodeId,
+              taskId: context.taskId,
+            },
+            taskId: context.taskId,
+          }),
+        );
+      },
+    );
   }
 
   /**
