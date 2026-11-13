@@ -21,7 +21,7 @@ import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import { resolveMembers } from '@rytass/bpm-core-client';
 import type { MemberProfileRecord } from '@rytass/bpm-core-client/template';
 import {
-  listStuckApprovalInstances,
+  listStuckApprovalInstancesPage,
   type StuckApprovalInstanceRecord,
 } from '@rytass/bpm-core-client/workflow';
 import { formatDateTime } from '../../../lib/format-date-time';
@@ -36,6 +36,8 @@ type StuckRow = Readonly<
 >;
 
 const STACK_STYLE: CSSProperties = { display: 'grid', gap: 12 };
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
 /**
  * Administrator list of approval instances that could not move on to their
@@ -56,6 +58,9 @@ export function AdminStuckInstancesView(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] =
     useState<StuckApprovalInstanceRecord | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [totalCount, setTotalCount] = useState(0);
 
   // Only the latest listing may write, so a slow earlier answer cannot replace
   // the list that a cancellation just reloaded.
@@ -68,7 +73,19 @@ export function AdminStuckInstancesView(): ReactElement {
     setLoading(true);
 
     try {
-      const loaded = await listStuckApprovalInstances();
+      const { instances: loaded, totalCount: total } =
+        await listStuckApprovalInstancesPage({ page, pageSize });
+
+      // A cancellation can empty the last page: step back to the new last one,
+      // whose load replaces this answer.
+      if (loaded.length === 0 && page > 1 && total > 0) {
+        if (latestRequestRef.current === request) {
+          setPage(Math.ceil(total / pageSize));
+        }
+
+        return;
+      }
+
       const resolution = await resolveMemberProfilesPerIdOnFailure(
         readMemberIds(loaded),
         resolveMembers,
@@ -80,6 +97,7 @@ export function AdminStuckInstancesView(): ReactElement {
 
       // Ids that cannot be resolved stay out of the map and show as the raw id.
       setInstances(loaded);
+      setTotalCount(total);
       setProfilesById(
         new Map(
           resolution.profiles.map((profile) => [profile.memberId, profile]),
@@ -95,7 +113,7 @@ export function AdminStuckInstancesView(): ReactElement {
         setLoading(false);
       }
     }
-  }, []);
+  }, [page, pageSize]);
 
   useEffect((): void => {
     void refresh();
@@ -213,6 +231,23 @@ export function AdminStuckInstancesView(): ReactElement {
                 dataSource={rows}
                 fullWidth
                 loading={loading}
+                pagination={{
+                  current: page,
+                  onChange: (nextPage): void => {
+                    setPage(nextPage);
+                  },
+                  onChangePageSize: (nextPageSize): void => {
+                    setPage(1);
+                    setPageSize(nextPageSize);
+                  },
+                  pageSize,
+                  pageSizeLabel: '每頁筆數',
+                  pageSizeOptions: PAGE_SIZE_OPTIONS,
+                  renderResultSummary: (from, to, total): string =>
+                    `顯示 ${from}-${to} 筆，共 ${total} 筆`,
+                  showPageSizeOptions: true,
+                  total: totalCount,
+                }}
               />
             ) : null}
           </div>

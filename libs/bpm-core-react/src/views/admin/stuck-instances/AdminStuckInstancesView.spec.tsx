@@ -52,17 +52,30 @@ jest.mock('@mezzanine-ui/react', () => {
     const rows = props.dataSource as readonly { readonly key: string }[];
     const actions = props.actions as
       | {
-          readonly render: (
-            row: unknown,
-          ) => readonly {
+          readonly render: (row: unknown) => readonly {
             readonly name: string;
             readonly onClick: () => void;
           }[];
         }
       | undefined;
+    const pagination = props.pagination as
+      | {
+          readonly current: number;
+          readonly onChange: (page: number) => void;
+          readonly total: number;
+        }
+      | undefined;
 
     return (
-      <div data-loading={String(props.loading)} data-table="">
+      <div
+        data-loading={String(props.loading)}
+        data-page={String(pagination?.current)}
+        data-table=""
+        data-total={String(pagination?.total)}
+      >
+        <button onClick={(): void => pagination?.onChange(2)} type="button">
+          next-page
+        </button>
         {rows.map((row): ReactElement => (
           <div data-row={row.key} key={row.key}>
             {columns.map((column): ReactElement => (
@@ -101,7 +114,7 @@ jest.mock('@rytass/bpm-core-client', () => ({
 
 jest.mock('@rytass/bpm-core-client/workflow', () => ({
   adminCancelApprovalInstance: jest.fn(),
-  listStuckApprovalInstances: jest.fn(),
+  listStuckApprovalInstancesPage: jest.fn(),
 }));
 
 const members = clientApi as jest.Mocked<typeof clientApi>;
@@ -142,6 +155,13 @@ const RESUBMIT: StuckApprovalInstanceRecord = {
   taskId: null,
 };
 
+function pageOf(
+  instances: readonly StuckApprovalInstanceRecord[],
+  totalCount: number = instances.length,
+): workflowApi.StuckApprovalInstancesPage {
+  return { instances, totalCount };
+}
+
 describe('AdminStuckInstancesView', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -151,7 +171,7 @@ describe('AdminStuckInstancesView', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     members.resolveMembers.mockReset();
-    api.listStuckApprovalInstances.mockReset();
+    api.listStuckApprovalInstancesPage.mockReset();
     api.adminCancelApprovalInstance.mockReset();
     members.resolveMembers.mockResolvedValue([
       {
@@ -182,8 +202,9 @@ describe('AdminStuckInstancesView', () => {
 
   function cell(rowKey: string, column: string): string {
     return (
-      container.querySelector(`[data-row="${rowKey}"] [data-column="${column}"]`)
-        ?.textContent ?? ''
+      container.querySelector(
+        `[data-row="${rowKey}"] [data-column="${column}"]`,
+      )?.textContent ?? ''
     );
   }
 
@@ -200,7 +221,7 @@ describe('AdminStuckInstancesView', () => {
   }
 
   it('lists each stuck case with where it stuck, the reason and a 24-hour time', async (): Promise<void> => {
-    api.listStuckApprovalInstances.mockResolvedValue([STUCK]);
+    api.listStuckApprovalInstancesPage.mockResolvedValue(pageOf([STUCK]));
 
     await render();
 
@@ -214,17 +235,20 @@ describe('AdminStuckInstancesView', () => {
   });
 
   it('names the member who failed and every member who has to press again', async (): Promise<void> => {
-    api.listStuckApprovalInstances.mockResolvedValue([STUCK]);
+    api.listStuckApprovalInstancesPage.mockResolvedValue(pageOf([STUCK]));
 
     await render();
 
-    expect(members.resolveMembers).toHaveBeenCalledWith(['member-1', 'member-2']);
+    expect(members.resolveMembers).toHaveBeenCalledWith([
+      'member-1',
+      'member-2',
+    ]);
     expect(cell('instance-1', 'failedActor')).toBe('王小明');
     expect(cell('instance-1', 'pendingActors')).toBe('王小明、李大華');
   });
 
   it('falls back to the member id when the directory cannot name a member', async (): Promise<void> => {
-    api.listStuckApprovalInstances.mockResolvedValue([STUCK]);
+    api.listStuckApprovalInstancesPage.mockResolvedValue(pageOf([STUCK]));
     members.resolveMembers.mockRejectedValue(new Error('directory down'));
 
     await render();
@@ -234,7 +258,7 @@ describe('AdminStuckInstancesView', () => {
   });
 
   it('shows the system as the one that failed when the timeout auto-approval did', async (): Promise<void> => {
-    api.listStuckApprovalInstances.mockResolvedValue([SLA]);
+    api.listStuckApprovalInstancesPage.mockResolvedValue(pageOf([SLA]));
 
     await render();
 
@@ -242,7 +266,7 @@ describe('AdminStuckInstancesView', () => {
   });
 
   it('shows a failed resubmission as 退件後重送 and says when nobody can press', async (): Promise<void> => {
-    api.listStuckApprovalInstances.mockResolvedValue([RESUBMIT]);
+    api.listStuckApprovalInstancesPage.mockResolvedValue(pageOf([RESUBMIT]));
 
     await render();
 
@@ -251,7 +275,7 @@ describe('AdminStuckInstancesView', () => {
   });
 
   it('says so when no case is stuck', async (): Promise<void> => {
-    api.listStuckApprovalInstances.mockResolvedValue([]);
+    api.listStuckApprovalInstancesPage.mockResolvedValue(pageOf([]));
 
     await render();
 
@@ -260,11 +284,11 @@ describe('AdminStuckInstancesView', () => {
 
   it('shows the table, loading, while the first listing is still on its way', async (): Promise<void> => {
     let resolveListing: (
-      instances: readonly StuckApprovalInstanceRecord[],
+      page: workflowApi.StuckApprovalInstancesPage,
     ) => void = (): void => undefined;
 
-    api.listStuckApprovalInstances.mockReturnValue(
-      new Promise<readonly StuckApprovalInstanceRecord[]>((resolve): void => {
+    api.listStuckApprovalInstancesPage.mockReturnValue(
+      new Promise<workflowApi.StuckApprovalInstancesPage>((resolve): void => {
         resolveListing = resolve;
       }),
     );
@@ -278,7 +302,7 @@ describe('AdminStuckInstancesView', () => {
     expect(container.textContent).not.toContain('目前沒有卡住的案件');
 
     await act(async (): Promise<void> => {
-      resolveListing([STUCK]);
+      resolveListing(pageOf([STUCK]));
     });
 
     expect(
@@ -288,7 +312,9 @@ describe('AdminStuckInstancesView', () => {
   });
 
   it('shows the error when the list cannot be loaded, not the empty message', async (): Promise<void> => {
-    api.listStuckApprovalInstances.mockRejectedValue(new Error('Forbidden'));
+    api.listStuckApprovalInstancesPage.mockRejectedValue(
+      new Error('Forbidden'),
+    );
 
     await render();
 
@@ -297,9 +323,9 @@ describe('AdminStuckInstancesView', () => {
   });
 
   it('cancels a case from its row and reloads the list', async (): Promise<void> => {
-    api.listStuckApprovalInstances
-      .mockResolvedValueOnce([STUCK])
-      .mockResolvedValueOnce([]);
+    api.listStuckApprovalInstancesPage
+      .mockResolvedValueOnce(pageOf([STUCK]))
+      .mockResolvedValueOnce(pageOf([]));
     api.adminCancelApprovalInstance.mockResolvedValue(undefined);
 
     await render();
@@ -327,8 +353,57 @@ describe('AdminStuckInstancesView', () => {
       instanceId: 'instance-1',
       reason: '下一關設定有誤',
     });
-    expect(api.listStuckApprovalInstances).toHaveBeenCalledTimes(2);
+    expect(api.listStuckApprovalInstancesPage).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-modal]')).toBeNull();
     expect(container.textContent).toContain('目前沒有卡住的案件');
+  });
+  it('asks for the first page of 20 and passes the total to the table', async (): Promise<void> => {
+    api.listStuckApprovalInstancesPage.mockResolvedValue(pageOf([STUCK], 45));
+
+    await render();
+
+    expect(api.listStuckApprovalInstancesPage).toHaveBeenCalledWith({
+      page: 1,
+      pageSize: 20,
+    });
+    expect(
+      container.querySelector('[data-table]')?.getAttribute('data-total'),
+    ).toBe('45');
+  });
+
+  it('loads the page the table asks for', async (): Promise<void> => {
+    api.listStuckApprovalInstancesPage
+      .mockResolvedValueOnce(pageOf([STUCK], 21))
+      .mockResolvedValueOnce(pageOf([SLA], 21));
+
+    await render();
+    await act(async (): Promise<void> => {
+      button('next-page').click();
+    });
+
+    expect(api.listStuckApprovalInstancesPage).toHaveBeenLastCalledWith({
+      page: 2,
+      pageSize: 20,
+    });
+    expect(cell('instance-2', 'instanceTitle')).toBe('出差申請');
+  });
+
+  it('steps back to the new last page when a cancellation empties the current one', async (): Promise<void> => {
+    api.listStuckApprovalInstancesPage
+      .mockResolvedValueOnce(pageOf([STUCK], 21))
+      .mockResolvedValueOnce(pageOf([], 20))
+      .mockResolvedValueOnce(pageOf([SLA], 20));
+
+    await render();
+    await act(async (): Promise<void> => {
+      button('next-page').click();
+    });
+
+    expect(api.listStuckApprovalInstancesPage).toHaveBeenLastCalledWith({
+      page: 1,
+      pageSize: 20,
+    });
+    expect(cell('instance-2', 'instanceTitle')).toBe('出差申請');
+    expect(container.textContent).not.toContain('目前沒有卡住的案件');
   });
 });
