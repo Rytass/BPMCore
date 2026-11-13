@@ -1287,6 +1287,118 @@ export async function listApprovalHistoryTasks(
   return normalizeTaskRecords(data.approvalHistoryTasks);
 }
 
+const MEMBER_TASK_SELECTION = `
+adhocDirectiveId
+adhocOriginTaskId
+adhocType
+assigneeMemberId
+assignmentType
+candidateMemberIds
+openCandidateMemberIds
+completedAt
+createdAt
+decisionPolicySnapshotJson
+delegationChainJson
+hasFillableFields
+id
+instanceId
+isAdhoc
+nodeId
+nodeLabel
+openedAt
+originalAssigneeMemberId
+slaDueAt
+status
+tokenId
+`;
+
+/** One page of a member's task list, with the total across every page. */
+export interface MemberTaskPage {
+  readonly tasks: readonly TaskRecord[];
+  readonly totalCount: number;
+}
+
+interface InboxTasksPageQueryData {
+  readonly inboxTaskCount: number;
+  readonly inboxTasks: readonly TaskRecord[];
+}
+
+interface ApprovalHistoryTasksPageQueryData {
+  readonly approvalHistoryTaskCount: number;
+  readonly approvalHistoryTasks: readonly TaskRecord[];
+}
+
+/**
+ * One page of the signed-in member's open tasks, newest first, with their
+ * total. The server caps a page at 100.
+ */
+export async function listInboxTasksPage({
+  assigneeMemberId,
+  page,
+  pageSize,
+}: {
+  readonly assigneeMemberId: string;
+  readonly page: number;
+  readonly pageSize: number;
+}): Promise<MemberTaskPage> {
+  const data = await requestGraphQl<InboxTasksPageQueryData>(
+    `query InboxTasksPage($assigneeMemberId: String!, $page: Int, $pageSize: Int) {
+      inboxTasks(assigneeMemberId: $assigneeMemberId, page: $page, pageSize: $pageSize) {
+        ${MEMBER_TASK_SELECTION}
+      }
+      inboxTaskCount
+    }`,
+    { assigneeMemberId, page, pageSize },
+  );
+
+  return {
+    tasks: normalizeTaskRecords(data.inboxTasks),
+    totalCount: data.inboxTaskCount,
+  };
+}
+
+/**
+ * One page of the tasks the signed-in member has acted on, most recently
+ * acted on first, with their total. `instanceState: 'RUNNING'` keeps only
+ * instances still under way. The server caps a page at 100.
+ */
+export async function listApprovalHistoryTasksPage({
+  assigneeMemberId,
+  instanceState = null,
+  page,
+  pageSize,
+}: {
+  readonly assigneeMemberId: string;
+  readonly instanceState?: ApprovalInstanceState | null;
+  readonly page: number;
+  readonly pageSize: number;
+}): Promise<MemberTaskPage> {
+  const data = await requestGraphQl<ApprovalHistoryTasksPageQueryData>(
+    `query ApprovalHistoryTasksPage(
+      $assigneeMemberId: String!
+      $instanceState: ApprovalInstanceState
+      $page: Int
+      $pageSize: Int
+    ) {
+      approvalHistoryTasks(
+        assigneeMemberId: $assigneeMemberId
+        instanceState: $instanceState
+        page: $page
+        pageSize: $pageSize
+      ) {
+        ${MEMBER_TASK_SELECTION}
+      }
+      approvalHistoryTaskCount(instanceState: $instanceState)
+    }`,
+    { assigneeMemberId, instanceState, page, pageSize },
+  );
+
+  return {
+    tasks: normalizeTaskRecords(data.approvalHistoryTasks),
+    totalCount: data.approvalHistoryTaskCount,
+  };
+}
+
 export async function readWorkflowDashboardSummary({
   currentMemberId,
   from,
