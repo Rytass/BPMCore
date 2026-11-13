@@ -1618,6 +1618,33 @@ Known limits of this round:
 - The guard covers SUBMIT, RESUBMIT and DECIDE only. Cancel, expire, close and
   the other engine-driven state changes are not guarded.
 
+### Instance lifecycle events (ADR 27 §1, unreleased, targets v0.23.0)
+
+Exported from the package root (`@rytass/bpm-core-nestjs-module`). A host
+registers a receiver with `instanceEventObserverProvider` (wiring) or
+`instanceEventObserver` (runtime); the provider wins when both are given. Without
+one, no outbox rows are written.
+
+Each event is one row in `approval_instance_events`, written in the same
+transaction as the state change. The observer is called after commit, at least
+once per event. Hosts dedupe on `event.id`. Events never carry `formData`.
+
+| Export | Kind | Purpose |
+|---|---|---|
+| `BPMInstanceEventObserver` | interface | `onInstanceEvent(event)`; may return a promise |
+| `BPM_INSTANCE_EVENT_OBSERVER` | injection token | The observer as bound; `InstanceEventModule` exports it only when a provider is given |
+| `BPMInstanceEvent` / `BPMInstanceEventType` / `BPMInstanceEventPayload` | types | Discriminated union on `type`; `id`, `seq` (string, per-instance order), `occurredAt`, `instanceId` and the snapshot fields |
+| `BPMInstanceEventSnapshot` / `BPMInstanceEventHeader` | types | Instance state and template fields carried with each event, and the common header |
+| `BPM_INSTANCE_EVENT_STATUSES` / `BPMInstanceEventStatus` | const / type | Outbox row status: `PENDING`, `DELIVERED`, `FAILED` |
+| `ApprovalInstanceEventEntity` | entity | Outbox table `approval_instance_events` |
+| `InstanceEventService` | service | `observer` (bound or `null`) and `enabled` |
+| `InstanceEventModule` | NestJS Module | `forRoot({ imports, observerProvider })`; global |
+
+Event types: `INSTANCE_SUBMITTED`, `INSTANCE_RESUBMITTED`, `INSTANCE_APPROVED`,
+`INSTANCE_REJECTED`, `INSTANCE_RETURNED`, `INSTANCE_CANCELLED`,
+`INSTANCE_EXPIRED`, `NODE_ACTIVATED` (a task is created), and
+`TASK_AUTO_DECISION_FAILED` (an SLA auto-approval was refused by the guard).
+
 ### Business key (host document ↔ instance)
 
 A host that submits instances from its own documents (a purchase order, say)

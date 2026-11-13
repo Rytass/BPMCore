@@ -11,6 +11,7 @@ import { BPMAuthModuleOptions } from '../bpm-auth/bpm-auth.options';
 import { BPMBusinessCalendar } from '../calendar/business-calendar.token';
 import type { BPMExpressionFunction } from '../expression-function/expression-function.types';
 import { BPMFormDataSourceRegistry } from '../form-data-source/form-data-source.types';
+import type { BPMInstanceEventObserver } from '../instance-event/instance-event.token';
 import { BPMRootIdentityOptions } from '../identity/identity-options';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
 import { BPMRootNotificationOptions } from '../notification/notification-options';
@@ -166,6 +167,17 @@ export interface BPMRootRuntimeOptions
    * Only read when a guard is bound.
    */
   readonly instanceGuardTimeoutMs?: number;
+
+  /**
+   * Receives instance lifecycle events (ADR 27 §1), as a ready instance. BPM
+   * writes one outbox row per event in the same transaction as the state change
+   * and calls the observer after commit, at least once per event. Hosts dedupe
+   * on `event.id`.
+   *
+   * `instanceEventObserverProvider` takes precedence when both are given. When
+   * omitted, no outbox rows are written.
+   */
+  readonly instanceEventObserver?: BPMInstanceEventObserver;
 
   /**
    * Host identity source, as a ready instance.

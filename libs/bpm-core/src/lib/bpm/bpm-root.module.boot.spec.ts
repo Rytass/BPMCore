@@ -19,6 +19,11 @@ import {
   BPM_MEMBER_RESOLVER,
   BPMMemberResolver,
 } from '../identity/member-resolver.interface';
+import {
+  BPM_INSTANCE_EVENT_OBSERVER,
+  BPMInstanceEventObserver,
+} from '../instance-event/instance-event.token';
+import { InstanceEventService } from '../instance-event/instance-event.service';
 import { OrganizationService } from '../organization/organization.service';
 import { BPMRootModule } from './bpm-root.module';
 import { TemplateService } from '../template/template.service';
@@ -349,6 +354,95 @@ describe('BPMRootModule bootstrap', (): void => {
     } finally {
       await moduleRef.close();
     }
+  });
+
+  describe('instance event observer (ADR 27 §1)', (): void => {
+    const observer: BPMInstanceEventObserver = {
+      onInstanceEvent: jest.fn(),
+    };
+    const otherObserver: BPMInstanceEventObserver = {
+      onInstanceEvent: jest.fn(),
+    };
+
+    it('takes the observer from the wiring-time provider', async (): Promise<void> => {
+      const moduleRef = await Test.createTestingModule({
+        imports: [
+          FakeDataSourceModule,
+          BPMRootModule.forRoot({
+            instanceEventObserverProvider: {
+              provide: BPM_INSTANCE_EVENT_OBSERVER,
+              useValue: observer,
+            },
+          }),
+        ],
+      }).compile();
+
+      try {
+        const service = moduleRef.get(InstanceEventService, { strict: false });
+
+        expect(service.observer).toBe(observer);
+        expect(service.enabled).toBe(true);
+      } finally {
+        await moduleRef.close();
+      }
+    });
+
+    it('takes the observer from the runtime option when no provider is given', async (): Promise<void> => {
+      const moduleRef = await Test.createTestingModule({
+        imports: [
+          FakeDataSourceModule,
+          BPMRootModule.forRootAsync({
+            useFactory: () => ({ instanceEventObserver: observer }),
+          }),
+        ],
+      }).compile();
+
+      try {
+        expect(
+          moduleRef.get(InstanceEventService, { strict: false }).observer,
+        ).toBe(observer);
+      } finally {
+        await moduleRef.close();
+      }
+    });
+
+    it('lets the wiring-time provider win over the runtime option', async (): Promise<void> => {
+      const moduleRef = await Test.createTestingModule({
+        imports: [
+          FakeDataSourceModule,
+          BPMRootModule.forRoot({
+            instanceEventObserver: otherObserver,
+            instanceEventObserverProvider: {
+              provide: BPM_INSTANCE_EVENT_OBSERVER,
+              useValue: observer,
+            },
+          }),
+        ],
+      }).compile();
+
+      try {
+        expect(
+          moduleRef.get(InstanceEventService, { strict: false }).observer,
+        ).toBe(observer);
+      } finally {
+        await moduleRef.close();
+      }
+    });
+
+    it('boots with no observer and reports the outbox as disabled', async (): Promise<void> => {
+      const moduleRef = await Test.createTestingModule({
+        imports: [FakeDataSourceModule, BPMRootModule.forRoot()],
+      }).compile();
+
+      try {
+        const service = moduleRef.get(InstanceEventService, { strict: false });
+
+        expect(service.observer).toBeNull();
+        expect(service.enabled).toBe(false);
+      } finally {
+        await moduleRef.close();
+      }
+    });
   });
 });
 

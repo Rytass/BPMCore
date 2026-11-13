@@ -25,6 +25,11 @@ import {
   FormDataSourceModule,
   FormDataSourceModuleOptions,
 } from '../form-data-source';
+import {
+  InstanceEventModule,
+  InstanceEventModuleOptions,
+} from '../instance-event/instance-event.module';
+import type { BPMInstanceEventObserver } from '../instance-event/instance-event.token';
 import { IdentityModule } from '../identity/identity.module';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
 import { NotificationModule } from '../notification/notification.module';
@@ -138,6 +143,16 @@ interface BPMRootModuleWiringOptions extends Pick<ModuleMetadata, 'imports'> {
    * did before the guard existed.
    */
   readonly instanceGuardProvider?: Provider<BPMInstanceGuard>;
+
+  /**
+   * Host-provided instance lifecycle event observer, as a Nest provider for
+   * `BPM_INSTANCE_EVENT_OBSERVER`.
+   *
+   * Runtime twin: {@link BPMRootRuntimeOptions.instanceEventObserver}. When both
+   * are given this provider wins. When neither is given, no outbox rows are
+   * written.
+   */
+  readonly instanceEventObserverProvider?: Provider<BPMInstanceEventObserver>;
 
   /**
    * Host-provided member resolver, as a Nest provider.
@@ -409,5 +424,9 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
       imports: wiring.imports,
       registryProvider: wiring.workflowWebhookRegistryProvider,
     } satisfies WorkflowWebhookModuleOptions),
+    InstanceEventModule.forRoot({
+      imports: wiring.imports,
+      observerProvider: wiring.instanceEventObserverProvider,
+    } satisfies InstanceEventModuleOptions),
   ];
 }
