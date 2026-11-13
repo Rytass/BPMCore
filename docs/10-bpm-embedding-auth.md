@@ -194,6 +194,7 @@ BPMCore 不再提供 mock fallback；
         provide: ATTACHMENT_STORAGE,
         useFactory: () => createHostStorageAdapter(),
       },
+      expressionMissingFormFieldsAsNull: false, // 預設值，見 docs/11 §2e 與 docs/05 §5.1.2
       notificationEmailEnabled: 'auto',
       notificationEmailSmtpHost: 'smtp.example.com',
       notificationEmailSmtpPort: 587,
