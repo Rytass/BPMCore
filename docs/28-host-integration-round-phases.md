@@ -79,7 +79,7 @@ P6 docs sweep, /review, release prep
 ## P5 — 補填放寬（完成）
 
 - 4(b)：
-  - `prepareDecisionFormDataOptions`：鎖外以簽核人身分解析，鎖內比對 fingerprint 後寫入快照。
+  - decide 交易內（`WorkflowEngineService` 取得案件 advisory lock、比對 `expectedFormDataFingerprint` 之後）以簽核人身分重新解析補填的資料來源值：整欄補填走 `refreshApproverFilledOptionSnapshots`，逐欄模式的開放格走 `refreshApproverFilledOpenCellSnapshots`（`ROW_FIELD` 取同列值）；兩者的結果寫入 `formDataOptionSnapshot`。值已不在選項內時，經 `answerValueNotResolved` 轉為 400 `formDataErrors`（`VALUE_NOT_RESOLVED`）。
   - lint 放寬。
   - 補填 UI 的資料來源控制項。
 - 4(a)：
