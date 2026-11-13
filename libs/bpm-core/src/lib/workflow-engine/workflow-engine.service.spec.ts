@@ -69,9 +69,12 @@ import { FormDefinitionVersionEntity } from '../form/form-definition-version.ent
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
+  BPMFormDataSource,
   BPMFormDataSourceException,
   BPMFormDataSourceValueResolver,
+  StaticBPMFormDataSourceRegistry,
 } from '../form-data-source';
+import { FormDataSourceValueResolverService } from '../form-data-source/form-data-source-value-resolver.service';
 import { ApprovalInstanceEventEntity } from '../instance-event/approval-instance-event.entity';
 import { InstanceEventService } from '../instance-event/instance-event.service';
 import type { BPMInstanceEventObserver } from '../instance-event/instance-event.token';
@@ -2715,6 +2718,7 @@ describe('WorkflowEngineService', () => {
     const createDecideFixture = (
       options: {
         readonly formData?: Readonly<Record<string, unknown>>;
+        readonly formDataSourceValueResolver?: BPMFormDataSourceValueResolver;
         readonly formSchema?: FormDefinitionSchema;
         readonly task?: Partial<TaskEntity>;
         readonly token?: Partial<WorkflowTokenEntity>;
@@ -2723,6 +2727,7 @@ describe('WorkflowEngineService', () => {
     ): ServiceFixture =>
       createServiceFixture({
         currentVersionId: 'template-version-1',
+        formDataSourceValueResolver: options.formDataSourceValueResolver,
         formSchema: options.formSchema,
         decisionTask: createTask({
           nodeId: 'task_finance',
@@ -3562,6 +3567,240 @@ describe('WorkflowEngineService', () => {
             BadRequestException,
             '缺少必填欄位：負責單位',
           );
+        });
+      });
+
+      describe('an approver-filled data-source field', () => {
+        type CostCenterRequest = {
+          readonly authContext: BPMAuthContext;
+          readonly bindings: Readonly<Record<string, unknown>>;
+          readonly values: readonly string[];
+        };
+        const costCenterAccess: readonly FieldAccessEntry[] = [
+          { display: 'SHOW', fieldKey: 'costCenter', fill: 'OPTIONAL' },
+        ];
+        const itemsCostCenterAccess: readonly FieldAccessEntry[] = [
+          { display: 'SHOW', fieldKey: 'items', fill: 'OPTIONAL' },
+        ];
+        const createCostCenterSource = (
+          optionsFor: (request: CostCenterRequest) => readonly FormFieldOption[],
+        ): BPMFormDataSource => ({
+          descriptor: {
+            key: 'demo.cost-centers',
+            label: 'Cost centers',
+            maximumResultCount: 20,
+            minimumSearchLength: 0,
+            pageSize: 20,
+            paginationMode: 'NONE',
+            parameters: [{ key: 'plant', required: true, type: 'STRING' }],
+            revalidationPolicy: 'WHEN_VALUE_OR_BINDINGS_CHANGE',
+            returnsCompleteList: true,
+            supportedControls: ['select'],
+            supportsSearch: false,
+            version: 1,
+          },
+          // Like a real provider: answers only the values it was asked for.
+          resolve: (request) =>
+            Promise.resolve(
+              optionsFor(request).filter((option) =>
+                request.values.includes(option.value),
+              ),
+            ),
+          search: () => Promise.resolve({ options: [] }),
+        });
+        const createRealResolver = (
+          source: BPMFormDataSource,
+        ): FormDataSourceValueResolverService =>
+          new FormDataSourceValueResolverService(
+            new StaticBPMFormDataSourceRegistry([source]),
+          );
+        const createPerRowCostCenterSchema = (): FormDefinitionSchema => ({
+          fields: [
+            {
+              columns: [
+                { fieldKey: 'plant', label: 'Plant', required: true, type: 'text' },
+                {
+                  dataSource: {
+                    bindings: [
+                      {
+                        from: { columnKey: 'plant', kind: 'ROW_FIELD' },
+                        parameter: 'plant',
+                      },
+                    ],
+                    key: 'demo.cost-centers',
+                    version: 1,
+                  },
+                  fieldKey: 'costCenter',
+                  label: 'Cost center',
+                  mode: 'single',
+                  required: true,
+                  type: 'select',
+                },
+              ],
+              fieldKey: 'items',
+              label: 'Items',
+              required: false,
+              type: 'table',
+            },
+          ],
+          schemaVersion: 1,
+        });
+        const TPE_OPTIONS: readonly FormFieldOption[] = [
+          { label: 'Cost center TPE', value: 'CC-001' },
+        ];
+        const KHH_OPTIONS: readonly FormFieldOption[] = [
+          { label: 'Cost center KHH', value: 'CC-002' },
+        ];
+        const optionsByPlant = (
+          request: CostCenterRequest,
+        ): readonly FormFieldOption[] =>
+          request.bindings.plant === 'KHH' ? KHH_OPTIONS : TPE_OPTIONS;
+
+        it('rejects a value that is not in the provider options', async (): Promise<void> => {
+          const fixture = createDecideFixture({
+            formData: { plant: 'TPE' },
+            formDataSourceValueResolver: createRealResolver(
+              createCostCenterSource(() => TPE_OPTIONS),
+            ),
+            formSchema: createDynamicOptionFormSchema(),
+            workflow: createFieldAccessWorkflow({
+              financeFieldAccess: costCenterAccess,
+            }),
+          });
+
+          await expectRejection(
+            decide(fixture, {
+              formDataJson: JSON.stringify({ costCenter: 'CC-999' }),
+            }),
+            BPMFormDataSourceException,
+            BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+          );
+          expect(fixture.savedInstance).toBeNull();
+        });
+
+        it('accepts a provider option and snapshots it', async (): Promise<void> => {
+          const fixture = createDecideFixture({
+            formData: { plant: 'TPE' },
+            formDataSourceValueResolver: createRealResolver(
+              createCostCenterSource(() => TPE_OPTIONS),
+            ),
+            formSchema: createDynamicOptionFormSchema(),
+            workflow: createFieldAccessWorkflow({
+              financeFieldAccess: costCenterAccess,
+            }),
+          });
+
+          const decision = await decide(fixture, {
+            formDataJson: JSON.stringify({ costCenter: 'CC-001' }),
+          });
+
+          expect(decision.action).toBe(TaskDecisionActionEnum.APPROVED);
+          expect(fixture.savedInstance?.formData.costCenter).toBe('CC-001');
+          expect(
+            fixture.savedInstance?.formDataOptionSnapshot.costCenter?.options.map(
+              (option) => option.value,
+            ),
+          ).toEqual(['CC-001']);
+        });
+
+        it('resolves a table data-source column per row through ROW_FIELD', async (): Promise<void> => {
+          const fixture = createDecideFixture({
+            formData: { items: [] },
+            formDataSourceValueResolver: createRealResolver(
+              createCostCenterSource(optionsByPlant),
+            ),
+            formSchema: createPerRowCostCenterSchema(),
+            workflow: createFieldAccessWorkflow({
+              financeFieldAccess: itemsCostCenterAccess,
+            }),
+          });
+
+          await decide(fixture, {
+            formDataJson: JSON.stringify({
+              items: [
+                { plant: 'TPE', costCenter: 'CC-001' },
+                { plant: 'KHH', costCenter: 'CC-002' },
+              ],
+            }),
+          });
+
+          expect(
+            Object.keys(fixture.savedInstance?.formDataOptionSnapshot ?? {}),
+          ).toEqual(
+            expect.arrayContaining([
+              'items[0].costCenter',
+              'items[1].costCenter',
+            ]),
+          );
+        });
+
+        it('rejects a table row whose value belongs to another row plant', async (): Promise<void> => {
+          const fixture = createDecideFixture({
+            formData: { items: [] },
+            formDataSourceValueResolver: createRealResolver(
+              createCostCenterSource(optionsByPlant),
+            ),
+            formSchema: createPerRowCostCenterSchema(),
+            workflow: createFieldAccessWorkflow({
+              financeFieldAccess: itemsCostCenterAccess,
+            }),
+          });
+
+          await expectRejection(
+            decide(fixture, {
+              formDataJson: JSON.stringify({
+                items: [
+                  { plant: 'TPE', costCenter: 'CC-001' },
+                  { plant: 'KHH', costCenter: 'CC-001' },
+                ],
+              }),
+            }),
+            BPMFormDataSourceException,
+            BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+          );
+          expect(fixture.savedInstance).toBeNull();
+        });
+
+        it('resolves with the signed-in approver context, not a bare member stub', async (): Promise<void> => {
+          const optionsFor = jest.fn(
+            (request: CostCenterRequest): readonly FormFieldOption[] => [
+              {
+                label: `Cost center for ${request.authContext.memberId}`,
+                value: 'CC-001',
+              },
+            ],
+          );
+          const fixture = createDecideFixture({
+            formData: { plant: 'TPE' },
+            formDataSourceValueResolver: createRealResolver(
+              createCostCenterSource(optionsFor),
+            ),
+            formSchema: createDynamicOptionFormSchema(),
+            workflow: createFieldAccessWorkflow({
+              financeFieldAccess: costCenterAccess,
+            }),
+          });
+
+          await fixture.service.decideTask(
+            {
+              action: TaskDecisionActionEnum.APPROVED,
+              decidedByMemberId: 'member-finance',
+              formDataJson: JSON.stringify({ costCenter: 'CC-001' }),
+              taskId: 'task-1',
+            },
+            { approverAuthContext: createAuthContext('member-finance') },
+          );
+
+          expect(optionsFor).toHaveBeenCalledWith(
+            expect.objectContaining({
+              authContext: createAuthContext('member-finance'),
+            }),
+          );
+          expect(
+            fixture.savedInstance?.formDataOptionSnapshot.costCenter?.options.map(
+              (option) => option.label,
+            ),
+          ).toEqual(['Cost center for member-finance']);
         });
       });
 

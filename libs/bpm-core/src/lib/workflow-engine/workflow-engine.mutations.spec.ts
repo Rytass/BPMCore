@@ -185,6 +185,8 @@ describe('WorkflowEngineMutations decideTask', () => {
       'expectedFormDataFingerprint is required when formDataJson is set',
     );
   };
+  // The signed-in approver's context, injected by @BPMCurrentAuthContext().
+  const approver = { memberId: 'member-current' } as BPMAuthContext;
   const input = (extra: Partial<DecideTaskInput>): DecideTaskInput =>
     ({
       action: TaskDecisionActionEnum.APPROVED,
@@ -200,6 +202,7 @@ describe('WorkflowEngineMutations decideTask', () => {
       mutations.decideTask(
         input({ formDataJson: '{"financeItems":[]}' }),
         'member-current',
+        approver,
       ),
     );
     await expectRejection(
@@ -209,6 +212,7 @@ describe('WorkflowEngineMutations decideTask', () => {
           formDataJson: '{"financeItems":[]}',
         }),
         'member-current',
+        approver,
       ),
     );
     expect(decideTask).not.toHaveBeenCalled();
@@ -218,7 +222,11 @@ describe('WorkflowEngineMutations decideTask', () => {
     const { decideTask, mutations } = createMutations();
 
     await expectRejection(
-      mutations.decideTask(input({ formDataJson: '{}' }), 'member-current'),
+      mutations.decideTask(
+        input({ formDataJson: '{}' }),
+        'member-current',
+        approver,
+      ),
     );
     expect(decideTask).not.toHaveBeenCalled();
   });
@@ -232,6 +240,7 @@ describe('WorkflowEngineMutations decideTask', () => {
         formDataJson: '{"financeItems":[]}',
       }),
       'member-current',
+      approver,
     );
 
     expect(decideTask).toHaveBeenCalledWith(
@@ -240,13 +249,14 @@ describe('WorkflowEngineMutations decideTask', () => {
         expectedFormDataFingerprint: 'fingerprint-1',
         formDataJson: '{"financeItems":[]}',
       }),
+      { approverAuthContext: approver },
     );
   });
 
   it('does not ask for a fingerprint when no formDataJson is sent', async (): Promise<void> => {
     const { decideTask, mutations } = createMutations();
 
-    await mutations.decideTask(input({}), 'member-current');
+    await mutations.decideTask(input({}), 'member-current', approver);
 
     expect(decideTask).toHaveBeenCalledTimes(1);
   });

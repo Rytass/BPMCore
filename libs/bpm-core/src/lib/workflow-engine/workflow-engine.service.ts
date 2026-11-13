@@ -10,6 +10,7 @@ import {
   readNodeRequiredFieldKeys,
   readFilterableFieldPaths,
   readFilterableValueProblems,
+  readTopLevelFieldKey,
   type ApprovalInstanceFieldFilter,
   type ApprovalInstanceSort,
   type FilterableValueProblem,
@@ -606,6 +607,13 @@ export interface DecideTaskOptions {
    * transfer. Defaults to {@link MANUAL_TRANSFER_DELEGATION_REASON}.
    */
   readonly transferReason?: string;
+  /**
+   * The approver's own auth context, passed by the GraphQL mutation. Data
+   * source providers receive it when an approver-filled dynamic field is
+   * resolved. Absent for engine-made decisions (SLA auto-approve), which then
+   * act as the decider's member id only.
+   */
+  readonly approverAuthContext?: BPMAuthContext;
 }
 
 interface ReturnedInstanceContext {
@@ -1354,6 +1362,44 @@ export class WorkflowEngineService {
   }
 
   /**
+   * ADR 27 §4(b): asks the data-source providers again, under the decision
+   * lock and as the approver, for the options of the approver-fillable fields.
+   * A value that is no longer among the options is refused by the resolver
+   * (`VALUE_NOT_RESOLVED`). Returns snapshots for the scoped fields only; the
+   * caller swaps them in for the stored ones.
+   */
+  private async refreshApproverFilledOptionSnapshots({
+    approverAuthContext,
+    fieldKeys,
+    formData,
+    instance,
+  }: {
+    readonly approverAuthContext: BPMAuthContext;
+    readonly fieldKeys: ReadonlySet<string>;
+    readonly formData: Readonly<Record<string, unknown>>;
+    readonly instance: ApprovalInstanceEntity;
+  }): Promise<FormDataSourceValueSnapshots> {
+    const schema = readFormDefinitionSnapshotSchema(
+      instance.formDefinitionSnapshot,
+    );
+
+    return this.resolveFormDataOptionSnapshots({
+      authContext: approverAuthContext,
+      formData,
+      previousFormData: instance.formData,
+      previousSnapshots: readSnapshotWithoutFields(
+        instance.formDataOptionSnapshot,
+        fieldKeys,
+      ),
+      revalidateAll: true,
+      schema: {
+        ...schema,
+        fields: schema.fields.filter((field) => fieldKeys.has(field.fieldKey)),
+      },
+    });
+  }
+
+  /**
    * Refuses an end user's resubmission of an instance bound to a `HOST_ONLY`
    * version (ADR 27 §5). Checked before any data source is called and outside
    * the lock: an instance never changes version and a published version never
@@ -1872,6 +1918,42 @@ export class WorkflowEngineService {
           }
         }
 
+        // ADR 27 §4(b): an approver-filled data-source field is judged as the
+        // approver's own pick. The provider is asked again under the lock with
+        // the approver's identity, so a value outside the current options is
+        // refused and the recorded label is refreshed before anything is
+        // written. Table data-source columns resolve per row (ROW_FIELD).
+        const fillableFieldKeys = readNodeFillableFieldKeys(taskNode);
+        const dataSourceRefreshKeys: ReadonlySet<string> =
+          input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc
+            ? fillableFieldKeys
+            : new Set(
+                changedFieldKeys.filter((fieldKey) =>
+                  fillableFieldKeys.has(fieldKey),
+                ),
+              );
+        const refreshedFormDataOptionSnapshots =
+          dataSourceRefreshKeys.size === 0
+            ? null
+            : await this.refreshApproverFilledOptionSnapshots({
+                approverAuthContext:
+                  options.approverAuthContext ??
+                  createWorkflowAuthContext(input.decidedByMemberId),
+                fieldKeys: dataSourceRefreshKeys,
+                formData: mergedFormData,
+                instance,
+              });
+        const nextFormDataOptionSnapshot: FormDataSourceValueSnapshots =
+          refreshedFormDataOptionSnapshots === null
+            ? (instance.formDataOptionSnapshot ?? {})
+            : {
+                ...readSnapshotWithoutFields(
+                  instance.formDataOptionSnapshot,
+                  dataSourceRefreshKeys,
+                ),
+                ...refreshedFormDataOptionSnapshots,
+              };
+
         // ADR 27 §2: the host guard judges the decision as it will be
         // committed, after the form checks and before anything is written.
         // The version is read only when a guard is bound, so an engine
@@ -1896,20 +1978,30 @@ export class WorkflowEngineService {
           });
         }
 
-        if (filledFormData !== null && changedFieldKeys.length > 0) {
+        const formDataChanged =
+          filledFormData !== null && changedFieldKeys.length > 0;
+        const formDataOptionSnapshotChanged =
+          computeStableValueFingerprint(nextFormDataOptionSnapshot) !==
+          computeStableValueFingerprint(instance.formDataOptionSnapshot ?? {});
+
+        if (formDataChanged) {
           await this.assertCurrentFilterableFormDataValues(
             instance.templateId,
             mergedFormData,
             manager,
           );
+        }
 
+        if (formDataChanged || formDataOptionSnapshotChanged) {
           // Merged into the shared `instance` before it is signed and before
           // the token moves on: the signature must cover the filled values, a
           // gateway after this node must route on them, and an end node saves
-          // this same object, which would write the old values back.
+          // this same object, which would write the old values back. The
+          // refreshed option labels go in the same write.
           const savedInstance = await instanceRepository.save({
             ...instance,
             formData: mergedFormData,
+            formDataOptionSnapshot: nextFormDataOptionSnapshot,
           });
 
           Object.assign(instance, savedInstance);
@@ -10955,6 +11047,21 @@ function readSnapshotWithoutField(
 ): FormDataSourceValueSnapshots {
   return Object.fromEntries(
     Object.entries(snapshots ?? {}).filter(([key]) => key !== fieldKey),
+  );
+}
+
+/**
+ * Drops every snapshot that belongs to one of the fields, table cells included
+ * (`items[0].col` belongs to `items`).
+ */
+function readSnapshotWithoutFields(
+  snapshots: FormDataSourceValueSnapshots | null | undefined,
+  fieldKeys: ReadonlySet<string>,
+): FormDataSourceValueSnapshots {
+  return Object.fromEntries(
+    Object.entries(snapshots ?? {}).filter(
+      ([key]) => !fieldKeys.has(readTopLevelFieldKey(key)),
+    ),
   );
 }
 

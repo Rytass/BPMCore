@@ -72,6 +72,7 @@ export class WorkflowEngineMutations {
   async decideTask(
     @Args('input') input: DecideTaskInput,
     @BPMCurrentMemberId() currentMemberId: string,
+    @BPMCurrentAuthContext() authContext: BPMAuthContext,
   ): Promise<TaskDecisionEntity> {
     // "Sent" means not null and not undefined, so '{}' counts. A host calling
     // the service may leave the fingerprint out; a screen may not, or it would
@@ -87,10 +88,15 @@ export class WorkflowEngineMutations {
       );
     }
 
-    return this.workflowEngineService.decideTask({
-      ...input,
-      decidedByMemberId: currentMemberId,
-    });
+    return this.workflowEngineService.decideTask(
+      {
+        ...input,
+        decidedByMemberId: currentMemberId,
+      },
+      // The signed-in approver's own context: data-source providers see who
+      // is deciding, so an approver-filled option is judged as their pick.
+      { approverAuthContext: authContext },
+    );
   }
 
   @Mutation(() => [TaskReassignmentResultObject], {
