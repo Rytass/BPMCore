@@ -117,9 +117,13 @@ unreliable, not as broken since a known date.
 **Never trust the exit code — verify the registry after every release.**
 `npm view` is locally cached and shows the old version for a minute or two, and
 the registry itself lags: on v0.14.0 all four URLs below still answered 404 for
-about a minute after `Published to https://registry.npmjs.org/`. A 404 straight
+about a minute after `Published to https://registry.npmjs.org/`, and on v0.22.0
+`@rytass/bpm-core-nestjs-module` still answered 404 (and its metadata still said
+`latest: 0.21.4`) more than four minutes after it was published. A 404 straight
 after a publish is not yet a skipped package — look for `Skipped package` in the
-output, and ask the registry again before recovering:
+output (keep the whole publish log; a truncated one hides the answer), and ask
+the registry again before recovering. Running the recovery publish anyway is
+harmless: it skips every package already there and reports so:
 
 ```bash
 for p in bpm-core-shared bpm-core-nestjs-module bpm-core-client bpm-core-react; do
