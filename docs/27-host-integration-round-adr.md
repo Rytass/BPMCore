@@ -210,10 +210,13 @@ ADR 20 §3.4 與 §8 把以下三點列為延後項目，不是拒絕。本次�
 - **現況**：
   - 原本被擋的 lint：`approverFilledFieldDataSource`（已移除，不再發出）、`approverFilledTableDataSourceColumn`（已縮限為依賴欄未開放的情況，見 §4.3）。
   - `decideTask` 不重新解析選項，也不寫 `formDataOptionSnapshot`。補填的值不但沒有顯示名稱快照，也沒驗證是不是合法選項。
-- **做法**：仿重送路徑，抽出 `prepareDecisionFormDataOptions`：
-  1. **鎖外**：以**簽核人**的 authContext 解析補填欄位的選項，並以既有快照做增量合併。
-  2. **鎖內**：比對 fingerprint，確認案件沒有被改過，再一併寫入 `formData` 與 `formDataOptionSnapshot`。
+- **做法**：
+  1. 以**簽核人**的 authContext 解析補填欄位的選項，並以既有快照做增量合併。
+  2. 一併寫入 `formData` 與 `formDataOptionSnapshot`。
   3. 解析不到的值回 `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED`，和送件時相同。
+- **實作**：由 `refreshApproverFilledOptionSnapshots`（一般欄位）與 `refreshApproverFilledOpenCellSnapshots`（逐欄 table 的格）完成。
+  - 原規劃仿照重送路徑，在鎖外解析、鎖內比對 fingerprint。
+  - 實作改成整段在決策交易內、案件 advisory lock 之下執行，不需要另外比對 fingerprint。
 - **附件**（`file_upload`）不在本次範圍。
 
 - **實作缺口（已補，`feat/hir-p5ds`）**：
