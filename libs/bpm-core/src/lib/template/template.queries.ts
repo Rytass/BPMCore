@@ -35,9 +35,12 @@ export class TemplateQueries {
       type: () => ApprovalTemplateActivationStatusEnum,
     })
     activationStatus?: ApprovalTemplateActivationStatusEnum | null,
+    @Args('includeHostManaged', { nullable: true, type: () => Boolean })
+    includeHostManaged?: boolean | null,
   ): Promise<readonly ApprovalTemplateEntity[]> {
     return this.templateService.listApprovalTemplates({
       activationStatus: activationStatus ?? undefined,
+      includeHostManaged: includeHostManaged ?? undefined,
       page: page ?? undefined,
       pageSize: pageSize ?? undefined,
       categoryId: categoryId ?? undefined,
@@ -62,10 +65,13 @@ export class TemplateQueries {
       type: () => ApprovalTemplateActivationStatusEnum,
     })
     activationStatus?: ApprovalTemplateActivationStatusEnum | null,
+    @Args('includeHostManaged', { nullable: true, type: () => Boolean })
+    includeHostManaged?: boolean | null,
   ): Promise<number> {
     return this.templateService.countApprovalTemplates({
       activationStatus: activationStatus ?? undefined,
       categoryId: categoryId ?? undefined,
+      includeHostManaged: includeHostManaged ?? undefined,
       searchText: searchText ?? undefined,
       status: status ?? undefined,
     });

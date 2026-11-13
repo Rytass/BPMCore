@@ -146,6 +146,7 @@ interface ListApprovalTemplatesOptions {
   readonly categoryId?: string;
   readonly searchText?: string;
   readonly status?: ApprovalTemplateListStatusEnum;
+  readonly includeHostManaged?: boolean;
 }
 
 interface ListApprovalTemplateCategoriesOptions {
@@ -617,6 +618,7 @@ export class TemplateService {
       where: createApprovalTemplateWhere({
         activationStatus: options.activationStatus,
         categoryId: options.categoryId,
+        includeHostManaged: options.includeHostManaged,
         searchText: options.searchText,
         status: options.status,
       }),
@@ -626,11 +628,13 @@ export class TemplateService {
   async countApprovalTemplates({
     activationStatus,
     categoryId,
+    includeHostManaged,
     searchText,
     status,
   }: {
     readonly activationStatus?: ApprovalTemplateActivationStatusEnum;
     readonly categoryId?: string;
+    readonly includeHostManaged?: boolean;
     readonly searchText?: string;
     readonly status?: ApprovalTemplateListStatusEnum;
   } = {}): Promise<number> {
@@ -638,6 +642,7 @@ export class TemplateService {
       where: createApprovalTemplateWhere({
         activationStatus,
         categoryId,
+        includeHostManaged,
         searchText,
         status,
       }),
@@ -1767,6 +1772,7 @@ function createApprovalTemplateWhere(
   options: Readonly<{
     readonly activationStatus?: ApprovalTemplateActivationStatusEnum;
     readonly categoryId?: string;
+    readonly includeHostManaged?: boolean;
     readonly searchText?: string;
     readonly status?: ApprovalTemplateListStatusEnum;
   }>,
@@ -1776,6 +1782,10 @@ function createApprovalTemplateWhere(
   const activeTemplateWhere: FindOptionsWhere<ApprovalTemplateEntity> = {
     deletedAt: IsNull(),
   };
+  // Host-managed templates stay out of lists unless the caller opts in
+  // (ADR 27 §6.2). The filter sits in baseWhere so every search clause keeps it.
+  const hostWhere: FindOptionsWhere<ApprovalTemplateEntity> =
+    options.includeHostManaged === true ? {} : { hostManaged: false };
   // Administrative activation is orthogonal to the version-derived publication
   // status, so an omitted filter keeps both active and deactivated templates.
   const activationWhere: FindOptionsWhere<ApprovalTemplateEntity> =
@@ -1795,6 +1805,7 @@ function createApprovalTemplateWhere(
       : {};
   const baseWhere: FindOptionsWhere<ApprovalTemplateEntity> = {
     ...activeTemplateWhere,
+    ...hostWhere,
     ...activationWhere,
     ...(options.categoryId ? { categoryId: options.categoryId } : {}),
     ...statusWhere,
