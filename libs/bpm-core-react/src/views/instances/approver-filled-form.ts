@@ -145,9 +145,10 @@ export function readFillLabelMarkers(
 /**
  * What approving sends as `fill.formData`: the keys of `values` that `node`
  * lets its approver fill, and nothing else (the server refuses any other key).
- * `values` is what the approver changed, not the rendered form — a renderer
- * default the approver never touched (a table's empty rows, a boolean's
- * `false`) is not theirs to sign, and would otherwise show up as filled in.
+ * `values` is the fill changes from `readFillChanges`, not the rendered form:
+ * a renderer default the approver never touched (a table's empty rows, an
+ * OPTIONAL boolean's `false`) is not theirs to sign and stays out. A REQUIRED
+ * boolean is the exception; its shown value is sent, see `readFillChanges`.
  */
 export function readFillPayload(
   values: WorkflowFormData,
@@ -167,9 +168,12 @@ export function readFillPayload(
 /**
  * What the approver's fill amounts to: the fields they changed (`draft`), plus
  * each fill table the page seeds with `minRows` rows that the case does not
- * store yet. The page shows those rows and validates them, so they are sent
- * too — left out, the server would refuse the approval for missing rows the
- * approver can see on screen.
+ * store yet, and each REQUIRED boolean fill field at the value the page shows.
+ * The page shows those rows and values and validates them, so they are sent
+ * too. Left out, the server would refuse the approval for a missing row, and
+ * for a missing `false` that the approver can see on screen: a boolean that
+ * is never sent reads as empty, while `false` is a value. Changed values
+ * override the displayed ones.
  */
 export function readFillChanges({
   draft,
@@ -197,9 +201,17 @@ export function readFillChanges({
     );
   });
 
+  const requiredBooleanKeys = [...readNodeRequiredFieldKeys(node)].filter(
+    (fieldKey) =>
+      fillableKeys.has(fieldKey) && typeof values[fieldKey] === 'boolean',
+  );
+
   return {
     ...Object.fromEntries(
       seededTables.map((field) => [field.fieldKey, values[field.fieldKey]]),
+    ),
+    ...Object.fromEntries(
+      requiredBooleanKeys.map((fieldKey) => [fieldKey, values[fieldKey]]),
     ),
     ...draft,
   };

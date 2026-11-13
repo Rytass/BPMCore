@@ -295,6 +295,80 @@ describe('approver-filled form helpers', () => {
       });
     });
 
+    describe('a REQUIRED boolean fill field', () => {
+      const BOOLEAN_SCHEMA: FormDefinitionSchema = {
+        ...SCHEMA,
+        fields: [
+          ...SCHEMA.fields,
+          {
+            fieldKey: 'taxFree',
+            label: '免稅',
+            required: false,
+            type: 'boolean',
+          },
+        ],
+      };
+      const booleanNode = (fill: 'OPTIONAL' | 'REQUIRED'): UserTaskNode =>
+        ({
+          ...fillNode,
+          data: {
+            ...fillNode.data,
+            fieldAccess: [{ display: 'SHOW', fieldKey: 'taxFree', fill }],
+          },
+        }) as UserTaskNode;
+
+      it('sends the shown false when the approver never touched it', () => {
+        const changes = readFillChanges({
+          draft: {},
+          node: booleanNode('REQUIRED'),
+          schema: BOOLEAN_SCHEMA,
+          stored: {},
+          values: { taxFree: false },
+        });
+
+        expect(changes).toEqual({ taxFree: false });
+        expect(readFillPayload(changes, booleanNode('REQUIRED'))).toEqual({
+          taxFree: false,
+        });
+      });
+
+      it('sends the changed value over the shown one', () => {
+        expect(
+          readFillChanges({
+            draft: { taxFree: true },
+            node: booleanNode('REQUIRED'),
+            schema: BOOLEAN_SCHEMA,
+            stored: {},
+            values: { taxFree: true },
+          }),
+        ).toEqual({ taxFree: true });
+      });
+
+      it('sends a stored true again without treating it as a change', () => {
+        expect(
+          readFillChanges({
+            draft: {},
+            node: booleanNode('REQUIRED'),
+            schema: BOOLEAN_SCHEMA,
+            stored: { taxFree: true },
+            values: { taxFree: true },
+          }),
+        ).toEqual({ taxFree: true });
+      });
+
+      it('leaves an OPTIONAL boolean out when untouched', () => {
+        expect(
+          readFillChanges({
+            draft: {},
+            node: booleanNode('OPTIONAL'),
+            schema: BOOLEAN_SCHEMA,
+            stored: {},
+            values: { taxFree: false },
+          }),
+        ).toEqual({});
+      });
+    });
+
     it('recognises the conflict message as the client throws it', () => {
       expect(
         isFillConflictMessage(
