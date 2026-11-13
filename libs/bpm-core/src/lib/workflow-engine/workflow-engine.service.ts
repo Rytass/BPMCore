@@ -195,6 +195,7 @@ import {
 import {
   BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
   BPMInitiatorCustomFieldsInput,
+  BPMInitiatorCustomFieldsPurpose,
   BPMInitiatorCustomFieldsResolver,
 } from './initiator-custom-fields-resolver.token';
 import {
@@ -4936,19 +4937,17 @@ export class WorkflowEngineService {
       return defaultSnapshot;
     }
 
+    // The template the resolver is asked about: the one being submitted, or
+    // the one whose options are read. The list asks about none.
+    const template = submission ?? formOptions;
     const input: BPMInitiatorCustomFieldsInput = {
       authContext,
       defaultSnapshot: cloneJsonObject(defaultSnapshot),
       formData: submission ? cloneJsonObject(submission.formData) : null,
       memberId,
-      purpose: submission
-        ? 'SUBMISSION'
-        : formOptions
-          ? 'FORM_OPTIONS'
-          : 'LAUNCHABLE_TEMPLATES',
-      templateId: submission?.templateId ?? formOptions?.templateId ?? null,
-      templateVersionId:
-        submission?.templateVersionId ?? formOptions?.templateVersionId ?? null,
+      purpose: readInitiatorCustomFieldsPurpose({ formOptions, submission }),
+      templateId: template?.templateId ?? null,
+      templateVersionId: template?.templateVersionId ?? null,
     };
 
     if (submission) {
@@ -9829,6 +9828,21 @@ function cloneJsonObject(
   value: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+/** Which caller is building an initiator snapshot, as the resolver is told. */
+function readInitiatorCustomFieldsPurpose({
+  formOptions,
+  submission,
+}: Readonly<{
+  formOptions: object | null;
+  submission: object | null;
+}>): BPMInitiatorCustomFieldsPurpose {
+  if (submission) {
+    return 'SUBMISSION';
+  }
+
+  return formOptions ? 'FORM_OPTIONS' : 'LAUNCHABLE_TEMPLATES';
 }
 
 /**
