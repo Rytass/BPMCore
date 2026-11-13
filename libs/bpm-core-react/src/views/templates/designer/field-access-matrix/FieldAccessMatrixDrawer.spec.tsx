@@ -177,6 +177,23 @@ const schema: FormDefinitionSchema = {
   schemaVersion: 1,
 };
 
+const tableSchema: FormDefinitionSchema = {
+  fields: [
+    field('amount', 'number'),
+    {
+      columns: [
+        { fieldKey: 'qty', label: '數量', required: false, type: 'number' },
+        { fieldKey: 'memo', label: '說明', required: false, type: 'text' },
+      ],
+      fieldKey: 'items',
+      label: '明細',
+      required: false,
+      type: 'table',
+    },
+  ],
+  schemaVersion: 1,
+};
+
 const definitionOf = (nodes: readonly WorkflowNode[]): WorkflowDefinition => ({
   edges: [edge('manager', 'finance')],
   meta: { schemaVersion: 1 },
@@ -203,12 +220,15 @@ describe('FieldAccessMatrixDrawer', () => {
     container.remove();
   });
 
-  function render(definition: WorkflowDefinition): void {
+  function render(
+    definition: WorkflowDefinition,
+    formSchema: FormDefinitionSchema = schema,
+  ): void {
     act((): void => {
       root.render(
         <FieldAccessMatrixDrawer
           definition={definition}
-          formSchema={schema}
+          formSchema={formSchema}
           language="zh-TW"
           onApply={onApply}
           onClose={onClose}
@@ -573,6 +593,64 @@ describe('FieldAccessMatrixDrawer', () => {
     toggleFilter();
     expect(rowKeys()).toEqual([]);
   });
+
+  it('applies a per-column fill chosen under a table row', () => {
+    render(definitionOf([userTask('manager'), userTask('finance')]), tableSchema);
+    choose('明細 在關卡 1的設定', 'COLUMNS');
+    choose('明細 · 數量 在關卡 1的補填設定', 'REQUIRED');
+    click('套用');
+
+    expect(onApply).toHaveBeenCalledWith([
+      {
+        columns: [{ columnKey: 'qty', fill: 'REQUIRED' }],
+        display: 'SHOW',
+        fieldKey: 'items',
+        fill: 'NONE',
+        nodeId: 'manager',
+      },
+    ]);
+  });
+
+  it('applies a change that touches only a column of a stored column-mode entry', () => {
+    render(
+      definitionOf([
+        userTask('manager', [
+          {
+            columns: [{ columnKey: 'qty', fill: 'OPTIONAL' }],
+            display: 'SHOW',
+            fieldKey: 'items',
+            fill: 'NONE',
+          },
+        ]),
+        userTask('finance'),
+      ]),
+      tableSchema,
+    );
+    choose('明細 · 數量 在關卡 1的補填設定', 'REQUIRED');
+    click('套用');
+
+    expect(onApply).toHaveBeenCalledWith([
+      {
+        columns: [{ columnKey: 'qty', fill: 'REQUIRED' }],
+        display: 'SHOW',
+        fieldKey: 'items',
+        fill: 'NONE',
+        nodeId: 'manager',
+      },
+    ]);
+  });
+
+  it('blocks 套用 while column mode has no column chosen', () => {
+    render(definitionOf([userTask('manager'), userTask('finance')]), tableSchema);
+    choose('明細 在關卡 1的設定', 'COLUMNS');
+    click('套用');
+
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(
+      container.querySelector('[data-variant="dot-error"]')?.textContent,
+    ).toBe('逐欄補填沒有選任何欄位，請至少選一欄或改回預設。');
+  });
 });
 
 describe('updateFieldAccessDraft', () => {
@@ -677,6 +755,24 @@ describe('FieldAccessNodeSection', () => {
 
     expect(warning?.textContent).not.toContain('workflow.nodes.');
     expect(warning?.textContent).toContain('主管');
+  });
+
+  it('counts each column grant as one fill unit', () => {
+    render(
+      userTask('manager', [
+        {
+          columns: [
+            { columnKey: 'qty', fill: 'REQUIRED' },
+            { columnKey: 'memo', fill: 'OPTIONAL' },
+          ],
+          display: 'SHOW',
+          fieldKey: 'items',
+          fill: 'NONE',
+        },
+      ]),
+    );
+
+    expect(container.textContent).toContain('本關補填 2 個（必填 1）');
   });
 
   it('offers to remove the legacy key', () => {
