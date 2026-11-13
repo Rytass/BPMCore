@@ -4,7 +4,6 @@ import {
   MemberMetadata,
   omitFormDataKeys,
   overlayStoredFormDataKeys,
-  readApproverFilledFieldKeys,
   readNodeFillableFieldKeys,
   readNodeFillGrantFieldKeys,
   readNodeRequiredFieldKeys,
@@ -133,6 +132,11 @@ import {
 } from '../organization/organization-time-zone';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
+import {
+  applyOpenColumnCells,
+  projectOpenColumnsOptional,
+  readApproverFilledDeferral,
+} from './approver-filled-table-columns';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
 import {
   ApprovalTemplateLaunchModeEnum,
@@ -1093,16 +1097,22 @@ export class WorkflowEngineService {
     // checked here; required and row minimums wait for the node that fills
     // them. Read off the version the instance is bound to, not the template's
     // latest, so a publish in between cannot change what is stripped.
-    const deferredFieldKeys = readApproverFilledFieldKeys(
+    const deferral = readApproverFilledDeferral(
       templateVersion.workflowDefinition,
     );
     const formData =
       input.endUserSubmission === true
-        ? omitFormDataKeys(submittedFormData, deferredFieldKeys)
+        ? applyOpenColumnCells(
+            omitFormDataKeys(submittedFormData, deferral.wholeKeys),
+            null,
+            deferral,
+          )
         : submittedFormData;
-    validateSubmittedFormData(formDefinitionVersion.schema, formData, {
-      deferredFieldKeys,
-    });
+    validateSubmittedFormData(
+      projectOpenColumnsOptional(formDefinitionVersion.schema, deferral),
+      formData,
+      { deferredFieldKeys: deferral.wholeKeys },
+    );
     // Checked against the bound version's schema before any data source is
     // called, so a bad value is refused cheaply. The transaction below
     // confirms under the template lock that this version is still current
@@ -1462,20 +1472,26 @@ export class WorkflowEngineService {
     const schema = readFormDefinitionSnapshotSchema(
       instance.formDefinitionSnapshot,
     );
-    const deferredFieldKeys = readApproverFilledFieldKeys(
-      instance.workflowSnapshot,
-    );
+    const deferral = readApproverFilledDeferral(instance.workflowSnapshot);
     // Same overlay as inside the lock, so the options resolved here are for
     // the form data that is actually saved.
     const formData =
       input.endUserSubmission === true
-        ? overlayStoredFormDataKeys(
-            submittedFormData,
+        ? applyOpenColumnCells(
+            overlayStoredFormDataKeys(
+              submittedFormData,
+              instance.formData,
+              deferral.wholeKeys,
+            ),
             instance.formData,
-            deferredFieldKeys,
+            deferral,
           )
         : submittedFormData;
-    validateSubmittedFormData(schema, formData, { deferredFieldKeys });
+    validateSubmittedFormData(
+      projectOpenColumnsOptional(schema, deferral),
+      formData,
+      { deferredFieldKeys: deferral.wholeKeys },
+    );
     await this.assertCurrentFilterableFormDataValues(
       instance.templateId,
       formData,
@@ -2531,23 +2547,28 @@ export class WorkflowEngineService {
         const resubmitSchema = readFormDefinitionSnapshotSchema(
           instance.formDefinitionSnapshot,
         );
-        const deferredFieldKeys = readApproverFilledFieldKeys(
-          instance.workflowSnapshot,
-        );
+        const deferral = readApproverFilledDeferral(instance.workflowSnapshot);
         // An end user gets back the value an approver already filled in, and
         // loses a key the stored data never had: the renderer seeds `false`,
         // `[]` and empty rows for every field, none of which an approver wrote.
+        // An open cell of a table is settled per row the same way.
         const formData =
           input.endUserSubmission === true
-            ? overlayStoredFormDataKeys(
-                submittedFormData,
+            ? applyOpenColumnCells(
+                overlayStoredFormDataKeys(
+                  submittedFormData,
+                  instance.formData,
+                  deferral.wholeKeys,
+                ),
                 instance.formData,
-                deferredFieldKeys,
+                deferral,
               )
             : submittedFormData;
-        validateSubmittedFormData(resubmitSchema, formData, {
-          deferredFieldKeys,
-        });
+        validateSubmittedFormData(
+          projectOpenColumnsOptional(resubmitSchema, deferral),
+          formData,
+          { deferredFieldKeys: deferral.wholeKeys },
+        );
         await this.assertCurrentFilterableFormDataValues(
           instance.templateId,
           formData,

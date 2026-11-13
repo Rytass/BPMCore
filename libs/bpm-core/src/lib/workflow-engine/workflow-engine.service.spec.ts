@@ -2415,31 +2415,45 @@ describe('WorkflowEngineService', () => {
   });
 
   describe('field access: submit and resubmit', () => {
-    const submit = (
+    const createSubmitFixture = (
       formDataJson: string,
       options: {
         readonly endUserSubmission?: boolean;
         readonly formSchema?: FormDefinitionSchema;
         readonly workflow?: WorkflowDefinition;
       } = {},
-    ): Promise<ApprovalInstanceEntity> =>
-      createServiceFixture({
+    ): {
+      readonly fixture: ServiceFixture;
+      readonly submitted: Promise<ApprovalInstanceEntity>;
+    } => {
+      const fixture = createServiceFixture({
         currentVersionId: 'template-version-1',
         formSchema: options.formSchema ?? createFinanceTableFormSchema(),
         formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
         templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
         templateWorkflowDefinition:
           options.workflow ?? createFieldAccessWorkflow(),
-      }).service.submitApprovalInstance({
-        formDataJson,
-        initiatorMemberId: 'member-001',
-        initiatorMetadataSnapshotJson: null,
-        templateId: 'template-1',
-        title: 'Request',
-        ...(options.endUserSubmission === undefined
-          ? {}
-          : { endUserSubmission: options.endUserSubmission }),
       });
+
+      return {
+        fixture,
+        submitted: fixture.service.submitApprovalInstance({
+          formDataJson,
+          initiatorMemberId: 'member-001',
+          initiatorMetadataSnapshotJson: null,
+          templateId: 'template-1',
+          title: 'Request',
+          ...(options.endUserSubmission === undefined
+            ? {}
+            : { endUserSubmission: options.endUserSubmission }),
+        }),
+      };
+    };
+    const submit = (
+      formDataJson: string,
+      options: Parameters<typeof createSubmitFixture>[1] = {},
+    ): Promise<ApprovalInstanceEntity> =>
+      createSubmitFixture(formDataJson, options).submitted;
 
     const resubmit = async (
       formDataJson: string,
@@ -2705,6 +2719,138 @@ describe('WorkflowEngineService', () => {
 
       expect(submitted.formData).toEqual(expected);
       expect(fixture.savedInstance?.formData).toEqual(expected);
+    });
+
+    // Column mode (ADR 27 §4(a)): the approver owns `seq` only; the applicant
+    // keeps the table's rows and the locked `taxAmount` column.
+    describe('column-mode table (approver owns seq only)', () => {
+      const columnWorkflow = (): WorkflowDefinition =>
+        createFieldAccessWorkflow({
+          financeFieldAccess: [
+            {
+              display: 'SHOW',
+              fieldKey: 'financeItems',
+              fill: 'NONE',
+              columns: [{ columnKey: 'seq', fill: 'OPTIONAL' }],
+            },
+            { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
+          ],
+        });
+      // `seq` is required by the form, but the approver fills it after the
+      // applicant, so the applicant's submission must not be held to it.
+      const requiredSeqSchema = (): FormDefinitionSchema => {
+        const base = createFinanceTableFormSchema();
+
+        return {
+          ...base,
+          fields: base.fields.map((field) =>
+            field.fieldKey === 'financeItems' && field.type === 'table'
+              ? {
+                  ...field,
+                  columns: field.columns.map((column) =>
+                    column.fieldKey === 'seq'
+                      ? { ...column, required: true }
+                      : column,
+                  ),
+                }
+              : field,
+          ),
+        };
+      };
+
+      it('drops a smuggled approver cell from an end-user submission', async (): Promise<void> => {
+        const instance = await submit(
+          '{"amount":10,"financeItems":[{"seq":7,"taxAmount":5}]}',
+          {
+            endUserSubmission: true,
+            formSchema: requiredSeqSchema(),
+            workflow: columnWorkflow(),
+          },
+        );
+
+        expect(instance.formData).toEqual({
+          amount: 10,
+          financeItems: [{ taxAmount: 5 }],
+        });
+      });
+
+      it('accepts a missing required approver column on an end-user submission', async (): Promise<void> => {
+        await expect(
+          submit('{"amount":10,"financeItems":[{"taxAmount":5}]}', {
+            endUserSubmission: true,
+            formSchema: requiredSeqSchema(),
+            workflow: columnWorkflow(),
+          }),
+        ).resolves.toMatchObject({ id: 'instance-1' });
+      });
+
+      it('still requires the applicant-owned column on an end-user submission', async (): Promise<void> => {
+        const { fixture, submitted } = createSubmitFixture(
+          '{"amount":10,"financeItems":[{"seq":1}]}',
+          {
+            endUserSubmission: true,
+            formSchema: requiredSeqSchema(),
+            workflow: columnWorkflow(),
+          },
+        );
+
+        await expect(submitted).rejects.toThrow();
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('still applies the table minRows to an end-user submission', async (): Promise<void> => {
+        const { fixture, submitted } = createSubmitFixture(
+          '{"amount":10,"financeItems":[]}',
+          {
+            endUserSubmission: true,
+            formSchema: requiredSeqSchema(),
+            workflow: columnWorkflow(),
+          },
+        );
+
+        await expect(submitted).rejects.toThrow();
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('restores the stored approver cell over a changed one on an end-user resubmit', async (): Promise<void> => {
+        const { fixture } = await resubmit(
+          '{"amount":10,"financeItems":[{"seq":99,"taxAmount":5}]}',
+          {
+            endUserSubmission: true,
+            formSchema: requiredSeqSchema(),
+            processFormData: {
+              amount: 10,
+              financeItems: [{ seq: 1, taxAmount: 5 }],
+            },
+            workflow: columnWorkflow(),
+          },
+        );
+
+        expect(fixture.savedInstance?.formData).toEqual({
+          amount: 10,
+          financeItems: [{ seq: 1, taxAmount: 5 }],
+        });
+      });
+
+      it('does not carry a stored approver cell onto a row added after it', async (): Promise<void> => {
+        const { fixture } = await resubmit(
+          '{"amount":10,"financeItems":[{"seq":1,"taxAmount":5},{"seq":4,"taxAmount":6}]}',
+          {
+            endUserSubmission: true,
+            formSchema: requiredSeqSchema(),
+            processFormData: {
+              amount: 10,
+              financeItems: [{ seq: 1, taxAmount: 5 }],
+            },
+            workflow: columnWorkflow(),
+          },
+        );
+
+        expect(fixture.savedInstance?.formData).toEqual({
+          amount: 10,
+          financeItems: [{ seq: 1, taxAmount: 5 }, { taxAmount: 6 }],
+        });
+      });
     });
   });
 
