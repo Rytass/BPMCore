@@ -581,6 +581,7 @@ describe('WorkflowEngineService', () => {
       fixture: ServiceFixture,
       options: {
         readonly authContext?: BPMAuthContext;
+        readonly initiatorCustomFields?: Readonly<Record<string, unknown>>;
         readonly initiatorMetadataSnapshotJson?: string;
       } = {},
     ): Promise<ApprovalInstanceEntity> =>
@@ -589,6 +590,7 @@ describe('WorkflowEngineService', () => {
           // The GraphQL mutation always sends both of these.
           endUserSubmission: true,
           formDataJson: '{"amount":1000}',
+          initiatorCustomFields: options.initiatorCustomFields ?? null,
           initiatorMemberId: 'member-001',
           initiatorMetadataSnapshotJson:
             options.initiatorMetadataSnapshotJson ?? null,
@@ -725,6 +727,68 @@ describe('WorkflowEngineService', () => {
         memberId: 'member-001',
         roles: ['IT'],
       });
+    });
+
+    it('lays the host initiatorCustomFields over what the resolver returned (ADR 27 §5)', async (): Promise<void> => {
+      const { resolver, resolveCustomFields } = createResolver({
+        grade: 7,
+        station: 'TPE',
+      });
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: resolver,
+      });
+
+      await submit(fixture, {
+        initiatorCustomFields: { costCenter: 'CC-9', station: 'KHH' },
+      });
+
+      expect(resolveCustomFields).toHaveBeenCalledTimes(1);
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: { costCenter: 'CC-9', grade: 7, station: 'KHH' },
+        ...ENGINE_SNAPSHOT,
+      });
+    });
+
+    it('builds the default snapshot under the host initiatorCustomFields when no resolver is registered', async (): Promise<void> => {
+      const fixture = createFixture();
+
+      await submit(fixture, { initiatorCustomFields: { station: 'TPE' } });
+
+      expect(fixture.savedInstance?.initiatorMetadataSnapshot).toEqual({
+        customFields: { station: 'TPE' },
+        ...ENGINE_SNAPSHOT,
+      });
+    });
+
+    it('lets an initiator policy read the host initiatorCustomFields', async (): Promise<void> => {
+      const fixture = createFixture({
+        initiatorCustomFieldsResolver: createResolver({ station: 'KHH' })
+          .resolver,
+        templateInitiatorPolicyCel: STATION_POLICY,
+      });
+
+      await expect(
+        submit(fixture, { initiatorCustomFields: { station: 'TPE' } }),
+      ).resolves.toMatchObject({ id: 'instance-1' });
+    });
+
+    it('refuses initiatorCustomFields together with a whole snapshot, or when it is not an object', async (): Promise<void> => {
+      const fixture = createFixture();
+
+      await expect(
+        submit(fixture, {
+          initiatorCustomFields: { station: 'TPE' },
+          initiatorMetadataSnapshotJson: '{"customFields":{},"memberId":"m"}',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        submit(fixture, {
+          initiatorCustomFields: ['TPE'] as unknown as Readonly<
+            Record<string, unknown>
+          >,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(fixture.savedInstance).toBeNull();
     });
 
     it('lets an initiator policy read what the resolver returned', async (): Promise<void> => {

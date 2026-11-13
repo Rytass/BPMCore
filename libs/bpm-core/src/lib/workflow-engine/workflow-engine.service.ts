@@ -236,6 +236,15 @@ type SubmitApprovalInstanceCommand = SubmitApprovalInstanceInput & {
    * unset and may prefill them.
    */
   readonly endUserSubmission?: boolean;
+  /**
+   * Service layer only (ADR 27 §5): fields a host adds to the initiator's
+   * `customFields`. The engine still builds the default snapshot and calls the
+   * `customFields` resolver; these values are merged over what it returned, so
+   * a key given here wins. Cannot be combined with
+   * `initiatorMetadataSnapshotJson` (400). The GraphQL mutation always passes
+   * `null`.
+   */
+  readonly initiatorCustomFields?: Readonly<Record<string, unknown>> | null;
 };
 
 type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
@@ -902,6 +911,7 @@ export class WorkflowEngineService {
       );
     }
 
+    const hostCustomFields = readHostInitiatorCustomFields(input);
     const submittedFormData = parseJsonObject(
       input.formDataJson,
       'formDataJson',
@@ -960,15 +970,18 @@ export class WorkflowEngineService {
           input.initiatorMetadataSnapshotJson,
           'initiatorMetadataSnapshotJson',
         )
-      : await this.buildInitiatorMetadataSnapshot({
-          authContext: submitAuthContext,
-          memberId: input.initiatorMemberId,
-          submission: {
-            formData,
-            templateId: template.id,
-            templateVersionId: templateVersion.id,
-          },
-        });
+      : mergeHostInitiatorCustomFields(
+          await this.buildInitiatorMetadataSnapshot({
+            authContext: submitAuthContext,
+            memberId: input.initiatorMemberId,
+            submission: {
+              formData,
+              templateId: template.id,
+              templateVersionId: templateVersion.id,
+            },
+          }),
+          hostCustomFields,
+        );
 
     if (
       !this.conditionService.evaluateBoolean(
@@ -10109,6 +10122,57 @@ function readDefaultInitiatorMetadataSnapshot(
   return {
     customFields: {},
     memberId,
+  };
+}
+
+/**
+ * Reads the service-only `initiatorCustomFields` of a submission (ADR 27 §5):
+ * `null` when absent, otherwise a JSON copy. Refused with 400 when it is not a
+ * plain object or comes together with a whole `initiatorMetadataSnapshotJson`,
+ * which would leave it unclear which one decides.
+ */
+function readHostInitiatorCustomFields(
+  input: SubmitApprovalInstanceCommand,
+): Readonly<Record<string, unknown>> | null {
+  const fields = input.initiatorCustomFields;
+
+  if (fields === undefined || fields === null) {
+    return null;
+  }
+
+  if (input.initiatorMetadataSnapshotJson) {
+    throw new BadRequestException(
+      'initiatorCustomFields cannot be combined with initiatorMetadataSnapshotJson',
+    );
+  }
+
+  if (typeof fields !== 'object' || Array.isArray(fields)) {
+    throw new BadRequestException('initiatorCustomFields must be an object');
+  }
+
+  return cloneJsonObject(fields);
+}
+
+/**
+ * Lays the host's `initiatorCustomFields` over the `customFields` of a built
+ * snapshot; a key the host gave wins over the resolver's.
+ */
+function mergeHostInitiatorCustomFields(
+  snapshot: Readonly<Record<string, unknown>>,
+  hostCustomFields: Readonly<Record<string, unknown>> | null,
+): Readonly<Record<string, unknown>> {
+  if (hostCustomFields === null) {
+    return snapshot;
+  }
+
+  const current = snapshot['customFields'];
+
+  return {
+    ...snapshot,
+    customFields: {
+      ...(isRecord(current) ? current : {}),
+      ...hostCustomFields,
+    },
   };
 }
 
