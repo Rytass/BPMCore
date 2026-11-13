@@ -1,3 +1,4 @@
+import { LessThan } from 'typeorm';
 import type { EntityManager, Repository } from 'typeorm';
 import { ApprovalInstanceEventEntity } from './approval-instance-event.entity';
 import { InstanceEventDeliveryService } from './instance-event.delivery.service';
@@ -39,6 +40,7 @@ function createRow(
 interface FakeHarness {
   readonly query: jest.Mock;
   readonly update: jest.Mock;
+  readonly remove: jest.Mock;
   readonly find: jest.Mock;
   readonly service: InstanceEventDeliveryService;
 }
@@ -71,7 +73,11 @@ function createHarness(options: {
   const update = jest.fn((): Promise<{ readonly affected: number }> =>
     Promise.resolve({ affected: options.updateAffected ?? 1 }),
   );
+  const remove = jest.fn((): Promise<{ readonly affected: number }> =>
+    Promise.resolve({ affected: 2 }),
+  );
   const repository = {
+    delete: remove,
     manager: {
       transaction: (
         callback: (entityManager: EntityManager) => Promise<unknown>,
@@ -91,6 +97,7 @@ function createHarness(options: {
   return {
     find,
     query,
+    remove,
     service: new InstanceEventDeliveryService(repository, events),
     update,
   };
@@ -220,6 +227,21 @@ describe('InstanceEventDeliveryService', (): void => {
 
     await expect(service.deliverDue(NOW)).resolves.toBe(1);
     expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('purges only DELIVERED rows older than retentionDays', async (): Promise<void> => {
+    const { remove, service } = createHarness({
+      observer: null,
+      delivery: { retentionDays: 30 },
+    });
+
+    const purged = await service.purgeDelivered(NOW);
+
+    expect(purged).toBe(2);
+    expect(remove).toHaveBeenCalledWith({
+      deliveredAt: LessThan(new Date('2026-10-15T00:00:00.000Z')),
+      status: 'DELIVERED',
+    });
   });
 
   it('caps the retry delay at maxRetryDelayMs and grows it per attempt', (): void => {

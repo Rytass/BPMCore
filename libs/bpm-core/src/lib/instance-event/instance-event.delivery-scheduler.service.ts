@@ -7,10 +7,13 @@ import {
 import { InstanceEventDeliveryService } from './instance-event.delivery.service';
 import { InstanceEventService } from './instance-event.service';
 
+/** Retention sweeps are cheap but not urgent; once an hour is plenty. */
+const PURGE_INTERVAL_MS = 3_600_000;
+
 /**
- * The fallback that retries failed attempts and releases rows the commit kick
- * missed (ADR 27 §1.3). `SKIP LOCKED` in the claim lets several API instances
- * run it at once.
+ * The fallback that retries failed attempts, releases rows the commit kick
+ * missed (ADR 27 §1.3), and sweeps delivered rows past retention. `SKIP LOCKED`
+ * in the claim lets several API instances run it at once.
  */
 @Injectable()
 export class InstanceEventDeliverySchedulerService
@@ -21,6 +24,7 @@ export class InstanceEventDeliverySchedulerService
   );
   private timer: NodeJS.Timeout | null = null;
   private scanning = false;
+  private lastPurgeAt = 0;
 
   constructor(
     private readonly deliveryService: InstanceEventDeliveryService,
@@ -60,6 +64,8 @@ export class InstanceEventDeliverySchedulerService
       if (count) {
         this.logger.log(`Attempted ${count} instance event deliveries`);
       }
+
+      await this.purgeIfDue(Date.now());
     } catch (error: unknown) {
       this.logger.error(
         error instanceof Error
@@ -68,6 +74,21 @@ export class InstanceEventDeliverySchedulerService
       );
     } finally {
       this.scanning = false;
+    }
+  }
+
+  private async purgeIfDue(now: number): Promise<void> {
+    if (now - this.lastPurgeAt < PURGE_INTERVAL_MS) {
+      return;
+    }
+
+    // Stamped before the call, so a failing sweep is not retried every scan.
+    this.lastPurgeAt = now;
+
+    const purged = await this.deliveryService.purgeDelivered(new Date(now));
+
+    if (purged) {
+      this.logger.log(`Purged ${purged} delivered instance events`);
     }
   }
 }

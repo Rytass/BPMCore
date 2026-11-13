@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, LessThan, Repository } from 'typeorm';
 import { readClaimedIds, withDispatchTimeout } from '../common/outbox';
 import { ApprovalInstanceEventEntity } from './approval-instance-event.entity';
 import type { BPMInstanceEventObserver } from './instance-event.token';
@@ -16,6 +16,7 @@ const MAX_CONCURRENT_DISPATCHES = 5;
 const MAX_ERROR_LENGTH = 500;
 /** A claim older than this is treated as abandoned and may be taken over. */
 const MIN_STALE_CLAIM_MS = 60_000;
+const DAY_MS = 86_400_000;
 
 interface DispatchOutcome {
   readonly kind: 'DELIVERED' | 'FAILED';
@@ -100,6 +101,22 @@ export class InstanceEventDeliveryService {
     );
 
     return rows.length;
+  }
+
+  /**
+   * Deletes `DELIVERED` rows older than `retentionDays`. `FAILED` rows are kept
+   * until an operator retries or removes them. Returns the number deleted.
+   */
+  async purgeDelivered(now: Date = new Date()): Promise<number> {
+    const cutoff = new Date(
+      now.getTime() - this.events.delivery.retentionDays * DAY_MS,
+    );
+    const result = await this.repository.delete({
+      deliveredAt: LessThan(cutoff),
+      status: 'DELIVERED',
+    });
+
+    return result.affected ?? 0;
   }
 
   /**

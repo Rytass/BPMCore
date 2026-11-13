@@ -4,18 +4,20 @@ import type { InstanceEventService } from './instance-event.service';
 
 function setup(enabled: boolean): {
   readonly deliverDue: jest.Mock;
+  readonly purgeDelivered: jest.Mock;
   readonly scheduler: InstanceEventDeliverySchedulerService;
 } {
   const deliverDue = jest.fn((): Promise<number> => Promise.resolve(0));
+  const purgeDelivered = jest.fn((): Promise<number> => Promise.resolve(0));
   const scheduler = new InstanceEventDeliverySchedulerService(
-    { deliverDue } as unknown as InstanceEventDeliveryService,
+    { deliverDue, purgeDelivered } as unknown as InstanceEventDeliveryService,
     {
       delivery: { scanIntervalMs: 1_000 },
       enabled,
     } as unknown as InstanceEventService,
   );
 
-  return { deliverDue, scheduler };
+  return { deliverDue, purgeDelivered, scheduler };
 }
 
 describe('InstanceEventDeliverySchedulerService', (): void => {
@@ -87,6 +89,20 @@ describe('InstanceEventDeliverySchedulerService', (): void => {
     await scheduler.scan();
 
     expect(deliverDue).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs the retention sweep at most once per hour', async (): Promise<void> => {
+    const { purgeDelivered, scheduler } = setup(true);
+
+    await scheduler.scan();
+    await scheduler.scan();
+
+    expect(purgeDelivered).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(3_600_000);
+    await scheduler.scan();
+
+    expect(purgeDelivered).toHaveBeenCalledTimes(2);
   });
 
   it('swallows a failed scan and clears the guard for the next one', async (): Promise<void> => {
