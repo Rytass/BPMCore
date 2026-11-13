@@ -72,6 +72,10 @@ import {
   BPMFormDataSourceException,
   BPMFormDataSourceValueResolver,
 } from '../form-data-source';
+import { ApprovalInstanceEventEntity } from '../instance-event/approval-instance-event.entity';
+import { InstanceEventService } from '../instance-event/instance-event.service';
+import type { BPMInstanceEventObserver } from '../instance-event/instance-event.token';
+import { InstanceEventWriter } from '../instance-event/instance-event.writer';
 import { NotificationEntity } from '../notification/notification.entity';
 import {
   NotificationResolutionEnum,
@@ -22763,6 +22767,8 @@ interface ServiceFixture {
   // Outbox rows a real `WorkflowWebhookDeliveryService` wrote through the
   // transaction manager, in save order.
   readonly savedWebhookDeliveries: readonly Readonly<Record<string, unknown>>[];
+  // Instance event rows the engine saved through the transaction manager.
+  readonly savedInstanceEvents: readonly Readonly<Record<string, unknown>>[];
   readonly savedToken: WorkflowTokenEntity | null;
   readonly service: WorkflowEngineService;
   readonly templateFind: jest.Mock<
@@ -22875,7 +22881,10 @@ function createServiceFixture({
   formSchema,
   formVersionStatus,
   initiatorCustomFieldsResolver,
+  instanceEventObserver,
   instanceSaveError,
+  seedProcessToken,
+  transactionalInstanceMissing,
   instanceState,
   latestReturnActivity,
   processActivityLogs = [],
@@ -22923,6 +22932,8 @@ function createServiceFixture({
   readonly initiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver;
   // Makes the instance insert fail, the way the database would on a clash.
   readonly instanceSaveError?: Error;
+  // Makes the transactional instance read find no row, as if it were gone.
+  readonly transactionalInstanceMissing?: boolean;
   readonly instanceState?: ApprovalInstanceStateEnum;
   readonly latestReturnActivity?: ActivityLogEntity | null;
   readonly processActivityLogs?: readonly ActivityLogEntity[];
@@ -22961,19 +22972,25 @@ function createServiceFixture({
   readonly templateWorkflowDefinition?: WorkflowDefinition;
   readonly transactionalInstanceUpdatedAt?: Date;
   readonly formDataSourceValueResolver?: BPMFormDataSourceValueResolver;
+  // Presence of an observer turns the instance event writer on.
+  readonly instanceEventObserver?: BPMInstanceEventObserver;
+  // Off for submit tests: the submit saves its own start token, and a seeded
+  // one would be processed a second time, doubling every task it creates.
+  readonly seedProcessToken?: boolean;
 }): ServiceFixture {
   let savedToken: WorkflowTokenEntity | null = null;
   let tokenSequence = 1;
   let taskSequence = 1;
-  let processTokens: readonly WorkflowTokenEntity[] = processWorkflowSnapshot
-    ? [
-        decisionToken ??
-          createWorkflowToken({
-            currentNodeId: 'start',
-            status: WorkflowTokenStatusEnum.ACTIVE,
-          }),
-      ]
-    : [];
+  let processTokens: readonly WorkflowTokenEntity[] =
+    processWorkflowSnapshot && seedProcessToken !== false
+      ? [
+          decisionToken ??
+            createWorkflowToken({
+              currentNodeId: 'start',
+              status: WorkflowTokenStatusEnum.ACTIVE,
+            }),
+        ]
+      : [];
   let processTasks: readonly TaskEntity[] = [
     ...(decisionTask ? [decisionTask] : []),
     ...additionalProcessTasks,
@@ -23341,24 +23358,26 @@ function createServiceFixture({
           Object.assign(createApprovalInstance(), entity),
       ),
       findOne: jest.fn(() =>
-        Promise.resolve(
-          // A row read back from the database is an entity whatever shape the
-          // caller last handed to `save`, so it is rehydrated here. Only
-          // `save` reports the shape it was actually given.
-          savedInstance
-            ? Object.assign(createApprovalInstance(), savedInstance)
-            : createApprovalInstance({
-                businessKey: processBusinessKey,
-                formData: processFormData,
-                formDataOptionSnapshot: processOptionSnapshot,
-                formDefinitionSnapshot: processFormDefinitionSnapshot,
-                initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
-                state: instanceState,
-                submittedByMemberId,
-                updatedAt: transactionalInstanceUpdatedAt,
-                workflowSnapshot: processWorkflowSnapshot,
-              }),
-        ),
+        transactionalInstanceMissing
+          ? Promise.resolve(null)
+          : Promise.resolve(
+              // A row read back from the database is an entity whatever shape the
+              // caller last handed to `save`, so it is rehydrated here. Only
+              // `save` reports the shape it was actually given.
+              savedInstance
+                ? Object.assign(createApprovalInstance(), savedInstance)
+                : createApprovalInstance({
+                    businessKey: processBusinessKey,
+                    formData: processFormData,
+                    formDataOptionSnapshot: processOptionSnapshot,
+                    formDefinitionSnapshot: processFormDefinitionSnapshot,
+                    initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
+                    state: instanceState,
+                    submittedByMemberId,
+                    updatedAt: transactionalInstanceUpdatedAt,
+                    workflowSnapshot: processWorkflowSnapshot,
+                  }),
+            ),
       ),
       save: jest.fn((entity: ApprovalInstanceEntity) => {
         if (instanceSaveError) {
@@ -23809,6 +23828,29 @@ function createServiceFixture({
     () => Promise.resolve([]),
   );
   let savedWebhookDeliveries: readonly Readonly<Record<string, unknown>>[] = [];
+  let savedInstanceEvents: readonly Readonly<Record<string, unknown>>[] = [];
+  // The writer saves one row per call, so this repository is single-row.
+  const transactionalInstanceEventRepository = createRepository<ObjectLiteral>({
+    create: jest.fn(
+      (
+        value: Readonly<Record<string, unknown>>,
+      ): Readonly<Record<string, unknown>> => ({ ...value }),
+    ),
+    save: jest.fn(
+      (
+        row: Readonly<Record<string, unknown>>,
+      ): Promise<Readonly<Record<string, unknown>>> => {
+        const saved = {
+          ...row,
+          id: `instance-event-${savedInstanceEvents.length + 1}`,
+        };
+
+        savedInstanceEvents = [...savedInstanceEvents, saved];
+
+        return Promise.resolve(saved);
+      },
+    ),
+  });
   const transactionalWebhookDeliveryRepository =
     createRepository<ObjectLiteral>({
       create: jest.fn(
@@ -23883,6 +23925,10 @@ function createServiceFixture({
 
       if (target === WorkflowWebhookDeliveryEntity) {
         return transactionalWebhookDeliveryRepository;
+      }
+
+      if (target === ApprovalInstanceEventEntity) {
+        return transactionalInstanceEventRepository;
       }
 
       // The write checks read the current form schema inside the transaction,
@@ -23960,6 +24006,9 @@ function createServiceFixture({
     get savedWebhookDeliveries(): readonly Readonly<Record<string, unknown>>[] {
       return savedWebhookDeliveries;
     },
+    get savedInstanceEvents(): readonly Readonly<Record<string, unknown>>[] {
+      return savedInstanceEvents;
+    },
     get savedDecision(): TaskDecisionEntity | null {
       return savedDecision;
     },
@@ -24015,6 +24064,10 @@ function createServiceFixture({
       rootOptions,
       webhookDeliveryService,
       initiatorCustomFieldsResolver,
+      undefined,
+      new InstanceEventWriter(
+        new InstanceEventService(instanceEventObserver, undefined),
+      ),
     ),
     notificationService,
   };
@@ -25897,6 +25950,40 @@ function answerTaskQueriesFromSavedTasks(fixture: ServiceFixture): void {
   });
 }
 
+const recordTransactionOutcomes = (
+  fixture: ServiceFixture,
+): readonly string[] => {
+  const { transaction } = (
+    fixture.service as unknown as {
+      readonly approvalInstanceRepository: {
+        readonly manager: { readonly transaction: jest.Mock };
+      };
+    }
+  ).approvalInstanceRepository.manager;
+  const runTransaction = transaction.getMockImplementation() as (
+    work: unknown,
+  ) => Promise<unknown>;
+  const outcomes: string[] = [];
+
+  transaction.mockImplementation(
+    async (work: unknown): Promise<unknown> => {
+      try {
+        const result = await runTransaction(work);
+
+        outcomes.push('commit');
+
+        return result;
+      } catch (error: unknown) {
+        outcomes.push('rollback');
+
+        throw error;
+      }
+    },
+  );
+
+  return outcomes;
+};
+
 describe('instance guard (ADR 27 §2)', (): void => {
   const AMOUNT_ISSUE: BPMInstanceGuardIssue = {
     code: 'AMOUNT_OVER_LIMIT',
@@ -25936,40 +26023,6 @@ describe('instance guard (ADR 27 §2)', (): void => {
       (): unknown => undefined,
       (rejection: unknown): unknown => rejection,
     );
-
-  const recordTransactionOutcomes = (
-    fixture: ServiceFixture,
-  ): readonly string[] => {
-    const { transaction } = (
-      fixture.service as unknown as {
-        readonly approvalInstanceRepository: {
-          readonly manager: { readonly transaction: jest.Mock };
-        };
-      }
-    ).approvalInstanceRepository.manager;
-    const runTransaction = transaction.getMockImplementation() as (
-      work: unknown,
-    ) => Promise<unknown>;
-    const outcomes: string[] = [];
-
-    transaction.mockImplementation(
-      async (work: unknown): Promise<unknown> => {
-        try {
-          const result = await runTransaction(work);
-
-          outcomes.push('commit');
-
-          return result;
-        } catch (error: unknown) {
-          outcomes.push('rollback');
-
-          throw error;
-        }
-      },
-    );
-
-    return outcomes;
-  };
 
   const createSubmitFixture = (
     rootOptions?: BPMRootRuntimeOptions,
@@ -26170,5 +26223,328 @@ describe('instance guard (ADR 27 §2)', (): void => {
 
     expect(outcomes).toEqual(['commit']);
     expect(fixture.savedDecision).not.toBeNull();
+  });
+});
+
+describe('instance event recording (ADR 27 P4)', (): void => {
+  type FixtureOptions = NonNullable<Parameters<typeof createServiceFixture>[0]>;
+
+  const createObserver = (): BPMInstanceEventObserver => ({
+    onInstanceEvent: jest.fn(),
+  });
+
+  const snapshot = (
+    instanceState: ApprovalInstanceStateEnum,
+  ): Readonly<Record<string, unknown>> => ({
+    instanceState,
+    templateId: 'template-1',
+    templateKey: null,
+    templateVersionId: 'template-version-1',
+  });
+
+  const readTypes = (fixture: ServiceFixture): readonly unknown[] =>
+    fixture.savedInstanceEvents.map(
+      (event: Readonly<Record<string, unknown>>): unknown => event.type,
+    );
+
+  const readPayloads = (fixture: ServiceFixture): readonly unknown[] =>
+    fixture.savedInstanceEvents.map(
+      (event: Readonly<Record<string, unknown>>): unknown => event.payload,
+    );
+
+  const createLinearFixture = (
+    overrides: Partial<FixtureOptions> = {},
+  ): ServiceFixture =>
+    createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceEventObserver: createObserver(),
+      processFormData: { amount: 1200 },
+      processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      ...overrides,
+    });
+
+  const createDecisionFixture = (
+    overrides: Partial<FixtureOptions> = {},
+  ): ServiceFixture =>
+    createLinearFixture({
+      decisionTask: createTask({
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      ...overrides,
+    });
+
+  const submitRequest = (
+    fixture: ServiceFixture,
+  ): Promise<ApprovalInstanceEntity> =>
+    fixture.service.submitApprovalInstance({
+      formDataJson: '{"amount":1000}',
+      initiatorMemberId: 'member-001',
+      initiatorMetadataSnapshotJson: null,
+      templateId: 'template-1',
+      title: 'Request',
+    });
+
+  it('writes INSTANCE_SUBMITTED before NODE_ACTIVATED on submit', async (): Promise<void> => {
+    const fixture = createLinearFixture({
+      seedProcessToken: false,
+      templateWorkflowDefinition: createLinearUserTaskWorkflow(),
+    });
+
+    await submitRequest(fixture);
+
+    expect(readTypes(fixture)).toEqual([
+      'INSTANCE_SUBMITTED',
+      'NODE_ACTIVATED',
+    ]);
+    expect(readPayloads(fixture)).toEqual([
+      { ...snapshot(ApprovalInstanceStateEnum.RUNNING), actorMemberId: 'member-001' },
+      {
+        ...snapshot(ApprovalInstanceStateEnum.RUNNING),
+        nodeId: 'task_finance',
+        taskIds: [expect.stringMatching(/^task-\d+$/u)],
+      },
+    ]);
+  });
+
+  it('writes INSTANCE_RESUBMITTED when a returned case is resubmitted', async (): Promise<void> => {
+    const fixture = createLinearFixture({
+      instanceState: ApprovalInstanceStateEnum.RETURNED,
+    });
+
+    await fixture.service.resubmitApprovalInstance({
+      formDataJson: '{"amount":1200}',
+      initiatorMemberId: 'member-001',
+      instanceId: 'instance-1',
+      title: null,
+    });
+
+    expect(readTypes(fixture)).toContain('INSTANCE_RESUBMITTED');
+    expect(readPayloads(fixture)[0]).toEqual({
+      ...snapshot(ApprovalInstanceStateEnum.RUNNING),
+      actorMemberId: 'member-001',
+    });
+  });
+
+  it('writes INSTANCE_APPROVED once when the last task is approved', async (): Promise<void> => {
+    const fixture = createDecisionFixture();
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    expect(fixture.savedInstance?.state).toBe(
+      ApprovalInstanceStateEnum.APPROVED,
+    );
+    expect(readTypes(fixture)).toEqual(['INSTANCE_APPROVED']);
+    expect(readPayloads(fixture)).toEqual([
+      snapshot(ApprovalInstanceStateEnum.APPROVED),
+    ]);
+  });
+
+  it('writes INSTANCE_REJECTED with the deciding member as actor', async (): Promise<void> => {
+    const fixture = createDecisionFixture();
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: 'Budget exceeded.',
+      decidedByMemberId: 'member-finance',
+      taskId: 'task-1',
+    });
+
+    expect(readTypes(fixture)).toEqual(['INSTANCE_REJECTED']);
+    expect(readPayloads(fixture)).toEqual([
+      {
+        ...snapshot(ApprovalInstanceStateEnum.REJECTED),
+        actorMemberId: 'member-finance',
+      },
+    ]);
+  });
+
+  it('writes INSTANCE_RETURNED from the returning node', async (): Promise<void> => {
+    const fixture = createDecisionFixture({
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },
+      }),
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.RETURNED,
+      comment: null,
+      decidedByMemberId: 'member-finance',
+      returnToNodeId: 'start',
+      taskId: 'task-1',
+    });
+
+    expect(readTypes(fixture)).toEqual(['INSTANCE_RETURNED']);
+    expect(readPayloads(fixture)).toEqual([
+      {
+        ...snapshot(ApprovalInstanceStateEnum.RETURNED),
+        actorMemberId: 'member-finance',
+        nodeId: 'task_finance',
+      },
+    ]);
+  });
+
+  it('writes INSTANCE_CANCELLED with the initiator as actor', async (): Promise<void> => {
+    const fixture = createLinearFixture();
+
+    await fixture.service.cancelApprovalInstance({
+      cancelledByMemberId: 'member-001',
+      comment: null,
+      instanceId: 'instance-1',
+    });
+
+    expect(readTypes(fixture)).toEqual(['INSTANCE_CANCELLED']);
+    expect(readPayloads(fixture)).toEqual([
+      {
+        ...snapshot(ApprovalInstanceStateEnum.CANCELLED),
+        actorMemberId: 'member-001',
+      },
+    ]);
+  });
+
+  it('writes INSTANCE_EXPIRED with no actor', async (): Promise<void> => {
+    const fixture = createLinearFixture();
+
+    await fixture.service.expireApprovalInstance({
+      comment: 'SLA timeout terminated this instance.',
+      instanceId: 'instance-1',
+      nodeId: 'task_finance',
+      taskId: 'task-1',
+    });
+
+    expect(readTypes(fixture)).toEqual(['INSTANCE_EXPIRED']);
+    expect(readPayloads(fixture)).toEqual([
+      snapshot(ApprovalInstanceStateEnum.EXPIRED),
+    ]);
+  });
+
+  it('writes TASK_AUTO_DECISION_FAILED in the caller transaction', async (): Promise<void> => {
+    const fixture = createLinearFixture();
+    const outcomes = recordTransactionOutcomes(fixture);
+
+    await fixture.service.recordTaskAutoDecisionFailed({
+      instanceId: 'instance-1',
+      reason: 'HOST_RULE',
+      taskId: 'task-1',
+    });
+
+    expect(outcomes).toEqual(['commit']);
+    expect(readTypes(fixture)).toEqual(['TASK_AUTO_DECISION_FAILED']);
+    expect(readPayloads(fixture)).toEqual([
+      {
+        ...snapshot(ApprovalInstanceStateEnum.RUNNING),
+        reason: 'HOST_RULE',
+        taskId: 'task-1',
+      },
+    ]);
+  });
+
+  it('opens no transaction for TASK_AUTO_DECISION_FAILED without an observer', async (): Promise<void> => {
+    const fixture = createLinearFixture({ instanceEventObserver: undefined });
+    const outcomes = recordTransactionOutcomes(fixture);
+
+    await fixture.service.recordTaskAutoDecisionFailed({
+      instanceId: 'instance-1',
+      reason: 'HOST_RULE',
+      taskId: 'task-1',
+    });
+
+    expect(outcomes).toEqual([]);
+    expect(fixture.savedInstanceEvents).toEqual([]);
+  });
+
+  it('skips TASK_AUTO_DECISION_FAILED without throwing when the instance is gone', async (): Promise<void> => {
+    const fixture = createLinearFixture({ transactionalInstanceMissing: true });
+
+    await expect(
+      fixture.service.recordTaskAutoDecisionFailed({
+        instanceId: 'instance-1',
+        reason: 'HOST_RULE',
+        taskId: 'task-1',
+      }),
+    ).resolves.toBeUndefined();
+    expect(fixture.savedInstanceEvents).toEqual([]);
+  });
+
+  it('records no event and runs no extra template query without an observer', async (): Promise<void> => {
+    const observed = createLinearFixture({
+      seedProcessToken: false,
+      templateWorkflowDefinition: createLinearUserTaskWorkflow(),
+    });
+    const plain = createLinearFixture({
+      instanceEventObserver: undefined,
+      seedProcessToken: false,
+      templateWorkflowDefinition: createLinearUserTaskWorkflow(),
+    });
+
+    await submitRequest(observed);
+    await submitRequest(plain);
+
+    expect(plain.savedInstanceEvents).toEqual([]);
+    expect(observed.savedInstanceEvents).toHaveLength(2);
+    expect(observed.templateFindOne.mock.calls.length).toBe(
+      plain.templateFindOne.mock.calls.length +
+        observed.savedInstanceEvents.length,
+    );
+  });
+
+  it('records the REJECTED actor as the candidate who decided, not the assignee', async (): Promise<void> => {
+    const fixture = createDecisionFixture({
+      processTaskCandidates: [
+        createTaskCandidate({ memberId: 'member-candidate', taskId: 'task-1' }),
+      ],
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.REJECTED,
+      comment: 'Budget exceeded.',
+      decidedByMemberId: 'member-candidate',
+      taskId: 'task-1',
+    });
+
+    expect(readPayloads(fixture)).toEqual([
+      {
+        ...snapshot(ApprovalInstanceStateEnum.REJECTED),
+        actorMemberId: 'member-candidate',
+      },
+    ]);
+  });
+
+  it('records the RETURNED actor as the candidate who decided, not the assignee', async (): Promise<void> => {
+    const fixture = createDecisionFixture({
+      processTaskCandidates: [
+        createTaskCandidate({ memberId: 'member-candidate', taskId: 'task-1' }),
+      ],
+      processWorkflowSnapshot: createLinearUserTaskWorkflow({
+        returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },
+      }),
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.RETURNED,
+      comment: null,
+      decidedByMemberId: 'member-candidate',
+      returnToNodeId: 'start',
+      taskId: 'task-1',
+    });
+
+    expect(readPayloads(fixture)).toEqual([
+      {
+        ...snapshot(ApprovalInstanceStateEnum.RETURNED),
+        actorMemberId: 'member-candidate',
+        nodeId: 'task_finance',
+      },
+    ]);
   });
 });
