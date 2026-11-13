@@ -585,7 +585,7 @@ BPMRootModule.forRoot({
   型別與 payload 見 `docs/10-bpm-embedding-auth.md` 的「案件事件與決策前檢查」。
 - **決策前檢查**：`SUBMIT`、`RESUBMIT`、`DECIDE` 寫入前呼叫。回傳非空陣列即擋下，回 400，`formDataErrors` 形狀同表單驗證；
   逾時回 503 `BPM_INSTANCE_GUARD_TIMEOUT`（fail closed），其他錯誤回 503 `BPM_INSTANCE_GUARD_FAILED`。
-- **SLA 自動核准**被擋下時，待辦保持開啟，寫入 `TASK_AUTO_DECISION_FAILED`。每次 SLA 掃描都會再寫一筆，直到通過或待辦被決策。
+- **SLA 自動核准**被擋下時，待辦保持開啟，寫入 `TASK_AUTO_DECISION_FAILED`。逾時動作只執行一次，之後的掃描不重試、不再寫事件。
 
 ### 4. 跑 migrations（**必要，且只在 deploy 時跑一次**）
 

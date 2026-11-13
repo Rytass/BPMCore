@@ -286,8 +286,8 @@ SLA 逾時的自動核准若被 guard 擋下，系統會：
 3. 記一筆 warning，繼續掃描其他待辦。
 4. 非 guard 造成的錯誤照常拋出。
 
-限制：待辦被決策前，每次 SLA 掃描都會再寫一筆 `TASK_AUTO_DECISION_FAILED`。若不想要大量重複事件，
-請在 observer 端去重，或調整 guard 的判斷條件。
+SLA 逾時動作只在逾期通知第一次建立時執行一次，之後的掃描不會重試自動核准，也不會再寫事件。
+待辦會一直開啟到有人決策；host 收到這個事件後，應自行通知負責人或決定後續處理。
 
 ## Attachment Storage Contract
 
