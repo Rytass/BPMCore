@@ -93,6 +93,8 @@ export interface BPMRoutes {
   adminDelegations(): string;
   /** Admin: database-managed notify webhook endpoints (ADR 18). */
   adminWebhookEndpoints(): string;
+  /** Admin: approval instances stuck after a failed advance, with cancel. */
+  adminStuckInstances(): string;
 }
 
 /**
@@ -128,6 +130,7 @@ export function createDefaultBPMRoutes(): BPMRoutes {
     adminUsers: () => '/admin/users',
     adminDelegations: () => '/admin/delegations',
     adminWebhookEndpoints: () => '/admin/webhook-endpoints',
+    adminStuckInstances: () => '/admin/stuck-instances',
   };
 }
 

@@ -29,6 +29,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { FormService } from '../form/form.service';
@@ -101,6 +102,7 @@ import {
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { DecideTaskInput } from './dto/decide-task.input';
 import { computeFormDataFingerprint } from './form-data-fingerprint';
+import { InstanceAdvanceFailure } from './instance-advance-failure';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskEntity } from './task.entity';
@@ -111,6 +113,7 @@ import {
   ApprovalInstanceListViewEnum,
   ApprovalInstanceStateEnum,
   MemberTaskRoleEnum,
+  StuckApprovalInstanceKindEnum,
   TaskAssignmentTypeEnum,
   TaskCandidateStatusEnum,
   TaskDecisionActionEnum,
@@ -121,6 +124,7 @@ import {
 } from './workflow-engine.enums';
 import {
   ADMIN_REASSIGN_DELEGATION_REASON,
+  StuckApprovalInstanceRecord,
   TaskReassignmentResult,
   WorkflowEngineService,
 } from './workflow-engine.service';
@@ -18582,6 +18586,298 @@ describe('WorkflowEngineService', () => {
     expect(cancelled.formDataJson).toBe(JSON.stringify({ amount: 1200 }));
   });
 
+  describe('an administrator cancelling an instance', (): void => {
+    const REASON = '申請人已離職';
+
+    // The default instance is 費用申請, filed by member-001, with task-1 open
+    // on task_finance.
+    const createCancelFixture = (
+      options: { readonly instanceState?: ApprovalInstanceStateEnum } = {},
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: options.instanceState,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+        rollbackFailedTransactions: true,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    const readLogs = (
+      fixture: ServiceFixture,
+    ): readonly ActivityLogEntity[] => [
+      ...fixture.savedActivityLogs,
+      ...fixture.savedSingleActivityLogs,
+    ];
+
+    const readCancellationLogs = (
+      fixture: ServiceFixture,
+    ): readonly ActivityLogEntity[] =>
+      readLogs(fixture).filter(
+        (log): boolean =>
+          log.eventType === ActivityLogEventTypeEnum.INSTANCE_CANCELLED,
+      );
+
+    const adminCancel = (
+      fixture: ServiceFixture,
+      overrides: {
+        readonly cancelledByMemberId?: string;
+        readonly instanceId?: string;
+        readonly reason?: string;
+      } = {},
+    ): Promise<ApprovalInstanceEntity> =>
+      fixture.service.adminCancelApprovalInstance({
+        cancelledByMemberId: 'admin-001',
+        instanceId: 'instance-1',
+        reason: REASON,
+        ...overrides,
+      });
+
+    it.each([
+      ApprovalInstanceStateEnum.RUNNING,
+      ApprovalInstanceStateEnum.RETURNED,
+    ])(
+      'cancels a %s instance that someone else filed',
+      async (instanceState: ApprovalInstanceStateEnum): Promise<void> => {
+        const fixture = createCancelFixture({ instanceState });
+
+        const cancelled = await adminCancel(fixture);
+
+        expect(cancelled.state).toBe(ApprovalInstanceStateEnum.CANCELLED);
+        // The mutation returns this entity, whose getters GraphQL resolves.
+        expect(cancelled).toBeInstanceOf(ApprovalInstanceEntity);
+      },
+    );
+
+    it.each([
+      ApprovalInstanceStateEnum.APPROVED,
+      ApprovalInstanceStateEnum.CANCELLED,
+    ])(
+      'refuses an instance that is already %s, with no record and no notice',
+      async (instanceState: ApprovalInstanceStateEnum): Promise<void> => {
+        const fixture = createCancelFixture({ instanceState });
+
+        await expect(adminCancel(fixture)).rejects.toThrow(
+          'is not cancellable',
+        );
+
+        expect(readLogs(fixture)).toEqual([]);
+        expect(
+          fixture.notificationService.createAdhocWorkflowNotifications,
+        ).not.toHaveBeenCalled();
+      },
+    );
+
+    it('refuses a reason that is only whitespace, before reading anything', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      // The instance does not exist either: the reason is judged first, so
+      // the caller is told what to fix rather than that the id is wrong.
+      const rejection = await adminCancel(fixture, {
+        instanceId: 'instance-missing',
+        reason: ' \n\t ',
+      }).then(
+        (): unknown => undefined,
+        (error: unknown): unknown => error,
+      );
+
+      expect(rejection).toBeInstanceOf(BadRequestException);
+      expect(rejection).not.toBeInstanceOf(NotFoundException);
+      expect(fixture.transaction).not.toHaveBeenCalled();
+    });
+
+    it('records the cancellation as the administrator, with the trimmed reason and a flag', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await adminCancel(fixture, { reason: `  ${REASON}\n` });
+
+      expect(readCancellationLogs(fixture)).toEqual([
+        expect.objectContaining({
+          actorMemberId: 'admin-001',
+          instanceId: 'instance-1',
+          payload: { cancelledByAdministrator: true, comment: REASON },
+        }),
+      ]);
+    });
+
+    it('ends the open task and clears its pending notices', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await adminCancel(fixture);
+
+      expect(readLatestTask(fixture, 'task-1')?.status).toBe(
+        TaskStatusEnum.CANCELLED,
+      );
+      expect(
+        fixture.notificationService.supersedeInstanceTaskNotifications,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ instanceId: 'instance-1' }),
+      );
+    });
+
+    it('tells the initiator, once, in the app, with the reason', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await adminCancel(fixture, { reason: `  ${REASON}  ` });
+
+      const notify =
+        fixture.notificationService.createAdhocWorkflowNotifications;
+
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // `null` is the in-app channel only.
+          channels: null,
+          message: `案件「費用申請」已由管理員撤銷：${REASON}`,
+          payload: {
+            nodeLabel: '管理員撤銷',
+            reason: REASON,
+            type: 'INSTANCE_CANCELLED_BY_ADMINISTRATOR',
+          },
+          recipientMemberIds: ['member-001'],
+        }),
+      );
+      // The notification template renders its title from `nodeLabel`; without
+      // it the title would be an empty string. This fixture mocks the
+      // notification service, so this only checks the payload carries a
+      // non-empty `nodeLabel`; the rendered title is pinned in
+      // notification.service.spec.ts, against the real service.
+      const call = (
+        notify as unknown as jest.Mock<
+          Promise<unknown>,
+          [{ readonly payload: { readonly nodeLabel?: string } }]
+        >
+      ).mock.calls[0]?.[0];
+
+      expect(call?.payload.nodeLabel?.trim()).toBeTruthy();
+    });
+
+    it('tells the initiator only after the cancellation has committed, outside its transaction', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+      const runTransaction = fixture.transaction.getMockImplementation();
+
+      if (!runTransaction) {
+        throw new Error('The fixture transaction has no implementation.');
+      }
+
+      let committed = false;
+      let committedWhenNotified: boolean | undefined;
+      let logsWhenNotified: readonly ActivityLogEntity[] = [];
+
+      fixture.transaction.mockImplementationOnce(
+        async (...args: unknown[]): Promise<unknown> => {
+          const result: unknown = await (
+            runTransaction as (...inner: unknown[]) => Promise<unknown>
+          )(...args);
+
+          committed = true;
+
+          return result;
+        },
+      );
+      (
+        fixture.notificationService
+          .createAdhocWorkflowNotifications as unknown as jest.Mock
+      ).mockImplementationOnce((): Promise<readonly unknown[]> => {
+        committedWhenNotified = committed;
+        logsWhenNotified = readCancellationLogs(fixture);
+
+        return Promise.resolve([]);
+      });
+
+      await adminCancel(fixture);
+
+      expect(committedWhenNotified).toBe(true);
+      expect(logsWhenNotified).toHaveLength(1);
+      // No manager: the rows are written on their own, as committed ones.
+      expect(
+        fixture.notificationService.createAdhocWorkflowNotifications,
+      ).toHaveBeenCalledWith(expect.not.objectContaining({ manager: expect.anything() }));
+    });
+
+    it('keeps the cancellation when the notice cannot be written, and logs it', async (): Promise<void> => {
+      const error = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockReturnValue(undefined);
+      const fixture = createCancelFixture();
+
+      (
+        fixture.notificationService
+          .createAdhocWorkflowNotifications as unknown as jest.Mock
+      ).mockRejectedValueOnce(new Error('notifications is unavailable'));
+
+      const cancelled = await adminCancel(fixture);
+
+      expect(cancelled.state).toBe(ApprovalInstanceStateEnum.CANCELLED);
+      expect(readCancellationLogs(fixture)).toHaveLength(1);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('could not be notified'),
+      );
+    });
+
+    it('does not tell an administrator who cancels their own instance', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await adminCancel(fixture, { cancelledByMemberId: 'member-001' });
+
+      expect(readCancellationLogs(fixture)).toEqual([
+        expect.objectContaining({
+          actorMemberId: 'member-001',
+          payload: { cancelledByAdministrator: true, comment: REASON },
+        }),
+      ]);
+      expect(
+        fixture.notificationService.createAdhocWorkflowNotifications,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('does not tell the initiator when the initiator withdraws the instance', async (): Promise<void> => {
+      const fixture = createCancelFixture();
+
+      await fixture.service.cancelApprovalInstance({
+        cancelledByMemberId: 'member-001',
+        comment: ' 不需要了 ',
+        instanceId: 'instance-1',
+      });
+
+      // The initiator path is unchanged: no flag, the comment as before.
+      expect(readCancellationLogs(fixture)).toEqual([
+        expect.objectContaining({
+          actorMemberId: 'member-001',
+          payload: { comment: '不需要了' },
+        }),
+      ]);
+      expect(
+        fixture.notificationService.createAdhocWorkflowNotifications,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('still tells a non-initiator they are not the initiator, even when the instance is already approved', async (): Promise<void> => {
+      const fixture = createCancelFixture({
+        instanceState: ApprovalInstanceStateEnum.APPROVED,
+      });
+
+      // The authorization check sits before the state check on this path, so
+      // the answer stays "initiator", not "not cancellable".
+      await expect(
+        fixture.service.cancelApprovalInstance({
+          cancelledByMemberId: 'member-other',
+          comment: null,
+          instanceId: 'instance-1',
+        }),
+      ).rejects.toThrow('can only be cancelled by its initiator');
+    });
+  });
+
   describe('expiring an instance on an SLA timeout', (): void => {
     const readLogs = (
       fixture: ServiceFixture,
@@ -20116,6 +20412,1130 @@ describe('WorkflowEngineService', () => {
         'member-a',
         'member-c',
       ]);
+    });
+  });
+
+  describe('recording why an instance could not move on (ADVANCE_FAILED)', (): void => {
+    const NO_NEXT_APPROVER = '簽核節點「下一關」 找不到簽核人';
+    const NO_RETURN_APPROVER = '簽核節點「財務簽核」 找不到簽核人';
+    const NOBODY: ApproverResolver = { memberIds: [], type: 'DIRECT' };
+
+    afterEach((): void => {
+      jest.restoreAllMocks();
+    });
+
+    // start -> task_finance -> task_next -> end. With `nextStageHasApprover`
+    // off, task_next has nobody to ask, so approving task_finance fails after
+    // the decision was written, and the whole transaction rolls back.
+    const createApprovalFixture = (
+      options: {
+        readonly additionalProcessInstances?: readonly ApprovalInstanceEntity[];
+        readonly additionalProcessTasks?: readonly TaskEntity[];
+        readonly instanceState?: ApprovalInstanceStateEnum;
+        readonly nextStageHasApprover?: boolean;
+        readonly processActivityLogs?: readonly ActivityLogEntity[];
+        readonly processTaskCandidates?: readonly TaskCandidateEntity[];
+        readonly task?: Partial<TaskEntity>;
+      } = {},
+    ): ServiceFixture => {
+      const workflow = appendNextUserTask(createLinearUserTaskWorkflow());
+
+      return createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+          ...options.task,
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_finance',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: options.instanceState,
+        additionalProcessInstances: options.additionalProcessInstances,
+        additionalProcessTasks: options.additionalProcessTasks,
+        processActivityLogs: options.processActivityLogs,
+        processTaskCandidates: options.processTaskCandidates,
+        processWorkflowSnapshot:
+          options.nextStageHasApprover === true
+            ? workflow
+            : withNodeData(workflow, 'task_next', {
+                approverResolver: NOBODY,
+              }),
+        rollbackFailedTransactions: true,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+    };
+
+    // start -> task_finance (nobody to ask) -> task_next -> end, with the
+    // decision on task_next, which may send the case back to task_finance.
+    const createReturnFixture = (): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          nodeId: 'task_next',
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+        decisionToken: createWorkflowToken({
+          currentNodeId: 'task_next',
+          status: WorkflowTokenStatusEnum.WAITING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: withNodeData(
+          appendNextUserTask(
+            createLinearUserTaskWorkflow({ approverResolver: NOBODY }),
+          ),
+          'task_next',
+          { returnBehavior: { allowReturn: true, allowedTargets: 'ANY' } },
+        ),
+        rollbackFailedTransactions: true,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    // A returned instance whose first stage has nobody to ask, so resubmitting
+    // fails in `processRunningInstance`.
+    const createResubmitFixture = (
+      processActivityLogs: readonly ActivityLogEntity[] = [],
+    ): ServiceFixture =>
+      createServiceFixture({
+        currentVersionId: 'template-version-1',
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        instanceState: ApprovalInstanceStateEnum.RETURNED,
+        processActivityLogs,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow({
+          approverResolver: NOBODY,
+        }),
+        rollbackFailedTransactions: true,
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+    const approve = (
+      fixture: ServiceFixture,
+      options?: { readonly automatic?: 'SLA_AUTO_APPROVE' },
+    ): Promise<TaskDecisionEntity> =>
+      fixture.service.decideTask(
+        {
+          action: TaskDecisionActionEnum.APPROVED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        },
+        options,
+      );
+
+    const returnToFinance = (
+      fixture: ServiceFixture,
+    ): Promise<TaskDecisionEntity> =>
+      fixture.service.decideTask({
+        action: TaskDecisionActionEnum.RETURNED,
+        comment: null,
+        decidedByMemberId: 'member-finance',
+        returnToNodeId: 'task_finance',
+        taskId: 'task-1',
+      });
+
+    const resubmit = (fixture: ServiceFixture): Promise<unknown> =>
+      fixture.service.resubmitApprovalInstance({
+        formDataJson: '{"amount":1200}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      });
+
+    // What the caller of a public method receives when it fails.
+    const readRejection = (promise: Promise<unknown>): Promise<unknown> =>
+      promise.then(
+        (): unknown => undefined,
+        (rejection: unknown): unknown => rejection,
+      );
+
+    const readAdvanceFailures = (
+      fixture: ServiceFixture,
+    ): readonly ActivityLogEntity[] =>
+      fixture.savedSingleActivityLogs.filter(
+        (log): boolean =>
+          log.eventType === ActivityLogEventTypeEnum.ADVANCE_FAILED,
+      );
+
+    // A failure recorded earlier, still describing task-1.
+    const createLoggedFailure = ({
+      actorMemberId = 'member-finance',
+      automatic = null,
+      createdAt,
+      id = 'logged-failure',
+      instanceId,
+      message = NO_NEXT_APPROVER,
+      taskId = 'task-1',
+    }: {
+      readonly actorMemberId?: string;
+      readonly automatic?: 'SLA_AUTO_APPROVE' | null;
+      readonly createdAt?: Date;
+      readonly id?: string;
+      readonly instanceId?: string;
+      readonly message?: string;
+      readonly taskId?: string;
+    } = {}): ActivityLogEntity =>
+      createActivityLog({
+        actorMemberId,
+        createdAt,
+        eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+        id,
+        instanceId,
+        nodeId: 'task_finance',
+        payload: {
+          action: 'APPROVED',
+          automatic,
+          kind: 'DECISION',
+          message,
+          nodeId: 'task_finance',
+          taskId,
+        },
+        taskId,
+      });
+
+    // A failed resubmission recorded earlier.
+    const createLoggedResubmitFailure = (): ActivityLogEntity =>
+      createActivityLog({
+        actorMemberId: 'member-001',
+        eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+        id: 'logged-resubmit-failure',
+        payload: {
+          action: null,
+          automatic: null,
+          kind: 'RESUBMIT',
+          message: NO_RETURN_APPROVER,
+          nodeId: null,
+          taskId: null,
+        },
+      });
+
+    it('records a failed approval and throws the error the caller always got', async (): Promise<void> => {
+      const fixture = createApprovalFixture();
+
+      const rejection = await readRejection(approve(fixture));
+
+      expect(rejection).toBeInstanceOf(ConflictException);
+      expect(rejection).not.toBeInstanceOf(InstanceAdvanceFailure);
+      expect((rejection as Error).message).toBe(NO_NEXT_APPROVER);
+
+      const failures = readAdvanceFailures(fixture);
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({
+        actorMemberId: 'member-finance',
+        instanceId: 'instance-1',
+        nodeId: 'task_finance',
+        payload: {
+          action: 'APPROVED',
+          automatic: null,
+          kind: 'DECISION',
+          message: NO_NEXT_APPROVER,
+          nodeId: 'task_finance',
+          taskId: 'task-1',
+        },
+        taskId: 'task-1',
+      });
+    });
+
+    interface LockCall {
+      readonly order: number;
+      readonly params: readonly unknown[];
+    }
+
+    it('writes the record in a transaction of its own, taking the instance lock before it reads anything', async (): Promise<void> => {
+      const fixture = createApprovalFixture();
+
+      await readRejection(approve(fixture));
+
+      // One transaction for the decision that rolled back, one for the record.
+      expect(fixture.transaction).toHaveBeenCalledTimes(2);
+
+      // Only what happens inside the record transaction counts: it is the last
+      // one opened, and everything it does is invoked after it was opened.
+      const recordStart = fixture.transaction.mock
+        .invocationCallOrder[1] as number;
+      const inRecord = (order: number): boolean => order > recordStart;
+
+      const lockCalls = fixture.managerQuery.mock.calls.flatMap(
+        ([sql, params], index): readonly LockCall[] => {
+          const order = fixture.managerQuery.mock.invocationCallOrder[
+            index
+          ] as number;
+
+          return sql.includes('pg_advisory_xact_lock') && inRecord(order)
+            ? [{ order, params }]
+            : [];
+        },
+      );
+      // The reads of the ADVANCE_FAILED rows already logged: the instance, then
+      // its activity log.
+      const readOrders = [
+        ...fixture.transactionalInstanceFindOne.mock.invocationCallOrder,
+        ...fixture.transactionalActivityLogFind.mock.invocationCallOrder,
+      ].filter(inRecord);
+
+      expect(lockCalls).toHaveLength(1);
+      expect(lockCalls[0]?.params).toEqual(['instance-1']);
+      // The check that stops a second row is only sound under the lock.
+      expect(readOrders.length).toBeGreaterThan(0);
+      expect(lockCalls[0]?.order as number).toBeLessThan(
+        Math.min(...readOrders),
+      );
+    });
+
+    const refusals: [string, Partial<TaskEntity>, Partial<DecideTaskInput>][] =
+      [
+        [
+          'the task is no longer open',
+          { status: TaskStatusEnum.COMPLETED },
+          {},
+        ],
+        [
+          'the form changed since the approver loaded it',
+          {},
+          { expectedFormDataFingerprint: 'stale-fingerprint' },
+        ],
+        [
+          'someone else holds the task',
+          {},
+          { decidedByMemberId: 'member-other' },
+        ],
+      ];
+
+    it.each(refusals)(
+      'records nothing when the decision is refused because %s',
+      async (
+        _reason: string,
+        task: Partial<TaskEntity>,
+        input: Partial<DecideTaskInput>,
+      ): Promise<void> => {
+        const fixture = createApprovalFixture({ task });
+
+        const rejection = await readRejection(
+          fixture.service.decideTask({
+            action: TaskDecisionActionEnum.APPROVED,
+            comment: null,
+            decidedByMemberId: 'member-finance',
+            taskId: 'task-1',
+            ...input,
+          }),
+        );
+
+        expect(rejection).toBeInstanceOf(ConflictException);
+        expect(readAdvanceFailures(fixture)).toHaveLength(0);
+        expect(fixture.transaction).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('records a failed return as a decision that returned', async (): Promise<void> => {
+      const fixture = createReturnFixture();
+
+      const rejection = await readRejection(returnToFinance(fixture));
+
+      expect(rejection).toBeInstanceOf(ConflictException);
+      expect((rejection as Error).message).toBe(NO_RETURN_APPROVER);
+      expect(readAdvanceFailures(fixture)).toHaveLength(1);
+      expect(readAdvanceFailures(fixture)[0]).toMatchObject({
+        actorMemberId: 'member-finance',
+        nodeId: 'task_next',
+        payload: {
+          action: 'RETURNED',
+          automatic: null,
+          kind: 'DECISION',
+          message: NO_RETURN_APPROVER,
+          nodeId: 'task_next',
+          taskId: 'task-1',
+        },
+        taskId: 'task-1',
+      });
+    });
+
+    it('records a failed resubmission without a task, a node or an action', async (): Promise<void> => {
+      const fixture = createResubmitFixture();
+
+      const rejection = await readRejection(resubmit(fixture));
+
+      expect(rejection).toBeInstanceOf(ConflictException);
+      expect(rejection).not.toBeInstanceOf(InstanceAdvanceFailure);
+      expect((rejection as Error).message).toBe(NO_RETURN_APPROVER);
+      expect(readAdvanceFailures(fixture)).toHaveLength(1);
+      expect(readAdvanceFailures(fixture)[0]).toMatchObject({
+        actorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        nodeId: null,
+        payload: {
+          action: null,
+          automatic: null,
+          kind: 'RESUBMIT',
+          message: NO_RETURN_APPROVER,
+          nodeId: null,
+          taskId: null,
+        },
+        taskId: null,
+      });
+    });
+
+    it('marks an approval made by the SLA timeout as automatic', async (): Promise<void> => {
+      const fixture = createApprovalFixture();
+
+      const rejection = await readRejection(
+        approve(fixture, { automatic: 'SLA_AUTO_APPROVE' }),
+      );
+
+      expect(rejection).toBeInstanceOf(ConflictException);
+      expect(readAdvanceFailures(fixture)).toHaveLength(1);
+      expect(readAdvanceFailures(fixture)[0]).toMatchObject({
+        actorMemberId: 'member-finance',
+        payload: {
+          action: 'APPROVED',
+          automatic: 'SLA_AUTO_APPROVE',
+          kind: 'DECISION',
+        },
+      });
+    });
+
+    describe('one row per stuck situation', (): void => {
+      it('writes one row when the same person fails the same way twice', async (): Promise<void> => {
+        const fixture = createApprovalFixture();
+
+        await readRejection(approve(fixture));
+        await readRejection(approve(fixture));
+
+        expect(readAdvanceFailures(fixture)).toHaveLength(1);
+      });
+
+      it('writes one row when a resubmission fails the same way twice', async (): Promise<void> => {
+        const fixture = createResubmitFixture();
+
+        await readRejection(resubmit(fixture));
+        await readRejection(resubmit(fixture));
+
+        expect(readAdvanceFailures(fixture)).toHaveLength(1);
+      });
+
+      it('writes a second row when the reason is different', async (): Promise<void> => {
+        const fixture = createApprovalFixture({
+          processActivityLogs: [
+            createLoggedFailure({
+              message:
+                '簽核節點「下一關」 找不到簽核人：組織「空組織」目前沒有任何有效成員',
+            }),
+          ],
+        });
+
+        await readRejection(approve(fixture));
+
+        expect(readAdvanceFailures(fixture)).toHaveLength(1);
+        expect(readAdvanceFailures(fixture)[0]?.payload['message']).toBe(
+          NO_NEXT_APPROVER,
+        );
+      });
+
+      it('writes a row of its own when another member failed the same way', async (): Promise<void> => {
+        const fixture = createApprovalFixture({
+          processActivityLogs: [
+            createLoggedFailure({ actorMemberId: 'member-other' }),
+          ],
+        });
+
+        await readRejection(approve(fixture));
+
+        expect(readAdvanceFailures(fixture)).toHaveLength(1);
+        expect(readAdvanceFailures(fixture)[0]?.actorMemberId).toBe(
+          'member-finance',
+        );
+      });
+
+      it('writes a new row when the old one described a task that is no longer open', async (): Promise<void> => {
+        const fixture = createApprovalFixture({
+          processActivityLogs: [
+            createLoggedFailure({ message: NO_NEXT_APPROVER }),
+          ],
+          task: { id: 'task-2' },
+        });
+
+        // The logged failure names task-1, which this fixture does not hold.
+        await readRejection(
+          fixture.service.decideTask({
+            action: TaskDecisionActionEnum.APPROVED,
+            comment: null,
+            decidedByMemberId: 'member-finance',
+            taskId: 'task-2',
+          }),
+        );
+
+        expect(readAdvanceFailures(fixture)).toHaveLength(1);
+        expect(readAdvanceFailures(fixture)[0]?.taskId).toBe('task-2');
+      });
+    });
+
+    it('throws the original error even when the record cannot be written', async (): Promise<void> => {
+      jest.spyOn(Logger.prototype, 'warn').mockReturnValue(undefined);
+      const error = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockReturnValue(undefined);
+      const fixture = createApprovalFixture();
+      const runTransaction = fixture.transaction.getMockImplementation();
+
+      if (!runTransaction) {
+        throw new Error('The fixture transaction has no implementation.');
+      }
+
+      const refuse = (): Promise<never> =>
+        Promise.reject(new Error('activity_logs is unavailable'));
+
+      // The first transaction is the decision, which runs for real; both tries
+      // of the record are refused by the database.
+      fixture.transaction
+        .mockImplementationOnce(runTransaction)
+        .mockImplementationOnce(refuse)
+        .mockImplementationOnce(refuse);
+
+      const rejection = await readRejection(approve(fixture));
+
+      expect(rejection).toBeInstanceOf(ConflictException);
+      expect((rejection as Error).message).toBe(NO_NEXT_APPROVER);
+      expect(readAdvanceFailures(fixture)).toHaveLength(0);
+      expect(fixture.transaction).toHaveBeenCalledTimes(3);
+      // Logged as an error, with what the row would have held.
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('ADVANCE_FAILED for instance instance-1'),
+        expect.stringContaining(`"taskId":"task-1"`),
+      );
+    });
+
+    it('tries the record again once when the first write fails', async (): Promise<void> => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockReturnValue(undefined);
+      const fixture = createApprovalFixture();
+      const runTransaction = fixture.transaction.getMockImplementation();
+
+      if (!runTransaction) {
+        throw new Error('The fixture transaction has no implementation.');
+      }
+
+      fixture.transaction
+        .mockImplementationOnce(runTransaction)
+        .mockImplementationOnce(
+          (): Promise<never> =>
+            Promise.reject(new Error('lock timeout')),
+        );
+
+      const rejection = await readRejection(approve(fixture));
+
+      expect((rejection as Error).message).toBe(NO_NEXT_APPROVER);
+      expect(readAdvanceFailures(fixture)).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('trying again'),
+      );
+    });
+
+    it('records nothing for an error that is not an HttpException', async (): Promise<void> => {
+      const fixture = createApprovalFixture({ nextStageHasApprover: true });
+      const failure = new Error('relation "tasks" does not exist');
+
+      jest
+        .mocked(fixture.notificationService.createTaskAssignedNotification)
+        .mockRejectedValueOnce(failure);
+
+      await expect(approve(fixture)).rejects.toBe(failure);
+      expect(readAdvanceFailures(fixture)).toHaveLength(0);
+      expect(fixture.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('records nothing for a failure that retrying clears (5xx)', async (): Promise<void> => {
+      const fixture = createApprovalFixture({ nextStageHasApprover: true });
+      const failure = new ServiceUnavailableException(
+        'The member directory is unreachable',
+      );
+
+      jest
+        .mocked(fixture.notificationService.createTaskAssignedNotification)
+        .mockRejectedValueOnce(failure);
+
+      await expect(approve(fixture)).rejects.toBe(failure);
+      expect(readAdvanceFailures(fixture)).toHaveLength(0);
+      expect(fixture.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    describe('the paths that call the same steps without a wrapper', (): void => {
+      it('still throws the ConflictException when processing an instance fails', async (): Promise<void> => {
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processWorkflowSnapshot: createLinearUserTaskWorkflow({
+            approverResolver: NOBODY,
+          }),
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        });
+
+        const rejection = await readRejection(
+          fixture.service.processInstance('instance-1'),
+        );
+
+        expect(rejection).toBeInstanceOf(ConflictException);
+        expect(rejection).not.toBeInstanceOf(InstanceAdvanceFailure);
+        expect(readAdvanceFailures(fixture)).toHaveLength(0);
+        expect(fixture.transaction).toHaveBeenCalledTimes(1);
+      });
+
+      it('still throws the ConflictException when a submission fails', async (): Promise<void> => {
+        const workflow = createLinearUserTaskWorkflow({
+          approverResolver: NOBODY,
+        });
+        const fixture = createServiceFixture({
+          currentVersionId: 'template-version-1',
+          formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+          processWorkflowSnapshot: workflow,
+          templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          templateWorkflowDefinition: workflow,
+        });
+
+        const rejection = await readRejection(
+          fixture.service.submitApprovalInstance({
+            formDataJson: '{"amount":1000}',
+            initiatorMemberId: 'member-001',
+            initiatorMetadataSnapshotJson:
+              '{"memberId":"member-001","roles":["IT"]}',
+            templateId: 'template-1',
+            title: null,
+          }),
+        );
+
+        expect(rejection).toBeInstanceOf(ConflictException);
+        expect(rejection).not.toBeInstanceOf(InstanceAdvanceFailure);
+        expect(readAdvanceFailures(fixture)).toHaveLength(0);
+      });
+    });
+
+    describe('the list of stuck instances (stuckApprovalInstances)', (): void => {
+      const EARLIER = new Date('2026-05-04T09:00:00.000Z');
+      const LATER = new Date('2026-05-04T10:00:00.000Z');
+
+      const listStuck = (
+        fixture: ServiceFixture,
+      ): Promise<readonly StuckApprovalInstanceRecord[]> =>
+        fixture.service.listStuckApprovalInstances();
+
+      it('lists nothing when no instance ever failed to move on', async (): Promise<void> => {
+        await expect(listStuck(createApprovalFixture())).resolves.toEqual([]);
+      });
+
+      it('lists an instance whose approval could not move on, and who has to press again', async (): Promise<void> => {
+        const fixture = createApprovalFixture();
+
+        await readRejection(approve(fixture));
+
+        // The decision rolled back: the task is still open, still the holder's.
+        await expect(listStuck(fixture)).resolves.toEqual([
+          {
+            automatic: null,
+            failedActorMemberId: 'member-finance',
+            failedAt: expect.any(Date),
+            initiatorMemberId: 'member-001',
+            instanceId: 'instance-1',
+            instanceTitle: '費用申請',
+            kind: StuckApprovalInstanceKindEnum.DECISION,
+            message: NO_NEXT_APPROVER,
+            nodeId: 'task_finance',
+            nodeLabel: '財務簽核',
+            pendingActorMemberIds: ['member-finance'],
+            taskId: 'task-1',
+            templateId: 'template-1',
+            templateName: '費用申請',
+          },
+        ]);
+      });
+
+      it('names the system, not a person, when the SLA timeout was the one approving', async (): Promise<void> => {
+        const fixture = createApprovalFixture();
+
+        await readRejection(approve(fixture, { automatic: 'SLA_AUTO_APPROVE' }));
+
+        const [row] = await listStuck(fixture);
+
+        expect(row?.automatic).toBe('SLA_AUTO_APPROVE');
+        expect(row?.failedActorMemberId).toBe('member-finance');
+      });
+
+      describe('who has to press again', (): void => {
+        it('lists the PENDING and CLAIMED seats, and neither a WAITING seat nor one that has left', async (): Promise<void> => {
+          const fixture = createApprovalFixture({
+            processActivityLogs: [createLoggedFailure()],
+            processTaskCandidates: [
+              createTaskCandidate({ id: 'seat-a', memberId: 'member-a' }),
+              createTaskCandidate({
+                id: 'seat-b',
+                memberId: 'member-b',
+                status: TaskCandidateStatusEnum.CLAIMED,
+              }),
+              createTaskCandidate({
+                id: 'seat-c',
+                memberId: 'member-c',
+                status: TaskCandidateStatusEnum.WAITING,
+              }),
+              createTaskCandidate({
+                id: 'seat-d',
+                memberId: 'member-d',
+                status: TaskCandidateStatusEnum.TRANSFERRED,
+              }),
+              createTaskCandidate({
+                id: 'seat-e',
+                memberId: 'member-e',
+                status: TaskCandidateStatusEnum.COMPLETED,
+              }),
+            ],
+          });
+
+          const [row] = await listStuck(fixture);
+
+          // Not the assignee either: a task with candidate rows is held by them.
+          expect(row?.pendingActorMemberIds).toEqual(['member-a', 'member-b']);
+        });
+
+        it('lists nobody when the only open seat is not yet anyone turn', async (): Promise<void> => {
+          const fixture = createApprovalFixture({
+            processActivityLogs: [createLoggedFailure()],
+            processTaskCandidates: [
+              createTaskCandidate({
+                id: 'seat-c',
+                memberId: 'member-c',
+                status: TaskCandidateStatusEnum.WAITING,
+              }),
+            ],
+          });
+
+          const [row] = await listStuck(fixture);
+
+          expect(row?.pendingActorMemberIds).toEqual([]);
+        });
+
+        it('follows a reassignment made after the failure', async (): Promise<void> => {
+          const fixture = createApprovalFixture({
+            processActivityLogs: [createLoggedFailure()],
+            task: { assigneeMemberId: 'member-delegate' },
+          });
+
+          const [row] = await listStuck(fixture);
+
+          expect(row?.failedActorMemberId).toBe('member-finance');
+          expect(row?.pendingActorMemberIds).toEqual(['member-delegate']);
+        });
+
+        it('is the initiator, with no task or node, for a failed resubmission', async (): Promise<void> => {
+          const fixture = createResubmitFixture();
+
+          await readRejection(resubmit(fixture));
+
+          await expect(listStuck(fixture)).resolves.toEqual([
+            {
+              automatic: null,
+              failedActorMemberId: 'member-001',
+              failedAt: expect.any(Date),
+              initiatorMemberId: 'member-001',
+              instanceId: 'instance-1',
+              instanceTitle: '費用申請',
+              kind: StuckApprovalInstanceKindEnum.RESUBMIT,
+              message: NO_RETURN_APPROVER,
+              nodeId: null,
+              nodeLabel: null,
+              pendingActorMemberIds: ['member-001'],
+              taskId: null,
+              templateId: 'template-1',
+              templateName: '費用申請',
+            },
+          ]);
+        });
+      });
+
+      describe('one row per instance, newest failure first', (): void => {
+        it('shows the latest unresolved failure when several voters failed', async (): Promise<void> => {
+          const fixture = createApprovalFixture({
+            processActivityLogs: [
+              createLoggedFailure({ actorMemberId: 'member-a', id: 'f-old' }),
+              createLoggedFailure({ actorMemberId: 'member-b', id: 'f-new' }),
+            ],
+          });
+
+          const rows = await listStuck(fixture);
+
+          expect(rows).toHaveLength(1);
+          expect(rows[0]?.failedActorMemberId).toBe('member-b');
+        });
+
+        it.each([
+          [
+            'instance-2 failed later',
+            EARLIER,
+            LATER,
+            ['instance-2', 'instance-1'],
+          ],
+          [
+            'instance-1 failed later',
+            LATER,
+            EARLIER,
+            ['instance-1', 'instance-2'],
+          ],
+        ] as const)(
+          'puts the instance that failed last first (%s)',
+          async (
+            _label,
+            instanceOneFailedAt,
+            instanceTwoFailedAt,
+            expectedOrder,
+          ): Promise<void> => {
+            const fixture = createApprovalFixture({
+              additionalProcessInstances: [
+                createApprovalInstance({
+                  id: 'instance-2',
+                  title: '第二張',
+                  workflowSnapshot: appendNextUserTask(
+                    createLinearUserTaskWorkflow(),
+                  ),
+                }),
+              ],
+              additionalProcessTasks: [
+                createTask({
+                  id: 'task-2',
+                  instanceId: 'instance-2',
+                  tokenId: 'token-2',
+                }),
+              ],
+              processActivityLogs: [
+                createLoggedFailure({
+                  createdAt: instanceOneFailedAt,
+                  id: 'f-one',
+                }),
+                createLoggedFailure({
+                  createdAt: instanceTwoFailedAt,
+                  id: 'f-two',
+                  instanceId: 'instance-2',
+                  taskId: 'task-2',
+                }),
+              ],
+            });
+
+            fixture.transactionalActivityLogFind.mockClear();
+
+            const rows = await listStuck(fixture);
+
+            expect(rows.map((row): string => row.instanceId)).toEqual(
+              expectedOrder,
+            );
+            expect(rows[0]?.failedAt).toEqual(LATER);
+            // The candidates, then every candidate's rows in one batch: not
+            // one read per instance.
+            expect(fixture.transactionalActivityLogFind).toHaveBeenCalledTimes(
+              2,
+            );
+          },
+        );
+      });
+
+      describe('paging', (): void => {
+        const createTwoStuckFixture = (): ServiceFixture =>
+          createApprovalFixture({
+            additionalProcessInstances: [
+              createApprovalInstance({
+                id: 'instance-2',
+                title: '第二張',
+                workflowSnapshot: appendNextUserTask(
+                  createLinearUserTaskWorkflow(),
+                ),
+              }),
+            ],
+            additionalProcessTasks: [
+              createTask({
+                id: 'task-2',
+                instanceId: 'instance-2',
+                tokenId: 'token-2',
+              }),
+            ],
+            processActivityLogs: [
+              createLoggedFailure({ createdAt: EARLIER, id: 'f-one' }),
+              createLoggedFailure({
+                createdAt: LATER,
+                id: 'f-two',
+                instanceId: 'instance-2',
+                taskId: 'task-2',
+              }),
+            ],
+          });
+
+        it('returns the requested page, newest failure first', async (): Promise<void> => {
+          const fixture = createTwoStuckFixture();
+
+          const first = await fixture.service.listStuckApprovalInstances({
+            page: 1,
+            pageSize: 1,
+          });
+          const second = await fixture.service.listStuckApprovalInstances({
+            page: 2,
+            pageSize: 1,
+          });
+          const beyond = await fixture.service.listStuckApprovalInstances({
+            page: 3,
+            pageSize: 1,
+          });
+
+          expect(first.map((row): string => row.instanceId)).toEqual([
+            'instance-2',
+          ]);
+          expect(second.map((row): string => row.instanceId)).toEqual([
+            'instance-1',
+          ]);
+          expect(beyond).toEqual([]);
+        });
+
+        it('counts every stuck instance across pages', async (): Promise<void> => {
+          await expect(
+            createTwoStuckFixture().service.countStuckApprovalInstances(),
+          ).resolves.toBe(2);
+          await expect(
+            createApprovalFixture().service.countStuckApprovalInstances(),
+          ).resolves.toBe(0);
+        });
+
+        it('caps a page at 100 rows and falls back to page 1 of 20 for bad values', async (): Promise<void> => {
+          const fixture = createTwoStuckFixture();
+
+          await expect(
+            fixture.service.listStuckApprovalInstances({
+              page: 0,
+              pageSize: -5,
+            }),
+          ).resolves.toHaveLength(2);
+        });
+      });
+
+      it('still lists a countersign whose last vote failed, though an earlier voter decided', async (): Promise<void> => {
+        // The earlier voter's TASK_DECIDED stays on file. It says nothing about
+        // this failure: the task is still open, and it is the last vote that
+        // cannot move the case on.
+        const fixture = createApprovalFixture({
+          processActivityLogs: [
+            createActivityLog({
+              actorMemberId: 'member-a',
+              eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+              id: 'decided-by-a',
+              nodeId: 'task_finance',
+              payload: { action: 'APPROVED' },
+              taskId: 'task-1',
+            }),
+            createLoggedFailure({ actorMemberId: 'member-b' }),
+          ],
+          processTaskCandidates: [
+            createTaskCandidate({
+              id: 'seat-a',
+              memberId: 'member-a',
+              status: TaskCandidateStatusEnum.COMPLETED,
+            }),
+            createTaskCandidate({ id: 'seat-b', memberId: 'member-b' }),
+          ],
+          task: { decisionPolicySnapshot: { type: 'PARALLEL_ALL' } },
+        });
+
+        const [row] = await listStuck(fixture);
+
+        expect(row?.instanceId).toBe('instance-1');
+        expect(row?.failedActorMemberId).toBe('member-b');
+        expect(row?.pendingActorMemberIds).toEqual(['member-b']);
+      });
+
+      describe('an instance that has moved on is not listed', (): void => {
+        const taskNoLongerOpen: [string, TaskStatusEnum][] = [
+          ['the task was completed', TaskStatusEnum.COMPLETED],
+          [
+            'the case was returned to an earlier stage',
+            TaskStatusEnum.CANCELLED,
+          ],
+          ['the task was transferred', TaskStatusEnum.TRANSFERRED],
+        ];
+
+        it.each(taskNoLongerOpen)(
+          'once %s, though the instance is still running',
+          async (_reason: string, status: TaskStatusEnum): Promise<void> => {
+            const fixture = createApprovalFixture({
+              processActivityLogs: [createLoggedFailure()],
+              task: { status },
+            });
+
+            await expect(listStuck(fixture)).resolves.toEqual([]);
+          },
+        );
+
+        it.each([
+          ApprovalInstanceStateEnum.CANCELLED,
+          ApprovalInstanceStateEnum.APPROVED,
+          ApprovalInstanceStateEnum.EXPIRED,
+        ])(
+          'once the instance ended as %s',
+          async (instanceState: ApprovalInstanceStateEnum): Promise<void> => {
+            // The task is left open: it is the instance state that decides.
+            const fixture = createApprovalFixture({
+              instanceState,
+              processActivityLogs: [createLoggedFailure()],
+            });
+
+            await expect(listStuck(fixture)).resolves.toEqual([]);
+          },
+        );
+
+        it('once the initiator cancelled the instance', async (): Promise<void> => {
+          const fixture = createApprovalFixture();
+
+          await readRejection(approve(fixture));
+          await expect(listStuck(fixture)).resolves.toHaveLength(1);
+
+          await fixture.service.cancelApprovalInstance({
+            cancelledByMemberId: 'member-001',
+            comment: null,
+            instanceId: 'instance-1',
+          });
+
+          await expect(listStuck(fixture)).resolves.toEqual([]);
+        });
+
+        it('once an administrator cancelled the instance', async (): Promise<void> => {
+          const fixture = createApprovalFixture();
+
+          await readRejection(approve(fixture));
+          await expect(listStuck(fixture)).resolves.toHaveLength(1);
+
+          await fixture.service.adminCancelApprovalInstance({
+            cancelledByMemberId: 'admin-001',
+            instanceId: 'instance-1',
+            reason: '申請人已離職',
+          });
+
+          await expect(listStuck(fixture)).resolves.toEqual([]);
+        });
+      });
+
+      it('drops a task that was transferred, and lists it again when the new holder fails too', async (): Promise<void> => {
+        const fixture = createApprovalFixture();
+
+        await readRejection(approve(fixture));
+        await expect(listStuck(fixture)).resolves.toHaveLength(1);
+
+        await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.TRANSFERRED,
+          comment: null,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+          transferToMemberId: 'member-delegate',
+        });
+
+        // The transfer moved nothing forward, yet task-1 is closed.
+        await expect(listStuck(fixture)).resolves.toEqual([]);
+
+        const transferred = fixture.savedTasks.find(
+          (task): boolean => task.assigneeMemberId === 'member-delegate',
+        );
+
+        expect(transferred).toBeDefined();
+
+        const rejection = await readRejection(
+          fixture.service.decideTask({
+            action: TaskDecisionActionEnum.APPROVED,
+            comment: null,
+            decidedByMemberId: 'member-delegate',
+            taskId: transferred?.id ?? '',
+          }),
+        );
+
+        expect(rejection).toBeInstanceOf(ConflictException);
+
+        const [row, ...rest] = await listStuck(fixture);
+
+        expect(rest).toHaveLength(0);
+        expect(row).toMatchObject({
+          failedActorMemberId: 'member-delegate',
+          pendingActorMemberIds: ['member-delegate'],
+          taskId: transferred?.id,
+        });
+      });
+
+      describe('a failed resubmission', (): void => {
+        it('is not listed once the instance was resubmitted after it', async (): Promise<void> => {
+          // Returned a second time since, so the instance state alone would
+          // still say RETURNED: the later resubmission is what resolves it.
+          const fixture = createResubmitFixture([
+            createLoggedResubmitFailure(),
+            createActivityLog({
+              actorMemberId: 'member-001',
+              eventType: ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+              id: 'resubmitted',
+            }),
+          ]);
+
+          await expect(listStuck(fixture)).resolves.toEqual([]);
+        });
+
+        it('is still listed when the resubmission on file came before it', async (): Promise<void> => {
+          const fixture = createResubmitFixture([
+            createActivityLog({
+              actorMemberId: 'member-001',
+              eventType: ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+              id: 'resubmitted',
+            }),
+            createLoggedResubmitFailure(),
+          ]);
+
+          const [row] = await listStuck(fixture);
+
+          expect(row?.kind).toBe(StuckApprovalInstanceKindEnum.RESUBMIT);
+        });
+
+        it('is not listed once the initiator cancelled the instance instead', async (): Promise<void> => {
+          const fixture = createResubmitFixture();
+
+          await readRejection(resubmit(fixture));
+          await expect(listStuck(fixture)).resolves.toHaveLength(1);
+
+          await fixture.service.cancelApprovalInstance({
+            cancelledByMemberId: 'member-001',
+            comment: null,
+            instanceId: 'instance-1',
+          });
+
+          await expect(listStuck(fixture)).resolves.toEqual([]);
+        });
+      });
+
+      it('refuses the old holder of a reassigned group task, and records nothing', async (): Promise<void> => {
+        // What `reassignTask` leaves on a group task: the old seat TRANSFERRED,
+        // a new one PENDING, and still no assignee. The SLA scan picks the
+        // earliest candidate row, which is now the old seat (see the
+        // notification spec), so its automatic approval is refused here before
+        // anything is attempted: no failure on file, nothing in the list.
+        const fixture = createApprovalFixture({
+          processTaskCandidates: [
+            createTaskCandidate({
+              id: 'seat-old',
+              memberId: 'member-finance',
+              status: TaskCandidateStatusEnum.TRANSFERRED,
+            }),
+            createTaskCandidate({ id: 'seat-new', memberId: 'member-new' }),
+          ],
+          task: {
+            assigneeMemberId: null,
+            assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+          },
+        });
+
+        const rejection = await readRejection(
+          approve(fixture, { automatic: 'SLA_AUTO_APPROVE' }),
+        );
+
+        expect(rejection).toBeInstanceOf(ConflictException);
+        expect(readAdvanceFailures(fixture)).toHaveLength(0);
+        await expect(listStuck(fixture)).resolves.toEqual([]);
+      });
     });
   });
 });
@@ -21826,6 +23246,12 @@ interface ServiceFixture {
   >;
   readonly savedDecision: TaskDecisionEntity | null;
   readonly transactionalActivityLogFindOne: import('typeorm').Repository<ActivityLogEntity>['findOne'];
+  // The in-transaction reads of the activity log and the instance, for tests
+  // that pin the order of what a transaction does.
+  readonly transactionalActivityLogFind: jest.Mock;
+  readonly transactionalInstanceFindOne: jest.Mock;
+  // The repository manager's `transaction`: one call per engine transaction.
+  readonly transaction: jest.Mock;
   // `AttachmentService.releaseUnreferencedFormAttachments`, one call per release.
   readonly releaseUnreferencedFormAttachments: jest.Mock;
   // `AttachmentService.bindFormDataAttachmentsToInstance`, one call per bind.
@@ -21896,6 +23322,7 @@ interface OrgUnitQueryBuilderMock {
 }
 
 function createServiceFixture({
+  additionalProcessInstances = [],
   additionalProcessTasks = [],
   conditionService = new ConditionService(),
   currentVersionId,
@@ -21925,6 +23352,7 @@ function createServiceFixture({
   processOrgUnits = [],
   processPositions = [],
   processWorkflowSnapshot,
+  rollbackFailedTransactions = false,
   rootInstanceUpdatedAt,
   rootOptions,
   serviceTaskDispatcher,
@@ -21936,6 +23364,8 @@ function createServiceFixture({
   transactionalInstanceUpdatedAt,
   webhookDeliveryService,
 }: {
+  // Other instances the transaction can read, besides the one under test.
+  readonly additionalProcessInstances?: readonly ApprovalInstanceEntity[];
   readonly additionalProcessTasks?: readonly TaskEntity[];
   // Defaults to the built-ins-only service; a test hands in one built with a
   // function registry, as `ConditionModule` injects it.
@@ -21977,6 +23407,12 @@ function createServiceFixture({
   readonly processPositions?: readonly PositionEntity[];
   readonly processWorkflowSnapshot?: WorkflowDefinition;
   readonly webhookDeliveryService?: WorkflowWebhookDeliveryService;
+  // Off by default: a transaction that throws keeps what it wrote, which the
+  // older tests read back. On, it puts the tasks, tokens, candidates,
+  // decisions, directives, activity log and instance back as they were when it
+  // opened, the way the database does, so a test can see what a failed
+  // decision leaves behind.
+  readonly rollbackFailedTransactions?: boolean;
   readonly rootInstanceUpdatedAt?: Date;
   readonly rootOptions?: BPMRootRuntimeOptions;
   readonly serviceTaskDispatcher?: BPMWorkflowServiceTaskDispatcher;
@@ -22358,31 +23794,49 @@ function createServiceFixture({
   const formVersionRepository = createRepository<FormDefinitionVersionEntity>({
     findOne: jest.fn(() => Promise.resolve(formVersion)),
   });
+  // A row read back from the database is an entity whatever shape the caller
+  // last handed to `save`, so it is rehydrated here. Only `save` reports the
+  // shape it was actually given.
+  const readInstanceUnderTest = (): ApprovalInstanceEntity =>
+    savedInstance
+      ? Object.assign(createApprovalInstance(), savedInstance)
+      : createApprovalInstance({
+          businessKey: processBusinessKey,
+          formData: processFormData,
+          formDataOptionSnapshot: processOptionSnapshot,
+          formDefinitionSnapshot: processFormDefinitionSnapshot,
+          initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
+          state: instanceState,
+          submittedByMemberId,
+          updatedAt: transactionalInstanceUpdatedAt,
+          workflowSnapshot: processWorkflowSnapshot,
+        });
   const transactionalInstanceRepository =
     createRepository<ApprovalInstanceEntity>({
       create: jest.fn(
         (entity: Partial<ApprovalInstanceEntity>): ApprovalInstanceEntity =>
           Object.assign(createApprovalInstance(), entity),
       ),
-      findOne: jest.fn(() =>
-        Promise.resolve(
-          // A row read back from the database is an entity whatever shape the
-          // caller last handed to `save`, so it is rehydrated here. Only
-          // `save` reports the shape it was actually given.
-          savedInstance
-            ? Object.assign(createApprovalInstance(), savedInstance)
-            : createApprovalInstance({
-                businessKey: processBusinessKey,
-                formData: processFormData,
-                formDataOptionSnapshot: processOptionSnapshot,
-                formDefinitionSnapshot: processFormDefinitionSnapshot,
-                initiatorMetadataSnapshot: processInitiatorMetadataSnapshot,
-                state: instanceState,
-                submittedByMemberId,
-                updatedAt: transactionalInstanceUpdatedAt,
-                workflowSnapshot: processWorkflowSnapshot,
-              }),
-        ),
+      // The instance under test, then any `additionalProcessInstances`: a row
+      // is found by its id, and the instance under test answers every other
+      // lookup, as it always has.
+      find: jest.fn(
+        (
+          options?: Readonly<{ where?: Readonly<Record<string, unknown>> }>,
+        ): Promise<readonly ApprovalInstanceEntity[]> =>
+          Promise.resolve(
+            [readInstanceUnderTest(), ...additionalProcessInstances].filter(
+              (instance) => matchesFindWhere(instance, options?.where),
+            ),
+          ),
+      ),
+      findOne: jest.fn(
+        (options?: Readonly<{ where?: Readonly<{ id?: string }> }>) =>
+          Promise.resolve(
+            additionalProcessInstances.find(
+              (instance) => instance.id === options?.where?.id,
+            ) ?? readInstanceUnderTest(),
+          ),
       ),
       save: jest.fn((entity: ApprovalInstanceEntity) => {
         if (instanceSaveError) {
@@ -22936,9 +24390,37 @@ function createServiceFixture({
     query: managerQuery,
   };
   const transaction = jest.fn(
-    <TResult>(
+    async <TResult>(
       callback: (manager: typeof transactionManager) => Promise<TResult>,
-    ) => callback(transactionManager),
+    ): Promise<TResult> => {
+      if (!rollbackFailedTransactions) {
+        return callback(transactionManager);
+      }
+
+      const opened = {
+        activityLogs: storedActivityLogs,
+        adhocDirectives: processAdhocDirectiveRows,
+        instance: savedInstance,
+        taskCandidates: processTaskCandidateRows,
+        taskDecisions: processTaskDecisionRows,
+        tasks: processTasks,
+        tokens: processTokens,
+      };
+
+      try {
+        return await callback(transactionManager);
+      } catch (error) {
+        storedActivityLogs = opened.activityLogs;
+        processAdhocDirectiveRows = opened.adhocDirectives;
+        savedInstance = opened.instance;
+        processTaskCandidateRows = opened.taskCandidates;
+        processTaskDecisionRows = opened.taskDecisions;
+        processTasks = opened.tasks;
+        processTokens = opened.tokens;
+
+        throw error;
+      }
+    },
   );
   Object.assign(instanceRepository, {
     manager: {
@@ -22972,6 +24454,10 @@ function createServiceFixture({
     templateFind,
     templateFindOne,
     transactionalActivityLogFindOne: transactionalActivityRepository.findOne,
+    transactionalActivityLogFind:
+      transactionalActivityRepository.find as unknown as jest.Mock,
+    transactionalInstanceFindOne:
+      transactionalInstanceRepository.findOne as unknown as jest.Mock,
     releaseUnreferencedFormAttachments:
       attachmentService.releaseUnreferencedFormAttachments as jest.Mock,
     bindFormDataAttachmentsToInstance:
@@ -23020,6 +24506,7 @@ function createServiceFixture({
       return savedToken;
     },
     taskCandidateFind,
+    transaction,
     delegationService,
     service: new WorkflowEngineService(
       instanceRepository,

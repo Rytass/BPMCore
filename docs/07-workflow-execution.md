@@ -38,7 +38,7 @@
 | **APPROVED**  | 所有 token 走到 End                                                                    | ✅   |
 | **REJECTED**  | 任一 task 拒絕（不可恢復）                                                             | ✅   |
 | **RETURNED**  | 退回到發起節點（start event）後等待發起人重新送出；退回到其他節點時維持 RUNNING          | ❌   |
-| **CANCELLED** | 發起人主動撤銷                                                                         | ✅   |
+| **CANCELLED** | 發起人主動撤銷；管理員也可以撤銷（未發佈，見 `adminCancelApprovalInstance`）           | ✅   |
 | **EXPIRED**   | 未發佈（v0.16.2 之後）。SLA 的 `TERMINATE_INSTANCE` 策略觸發；收尾與取消相同，但無 actor、不是人為撤銷（見 §6.2） | ✅   |
 
 > 先前已被 SLA 終止的案件仍為 CANCELLED（舊資料不回填）。
@@ -966,6 +966,37 @@ async function handleTransfer(task, transferToMemberId) {
 **管理員改派**（未發佈，v0.16.2 之後）：`reassignTask`／`reassignMemberTasks` 由管理員把開放中的席位就地移給另一位成員，
 task id 不變、不寫決策與簽章，也不受節點 `allowTransfer` 限制（詳見 `docs/api-reference.md`）。
 
+### 5.5 往下走失敗的記錄
+
+未發佈（v0.21.4 之後）。決策或重送在「往下一關」這一步失敗時（例如下一關解析不出簽核人），整筆交易回滾，
+決策失敗時 task 仍開著；重送失敗時案件仍是退回狀態。為了讓管理員看得到卡住的案件，失敗會另記一筆 `ADVANCE_FAILED` 活動紀錄。
+
+- **三個包裝點**，都包在公開方法的呼叫端，不包進 `processRunningInstance`／`returnInstanceToNode` 內部
+  （送單與管理員重跑也呼叫它們，必須維持丟出原本的錯誤類別）：
+  1. `decideTask` 同意後，從讀 token 到 `processRunningInstance` 這一段（`kind: 'DECISION'`、`action: 'APPROVED'`）；
+  2. `decideTask` 退回時的 `returnInstanceToNode`（`kind: 'DECISION'`、`action: 'RETURNED'`）；
+  3. `resubmitApprovalInstance` 的 `processRunningInstance`（`kind: 'RESUBMIT'`）。
+- **只記狀態碼 < 500 的 `HttpException`**。5xx 通常重試就會好，一般 `Error` 可能帶 SQL，兩者都照舊丟出、不寫入。
+- **交易外另寫一筆**：包裝點把錯誤包成內部的 `InstanceAdvanceFailure`，交易回滾後由 `decideTask`／`resubmitApprovalInstance`
+  在 `runEngineTransaction` 外面接住，另開一筆交易，先取 `pg_advisory_xact_lock(hashtext(instanceId))`，去重後寫入，
+  最後把原始錯誤原封不動丟回去；`InstanceAdvanceFailure` 不會離開公開方法。寫入本身失敗只記 logger 警告，不蓋掉原始錯誤。
+  payload 有 `kind`、`taskId`、`nodeId`、`action`、`automatic`（逾時自動同意為 `'SLA_AUTO_APPROVE'`，否則 `null`）、`message`；
+  `actorMemberId` 是操作者，逾時自動同意那一類是系統代選的持有人，並不是他按的。
+- **去重**：同一案件已有一筆「尚未解決」、種類相同且 `message` 相同的紀錄，就不再寫。`DECISION` 的鍵是 task＋操作者＋action
+  （會簽時不同的人各留一筆）；`RESUBMIT` 一個案件只有一個鍵。同一個人換了失敗原因就是新消息，會再寫一筆。
+- **「尚未解決」的判定**（不看 `TASK_DECIDED`，會簽時前面的人已提交過）：
+  - `DECISION`：該 task 仍是開著的，而且案件仍是 `RUNNING`。task 完成、被退回取消、案件終止，或一般 task 被轉簽（原 task 變
+    `TRANSFERRED`，另開新 task），都算已解決；轉簽後先從清單消失，新持有人若再失敗會寫一筆新紀錄、重新出現。
+  - `RESUBMIT`：案件仍是 `RETURNED`，而且之後沒有 `INSTANCE_RESUBMITTED`。
+  - 一個案件只取最新一筆未解決的紀錄，列在 `stuckApprovalInstances`（管理員專用）。一律分頁：`page` 預設 1、`pageSize`
+    預設 20、上限 100；總數由 `stuckApprovalInstanceCount` 提供。
+- **未涵蓋**：
+  - 往下走時丟出一般 `Error`（快照畸形的 `TypeError`、host 掛進來的 provider 丟的錯）也會讓案件卡住，但不會被記錄。
+  - 運算式時間預算超支（`EXPRESSION_BUDGET_EXCEEDED`）是 400，所以會被記成卡住；時間預算算的是實際經過時間，
+    主機負載高時也可能觸發，那時其實只是暫時性錯誤。
+  - 群組任務只要有人投過票（包括不讓任務完成的那一票），`assigneeMemberId` 就會被設成投票的人，之後 SLA 自動同意代選到的就是
+    這個已投過票的人，在驗證階段被拒。這是既有行為，失敗發生在包裝點之前，所以不會被記錄，也不會出現在清單上。
+
 ---
 
 ## 6. SLA 與 Boundary Timer Event
@@ -1054,6 +1085,10 @@ async function handleOverdueTask(task) {
 - `task_decisions`、簽章（`signatures.signer_member_id`）與 `TASK_DECIDED` 活動紀錄都歸屬於該成員，看起來像他本人同意。
 - 辨識方式：決策的 `comment` 為固定字串 `SLA timeout auto-approved this task.`，且同一 task 之前有一筆 `SLA_TRIGGERED`（`actor_member_id` 為 null）。
 - 稽核時必須以這兩筆紀錄判斷是否為逾時自動同意，不能只看簽章人。
+
+**AUTO_APPROVE 失敗之後**：自動同意只會試一次，不會自動重試（逾期通知已建立，下一輪掃描不再執行動作）。失敗若屬 §5.5 的範圍，
+會留下 `ADVANCE_FAILED`（`automatic: 'SLA_AUTO_APPROVE'`）。該 task 有 assignee 時，管理員改派給新持有人後，新持有人還沒收過逾期通知，
+下一輪掃描會以新持有人名義再自動同意一次。
 
 **ESCALATE 的細節**：升級目標不是 delegation rule 查到的，而是組織主管解析（`NotificationService.resolveEscalationTargetMemberId`，逐層呼叫 `OrganizationService.resolveManagerMemberId`，從 actor 往上
 `escalateLevelsUp` 層，至少 1 層）。實際轉交走 `decideTask(TRANSFERRED)` 並帶 `transferReason: 'SLA_ESCALATION'`，

@@ -52,6 +52,8 @@ const PLANNED_ENTRIES: Readonly<Record<string, string>> = {
   'views/admin/delegations/index': 'src/views/admin/delegations/index.ts',
   'views/admin/webhook-endpoints/index':
     'src/views/admin/webhook-endpoints/index.ts',
+  'views/admin/stuck-instances/index':
+    'src/views/admin/stuck-instances/index.ts',
 
   // Next.js Server Component shims (export `{ default, metadata }`).
   'pages/root/index': 'src/pages/root/index.tsx',
@@ -77,6 +79,8 @@ const PLANNED_ENTRIES: Readonly<Record<string, string>> = {
   'pages/admin/delegations/index': 'src/pages/admin/delegations/index.tsx',
   'pages/admin/webhook-endpoints/index':
     'src/pages/admin/webhook-endpoints/index.tsx',
+  'pages/admin/stuck-instances/index':
+    'src/pages/admin/stuck-instances/index.tsx',
 };
 
 const entries: Record<string, string> = Object.fromEntries(

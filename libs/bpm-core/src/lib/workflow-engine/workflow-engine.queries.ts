@@ -14,9 +14,11 @@ import {
   InactiveMemberWithOpenTasksObject,
   MemberOpenTaskObject,
 } from './task-reassignment.object';
+import { StuckApprovalInstanceObject } from './stuck-approval-instance.object';
 import {
   InactiveMemberOpenTasksRecord,
   MemberOpenTaskRecord,
+  StuckApprovalInstanceRecord,
 } from './workflow-engine.service';
 import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
@@ -265,6 +267,36 @@ export class WorkflowEngineQueries {
       (memberIds): Promise<readonly MemberMetadata[]> =>
         identityService.resolveInactiveMembers(memberIds),
     );
+  }
+
+  @Query(() => [StuckApprovalInstanceObject], {
+    description:
+      'Administrator: the RUNNING or RETURNED instances that could not move ' +
+      'on to their next stage and still cannot, newest failure first, one ' +
+      'row each. Each row says who has to press again now. Always paged: ' +
+      'page defaults to 1, pageSize to 20 (at most 100); ' +
+      'stuckApprovalInstanceCount gives the total.',
+  })
+  @BPMAdminOnly()
+  async stuckApprovalInstances(
+    @Args('page', { nullable: true, type: () => Int })
+    page: number | null,
+    @Args('pageSize', { nullable: true, type: () => Int })
+    pageSize: number | null,
+  ): Promise<readonly StuckApprovalInstanceRecord[]> {
+    return this.workflowEngineService.listStuckApprovalInstances({
+      page: page ?? undefined,
+      pageSize: pageSize ?? undefined,
+    });
+  }
+
+  @Query(() => Int, {
+    description:
+      'Administrator: how many instances stuckApprovalInstances pages through.',
+  })
+  @BPMAdminOnly()
+  async stuckApprovalInstanceCount(): Promise<number> {
+    return this.workflowEngineService.countStuckApprovalInstances();
   }
 
   @Query(() => [ApprovalTemplateEntity])

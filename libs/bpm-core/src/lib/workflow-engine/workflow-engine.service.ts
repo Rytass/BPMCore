@@ -162,6 +162,10 @@ import {
   computeFormDataFingerprint,
   computeStableValueFingerprint,
 } from './form-data-fingerprint';
+import {
+  InstanceAdvanceFailure,
+  type InstanceAdvanceFailureContext,
+} from './instance-advance-failure';
 import { readDistinctSubmitterMemberId } from './instance-submitter';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
@@ -171,6 +175,7 @@ import {
   ApprovalInstanceListViewEnum,
   ApprovalInstanceStateEnum,
   MemberTaskRoleEnum,
+  StuckApprovalInstanceKindEnum,
   TaskAssignmentTypeEnum,
   TaskCandidateStatusEnum,
   TaskDecisionActionEnum,
@@ -493,6 +498,34 @@ export interface MemberOpenTaskRecord {
   readonly templateName: string | null;
 }
 
+/** An instance that could not move on, as the administrator's stuck list reads it. */
+/** Paging of {@link WorkflowEngineService.listStuckApprovalInstances}. */
+export interface ListStuckApprovalInstancesOptions {
+  /** 1-based; defaults to 1. */
+  readonly page?: number;
+  /** Defaults to 20, at most 100. */
+  readonly pageSize?: number;
+}
+
+export interface StuckApprovalInstanceRecord {
+  /** `'SLA_AUTO_APPROVE'` when the failed attempt was the timeout approving. */
+  readonly automatic: 'SLA_AUTO_APPROVE' | null;
+  readonly failedActorMemberId: string | null;
+  readonly failedAt: Date;
+  readonly initiatorMemberId: string;
+  readonly instanceId: string;
+  readonly instanceTitle: string;
+  readonly kind: StuckApprovalInstanceKindEnum;
+  readonly message: string;
+  readonly nodeId: string | null;
+  readonly nodeLabel: string | null;
+  /** Who has to press again now; read when the list is loaded. */
+  readonly pendingActorMemberIds: readonly string[];
+  readonly taskId: string | null;
+  readonly templateId: string;
+  readonly templateName: string | null;
+}
+
 /** The administrator screens are in Traditional Chinese: names sort by stroke count. */
 const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
 
@@ -504,6 +537,13 @@ const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
  */
 const INACTIVE_MEMBER_COUNT_CONCURRENCY = 5;
 
+/**
+ * How many times an `ADVANCE_FAILED` row is tried before giving up. A missed
+ * row hides the instance from the stuck list, and a second try is safe: the
+ * duplicate check runs under the instance lock.
+ */
+const ADVANCE_FAILURE_RECORD_ATTEMPTS = 2;
+
 /** A deactivated member who still holds open tasks, for the reassignment screen. */
 export interface InactiveMemberOpenTasksRecord {
   readonly email: string;
@@ -511,6 +551,28 @@ export interface InactiveMemberOpenTasksRecord {
   readonly name: string;
   /** Same count as {@link WorkflowEngineService.listMemberOpenTasks} returns rows. */
   readonly openTaskCount: number;
+}
+
+/** Input of {@link WorkflowEngineService.adminCancelApprovalInstance}. */
+export interface AdminCancelApprovalInstanceCommand {
+  readonly cancelledByMemberId: string;
+  readonly instanceId: string;
+  /** Why the administrator ends it; stored and sent to the initiator. */
+  readonly reason: string;
+}
+
+/**
+ * What one cancellation path brings to {@link WorkflowEngineService}'s shared
+ * cancel transaction. The steps run in a fixed order; see
+ * `cancelApprovalInstanceInTransaction`.
+ */
+interface InstanceCancellation {
+  readonly actorMemberId: string;
+  /** Runs once the instance is read; throws to refuse. */
+  readonly authorize: (instance: ApprovalInstanceEntity) => void;
+  readonly instanceId: string;
+  /** The payload of the INSTANCE_CANCELLED activity record. */
+  readonly payload: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -799,6 +861,221 @@ export class WorkflowEngineService {
     }, Promise.resolve());
 
     return result;
+  }
+
+  /**
+   * Runs a public operation whose engine transaction may fail with an
+   * {@link InstanceAdvanceFailure}. The transaction has rolled back by the time
+   * it lands here, so the record is written in a transaction of its own, and
+   * the caller then gets the original error: same class, same message, as if
+   * none of this existed. The wrapper type never leaves this method.
+   */
+  private async withAdvanceFailureRecorded<TResult>(
+    run: () => Promise<TResult>,
+  ): Promise<TResult> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof InstanceAdvanceFailure) {
+        await this.recordAdvanceFailure(error);
+
+        throw error.originalError;
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Writes the `ADVANCE_FAILED` row for a rolled-back attempt, trying again
+   * once if the write fails. If every try fails the failure is logged as an
+   * error with what the row would have held, and swallowed: the caller must
+   * see the error that stopped the case, not the one that stopped its record.
+   * Such an instance is missing from the stuck list, so the log is the only
+   * trace of it.
+   */
+  private async recordAdvanceFailure(
+    failure: InstanceAdvanceFailure,
+    attempt = 1,
+  ): Promise<void> {
+    const { context, message } = failure;
+
+    try {
+      await this.writeAdvanceFailure(failure);
+    } catch (recordError) {
+      const reason =
+        recordError instanceof Error ? recordError.message : 'unknown error';
+
+      if (attempt < ADVANCE_FAILURE_RECORD_ATTEMPTS) {
+        this.logger.warn(
+          `Could not record ADVANCE_FAILED for instance ${context.instanceId} (attempt ${attempt}), trying again: ${reason}`,
+        );
+
+        return this.recordAdvanceFailure(failure, attempt + 1);
+      }
+
+      this.logger.error(
+        `Could not record ADVANCE_FAILED for instance ${context.instanceId}; it will not appear in the stuck list: ${reason}`,
+        JSON.stringify({
+          action: context.action,
+          actorMemberId: context.actorMemberId,
+          automatic: context.automatic,
+          kind: context.kind,
+          message,
+          nodeId: context.nodeId,
+          taskId: context.taskId,
+        }),
+      );
+    }
+  }
+
+  /** One try of {@link recordAdvanceFailure}, in a transaction of its own. */
+  private async writeAdvanceFailure(
+    failure: InstanceAdvanceFailure,
+  ): Promise<void> {
+    const { context, message } = failure;
+
+    await this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<void> => {
+        // The same per-instance lock every decision takes, so two attempts
+        // failing together cannot both pass the check below and write twice.
+        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          context.instanceId,
+        ]);
+
+        const unresolved = await this.readUnresolvedAdvanceFailures(
+          manager,
+          context.instanceId,
+        );
+
+        if (
+          unresolved.some((logged): boolean =>
+            isSameAdvanceFailure(logged, context, message),
+          )
+        ) {
+          return;
+        }
+
+        const activityRepository = manager.getRepository(ActivityLogEntity);
+
+        await activityRepository.save(
+          activityRepository.create({
+            actorMemberId: context.actorMemberId,
+            eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+            instanceId: context.instanceId,
+            nodeId: context.nodeId,
+            payload: {
+              action: context.action,
+              automatic: context.automatic,
+              kind: context.kind,
+              message,
+              nodeId: context.nodeId,
+              taskId: context.taskId,
+            },
+            taskId: context.taskId,
+          }),
+        );
+      },
+    );
+  }
+
+  /**
+   * The `ADVANCE_FAILED` rows of one instance that still describe how it is
+   * stuck, oldest first. Whether a decision went through is not read from
+   * `TASK_DECIDED`: a countersign leaves one behind from an earlier voter while
+   * the last vote is the one that failed. What counts is whether the situation
+   * the row describes still holds.
+   *
+   * - `DECISION`: the task is still open and the instance is still RUNNING.
+   *   Once the task is done, cancelled, transferred or the instance has ended,
+   *   the case has moved on or been taken over.
+   * - `RESUBMIT`: the instance is still RETURNED and no later
+   *   `INSTANCE_RESUBMITTED` exists.
+   *
+   * Shared by the duplicate check when a failure is recorded and by the list
+   * of stuck instances; the caller picks the last row for "the latest".
+   */
+  private async readUnresolvedAdvanceFailures(
+    manager: EntityManager,
+    instanceId: string,
+  ): Promise<readonly ActivityLogEntity[]> {
+    const instance = await manager
+      .getRepository(ApprovalInstanceEntity)
+      .findOne({ where: { id: instanceId } });
+
+    if (!instance) {
+      return [];
+    }
+
+    const byInstance = await this.readUnresolvedAdvanceFailuresByInstance(
+      manager,
+      [instance],
+    );
+
+    return byInstance.get(instance.id) ?? [];
+  }
+
+  /**
+   * {@link readUnresolvedAdvanceFailures} for many instances at once, in two
+   * queries whatever their number: one for their activity rows, one for the
+   * tasks those rows name. Instances with nothing unresolved are absent.
+   */
+  private async readUnresolvedAdvanceFailuresByInstance(
+    manager: EntityManager,
+    instances: readonly ApprovalInstanceEntity[],
+  ): Promise<ReadonlyMap<string, readonly ActivityLogEntity[]>> {
+    if (instances.length === 0) {
+      return new Map();
+    }
+
+    const logs = await manager.getRepository(ActivityLogEntity).find({
+      order: { seq: 'ASC' },
+      where: {
+        eventType: In([
+          ActivityLogEventTypeEnum.ADVANCE_FAILED,
+          ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+        ]),
+        instanceId: In(instances.map((instance): string => instance.id)),
+      },
+    });
+    const decidedTaskIds = [
+      ...new Set(
+        logs.flatMap((log): readonly string[] =>
+          log.eventType === ActivityLogEventTypeEnum.ADVANCE_FAILED &&
+          log.taskId
+            ? [log.taskId]
+            : [],
+        ),
+      ),
+    ];
+    const openTaskIds = new Set(
+      decidedTaskIds.length === 0
+        ? []
+        : (
+            await manager.getRepository(TaskEntity).find({
+              where: {
+                id: In(decidedTaskIds),
+                status: In([...OPEN_TASK_STATUSES]),
+              },
+            })
+          ).map((task): string => task.id),
+    );
+
+    return new Map(
+      instances.flatMap(
+        (
+          instance,
+        ): readonly (readonly [string, readonly ActivityLogEntity[]])[] => {
+          const unresolved = readUnresolvedInstanceFailures(
+            instance,
+            logs.filter((log): boolean => log.instanceId === instance.id),
+            openTaskIds,
+          );
+
+          return unresolved.length === 0 ? [] : [[instance.id, unresolved]];
+        },
+      ),
+    );
   }
 
   /**
@@ -1250,6 +1527,15 @@ export class WorkflowEngineService {
   async decideTask(
     input: DecideTaskInput,
     options: DecideTaskOptions = {},
+  ): Promise<TaskDecisionEntity> {
+    return this.withAdvanceFailureRecorded(() =>
+      this.decideTaskInTransaction(input, options),
+    );
+  }
+
+  private async decideTaskInTransaction(
+    input: DecideTaskInput,
+    options: DecideTaskOptions,
   ): Promise<TaskDecisionEntity> {
     return this.runEngineTransaction(
       async (manager): Promise<TaskDecisionEntity> => {
@@ -1760,6 +2046,21 @@ export class WorkflowEngineService {
           }),
         );
 
+        // What an ADVANCE_FAILED row says if the move to the next stage fails.
+        // An SLA timeout acts as the member `resolveTaskActorMemberId` picked,
+        // who never pressed anything, so `automatic` is what tells them apart.
+        const advanceContext = (
+          action: 'APPROVED' | 'RETURNED',
+        ): InstanceAdvanceFailureContext => ({
+          action,
+          actorMemberId: input.decidedByMemberId,
+          automatic: options.automatic ?? null,
+          instanceId: instance.id,
+          kind: 'DECISION',
+          nodeId: claimedTask.nodeId,
+          taskId: claimedTask.id,
+        });
+
         // Resolve the recipient's "待簽" notification so its inline 同意/拒絕
         // actions disappear once the task is decided. When the task has ended
         // (rejected / returned, or an approval that completed it), every other
@@ -1808,44 +2109,48 @@ export class WorkflowEngineService {
             return decision;
           }
 
-          const token = await tokenRepository.findOne({
-            where: { id: claimedTask.tokenId },
-          });
+          // Everything from here to the next stage is the part that leaves the
+          // case stuck when it fails: the decision rolls back with it.
+          await runInstanceAdvanceStep(advanceContext('APPROVED'), async () => {
+            const token = await tokenRepository.findOne({
+              where: { id: claimedTask.tokenId },
+            });
 
-          if (!token) {
-            throw new NotFoundException(
-              `Workflow token ${claimedTask.tokenId} was not found`,
-            );
-          }
+            if (!token) {
+              throw new NotFoundException(
+                `Workflow token ${claimedTask.tokenId} was not found`,
+              );
+            }
 
-          if (token.status !== WorkflowTokenStatusEnum.WAITING) {
-            throw new ConflictException(
-              `Workflow token ${token.id} is not waiting for a task decision`,
-            );
-          }
+            if (token.status !== WorkflowTokenStatusEnum.WAITING) {
+              throw new ConflictException(
+                `Workflow token ${token.id} is not waiting for a task decision`,
+              );
+            }
 
-          const activeToken = await tokenRepository.save({
-            ...token,
-            consumedAt: null,
-            status: WorkflowTokenStatusEnum.ACTIVE,
-          });
+            const activeToken = await tokenRepository.save({
+              ...token,
+              consumedAt: null,
+              status: WorkflowTokenStatusEnum.ACTIVE,
+            });
 
-          await this.dispatchAdhocStageNotifications(
-            manager,
-            instance,
-            claimedTask.nodeId,
-            'APPROVED',
-          );
-          await this.advanceTokenToOutgoingNodes(
-            manager,
-            instance,
-            activeToken,
-            readWorkflowNodeOrThrow(
-              instance.workflowSnapshot,
+            await this.dispatchAdhocStageNotifications(
+              manager,
+              instance,
               claimedTask.nodeId,
-            ),
-          );
-          await this.processRunningInstance(manager, instance);
+              'APPROVED',
+            );
+            await this.advanceTokenToOutgoingNodes(
+              manager,
+              instance,
+              activeToken,
+              readWorkflowNodeOrThrow(
+                instance.workflowSnapshot,
+                claimedTask.nodeId,
+              ),
+            );
+            await this.processRunningInstance(manager, instance);
+          });
 
           return decision;
         }
@@ -1855,12 +2160,14 @@ export class WorkflowEngineService {
         }
 
         if (input.action === TaskDecisionActionEnum.RETURNED) {
-          await this.returnInstanceToNode(
-            manager,
-            instance,
-            completedTask,
-            returnToNodeId,
-            decidedAt,
+          await runInstanceAdvanceStep(advanceContext('RETURNED'), () =>
+            this.returnInstanceToNode(
+              manager,
+              instance,
+              completedTask,
+              returnToNodeId,
+              decidedAt,
+            ),
           );
 
           return decision;
@@ -1888,30 +2195,128 @@ export class WorkflowEngineService {
   async cancelApprovalInstance(
     input: CancelApprovalInstanceInput,
   ): Promise<ApprovalInstanceEntity> {
+    return this.cancelApprovalInstanceInTransaction({
+      actorMemberId: input.cancelledByMemberId,
+      authorize: (instance): void => {
+        if (instance.initiatorMemberId !== input.cancelledByMemberId) {
+          throw new ConflictException(
+            `Approval instance ${instance.id} can only be cancelled by its initiator`,
+          );
+        }
+      },
+      instanceId: input.instanceId,
+      payload: {
+        comment: input.comment?.trim() || null,
+      },
+    });
+  }
+
+  /**
+   * Administrator: ends a running or returned instance on the initiator's
+   * behalf, whoever started it. The reason is required; it is recorded as the
+   * comment of the INSTANCE_CANCELLED activity (flagged
+   * `cancelledByAdministrator`, so a host can tell this from the initiator
+   * withdrawing) and sent to the initiator as an in-app notification. An
+   * administrator ending their own instance is not told.
+   *
+   * The notification is written only after the cancellation has committed,
+   * so nobody is told of a cancellation that then rolled back. A failure to
+   * write it is logged and does not undo the cancellation.
+   *
+   * Like the other administrator operations of this service it does not check
+   * who `cancelledByMemberId` is: the GraphQL mutation is guarded by
+   * `@BPMAdminOnly()`, and a host calling this directly must check first. That
+   * member is recorded as the actor of the INSTANCE_CANCELLED activity.
+   */
+  async adminCancelApprovalInstance(
+    input: AdminCancelApprovalInstanceCommand,
+  ): Promise<ApprovalInstanceEntity> {
+    const reason = input.reason.trim();
+
+    // Refused before anything is read, so an empty reason is never mistaken
+    // for a missing instance.
+    if (!reason) {
+      throw new BadRequestException(
+        'A reason is required to cancel an approval instance as an administrator',
+      );
+    }
+
+    const cancelled = await this.cancelApprovalInstanceInTransaction({
+      actorMemberId: input.cancelledByMemberId,
+      authorize: (): void => undefined,
+      instanceId: input.instanceId,
+      payload: {
+        cancelledByAdministrator: true,
+        comment: reason,
+      },
+    });
+
+    if (cancelled.initiatorMemberId !== input.cancelledByMemberId) {
+      await this.notifyInitiatorOfAdminCancel(cancelled, reason);
+    }
+
+    return cancelled;
+  }
+
+  /**
+   * Tells the initiator, after the commit, that an administrator ended their
+   * instance. Written outside any transaction, so external channels go out
+   * straight away and an observer is told the rows are committed.
+   */
+  private async notifyInitiatorOfAdminCancel(
+    instance: ApprovalInstanceEntity,
+    reason: string,
+  ): Promise<void> {
+    try {
+      await this.notificationService.createAdhocWorkflowNotifications({
+        channels: null,
+        instance,
+        message: `案件「${instance.title}」已由管理員撤銷：${reason}`,
+        payload: {
+          nodeLabel: '管理員撤銷',
+          reason,
+          type: 'INSTANCE_CANCELLED_BY_ADMINISTRATOR',
+        },
+        recipientMemberIds: [instance.initiatorMemberId],
+      });
+    } catch (error: unknown) {
+      this.logger.error(
+        `Instance ${instance.id} was cancelled by an administrator, but its initiator ${instance.initiatorMemberId} could not be notified: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+    }
+  }
+
+  /**
+   * The cancel transaction both paths share. The order is part of the
+   * contract: read, authorize, check the state, close, record. A non-initiator who tries to withdraw an already
+   * approved instance must keep getting the "initiator" refusal, not
+   * "not cancellable".
+   */
+  private async cancelApprovalInstanceInTransaction(
+    cancellation: InstanceCancellation,
+  ): Promise<ApprovalInstanceEntity> {
     return this.runEngineTransaction(
       async (manager): Promise<ApprovalInstanceEntity> => {
         await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-          input.instanceId,
+          cancellation.instanceId,
         ]);
 
         const instanceRepository = manager.getRepository(
           ApprovalInstanceEntity,
         );
         const instance = await instanceRepository.findOne({
-          where: { id: input.instanceId },
+          where: { id: cancellation.instanceId },
         });
 
         if (!instance) {
           throw new NotFoundException(
-            `Approval instance ${input.instanceId} was not found`,
+            `Approval instance ${cancellation.instanceId} was not found`,
           );
         }
 
-        if (instance.initiatorMemberId !== input.cancelledByMemberId) {
-          throw new ConflictException(
-            `Approval instance ${instance.id} can only be cancelled by its initiator`,
-          );
-        }
+        cancellation.authorize(instance);
 
         if (
           instance.state !== ApprovalInstanceStateEnum.RUNNING &&
@@ -1930,13 +2335,11 @@ export class WorkflowEngineService {
 
         await manager.getRepository(ActivityLogEntity).save(
           manager.getRepository(ActivityLogEntity).create({
-            actorMemberId: input.cancelledByMemberId,
+            actorMemberId: cancellation.actorMemberId,
             eventType: ActivityLogEventTypeEnum.INSTANCE_CANCELLED,
             instanceId: instance.id,
             nodeId: null,
-            payload: {
-              comment: input.comment?.trim() || null,
-            },
+            payload: cancellation.payload,
             taskId: null,
           }),
         );
@@ -2050,6 +2453,15 @@ export class WorkflowEngineService {
   }
 
   async resubmitApprovalInstance(
+    input: ResubmitApprovalInstanceCommand,
+    authContext?: BPMAuthContext,
+  ): Promise<ApprovalInstanceEntity> {
+    return this.withAdvanceFailureRecorded(() =>
+      this.resubmitApprovalInstanceInTransaction(input, authContext),
+    );
+  }
+
+  private async resubmitApprovalInstanceInTransaction(
     input: ResubmitApprovalInstanceCommand,
     authContext?: BPMAuthContext,
   ): Promise<ApprovalInstanceEntity> {
@@ -2203,7 +2615,18 @@ export class WorkflowEngineService {
             taskId: null,
           }),
         );
-        await this.processRunningInstance(manager, runtimeInstance);
+        await runInstanceAdvanceStep(
+          {
+            action: null,
+            actorMemberId: input.initiatorMemberId,
+            automatic: null,
+            instanceId: instance.id,
+            kind: 'RESUBMIT',
+            nodeId: null,
+            taskId: null,
+          },
+          () => this.processRunningInstance(manager, runtimeInstance),
+        );
 
         const refreshedInstance = await instanceRepository.findOne({
           where: { id: instance.id },
@@ -6520,6 +6943,153 @@ export class WorkflowEngineService {
   }
 
   /**
+   * The instances that could not move on and still cannot, newest failure
+   * first, one row each, described by their latest unresolved `ADVANCE_FAILED`.
+   *
+   * Which failures are unresolved is decided by
+   * {@link readUnresolvedAdvanceFailures}, the same rule the duplicate check
+   * uses; this only picks the candidates (an instance that is RUNNING or
+   * RETURNED and has an `ADVANCE_FAILED` at all) and decorates the result.
+   *
+   * Who has to press again is read now, not copied from the failure: a task
+   * the administrator has reassigned since shows its new holder.
+   * - `DECISION`: the candidates whose seat is PENDING or CLAIMED. A WAITING
+   *   seat of a sequential task is not that member's turn yet. A task without
+   *   a single candidate row is a direct task, held by its assignee.
+   * - `RESUBMIT`: the initiator.
+   */
+  async listStuckApprovalInstances(
+    options: ListStuckApprovalInstancesOptions = {},
+  ): Promise<readonly StuckApprovalInstanceRecord[]> {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<readonly StuckApprovalInstanceRecord[]> => {
+        // Who is stuck is decided over every candidate; only the page shown
+        // is decorated with its tasks, seats and template names.
+        const offset = readPageOffset(options.page, options.pageSize);
+        const stuck = (await this.readStuckCandidates(manager)).slice(
+          offset,
+          offset + normalizePageSize(options.pageSize),
+        );
+
+        if (stuck.length === 0) {
+          return [];
+        }
+
+        const taskIds = [
+          ...new Set(
+            stuck.flatMap(({ failure }): readonly string[] =>
+              failure.taskId ? [failure.taskId] : [],
+            ),
+          ),
+        ];
+        const tasks = taskIds.length
+          ? await manager
+              .getRepository(TaskEntity)
+              .find({ where: { id: In(taskIds) } })
+          : [];
+        const candidates = taskIds.length
+          ? await manager.getRepository(TaskCandidateEntity).find({
+              order: {
+                sequence: { direction: 'ASC', nulls: 'LAST' },
+                createdAt: 'ASC',
+                id: 'ASC',
+              },
+              where: { taskId: In(taskIds) },
+            })
+          : [];
+        const templates = await manager
+          .getRepository(ApprovalTemplateEntity)
+          .find({
+            where: {
+              id: In([
+                ...new Set(stuck.map(({ instance }) => instance.templateId)),
+              ]),
+            },
+          });
+        const templateNameById = new Map(
+          templates.map((template): readonly [string, string] => [
+            template.id,
+            template.name,
+          ]),
+        );
+
+        return stuck.map(
+          (candidate): StuckApprovalInstanceRecord =>
+            toStuckApprovalInstanceRecord(candidate, {
+              candidates,
+              tasks,
+              templateNameById,
+            }),
+        );
+      },
+    );
+  }
+
+  /** How many instances {@link listStuckApprovalInstances} pages through. */
+  async countStuckApprovalInstances(): Promise<number> {
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<number> =>
+        (await this.readStuckCandidates(manager)).length,
+    );
+  }
+
+  /**
+   * Every stuck instance with its latest unresolved failure, newest failure
+   * first: the candidates are the RUNNING or RETURNED instances with any
+   * `ADVANCE_FAILED` row, and {@link readUnresolvedAdvanceFailuresByInstance}
+   * decides which of them are still stuck, in two queries for all of them.
+   */
+  private async readStuckCandidates(
+    manager: EntityManager,
+  ): Promise<StuckCandidates> {
+    const failedInstanceIds = [
+      ...new Set(
+        (
+          await manager.getRepository(ActivityLogEntity).find({
+            select: { instanceId: true },
+            where: {
+              eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+            },
+          })
+        ).map((log): string => log.instanceId),
+      ),
+    ];
+
+    if (failedInstanceIds.length === 0) {
+      return [];
+    }
+
+    const instances = await manager
+      .getRepository(ApprovalInstanceEntity)
+      .find({
+        where: {
+          id: In(failedInstanceIds),
+          state: In([
+            ApprovalInstanceStateEnum.RUNNING,
+            ApprovalInstanceStateEnum.RETURNED,
+          ]),
+        },
+      });
+    // Batched: two queries however many instances are candidates.
+    const unresolvedByInstance =
+      await this.readUnresolvedAdvanceFailuresByInstance(
+        manager,
+        instances,
+      );
+    const found: StuckCandidates = instances.flatMap(
+      (instance): StuckCandidates => {
+        const unresolved = unresolvedByInstance.get(instance.id) ?? [];
+        const latest = unresolved[unresolved.length - 1];
+
+        return latest ? [{ failure: latest, instance }] : [];
+      },
+    );
+    return [...found].sort((left, right): number =>
+      compareFailuresNewestFirst(left.failure, right.failure),
+    );
+  }
+
+  /**
    * Deactivated members who still hold open tasks, so an administrator can find
    * them: a deactivated member no longer shows up in the member search.
    *
@@ -10509,6 +11079,205 @@ function readReturnResubmitStrategyFromPayload(
   return payload.resubmitStrategy === 'FROM_RETURN_POINT'
     ? 'FROM_RETURN_POINT'
     : 'RESTART';
+}
+
+/**
+ * Whether a recorded failure is the one a new attempt would write again: same
+ * kind and key, same reason. A decision is keyed by task, actor and action, so
+ * the votes of a countersign each keep their own row; a resubmission has one
+ * key per instance. The same actor failing for a different reason is news, so
+ * the message is part of the match.
+ */
+function isSameAdvanceFailure(
+  logged: ActivityLogEntity,
+  context: InstanceAdvanceFailureContext,
+  message: string,
+): boolean {
+  if (
+    readStringPayloadValue(logged.payload, 'kind') !== context.kind ||
+    logged.payload['message'] !== message
+  ) {
+    return false;
+  }
+
+  return (
+    context.kind === 'RESUBMIT' ||
+    (logged.taskId === context.taskId &&
+      logged.actorMemberId === context.actorMemberId &&
+      readStringPayloadValue(logged.payload, 'action') === context.action)
+  );
+}
+
+/**
+ * The rule of `readUnresolvedAdvanceFailures` for one instance, given its
+ * `ADVANCE_FAILED` and `INSTANCE_RESUBMITTED` rows in `seq` order and the ids
+ * of the tasks among them that are still open.
+ */
+function readUnresolvedInstanceFailures(
+  instance: ApprovalInstanceEntity,
+  logs: readonly ActivityLogEntity[],
+  openTaskIds: ReadonlySet<string>,
+): readonly ActivityLogEntity[] {
+  return logs.filter((failure, index): boolean => {
+    if (failure.eventType !== ActivityLogEventTypeEnum.ADVANCE_FAILED) {
+      return false;
+    }
+
+    const kind = readStringPayloadValue(failure.payload, 'kind');
+
+    if (kind === 'DECISION') {
+      return (
+        instance.state === ApprovalInstanceStateEnum.RUNNING &&
+        failure.taskId !== null &&
+        openTaskIds.has(failure.taskId)
+      );
+    }
+
+    if (kind === 'RESUBMIT') {
+      return (
+        instance.state === ApprovalInstanceStateEnum.RETURNED &&
+        !logs
+          .slice(index + 1)
+          .some(
+            (log): boolean =>
+              log.eventType === ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+          )
+      );
+    }
+
+    return false;
+  });
+}
+
+/**
+ * Runs the step that moves an instance on and, when it fails with an error an
+ * operator is meant to read (an `HttpException` below 500), hands it on as an
+ * {@link InstanceAdvanceFailure} so the public method can record it once the
+ * transaction has rolled back. Everything else passes through untouched: a 5xx
+ * is usually a hiccup that retrying clears, and a plain `Error` may carry SQL.
+ *
+ * Used at the three call sites only. `processRunningInstance` and
+ * `returnInstanceToNode` stay unwrapped because submit and the administrator's
+ * re-run call them too, and they must keep throwing the original class.
+ */
+async function runInstanceAdvanceStep<TResult>(
+  context: InstanceAdvanceFailureContext,
+  step: () => Promise<TResult>,
+): Promise<TResult> {
+  try {
+    return await step();
+  } catch (error) {
+    if (error instanceof HttpException && error.getStatus() < 500) {
+      throw new InstanceAdvanceFailure(error, context);
+    }
+
+    throw error;
+  }
+}
+
+/** An instance with the failure that describes how it is stuck. */
+interface StuckInstanceCandidate {
+  readonly failure: ActivityLogEntity;
+  readonly instance: ApprovalInstanceEntity;
+}
+
+type StuckCandidates = readonly StuckInstanceCandidate[];
+
+function toStuckApprovalInstanceRecord(
+  { failure, instance }: StuckInstanceCandidate,
+  lookup: {
+    readonly candidates: readonly TaskCandidateEntity[];
+    readonly tasks: readonly TaskEntity[];
+    readonly templateNameById: ReadonlyMap<string, string>;
+  },
+): StuckApprovalInstanceRecord {
+  const isResubmit =
+    readStringPayloadValue(failure.payload, 'kind') === 'RESUBMIT';
+  const taskId = isResubmit ? null : failure.taskId;
+  const nodeId = isResubmit ? null : failure.nodeId;
+  const message = failure.payload['message'];
+
+  return {
+    automatic:
+      failure.payload['automatic'] === SLA_AUTO_APPROVE_MARK
+        ? SLA_AUTO_APPROVE_MARK
+        : null,
+    failedActorMemberId: failure.actorMemberId,
+    failedAt: failure.createdAt,
+    initiatorMemberId: instance.initiatorMemberId,
+    instanceId: instance.id,
+    instanceTitle: instance.title,
+    kind: isResubmit
+      ? StuckApprovalInstanceKindEnum.RESUBMIT
+      : StuckApprovalInstanceKindEnum.DECISION,
+    message: typeof message === 'string' ? message : '',
+    nodeId,
+    nodeLabel: nodeId
+      ? readWorkflowNodeLabel(instance.workflowSnapshot, nodeId)
+      : null,
+    pendingActorMemberIds:
+      taskId === null
+        ? [instance.initiatorMemberId]
+        : readTaskHolderMemberIds(
+            lookup.tasks.find((task): boolean => task.id === taskId) ?? null,
+            lookup.candidates.filter(
+              (candidate): boolean => candidate.taskId === taskId,
+            ),
+          ),
+    taskId,
+    templateId: instance.templateId,
+    templateName: lookup.templateNameById.get(instance.templateId) ?? null,
+  };
+}
+
+/**
+ * The members who can press a task's button now: a PENDING or CLAIMED seat,
+ * each member once. A WAITING seat of a sequential task is not that member's
+ * turn yet. A task with no candidate row at all is a direct task, held by its
+ * assignee, as the reassignment check reads it.
+ */
+function readTaskHolderMemberIds(
+  task: TaskEntity | null,
+  candidates: readonly TaskCandidateEntity[],
+): readonly string[] {
+  if (candidates.length === 0) {
+    return task?.assigneeMemberId ? [task.assigneeMemberId] : [];
+  }
+
+  return [
+    ...new Set(
+      candidates
+        .filter(
+          (candidate): boolean =>
+            candidate.status === TaskCandidateStatusEnum.PENDING ||
+            candidate.status === TaskCandidateStatusEnum.CLAIMED,
+        )
+        .map((candidate): string => candidate.memberId),
+    ),
+  ];
+}
+
+/**
+ * Newest first. `created_at` is the transaction start time, so rows written by
+ * one transaction tie on it; `seq` is the write order and breaks the tie.
+ */
+function compareFailuresNewestFirst(
+  left: ActivityLogEntity,
+  right: ActivityLogEntity,
+): number {
+  const byTime = right.createdAt.getTime() - left.createdAt.getTime();
+
+  if (byTime !== 0) {
+    return byTime;
+  }
+
+  const bySeq = BigInt(right.seq ?? '0') - BigInt(left.seq ?? '0');
+
+  if (bySeq !== BigInt(0)) {
+    return bySeq > BigInt(0) ? 1 : -1;
+  }
+
+  return left.instanceId.localeCompare(right.instanceId);
 }
 
 function readStringPayloadValue(

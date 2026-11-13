@@ -1421,3 +1421,52 @@ describe('decision comments on a task several members signed', (): void => {
     });
   });
 });
+
+describe('stuck approval and administrator cancellation in the timeline', (): void => {
+  const log = (eventType: string): ActivityLogRecord =>
+    ({
+      actorMemberId: 'member-001',
+      createdAt: '2026-11-12T08:00:00.000Z',
+      eventType,
+      id: `activity-${eventType}`,
+      instanceId: 'instance-1',
+      nodeId: null,
+      payloadJson: '{}',
+      taskId: null,
+    }) as unknown as ActivityLogRecord;
+
+  it('puts a failed move to the next stage on the timeline with its reason', (): void => {
+    expect(isUserMeaningfulActivity(log('ADVANCE_FAILED'))).toBe(true);
+    expect(
+      readActivityEventLabel('ADVANCE_FAILED', {
+        automatic: null,
+        message: '找不到下一關的簽核人',
+      }),
+    ).toBe('往下一關失敗：找不到下一關的簽核人');
+  });
+
+  it('says the system failed when the timeout auto-approval was the one that failed', (): void => {
+    expect(
+      readActivityEventLabel('ADVANCE_FAILED', {
+        automatic: 'SLA_AUTO_APPROVE',
+        message: '找不到下一關的簽核人',
+      }),
+    ).toBe('系統逾時自動同意失敗：找不到下一關的簽核人');
+  });
+
+  it('labels an administrator cancellation with the reason', (): void => {
+    expect(
+      readActivityEventLabel('INSTANCE_CANCELLED', {
+        cancelledByAdministrator: true,
+        comment: '申請人已離職',
+      }),
+    ).toBe('管理員撤銷：申請人已離職');
+  });
+
+  it('keeps the applicant own cancellation label unchanged', (): void => {
+    expect(readActivityEventLabel('INSTANCE_CANCELLED', {})).toBe('案件已取消');
+    expect(
+      readActivityEventLabel('INSTANCE_CANCELLED', { comment: '填錯了' }),
+    ).toBe('案件已取消');
+  });
+});
