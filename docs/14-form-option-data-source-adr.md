@@ -259,7 +259,9 @@ Read-only resolve 採**部分解析回報**：provider 正常回應但解不出�
 Runtime query（search 與 resolve 皆同）必須從權威資料取得 DataSource reference：
 
 - 發起頁：以 published form version／launch context 為準，並檢查目前使用者可發起該
-  template。
+  template。（後續修訂：改以單一範本的發起權限判斷，initiator `customFields`
+  resolver 收到 `purpose: 'FORM_OPTIONS'`，宿主可只為查選項放行只准後端送審的範本；
+  可發起列表與送單不受影響。）
 - 退回編輯：以 instance 的 form definition snapshot 為準，並檢查目前使用者可讀且可
   resubmit 該 instance。
 - 唯讀案件：不呼叫 Runtime Query，只讀案件 snapshot。

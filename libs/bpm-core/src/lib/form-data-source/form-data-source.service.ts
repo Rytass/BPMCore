@@ -24,7 +24,6 @@ import { BPMAuthContext } from '../bpm-auth';
 import { ConditionService } from '../condition/condition.service';
 import { runExpressionOperation } from '../condition/expression-budget';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
-import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
 import { FormDefinitionVersionEntity } from '../form/form-definition-version.entity';
 import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import { parseAndValidateFormSchemas } from '../form/form-schema.validator';
@@ -132,6 +131,8 @@ export class FormDataSourceService {
   constructor(
     @Inject(BPM_FORM_DATA_SOURCE_REGISTRY)
     private readonly registry: BPMFormDataSourceRegistry,
+    // No longer read here (the engine resolves the template version); kept so
+    // a hand-built service's constructor arguments stay where they were.
     @InjectRepository(ApprovalTemplateVersionEntity)
     private readonly approvalTemplateVersionRepository: Repository<ApprovalTemplateVersionEntity>,
     @InjectRepository(FormDefinitionVersionEntity)
@@ -561,28 +562,15 @@ export class FormDataSourceService {
     }
 
     if (templateId) {
-      const launchableTemplates =
-        await this.workflowEngineService.listLaunchableApprovalTemplates(
+      // Judged for this one template with `purpose: 'FORM_OPTIONS'`, so a
+      // host can open the options of a template its members may not submit
+      // themselves without listing it as launchable.
+      const templateVersion =
+        await this.workflowEngineService.readFormOptionsTemplateVersion(
+          templateId,
           authContext.memberId,
           authContext,
         );
-      const template = launchableTemplates.find(
-        (candidate) => candidate.id === templateId,
-      );
-
-      if (!template?.currentVersionId) {
-        throw new BPMFormDataSourceForbiddenException(
-          BPM_FORM_DATA_SOURCE_ERROR_CODES.RUNTIME_CONTEXT_FORBIDDEN,
-        );
-      }
-
-      const templateVersion =
-        await this.approvalTemplateVersionRepository.findOne({
-          where: {
-            id: template.currentVersionId,
-            status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
-          },
-        });
 
       if (!templateVersion?.formDefinitionVersionId) {
         throw new BPMFormDataSourceForbiddenException(

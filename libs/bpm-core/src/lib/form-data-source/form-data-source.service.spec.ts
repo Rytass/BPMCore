@@ -772,10 +772,16 @@ describe('FormDataSourceService', () => {
     ]);
   });
 
-  it('derives a runtime source from a launchable published template', async (): Promise<void> => {
+  it('derives a runtime source from the template version the engine opens for form options', async (): Promise<void> => {
     const search = jest.fn(
       (): Promise<BPMFormDataSourceSearchResult> =>
         Promise.resolve({ options: [{ label: 'A', value: 'A' }] }),
+    );
+    const readFormOptionsTemplateVersion = jest.fn(() =>
+      Promise.resolve({
+        formDefinitionVersionId: 'form-version-1',
+        id: 'template-version-1',
+      }),
     );
     const service = createService(createSource({ search }), {
       approvalTemplateVersionRepository: {
@@ -798,9 +804,7 @@ describe('FormDataSourceService', () => {
         ),
       } as unknown as Repository<FormDefinitionVersionEntity>,
       workflowEngineService: {
-        listLaunchableApprovalTemplates: jest.fn(() =>
-          Promise.resolve([{ currentVersionId: 'template-version-1', id: 'template-1' }]),
-        ),
+        readFormOptionsTemplateVersion,
       } as unknown as WorkflowEngineService,
     });
 
@@ -814,13 +818,18 @@ describe('FormDataSourceService', () => {
     );
 
     expect(result.options).toEqual([{ label: 'A', value: 'A' }]);
+    expect(readFormOptionsTemplateVersion).toHaveBeenCalledWith(
+      'template-1',
+      authContext.memberId,
+      authContext,
+    );
     expect(search).toHaveBeenCalled();
   });
 
-  it('rejects a runtime request for a non-launchable template', async (): Promise<void> => {
+  it('rejects a runtime request for a template whose options the member may not read', async (): Promise<void> => {
     const service = createService(createSource(), {
       workflowEngineService: {
-        listLaunchableApprovalTemplates: jest.fn(() => Promise.resolve([])),
+        readFormOptionsTemplateVersion: jest.fn(() => Promise.resolve(null)),
       } as unknown as WorkflowEngineService,
     });
 
@@ -1070,10 +1079,11 @@ describe('FormDataSourceService', () => {
         ),
       } as unknown as Repository<FormDefinitionVersionEntity>,
       workflowEngineService: {
-        listLaunchableApprovalTemplates: jest.fn(() =>
-          Promise.resolve([
-            { currentVersionId: 'template-version-1', id: 'template-1' },
-          ]),
+        readFormOptionsTemplateVersion: jest.fn(() =>
+          Promise.resolve({
+            formDefinitionVersionId: 'form-version-1',
+            id: 'template-version-1',
+          }),
         ),
       } as unknown as WorkflowEngineService,
     });
@@ -1096,10 +1106,10 @@ describe('FormDataSourceService', () => {
     );
   });
 
-  it('rejects a runtime resolve for a non-launchable template', async (): Promise<void> => {
+  it('rejects a runtime resolve for a template whose options the member may not read', async (): Promise<void> => {
     const service = createService(createSource(), {
       workflowEngineService: {
-        listLaunchableApprovalTemplates: jest.fn(() => Promise.resolve([])),
+        readFormOptionsTemplateVersion: jest.fn(() => Promise.resolve(null)),
       } as unknown as WorkflowEngineService,
     });
 

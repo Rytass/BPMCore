@@ -2,11 +2,13 @@ import { InjectionToken } from '@nestjs/common';
 import { BPMAuthContext } from '../bpm-auth';
 
 /**
- * Why the engine is asking for `customFields`: a case being submitted, or the
- * list of templates a member may start (`launchableApprovalTemplates`).
+ * Why the engine is asking for `customFields`: a case being submitted, the
+ * list of templates a member may start (`launchableApprovalTemplates`), or a
+ * member reading the data-source options of one template's form before it is
+ * submitted.
  */
 export type BPMInitiatorCustomFieldsPurpose =
-  'SUBMISSION' | 'LAUNCHABLE_TEMPLATES';
+  'FORM_OPTIONS' | 'LAUNCHABLE_TEMPLATES' | 'SUBMISSION';
 
 /**
  * What the engine tells the host while it builds an initiator snapshot.
@@ -30,7 +32,8 @@ export interface BPMInitiatorCustomFieldsInput {
    * The form data being submitted, which is the same data the case is created
    * with. When the submission comes from an end user (the GraphQL mutation),
    * the fields an approver fills in have already been dropped from it.
-   * `null` for `LAUNCHABLE_TEMPLATES`, which has no form.
+   * `null` for `LAUNCHABLE_TEMPLATES` and `FORM_OPTIONS`, which have no
+   * submitted form.
    */
   readonly formData: Readonly<Record<string, unknown>> | null;
 
@@ -39,12 +42,15 @@ export interface BPMInitiatorCustomFieldsInput {
 
   readonly purpose: BPMInitiatorCustomFieldsPurpose;
 
-  /** The template being submitted; `null` for `LAUNCHABLE_TEMPLATES`. */
+  /**
+   * The template being submitted, or whose options are read; `null` for
+   * `LAUNCHABLE_TEMPLATES`.
+   */
   readonly templateId: string | null;
 
   /**
-   * The published version the case starts on; `null` for
-   * `LAUNCHABLE_TEMPLATES`.
+   * The published version the case starts on, or whose options are read;
+   * `null` for `LAUNCHABLE_TEMPLATES`.
    */
   readonly templateVersionId: string | null;
 }
@@ -67,10 +73,24 @@ export interface BPMInitiatorCustomFieldsInput {
  *   There is no template and no form: `templateId`, `templateVersionId` and
  *   `formData` are `null`.
  *
- * The answer must depend on the initiator only, never on the template or the
- * form: the list asks once for every template, and a template it lists has to
- * be one the member can then submit. Return the same `customFields` for both
- * purposes.
+ * - `FORM_OPTIONS`: a member reads the data-source options of a template's
+ *   form by `templateId` (`formFieldOptions` / `resolveFormFieldOptions`)
+ *   and the engine judges that one
+ *   template's initiator policy. `templateId` and `templateVersionId` are set,
+ *   `formData` is `null`. The snapshot is only judged, never stored.
+ *
+ * For `SUBMISSION` and `LAUNCHABLE_TEMPLATES` the answer must depend on the
+ * initiator only, never on the template or the form: the list asks once for
+ * every template, and a template it lists has to be one the member can then
+ * submit. Return the same `customFields` for both.
+ *
+ * `FORM_OPTIONS` is the one purpose that may answer differently. It opens a
+ * template's options and nothing else, so a template that only the host's
+ * backend submits (an initiator policy such as
+ * `has(initiator.customFields.hostSubmitted)`) can let members fill its form
+ * while the launchable list and the GraphQL submission still turn them away.
+ * Returning the submission answer here keeps the old behaviour: options are
+ * open to exactly the members who may start the template.
  *
  * It decides `customFields` and nothing else: `memberId`, `orgUnitIds`,
  * `positionId`, `positionIds` and `primaryOrgUnitId` always come from the
