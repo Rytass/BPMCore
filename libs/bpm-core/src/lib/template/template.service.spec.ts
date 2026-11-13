@@ -4586,6 +4586,161 @@ describe('TemplateService template key (ADR 27 §6)', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 });
+
+describe('TemplateService compose template key (ADR 27 §6.2)', () => {
+  it('creates a template carrying the key when no live template has it', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const result = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+
+    expect(result.template.key).toBe('invoice.payment');
+    expect(store(ApprovalTemplateEntity).size).toBe(1);
+  });
+
+  it('adds a draft version to the live template holding the key instead of creating one', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const first = await service.composeApprovalTemplateWithForm(
+      composeInput({ publish: true, templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+    const second = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+
+    expect(second.template.id).toBe(first.template.id);
+    expect(second.templateVersion.id).not.toBe(first.templateVersion.id);
+    expect(second.templateVersion.status).toBe(
+      ApprovalTemplateVersionStatusEnum.DRAFT,
+    );
+    expect(store(ApprovalTemplateEntity).size).toBe(1);
+  });
+
+  it('ignores a soft-deleted template holding the key and creates a new one', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const first = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+    Object.assign(
+      store(ApprovalTemplateEntity).get(first.template.id) as ObjectLiteral,
+      { deletedAt: new Date() },
+    );
+
+    const second = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'invoice.payment' }),
+      'member-admin',
+    );
+
+    expect(second.template.id).not.toBe(first.template.id);
+    expect(second.template.key).toBe('invoice.payment');
+    expect(store(ApprovalTemplateEntity).size).toBe(2);
+  });
+
+  it('sets the templateKey on the templateId template when no row holds it', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const drafted = await service.composeApprovalTemplateWithForm(
+      composeInput(),
+      'member-admin',
+    );
+    const keyed = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateId: drafted.template.id, templateKey: 'gamma' }),
+      'member-admin',
+    );
+
+    expect(keyed.template.id).toBe(drafted.template.id);
+    expect(keyed.template.key).toBe('gamma');
+    expect(store(ApprovalTemplateEntity).size).toBe(1);
+  });
+
+  it('refuses a templateId and templateKey that point at different templates', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const alpha = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'alpha' }),
+      'member-admin',
+    );
+    await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: 'beta' }),
+      'member-admin',
+    );
+    const versionsBefore = store(ApprovalTemplateVersionEntity).size;
+
+    await expect(
+      service.composeApprovalTemplateWithForm(
+        composeInput({ templateId: alpha.template.id, templateKey: 'beta' }),
+        'member-admin',
+      ),
+    ).rejects.toThrow(
+      new BadRequestException(
+        'templateId and templateKey point at different templates',
+      ).message,
+    );
+    expect(store(ApprovalTemplateVersionEntity).size).toBe(versionsBefore);
+  });
+
+  it('refuses a key and templateKey that differ, before writing anything', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    await expect(
+      service.composeApprovalTemplateWithForm(
+        composeInput({ key: 'alpha', templateKey: 'beta' }),
+        'member-admin',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(store(ApprovalTemplateEntity).size).toBe(0);
+  });
+
+  it('accepts a key and templateKey that match', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const result = await service.composeApprovalTemplateWithForm(
+      composeInput({ key: 'alpha', templateKey: 'alpha' }),
+      'member-admin',
+    );
+
+    expect(result.template.key).toBe('alpha');
+  });
+
+  it('ignores an empty templateKey', async (): Promise<void> => {
+    const { manager } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    const result = await service.composeApprovalTemplateWithForm(
+      composeInput({ templateKey: '' }),
+      'member-admin',
+    );
+
+    expect(result.template.key).toBeNull();
+  });
+
+  it('rejects a malformed templateKey before writing anything', async (): Promise<void> => {
+    const { manager, store } = createInMemoryManager();
+    const service = createStoreBackedService(manager);
+
+    await expect(
+      service.composeApprovalTemplateWithForm(
+        composeInput({ templateKey: 'bad key' }),
+        'member-admin',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(store(ApprovalTemplateEntity).size).toBe(0);
+  });
+});
+
 describe('TemplateService filterable field enforcement (ADR 25 §5.4)', () => {
   const NOTE_TEXT_SCHEMA = {
     fields: [{ fieldKey: 'note', label: '備註', required: false, type: 'text' }],

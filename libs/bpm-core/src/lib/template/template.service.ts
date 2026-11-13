@@ -268,6 +268,18 @@ export class TemplateService {
     // Validated before any lock is taken. `undefined` keeps the stored key.
     const key =
       input.key === undefined ? undefined : normalizeTemplateKey(input.key);
+    const templateKey = normalizeTemplateKey(input.templateKey);
+
+    if (key !== undefined && templateKey !== null && key !== templateKey) {
+      throw new BadRequestException(
+        'key and templateKey must match when both are given',
+      );
+    }
+
+    // The key the template row ends up with. `templateKey` names the template
+    // when `templateId` is absent, so it is also the key written on create.
+    const writtenKey = key !== undefined ? key : (templateKey ?? undefined);
+
     const { event, result } = await translateTemplateKeyConflict(
       this.templateRepository.manager.transaction(
         async (
@@ -281,16 +293,34 @@ export class TemplateService {
           // writes the draft row, the same order a standalone publish uses.
           // Taking it later (after the draft write, inside publishVersion) let a
           // concurrent publish of the same draft deadlock against this one.
-          if (input.templateId) {
+          // ADR 27 §6.2: without a templateId, a live template holding the
+          // templateKey is versioned instead of creating a second one. Soft-
+          // deleted rows are skipped, so their key is free again.
+          const keyed =
+            templateKey === null
+              ? null
+              : await manager.getRepository(ApprovalTemplateEntity).findOne({
+                  where: { deletedAt: IsNull(), key: templateKey },
+                });
+
+          if (input.templateId && keyed && keyed.id !== input.templateId) {
+            throw new BadRequestException(
+              'templateId and templateKey point at different templates',
+            );
+          }
+
+          const targetTemplateId = input.templateId ?? keyed?.id ?? null;
+
+          if (targetTemplateId) {
             const locked = await this.readLockedTemplateOrThrow(
               manager,
-              input.templateId,
+              targetTemplateId,
             );
 
-            if (key !== undefined) {
+            if (writtenKey !== undefined) {
               await manager
                 .getRepository(ApprovalTemplateEntity)
-                .update({ id: locked.id }, { key });
+                .update({ id: locked.id }, { key: writtenKey });
             }
           }
 
@@ -303,7 +333,8 @@ export class TemplateService {
             await this.resolveComposedTemplateDraftVersion(
               manager,
               input,
-              key,
+              targetTemplateId,
+              writtenKey,
               currentMemberId,
             );
 
@@ -444,10 +475,11 @@ export class TemplateService {
   private async resolveComposedTemplateDraftVersion(
     manager: EntityManager,
     input: ComposeApprovalTemplateWithFormInput,
+    templateId: string | null,
     key: string | null | undefined,
     currentMemberId: string | null,
   ): Promise<ApprovalTemplateVersionEntity> {
-    if (!input.templateId) {
+    if (!templateId) {
       const template = await this.createApprovalTemplate(
         {
           category: input.category,
@@ -472,8 +504,8 @@ export class TemplateService {
     }
 
     return (
-      (await this.findDraftTemplateVersion(input.templateId, manager)) ??
-      (await this.forkApprovalTemplate(input.templateId, manager))
+      (await this.findDraftTemplateVersion(templateId, manager)) ??
+      (await this.forkApprovalTemplate(templateId, manager))
     );
   }
 

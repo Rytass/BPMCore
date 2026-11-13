@@ -24,6 +24,23 @@ export class ComposeApprovalTemplateWithFormInput {
   @IsUUID()
   templateId!: string | null;
 
+  /**
+   * Host key that finds the template to version when `templateId` is absent
+   * (ADR 27 §6.2). Not found: the template is created with this key.
+   */
+  @Field(() => String, {
+    description:
+      'Host key that finds the template to version, used when templateId is absent. A live template with this key gets a new draft version; if none exists, a new template is created with this key. Same format as key. An empty string or null is ignored.',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_object: object, value: unknown): boolean => value !== '')
+  @IsString()
+  @Matches(TEMPLATE_KEY_PATTERN, {
+    message: 'templateKey must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$',
+  })
+  templateKey?: string | null;
+
   // --- Form content ---
   @Field()
   @IsString()
