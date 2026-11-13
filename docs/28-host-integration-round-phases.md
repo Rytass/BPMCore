@@ -2,6 +2,7 @@
 
 - **對應 ADR**：[27 — 宿主深度整合能力](./27-host-integration-round-adr.md)
 - **基準版本**：0.22.0（`8990d251`）
+- **狀態**：P1–P5 完成，P6 進行中
 - **交付**：單一 PR（分支 `feat/host-integration-round`），一次發版 `0.23.0`
 - **原則**：每個 phase 都是一組 atomic commit，結束時 `typecheck`、`lint`、`test` 全綠才進下一個；`docs/api-reference.md` 在同一個 commit 內同步
 
@@ -24,7 +25,7 @@ P6 docs sweep, /review, release prep
 - ADR 27、Phase 28、`docs/README.md` 索引。
 - **gate**：使用者核可 ADR 27，特別是 §12 標「採建議值」的子題與 F6 的列結構鎖定提案。
 
-## P1 — 小而獨立的四項
+## P1 — 小而獨立的四項（完成）
 
 | 項        | 改動                                                                                                                                                                                  | 測試                                                                           |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -33,7 +34,7 @@ P6 docs sweep, /review, release prep
 | 8         | validator 放寬（無 `FIELD`／`EXPRESSION` 依賴）；發布 preview 警告；渲染端主動解析預設值；設計器不再清掉預設值                                                                        | 有依賴時仍拒絕；預設值不在選項內時送件回 `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` |
 | 5（參數） | `submitApprovalInstance` service 輸入加 `initiatorCustomFields`；與 `initiatorMetadataSnapshotJson` 互斥                                                                              | 合併順序（resolver 之上再疊 host 值）、互斥 400、GraphQL 無法帶入              |
 
-## P2 — 範本層欄位與 migration
+## P2 — 範本層欄位與 migration（完成）
 
 - Migration `0000000032000-host-integration-round`：ADR 27 §10.1 全部，包含 P4 才會用到的 `approval_instance_events` 表，一支 migration 一次建好。
 - 6：`key` 欄位、partial unique index、compose 依 key upsert、`approvalTemplateByKey`、`approvalInstances` 系列與 P1 的 `templateKey` 篩選。
@@ -44,7 +45,7 @@ P6 docs sweep, /review, release prep
   - 既有 migration spec 全綠。
   - key 唯一性：軟刪除後可重用、未刪除時重複回 409。
 
-## P3 — 未填欄位當 null
+## P3 — 未填欄位當 null（完成）
 
 - `expressionMissingFormFieldsAsNull` 選項，三個 context 建立點共用同一個補值函式。
 - **測試**（`test-real-engine`）：
@@ -52,7 +53,7 @@ P6 docs sweep, /review, release prep
   - 補值不寫回 `form_data`。
 - **文件**：05 的對照表、p2-p3 lint 文件矛盾的修正。
 
-## P4 — 生命週期事件與決策前檢查
+## P4 — 生命週期事件與決策前檢查（完成）
 
 兩項都動交易邊界，放在同一個 phase。
 
@@ -75,7 +76,7 @@ P6 docs sweep, /review, release prep
   - SLA 自動同意被擋時任務維持開啟並發事件。
   - 沒有 observer 或 guard 時，行為與 0.22.0 相同。
 
-## P5 — 補填放寬
+## P5 — 補填放寬（完成）
 
 - 4(b)：
   - `prepareDecisionFormDataOptions`：鎖外以簽核人身分解析，鎖內比對 fingerprint 後寫入快照。
@@ -95,7 +96,7 @@ P6 docs sweep, /review, release prep
   - 兩欄都開給同一節點：decide 時依賴欄以補填後的值重新解析。
   - 舊範本（發布規則上線前）依賴欄未開放而來源欄被改動：decide 回 `FORM_FIELD_ACCESS_DEPENDENT_COLUMN_STALE`。
 
-## P6 — 收尾與發版準備
+## P6 — 收尾與發版準備（進行中）
 
 - `docs/api-reference.md` 全面比對新增 export，並更新「Last verified against」。
 - [10 — 嵌入式模組](./10-bpm-embedding-auth.md)、[11 — Consumer Quickstart](./11-consumer-quickstart.md) 補上新的 token 與選項。
