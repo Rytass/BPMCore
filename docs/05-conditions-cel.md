@@ -66,6 +66,8 @@
   後者的快照在送單那一刻定下，重送不重算；送單時評估的發起權限（`initiatorPolicyCel`）讀的是同一份。
   「可發起範本」列表每次請求也呼叫它一次（`purpose: 'LAUNCHABLE_TEMPLATES'`，沒有範本與表單，`templateId`、`templateVersionId`、`formData` 為 `null`），
   用同一份 `customFields` 評估每個範本的發起權限，所以 resolver 的結果只能依發起人決定，送單與列表要回一樣的值。
+  發起頁以 `templateId` 查表單選項時另呼叫一次（`purpose: 'FORM_OPTIONS'`，帶該範本的 `templateId`、`templateVersionId`，`formData` 為 `null`），只評估該範本的發起權限。
+  這是唯一可以回不同值的時機：只准宿主後端送審的範本（例如 `has(initiator.customFields.hostSubmitted)`）可以在這裡放行，讓成員查得到選項，但可發起列表與 GraphQL 送單照樣擋下；這份快照只用來判斷，不會存。
   列表呼叫失敗或逾時（10 秒）時不讓整份列表失敗，改用 `customFields: {}` 評估並記 warning：讀到 `initiator.customFields` 的範本會因缺鍵被排除，其他範本照常列出。
   送單則不降級：resolver 失敗、逾時或回傳格式不對，送單一律失敗、不建立案件（見 `docs/api-reference.md` 的 workflow-engine 段）。
   試跑不呼叫它。

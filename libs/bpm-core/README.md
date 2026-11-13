@@ -765,6 +765,14 @@ condition or in its initiator policy.
   its answer. So the answer must depend on the initiator only, and be the same
   for both purposes: a template the list shows has to be one the member can
   then submit.
+- It runs once more when a member reads a template's form options by
+  `templateId` (`purpose: 'FORM_OPTIONS'`, with the template and its published
+  version, `null` form data), and only that template's initiator policy is
+  judged. This purpose may answer differently: return, say,
+  `{ hostSubmitted: true }` here for a template only your backend submits, and
+  members can fill its form while the launchable list and the GraphQL
+  submission still refuse them. Return the submission answer to keep options
+  open to exactly the members who may start the template.
 - It decides `customFields` only. `memberId`, `orgUnitIds`, `positionId`,
   `positionIds` and `primaryOrgUnitId` always come from BPM, whatever it returns.
 - It must return a plain, JSON-serializable object within 10 seconds. Anything
@@ -788,7 +796,7 @@ condition or in its initiator policy.
 - Register it as the `initiatorCustomFieldsResolver` runtime value, the
   `initiatorCustomFieldsResolverProvider` wiring option, or the token in a
   `@Global()` host module. Every one of them reaches the single engine the
-  submission, the launchable list and the form option DataSources share.
+  submission, the launchable list and the form option check share.
 
 ## Organization Data Ownership
 

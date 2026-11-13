@@ -195,6 +195,7 @@ import {
 import {
   BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
   BPMInitiatorCustomFieldsInput,
+  BPMInitiatorCustomFieldsPurpose,
   BPMInitiatorCustomFieldsResolver,
 } from './initiator-custom-fields-resolver.token';
 import {
@@ -4428,59 +4429,139 @@ export class WorkflowEngineService {
       },
     );
 
-    return templates.filter((template) => {
-      const currentVersion = template.currentVersionId
-        ? (versionById.get(template.currentVersionId) ?? null)
-        : null;
+    return templates.filter((template) =>
+      this.isInitiatorPolicyMet(
+        template,
+        template.currentVersionId
+          ? (versionById.get(template.currentVersionId) ?? null)
+          : null,
+        initiatorMetadataSnapshot,
+        'launchable templates',
+      ),
+    );
+  }
 
-      if (!currentVersion?.formDefinitionVersionId) {
-        return false;
-      }
-
-      // A policy in a dialect this version does not know cannot be evaluated,
-      // so the template is not launchable (fail closed), but only that one:
-      // publishing does not check the field yet (Phase 23 P2), and one such
-      // version must not break the list for every member.
-      if (
-        hasExpressionText(currentVersion.initiatorPolicyCel) &&
-        !isReadableExpressionDialect(currentVersion.workflowDefinition)
-      ) {
-        this.logger.warn(
-          `template=${template.id} version=${currentVersion.id} left out of launchable templates: unknown expression dialect`,
-        );
-
-        return false;
-      }
-
-      // Each template is its own operation, so one slow template cannot use
-      // up the allowance of the rest of the list. A policy that throws (for
-      // example a missing `initiator.customFields.*` key, because the resolver
-      // did not return it, or failed and the list fell back to `{}`) is also
-      // only that template's problem: it is left out, and the error code is
-      // logged, never the values.
-      try {
-        return runExpressionOperation(() =>
-          this.conditionService.evaluateBoolean(
-            currentVersion.initiatorPolicyCel,
-            buildInitiatorPolicyContext(initiatorMetadataSnapshot),
-            'initiatorPolicyCel',
-            readExpressionDialectOptions(
-              currentVersion.initiatorPolicyCel,
-              currentVersion.workflowDefinition,
-            ),
-          ),
-        );
-      } catch (error: unknown) {
-        const reason =
-          error instanceof ExpressionRuntimeError ? error.code : 'UNEXPECTED';
-
-        this.logger.warn(
-          `template=${template.id} version=${currentVersion.id} left out of launchable templates: initiatorPolicyCel failed (${reason})`,
-        );
-
-        return false;
-      }
+  /**
+   * The published version whose form `memberId` may read data-source options
+   * for when starting `templateId`, or `null` when they may not.
+   *
+   * It applies the same checks as {@link listLaunchableApprovalTemplates} to
+   * that one template, but asks the host's initiator `customFields` resolver
+   * with `purpose: 'FORM_OPTIONS'` and the template and version ids. A host can
+   * therefore open a template's options to members who may not submit it
+   * themselves — a template only the host's backend submits — without the
+   * template appearing in their launchable list. The snapshot is used for this
+   * judgement only and is never stored. A resolver failure judges against
+   * `customFields: {}`, as the list does, so a policy that reads
+   * `initiator.customFields` then fails closed.
+   */
+  async readFormOptionsTemplateVersion(
+    templateId: string,
+    memberId: string,
+    authContext?: BPMAuthContext,
+  ): Promise<ApprovalTemplateVersionEntity | null> {
+    const template = await this.approvalTemplateRepository.findOne({
+      where: { id: templateId, isActive: true },
     });
+
+    if (!template?.currentVersionId) {
+      return null;
+    }
+
+    const currentVersion = await this.approvalTemplateVersionRepository.findOne(
+      {
+        where: {
+          id: template.currentVersionId,
+          status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        },
+      },
+    );
+
+    if (!currentVersion?.formDefinitionVersionId) {
+      return null;
+    }
+
+    const initiatorMetadataSnapshot = await this.buildInitiatorMetadataSnapshot(
+      {
+        authContext: authContext ?? createWorkflowAuthContext(memberId),
+        formOptions: {
+          templateId: template.id,
+          templateVersionId: currentVersion.id,
+        },
+        memberId,
+        submission: null,
+      },
+    );
+
+    return this.isInitiatorPolicyMet(
+      template,
+      currentVersion,
+      initiatorMetadataSnapshot,
+      'form options',
+    )
+      ? currentVersion
+      : null;
+  }
+
+  /**
+   * Whether `template`'s current published version lets the member described
+   * by `initiatorMetadataSnapshot` start it: the launchable list and the form
+   * options check share this, so the two cannot drift apart. `scope` only
+   * names the caller in the log.
+   */
+  private isInitiatorPolicyMet(
+    template: ApprovalTemplateEntity,
+    currentVersion: ApprovalTemplateVersionEntity | null,
+    initiatorMetadataSnapshot: Readonly<Record<string, unknown>>,
+    scope: 'form options' | 'launchable templates',
+  ): boolean {
+    if (!currentVersion?.formDefinitionVersionId) {
+      return false;
+    }
+
+    // A policy in a dialect this version does not know cannot be evaluated,
+    // so the template is not launchable (fail closed), but only that one:
+    // publishing does not check the field yet (Phase 23 P2), and one such
+    // version must not break the list for every member.
+    if (
+      hasExpressionText(currentVersion.initiatorPolicyCel) &&
+      !isReadableExpressionDialect(currentVersion.workflowDefinition)
+    ) {
+      this.logger.warn(
+        `template=${template.id} version=${currentVersion.id} left out of ${scope}: unknown expression dialect`,
+      );
+
+      return false;
+    }
+
+    // Each template is its own operation, so one slow template cannot use
+    // up the allowance of the rest of the list. A policy that throws (for
+    // example a missing `initiator.customFields.*` key, because the resolver
+    // did not return it, or failed and the list fell back to `{}`) is also
+    // only that template's problem: it is left out, and the error code is
+    // logged, never the values.
+    try {
+      return runExpressionOperation(() =>
+        this.conditionService.evaluateBoolean(
+          currentVersion.initiatorPolicyCel,
+          buildInitiatorPolicyContext(initiatorMetadataSnapshot),
+          'initiatorPolicyCel',
+          readExpressionDialectOptions(
+            currentVersion.initiatorPolicyCel,
+            currentVersion.workflowDefinition,
+          ),
+        ),
+      );
+    } catch (error: unknown) {
+      const reason =
+        error instanceof ExpressionRuntimeError ? error.code : 'UNEXPECTED';
+
+      this.logger.warn(
+        `template=${template.id} version=${currentVersion.id} left out of ${scope}: initiatorPolicyCel failed (${reason})`,
+      );
+
+      return false;
+    }
   }
 
   async listWorkflowTokens(
@@ -4972,8 +5053,9 @@ export class WorkflowEngineService {
    *   case on data the host never gave. It runs before the engine
    *   transaction, so a failure leaves nothing behind and a slow lookup holds
    *   no lock.
-   * - The list carries on with `customFields: {}` and logs a warning: one
-   *   failing lookup must not take the whole list away. That fails closed: a
+   * - The list, and the form options check, carry on with `customFields: {}`
+   *   and log a warning: one failing lookup must not take the whole list
+   *   away. That fails closed: a
    *   policy that reads `initiator.customFields` then throws on the missing key
    *   and the list's per-template catch leaves that template out, while a
    *   template whose policy does not read it is listed as usual. Submitting is
@@ -4981,10 +5063,16 @@ export class WorkflowEngineService {
    */
   private async buildInitiatorMetadataSnapshot({
     authContext,
+    formOptions = null,
     memberId,
     submission,
   }: {
     readonly authContext: BPMAuthContext;
+    /** Set for the form options check; the list leaves both out. */
+    readonly formOptions?: {
+      readonly templateId: string;
+      readonly templateVersionId: string;
+    } | null;
     readonly memberId: string;
     readonly submission: {
       readonly formData: Readonly<Record<string, unknown>>;
@@ -4999,14 +5087,17 @@ export class WorkflowEngineService {
       return defaultSnapshot;
     }
 
+    // The template the resolver is asked about: the one being submitted, or
+    // the one whose options are read. The list asks about none.
+    const template = submission ?? formOptions;
     const input: BPMInitiatorCustomFieldsInput = {
       authContext,
       defaultSnapshot: cloneJsonObject(defaultSnapshot),
       formData: submission ? cloneJsonObject(submission.formData) : null,
       memberId,
-      purpose: submission ? 'SUBMISSION' : 'LAUNCHABLE_TEMPLATES',
-      templateId: submission?.templateId ?? null,
-      templateVersionId: submission?.templateVersionId ?? null,
+      purpose: readInitiatorCustomFieldsPurpose({ formOptions, submission }),
+      templateId: template?.templateId ?? null,
+      templateVersionId: template?.templateVersionId ?? null,
     };
 
     if (submission) {
@@ -5029,7 +5120,11 @@ export class WorkflowEngineService {
       };
     } catch (error: unknown) {
       this.logger.warn(
-        `Launchable templates judged with customFields {}: the initiator customFields resolver failed (${
+        `${
+          formOptions
+            ? `Form options for template=${formOptions.templateId}`
+            : 'Launchable templates'
+        } judged with customFields {}: the initiator customFields resolver failed (${
           error instanceof HttpException ? error.getStatus() : 'UNEXPECTED'
         })`,
       );
@@ -5059,9 +5154,9 @@ export class WorkflowEngineService {
     input: BPMInitiatorCustomFieldsInput,
   ): Promise<Readonly<Record<string, unknown>>> {
     const subject =
-      input.purpose === 'SUBMISSION'
-        ? `template=${input.templateId} version=${input.templateVersionId}`
-        : 'launchable templates';
+      input.purpose === 'LAUNCHABLE_TEMPLATES'
+        ? 'launchable templates'
+        : `${input.purpose === 'FORM_OPTIONS' ? 'form options ' : ''}template=${input.templateId} version=${input.templateVersionId}`;
     const outcome = await settleWithin(
       new Promise<unknown>((resolve: (value: unknown) => void): void => {
         resolve(resolver.resolveCustomFields(input));
@@ -9883,6 +9978,21 @@ function cloneJsonObject(
   value: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+/** Which caller is building an initiator snapshot, as the resolver is told. */
+function readInitiatorCustomFieldsPurpose({
+  formOptions,
+  submission,
+}: Readonly<{
+  formOptions: object | null;
+  submission: object | null;
+}>): BPMInitiatorCustomFieldsPurpose {
+  if (submission) {
+    return 'SUBMISSION';
+  }
+
+  return formOptions ? 'FORM_OPTIONS' : 'LAUNCHABLE_TEMPLATES';
 }
 
 /**

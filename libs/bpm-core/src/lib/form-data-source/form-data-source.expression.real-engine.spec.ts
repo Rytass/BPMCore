@@ -246,10 +246,11 @@ const createRuntimeService = (
       ),
     } as unknown as Repository<FormDefinitionVersionEntity>,
     {
-      listLaunchableApprovalTemplates: jest.fn(() =>
-        Promise.resolve([
-          { currentVersionId: 'template-version-1', id: 'template-1' },
-        ]),
+      readFormOptionsTemplateVersion: jest.fn(() =>
+        Promise.resolve({
+          formDefinitionVersionId: 'form-version-1',
+          id: 'template-version-1',
+        }),
       ),
     } as unknown as WorkflowEngineService,
     service,

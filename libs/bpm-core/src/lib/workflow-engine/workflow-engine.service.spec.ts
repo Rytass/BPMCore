@@ -1362,6 +1362,126 @@ describe('WorkflowEngineService', () => {
         });
       });
     });
+
+    describe('form options', (): void => {
+      // Shuttle's shape: only the host's backend may submit, by passing a
+      // snapshot of its own; the GraphQL mutation never accepts one.
+      const HOST_ONLY_POLICY = 'has(initiator.customFields.hostSubmitted)';
+      // `has()` on a map key is a cel-v2 macro; the default dialect rejects it.
+      const CEL_V2_WORKFLOW = {
+        ...createStartEndWorkflow(),
+        expressionDialect: 'cel-v2',
+      } as WorkflowDefinition;
+      const grantFormOptionsOnly = (
+        input: BPMInitiatorCustomFieldsInput,
+      ): Promise<Readonly<Record<string, unknown>>> =>
+        Promise.resolve(
+          input.purpose === 'FORM_OPTIONS' && input.templateId === 'template-1'
+            ? { hostSubmitted: true }
+            : {},
+        );
+      const listIds = async (
+        fixture: ServiceFixture,
+      ): Promise<readonly string[]> =>
+        (
+          await fixture.service.listLaunchableApprovalTemplates('member-001')
+        ).map((template) => template.id);
+      const readVersionId = async (
+        fixture: ServiceFixture,
+      ): Promise<string | null> =>
+        (await fixture.service.readFormOptionsTemplateVersion(
+          'template-1',
+          'member-001',
+        ))?.id ?? null;
+
+      it('opens a host-only template\'s options without listing it or letting the member submit it', async (): Promise<void> => {
+        const { resolver, resolveCustomFields } = createResolver({});
+
+        resolveCustomFields.mockImplementation(grantFormOptionsOnly);
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+          templateInitiatorPolicyCel: HOST_ONLY_POLICY,
+          templateWorkflowDefinition: CEL_V2_WORKFLOW,
+        });
+
+        await expect(readVersionId(fixture)).resolves.toBe(
+          'template-version-1',
+        );
+        expect(resolveCustomFields).toHaveBeenCalledWith(
+          expect.objectContaining({
+            formData: null,
+            memberId: 'member-001',
+            purpose: 'FORM_OPTIONS',
+            templateId: 'template-1',
+            templateVersionId: 'template-version-1',
+          }),
+        );
+        await expect(listIds(fixture)).resolves.toEqual([]);
+        await expect(submit(fixture)).rejects.toThrow(NOT_ALLOWED);
+        expect(fixture.savedInstance).toBeNull();
+      });
+
+      it('keeps the options closed when the policy refuses the member', async (): Promise<void> => {
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: createResolver({}).resolver,
+          templateInitiatorPolicyCel: HOST_ONLY_POLICY,
+          templateWorkflowDefinition: CEL_V2_WORKFLOW,
+        });
+
+        await expect(readVersionId(fixture)).resolves.toBeNull();
+      });
+
+      it('opens the options of a template the member may start, as before', async (): Promise<void> => {
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: createResolver({ station: 'TPE' })
+            .resolver,
+          templateInitiatorPolicyCel: STATION_POLICY,
+        });
+
+        await expect(readVersionId(fixture)).resolves.toBe(
+          'template-version-1',
+        );
+      });
+
+      it('answers null without asking the host when the template is not active', async (): Promise<void> => {
+        const { resolver, resolveCustomFields } = createResolver({});
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+        });
+
+        fixture.templateFindOne.mockResolvedValueOnce(null);
+
+        await expect(readVersionId(fixture)).resolves.toBeNull();
+        expect(fixture.templateFindOne).toHaveBeenCalledWith({
+          where: { id: 'template-1', isActive: true },
+        });
+        expect(resolveCustomFields).not.toHaveBeenCalled();
+      });
+
+      it('fails closed when the resolver throws, whatever it throws', async (): Promise<void> => {
+        const warn = jest
+          .spyOn(Logger.prototype, 'warn')
+          .mockReturnValue(undefined);
+        jest.spyOn(Logger.prototype, 'error').mockReturnValue(undefined);
+        const { resolver, resolveCustomFields } = createResolver({});
+
+        resolveCustomFields.mockRejectedValue(
+          new ForbiddenException('not allowed'),
+        );
+        const fixture = createFixture({
+          initiatorCustomFieldsResolver: resolver,
+          templateInitiatorPolicyCel: HOST_ONLY_POLICY,
+          templateWorkflowDefinition: CEL_V2_WORKFLOW,
+        });
+
+        await expect(readVersionId(fixture)).resolves.toBeNull();
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining(
+            'Form options for template=template-1 judged with customFields {}',
+          ),
+        );
+      });
+    });
   });
 
   describe('business key', () => {
