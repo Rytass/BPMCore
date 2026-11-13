@@ -23,8 +23,11 @@ export class FormQueries {
       type: () => FormDefinitionListStatusEnum,
     })
     status?: FormDefinitionListStatusEnum | null,
+    @Args('includeHostManaged', { nullable: true, type: () => Boolean })
+    includeHostManaged?: boolean | null,
   ): Promise<readonly FormDefinitionEntity[]> {
     return this.formService.listFormDefinitions({
+      includeHostManaged: includeHostManaged ?? undefined,
       page: page ?? undefined,
       pageSize: pageSize ?? undefined,
       status: status ?? undefined,
@@ -38,8 +41,13 @@ export class FormQueries {
       type: () => FormDefinitionListStatusEnum,
     })
     status?: FormDefinitionListStatusEnum | null,
+    @Args('includeHostManaged', { nullable: true, type: () => Boolean })
+    includeHostManaged?: boolean | null,
   ): Promise<number> {
-    return this.formService.countFormDefinitions(status ?? undefined);
+    return this.formService.countFormDefinitions(
+      status ?? undefined,
+      includeHostManaged ?? undefined,
+    );
   }
 
   @Query(() => FormDefinitionEntity)

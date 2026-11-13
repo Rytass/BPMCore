@@ -47,6 +47,7 @@ interface ListFormDefinitionsOptions {
   readonly page?: number;
   readonly pageSize?: number;
   readonly status?: FormDefinitionListStatusEnum;
+  readonly includeHostManaged?: boolean;
 }
 
 @Injectable()
@@ -138,7 +139,10 @@ export class FormService {
             take: normalizedPageSize,
           }
         : {}),
-      where: createFormDefinitionWhere(options.status),
+      where: createFormDefinitionWhere(
+        options.status,
+        options.includeHostManaged,
+      ),
     });
 
     return this.hydrateCurrentVersions(definitions);
@@ -146,9 +150,10 @@ export class FormService {
 
   async countFormDefinitions(
     status?: FormDefinitionListStatusEnum,
+    includeHostManaged?: boolean,
   ): Promise<number> {
     return this.formDefinitionRepository.count({
-      where: createFormDefinitionWhere(status),
+      where: createFormDefinitionWhere(status, includeHostManaged),
     });
   }
 
@@ -646,11 +651,17 @@ function normalizePageSize(pageSize: number): number {
 
 function createFormDefinitionWhere(
   status: FormDefinitionListStatusEnum | undefined,
+  includeHostManaged?: boolean,
 ): FindOptionsWhere<FormDefinitionEntity> {
+  // Host-managed forms stay out of lists unless the caller opts in (ADR 27 §9).
+  const hostWhere: FindOptionsWhere<FormDefinitionEntity> =
+    includeHostManaged === true ? {} : { hostManaged: false };
+
   if (status === FormDefinitionListStatusEnum.DRAFT) {
     return {
       currentVersionId: IsNull(),
       deletedAt: IsNull(),
+      ...hostWhere,
     };
   }
 
@@ -658,10 +669,11 @@ function createFormDefinitionWhere(
     return {
       currentVersionId: Not(IsNull()),
       deletedAt: IsNull(),
+      ...hostWhere,
     };
   }
 
-  return { deletedAt: IsNull() };
+  return { deletedAt: IsNull(), ...hostWhere };
 }
 
 function hasSameFormContent(
