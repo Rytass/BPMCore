@@ -32,6 +32,8 @@ import { EMPTY_WORKFLOW_DEFINITION } from './workflow-definition.validator';
 import {
   FormDefinitionSchema,
   FormFieldDefinition,
+  isTableFieldDefinition,
+  TableColumnDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
   ApproverResolver,
@@ -1766,17 +1768,15 @@ describe('TemplateService', () => {
       );
     });
 
-    it('rejects an approver-filled data-source field', async (): Promise<void> => {
+    it('publishes an approver-filled data-source field, whose options the decide step validates', async (): Promise<void> => {
       const service = createTableConditionPublishService({
         schema: fillSchema,
-        workflowDefinition: createFieldAccessWorkflow([
-          [fillable('taxCode')],
-        ]),
+        workflowDefinition: createFieldAccessWorkflow([[fillable('taxCode')]]),
       });
 
-      await expect(publishError(service)).resolves.toBe(
-        'formData.taxCode is filled in by an approver, so it cannot be a data-source field',
-      );
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
     it('rejects an approver-filled file upload field', async (): Promise<void> => {
@@ -1792,7 +1792,7 @@ describe('TemplateService', () => {
       );
     });
 
-    it('rejects an approver-filled table that has a data-source column', async (): Promise<void> => {
+    it('publishes an approver-filled table that has a data-source column when the whole table is filled', async (): Promise<void> => {
       const service = createTableConditionPublishService({
         schema: fillSchema,
         workflowDefinition: createFieldAccessWorkflow([
@@ -1800,9 +1800,9 @@ describe('TemplateService', () => {
         ]),
       });
 
-      await expect(publishError(service)).resolves.toBe(
-        'formData.sourcedLines is filled in by an approver, so its table cannot have a data-source column',
-      );
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
     });
 
     it('leaves data-source fields and columns alone while no approver fills them in', async (): Promise<void> => {
@@ -1834,6 +1834,87 @@ describe('TemplateService', () => {
         'workflow.nodes.task_1.fieldAccess must name a field of the bound form: alsoMissing',
         'workflow.nodes.task_1.fieldAccess must name a field of the bound form: missing',
       ]);
+    });
+
+    // Column mode (`columns`) is fail-closed until per-cell enforcement lands,
+    // so a data-source column opened to an approver stays a publish error.
+    const columnFillable = (
+      fieldKey: string,
+      columnKeys: readonly string[],
+    ): Readonly<Record<string, unknown>> => ({
+      display: 'SHOW',
+      fieldKey,
+      fill: 'NONE',
+      columns: columnKeys.map((columnKey) => ({
+        columnKey,
+        fill: 'OPTIONAL',
+      })),
+    });
+
+    it('rejects a column-mode data-source column opened to an approver', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldAccessWorkflow([
+          [columnFillable('sourcedLines', ['kind'])],
+        ]),
+      });
+
+      await expect(publishError(service)).resolves.toBe(
+        'formData.sourcedLines is filled in by an approver, so its table cannot have a data-source column',
+      );
+    });
+
+    it('publishes a column-mode table whose opened columns are plain columns', async (): Promise<void> => {
+      const service = createTableConditionPublishService({
+        schema: fillSchema,
+        workflowDefinition: createFieldAccessWorkflow([
+          [columnFillable('lines', ['name'])],
+        ]),
+      });
+
+      await expect(
+        service.publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
+
+    it('rejects a column-mode column that another data-source column reads through ROW_FIELD', async (): Promise<void> => {
+      const rowFieldSchema: FormDefinitionSchema = {
+        ...fillSchema,
+        fields: fillSchema.fields.map((field): FormFieldDefinition =>
+          field.fieldKey === 'sourcedLines' && isTableFieldDefinition(field)
+            ? {
+                ...field,
+                columns: field.columns.map((column) =>
+                  column.fieldKey === 'kind'
+                    ? ({
+                        ...column,
+                        dataSource: {
+                          bindings: [
+                            {
+                              from: { kind: 'ROW_FIELD', columnKey: 'name' },
+                              parameter: 'name',
+                            },
+                          ],
+                          key: 'invoice_kinds',
+                          version: 1,
+                        },
+                      } as TableColumnDefinition)
+                    : column,
+                ),
+              }
+            : field,
+        ),
+      } as FormDefinitionSchema;
+      const service = createTableConditionPublishService({
+        schema: rowFieldSchema,
+        workflowDefinition: createFieldAccessWorkflow([
+          [columnFillable('sourcedLines', ['name'])],
+        ]),
+      });
+
+      await expect(publishError(service)).resolves.toBe(
+        'formData.sourcedLines is filled in by an approver, so its table cannot have a data-source column',
+      );
     });
 
     it.each(['lines.name', 'lines[0]', 'lines[0].name'])(
