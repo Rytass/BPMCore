@@ -203,6 +203,12 @@ import {
   BPMInitiatorCustomFieldsResolver,
 } from './initiator-custom-fields-resolver.token';
 import {
+  BPMInstanceEventSnapshot,
+  BPMInstanceEventType,
+  BPMInstanceEventTypePayloads,
+} from '../instance-event/instance-event.types';
+import { InstanceEventWriter } from '../instance-event/instance-event.writer';
+import {
   BPM_INSTANCE_GUARD,
   BPMInstanceGuard,
   BPMInstanceGuardInput,
@@ -790,6 +796,8 @@ export class WorkflowEngineService {
     @Optional()
     @Inject(BPM_INSTANCE_GUARD)
     injectedInstanceGuard?: BPMInstanceGuard,
+    @Optional()
+    private readonly instanceEventWriter?: InstanceEventWriter,
   ) {
     // A binding under the token wins: that is either the host's own provider
     // or `workflowServiceTaskDispatcherProvider`, both of them deliberate. The
@@ -852,6 +860,48 @@ export class WorkflowEngineService {
       this.instanceGuard,
       input,
       this.instanceGuardTimeoutMs,
+    );
+  }
+
+  /**
+   * Writes one case-lifecycle event (ADR 27 §1) in the caller's transaction.
+   * Returns before any lookup when no observer is bound, so a host without
+   * one pays nothing. `instanceState` is the state the change commits, not the
+   * state the instance held before it.
+   */
+  private async recordInstanceEvent<K extends BPMInstanceEventType>(
+    manager: EntityManager,
+    instance: Readonly<
+      Pick<ApprovalInstanceEntity, 'id' | 'templateId' | 'templateVersionId'>
+    >,
+    instanceState: ApprovalInstanceStateEnum,
+    type: K,
+    fields: BPMInstanceEventTypePayloads[K],
+  ): Promise<void> {
+    if (this.instanceEventWriter?.enabled !== true) {
+      return;
+    }
+
+    const template = await manager
+      .getRepository(ApprovalTemplateEntity)
+      .findOne({
+        select: { id: true, key: true },
+        where: { id: instance.templateId },
+        withDeleted: true,
+      });
+    const snapshot: BPMInstanceEventSnapshot = {
+      instanceState,
+      templateId: instance.templateId,
+      templateKey: template?.key ?? null,
+      templateVersionId: instance.templateVersionId,
+    };
+
+    await this.instanceEventWriter.record(
+      manager,
+      instance.id,
+      snapshot,
+      type,
+      fields,
     );
   }
 
@@ -1226,6 +1276,13 @@ export class WorkflowEngineService {
             taskId: null,
           }),
         ]);
+        await this.recordInstanceEvent(
+          manager,
+          instance,
+          instance.state,
+          'INSTANCE_SUBMITTED',
+          { actorMemberId: submittedByMemberId },
+        );
         await this.processRunningInstance(manager, instance);
 
         return instance;
@@ -1421,6 +1478,40 @@ export class WorkflowEngineService {
       }
 
       await this.processRunningInstance(manager, instance);
+    });
+  }
+
+  /**
+   * Records `TASK_AUTO_DECISION_FAILED` (ADR 27 §3) in its own transaction.
+   * Used after an automatic decision was refused by the instance guard: the
+   * decision's transaction has already rolled back, so the event cannot ride
+   * on it. Returns before any query when no observer is bound.
+   */
+  async recordTaskAutoDecisionFailed(input: {
+    readonly instanceId: string;
+    readonly taskId: string;
+    readonly reason: string;
+  }): Promise<void> {
+    if (this.instanceEventWriter?.enabled !== true) {
+      return;
+    }
+
+    await this.runEngineTransaction(async (manager): Promise<void> => {
+      const instance = await manager
+        .getRepository(ApprovalInstanceEntity)
+        .findOne({ where: { id: input.instanceId } });
+
+      if (!instance) {
+        return;
+      }
+
+      await this.recordInstanceEvent(
+        manager,
+        instance,
+        instance.state,
+        'TASK_AUTO_DECISION_FAILED',
+        { reason: input.reason, taskId: input.taskId },
+      );
     });
   }
 
@@ -2148,6 +2239,13 @@ export class WorkflowEngineService {
             taskId: null,
           }),
         );
+        await this.recordInstanceEvent(
+          manager,
+          cancelledInstance,
+          ApprovalInstanceStateEnum.CANCELLED,
+          'INSTANCE_CANCELLED',
+          { actorMemberId: input.cancelledByMemberId },
+        );
 
         return cancelledInstance;
       },
@@ -2205,6 +2303,13 @@ export class WorkflowEngineService {
             },
             taskId: input.taskId ?? null,
           }),
+        );
+        await this.recordInstanceEvent(
+          manager,
+          expiredInstance,
+          ApprovalInstanceStateEnum.EXPIRED,
+          'INSTANCE_EXPIRED',
+          {},
         );
 
         return expiredInstance;
@@ -2392,6 +2497,15 @@ export class WorkflowEngineService {
           state: ApprovalInstanceStateEnum.RUNNING,
           title: input.title?.trim() || instance.title,
         });
+        // Written before the resume below, so RESUBMITTED precedes any
+        // NODE_ACTIVATED that the resume produces in the same transaction.
+        await this.recordInstanceEvent(
+          manager,
+          resubmittedInstance,
+          ApprovalInstanceStateEnum.RUNNING,
+          'INSTANCE_RESUBMITTED',
+          { actorMemberId: input.initiatorMemberId },
+        );
         await this.attachmentService.bindFormDataAttachmentsToInstance(
           manager,
           {
@@ -5825,6 +5939,13 @@ export class WorkflowEngineService {
       ApprovalInstanceStateEnum.APPROVED,
     );
     await this.cancelPendingAdhocDirectives(manager, instance.id, null);
+    await this.recordInstanceEvent(
+      manager,
+      completedInstance,
+      ApprovalInstanceStateEnum.APPROVED,
+      'INSTANCE_APPROVED',
+      {},
+    );
   }
 
   private async isNodeEntryReady(
@@ -6304,6 +6425,24 @@ export class WorkflowEngineService {
         Object.assign(instance, { completedAt, state: instanceState }),
       );
 
+      if (instanceState === ApprovalInstanceStateEnum.REJECTED) {
+        await this.recordInstanceEvent(
+          manager,
+          completedInstance,
+          instanceState,
+          'INSTANCE_REJECTED',
+          { actorMemberId: null },
+        );
+      } else {
+        await this.recordInstanceEvent(
+          manager,
+          completedInstance,
+          instanceState,
+          'INSTANCE_APPROVED',
+          {},
+        );
+      }
+
       if (instanceState === ApprovalInstanceStateEnum.APPROVED) {
         await this.notificationService.createInstanceCompletedNotification({
           instance: completedInstance,
@@ -6487,6 +6626,13 @@ export class WorkflowEngineService {
         },
         taskId: task.id,
       }),
+    );
+    await this.recordInstanceEvent(
+      manager,
+      instance,
+      instance.state,
+      'NODE_ACTIVATED',
+      { nodeId: node.id, taskIds: [task.id] },
     );
     await openCandidates.reduce<Promise<void>>(
       async (previous, candidate): Promise<void> => {
@@ -9926,6 +10072,13 @@ export class WorkflowEngineService {
         taskId: task.id,
       }),
     );
+    await this.recordInstanceEvent(
+      manager,
+      rejectedInstance,
+      ApprovalInstanceStateEnum.REJECTED,
+      'INSTANCE_REJECTED',
+      { actorMemberId: task.assigneeMemberId },
+    );
   }
 
   private async returnInstanceToNode(
@@ -10012,6 +10165,13 @@ export class WorkflowEngineService {
         taskId: null,
       }),
     ]);
+    await this.recordInstanceEvent(
+      manager,
+      returnedInstance,
+      returnedInstance.state,
+      'INSTANCE_RETURNED',
+      { actorMemberId: task.assigneeMemberId, nodeId: task.nodeId },
+    );
 
     if (returnedInstance.state === ApprovalInstanceStateEnum.RUNNING) {
       await this.processRunningInstance(manager, returnedInstance);
