@@ -216,6 +216,15 @@ ADR 20 §3.4 與 §8 把以下三點列為延後項目，不是拒絕。本次�
   3. 解析不到的值回 `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED`，和送件時相同。
 - **附件**（`file_upload`）不在本次範圍。
 
+- **實作缺口（已補，`feat/hir-p5ds`）**：
+  - **缺口 1，運行期讀取閘門**：`FormDataSourceService` 的 instance 讀取原本只看 instance 狀態，補填者在 RUNNING 案件中可讀到未開給自己的補填欄選項。現在 RUNNING 且呼叫者是補填者時，改由 `WorkflowEngineService.listApproverFillUnits(instanceId, memberId)` 取得可補填單位（整欄或逐欄），目標欄必須被某個單位涵蓋，否則回 `RUNTIME_CONTEXT_FORBIDDEN`。申請人在 RETURNED 狀態的讀取不變。
+  - **缺口 2，decide 的 400 契約**：補填欄的 `FORM_DATA_SOURCE_VALUE_NOT_RESOLVED` 在 decide 端回 400 並帶 `formDataErrors`，定位到該欄或該格（`BPMFormDataSourceValueNotResolvedException` 攜帶 `location`），與送件時一致。
+  - **缺口 1 的判定規則**（自行決定，待 ADR 裁決確認）：
+    - (i) `display: HIDE` 的欄即使有補填單位也拒絕讀取，隱藏優先。
+    - (ii) 查詢是該成員在此案件所有開放任務的聯集，不限於單一任務。
+    - (iii) 臨時任務（ad-hoc）不授予任何補填單位。
+    - (iv) 候選人列為 WAITING，或已決議（非 PENDING／CLAIMED），即使任務仍開放也不授予。
+
 ### 4.3 (a) table 逐欄補填
 
 **設定**：table 的 `FieldAccessEntry` 新增選填的 `columns`：
