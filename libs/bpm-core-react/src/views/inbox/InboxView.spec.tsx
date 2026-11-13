@@ -62,18 +62,14 @@ jest.mock('@mezzanine-ui/react', () => {
     Tab: (props: Readonly<Record<string, unknown>>): ReactElement => (
       <div>
         {props.children as ReactNode}
-        {['tracking', 'history'].map(
-          (tab): ReactElement => (
-            <button
-              data-tab={tab}
-              key={tab}
-              onClick={(): void =>
-                (props.onChange as (key: string) => void)(tab)
-              }
-              type="button"
-            />
-          ),
-        )}
+        {['tracking', 'history'].map((tab): ReactElement => (
+          <button
+            data-tab={tab}
+            key={tab}
+            onClick={(): void => (props.onChange as (key: string) => void)(tab)}
+            type="button"
+          />
+        ))}
       </div>
     ),
     TabItem: (props: Readonly<Record<string, unknown>>): ReactElement => (
@@ -99,15 +95,40 @@ jest.mock('../../lib/router-adapter', () => ({
 jest.mock('../../lib/routes-config', () => ({
   useBPMRoutes: (): Readonly<Record<string, unknown>> => ({}),
 }));
-jest.mock('@rytass/bpm-core-client/workflow', () => ({
-  listApprovalHistoryTasks: jest.fn(),
-  listApprovalInstancesPage: jest.fn(),
-  listInboxTasks: jest.fn(),
-  listTaskDecisions: jest.fn(),
-  readApprovalInstance: jest.fn(),
-  readApprovalInstanceCaseTitle: jest.fn(),
-  readApprovalTemplateCurrentFormSchema: jest.fn(),
-}));
+// The view asks for pages; the tests state rows through the unpaged mocks and
+// these hand them back as one page whose total is their count.
+jest.mock('@rytass/bpm-core-client/workflow', () => {
+  type PageInput = Readonly<{ assigneeMemberId: string }>;
+  type PageResult = Readonly<{ tasks: readonly unknown[]; totalCount: number }>;
+
+  const listApprovalHistoryTasks = jest.fn();
+  const listInboxTasks = jest.fn();
+  const asPage = async (
+    list: jest.Mock,
+    { assigneeMemberId }: PageInput,
+  ): Promise<PageResult> => {
+    const tasks = ((await list(assigneeMemberId)) ?? []) as readonly unknown[];
+
+    return { tasks, totalCount: tasks.length };
+  };
+
+  return {
+    listApprovalHistoryTasks,
+    listApprovalHistoryTasksPage: jest.fn(
+      (input: PageInput): Promise<PageResult> =>
+        asPage(listApprovalHistoryTasks, input),
+    ),
+    listApprovalInstancesPage: jest.fn(),
+    listInboxTasks,
+    listInboxTasksPage: jest.fn((input: PageInput): Promise<PageResult> =>
+      asPage(listInboxTasks, input),
+    ),
+    listTaskDecisions: jest.fn(),
+    readApprovalInstance: jest.fn(),
+    readApprovalInstanceCaseTitle: jest.fn(),
+    readApprovalTemplateCurrentFormSchema: jest.fn(),
+  };
+});
 jest.mock('@rytass/bpm-core-client/template', () => ({
   listApprovalTemplates: jest.fn(async (): Promise<readonly unknown[]> => []),
 }));
@@ -210,6 +231,59 @@ describe('InboxView node column', () => {
       status: 'COMPLETED',
     }),
   ];
+
+  describe('paging', (): void => {
+    // The tab items render in order: 待簽核, 已處理未結束, 歷史簽核記錄.
+    const badge = (tab: 'pending' | 'tracking'): string | null | undefined =>
+      container
+        .querySelectorAll('[data-badge-count]')
+        [tab === 'pending' ? 0 : 1]?.getAttribute('data-badge-count');
+
+    it('asks for the first page of each tab, the tracking one narrowed to running cases', async (): Promise<void> => {
+      api.listInboxTasks.mockResolvedValue([]);
+
+      await renderInbox();
+
+      expect(api.listInboxTasksPage).toHaveBeenCalledWith({
+        assigneeMemberId: 'member-001',
+        page: 1,
+        pageSize: 20,
+      });
+      expect(api.listApprovalHistoryTasksPage).toHaveBeenCalledWith({
+        assigneeMemberId: 'member-001',
+        instanceState: 'RUNNING',
+        page: 1,
+        pageSize: 20,
+      });
+      expect(api.listApprovalHistoryTasksPage).toHaveBeenCalledWith({
+        assigneeMemberId: 'member-001',
+        page: 1,
+        pageSize: 20,
+      });
+    });
+
+    it('counts every page in the badges, not only the rows on screen', async (): Promise<void> => {
+      api.listInboxTasksPage.mockResolvedValueOnce({
+        tasks: [task({ id: 'task-1' })],
+        totalCount: 57,
+      });
+      // Once each: the implementation would otherwise outlive this test.
+      api.listApprovalHistoryTasksPage
+        .mockImplementationOnce(async ({ instanceState }) => ({
+          tasks: [],
+          totalCount: instanceState === 'RUNNING' ? 8 : 300,
+        }))
+        .mockImplementationOnce(async ({ instanceState }) => ({
+          tasks: [],
+          totalCount: instanceState === 'RUNNING' ? 8 : 300,
+        }));
+
+      await renderInbox();
+
+      expect(badge('pending')).toBe('57');
+      expect(badge('tracking')).toBe('8');
+    });
+  });
 
   it('shows the node name in the pending tab and falls back to the id', async (): Promise<void> => {
     api.listInboxTasks.mockResolvedValue([
@@ -377,9 +451,9 @@ describe('InboxView returned cases', () => {
     await renderInbox();
 
     expect(
-      container.querySelector('[data-badge-count]')?.getAttribute(
-        'data-badge-count',
-      ),
+      container
+        .querySelector('[data-badge-count]')
+        ?.getAttribute('data-badge-count'),
     ).toBe('1');
     expect(returnedSection()?.querySelectorAll('[data-row]')).toHaveLength(2);
   });
@@ -414,10 +488,8 @@ describe('InboxView returned cases', () => {
 
   // A full page of 100 with more behind it, as the server pages them.
   const fullPage = (initiatorMemberId: string): ApprovalInstanceRecord[] =>
-    Array.from(
-      { length: 100 },
-      (_, index): ApprovalInstanceRecord =>
-        returnedInstance({ id: `instance-${index}`, initiatorMemberId }),
+    Array.from({ length: 100 }, (_, index): ApprovalInstanceRecord =>
+      returnedInstance({ id: `instance-${index}`, initiatorMemberId }),
     );
 
   it('says where to find the rest when there are more than it lists', async (): Promise<void> => {
@@ -437,7 +509,7 @@ describe('InboxView returned cases', () => {
 
   // The member's own returned cases may all sit past a first page filled with
   // cases filed for someone else; the pointer must still show.
-  it('points to the rest when the first page holds none of the member\'s own cases', async (): Promise<void> => {
+  it("points to the rest when the first page holds none of the member's own cases", async (): Promise<void> => {
     api.listApprovalInstancesPage.mockResolvedValue(
       returnedPage(fullPage('member-boss'), 101),
     );
@@ -530,8 +602,9 @@ describe('InboxView own decision', () => {
 
   function cell(taskId: string, column: string): string | undefined {
     return (
-      container.querySelector(`[data-row="${taskId}"] [data-column="${column}"]`)
-        ?.textContent ?? undefined
+      container.querySelector(
+        `[data-row="${taskId}"] [data-column="${column}"]`,
+      )?.textContent ?? undefined
     );
   }
 
@@ -625,9 +698,8 @@ describe('InboxView own decision', () => {
         chain.shared ? 'task-shared' : `task-${order}`;
       const taskId = readTaskId(index);
       const signing = chain.signings[index];
-      const decisions = chain.signings.map(
-        (item, order): TaskDecisionRecord =>
-          decision(readTaskId(order), item, order + 1),
+      const decisions = chain.signings.map((item, order): TaskDecisionRecord =>
+        decision(readTaskId(order), item, order + 1),
       );
 
       // completedAt differs from every decision time, so a fallback to it
@@ -732,7 +804,7 @@ describe('InboxView own decision', () => {
     expect(cell('task-shared', '意見')).toBe('課長意見');
   });
 
-  it('shows the latest of a member\'s own decisions on a task', async (): Promise<void> => {
+  it("shows the latest of a member's own decisions on a task", async (): Promise<void> => {
     // A seat transferred away and back leaves the member two decisions.
     await openHistoryAs(
       CHIEF,
@@ -760,7 +832,7 @@ describe('InboxView own decision', () => {
     expect(cell('task-shared', '意見')).toBe('收回後同意');
   });
 
-  it('shows no one else\'s decision to a member who has none on the task', async (): Promise<void> => {
+  it("shows no one else's decision to a member who has none on the task", async (): Promise<void> => {
     await openHistoryAs(
       CHIEF,
       task({
