@@ -4,10 +4,13 @@ import {
   MemberMetadata,
   omitFormDataKeys,
   overlayStoredFormDataKeys,
+  readNodeFieldAccess,
   readNodeFillableFieldKeys,
   readNodeFillGrantFieldKeys,
+  readNodeFillUnits,
   readNodeRequiredFieldKeys,
   readFilterableFieldPaths,
+  type FieldAccessFillUnit,
   readFilterableValueProblems,
   readTopLevelFieldKey,
   type ApprovalInstanceFieldFilter,
@@ -4577,6 +4580,77 @@ export class WorkflowEngineService {
     }
 
     return instance;
+  }
+
+  /**
+   * ADR 27 §4.2 (gap 1): the fill units an approver may use to resolve runtime
+   * data-source options on a RUNNING instance. Only tasks the member can act on
+   * count: the member is the assignee or a PENDING/CLAIMED candidate of a
+   * PENDING or IN_PROGRESS, non-ad-hoc task. A task whose candidate row is
+   * WAITING or already decided grants nothing, even though its status is open.
+   * A field counts only when its node lists it as SHOW; a HIDE entry never
+   * grants, whatever its fill is. Returns `[]` when the instance is not RUNNING.
+   */
+  async listApproverFillUnits(
+    instanceId: string,
+    memberId: string,
+  ): Promise<readonly FieldAccessFillUnit[]> {
+    const instance = await this.approvalInstanceRepository.findOne({
+      where: { id: instanceId },
+    });
+
+    if (
+      !instance ||
+      instance.state !== ApprovalInstanceStateEnum.RUNNING
+    ) {
+      return [];
+    }
+
+    const tasks = await this.taskRepository.find({
+      where: {
+        instanceId,
+        isAdhoc: false,
+        status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
+      },
+    });
+    const unitsPerTask = await Promise.all(
+      tasks.map(async (task): Promise<readonly FieldAccessFillUnit[]> => {
+        const node = instance.workflowSnapshot.nodes.find(
+          (candidate): candidate is UserTaskNode =>
+            candidate.type === 'userTask' && candidate.id === task.nodeId,
+        );
+
+        if (!node) {
+          return [];
+        }
+
+        try {
+          await this.readTaskActorContext(
+            this.taskRepository.manager,
+            task,
+            memberId,
+          );
+        } catch (error: unknown) {
+          if (error instanceof ConflictException) {
+            return [];
+          }
+
+          throw error;
+        }
+
+        const shown = new Set(
+          readNodeFieldAccess(node)
+            .filter((entry) => entry.display === 'SHOW')
+            .map((entry) => entry.fieldKey),
+        );
+
+        return readNodeFillUnits(node).filter((unit) =>
+          shown.has(unit.fieldKey),
+        );
+      }),
+    );
+
+    return unitsPerTask.flat();
   }
 
   /**
