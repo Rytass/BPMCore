@@ -49,7 +49,6 @@ import {
   FormFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
-  readNodeFillableFieldKeys,
   readNodeFillGrantFieldKeys,
   readTopLevelFieldKey,
   type ResolvedFieldAccess,
@@ -125,9 +124,11 @@ import {
   isFillConflictMessage,
   readApplicantFormSchema,
   readApplicantSubmission,
+  readFillColumnModeFieldKeys,
   readFillDisplaySchema,
   readFillLabelMarkers,
   readFillChanges,
+  readFillOpenColumns,
   readFillOrgUnitIds,
   readFillPayload,
   readFillServerErrors,
@@ -140,6 +141,7 @@ import {
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
 import { useFileUploadFieldStates } from '../../forms/renderer/file-upload-field';
+import type { FormRendererTableAccess } from '../../forms/renderer/FormRendererView';
 
 /** Counts fields, not cells: a table with three bad cells is one field. */
 function readFillIncompleteMessage(
@@ -537,6 +539,27 @@ export function InstanceDetailView({
         : undefined,
     [activityLogs, currentTask, instance, tasks],
   );
+  // A column-only table lets the approver edit its open columns and nothing
+  // else: the rows are the applicant's (ADR 27 §4(a)).
+  const fillTableAccess = useMemo(
+    (): Readonly<Record<string, FormRendererTableAccess>> | undefined =>
+      fillNode
+        ? Object.fromEntries(
+            [...readFillColumnModeFieldKeys(fillNode)].map(
+              (fieldKey): readonly [string, FormRendererTableAccess] => [
+                fieldKey,
+                {
+                  editableColumns: [
+                    ...readFillOpenColumns(fillNode, fieldKey).keys(),
+                  ],
+                  lockRows: true,
+                },
+              ],
+            ),
+          )
+        : undefined,
+    [fillNode],
+  );
   const fillLabelMarkers = useMemo(
     (): Readonly<Record<string, string>> | undefined =>
       instance
@@ -562,7 +585,7 @@ export function InstanceDetailView({
       fillNode && fillValues && schemaSnapshot && instance?.formDataFingerprint
         ? {
             expectedFormDataFingerprint: instance.formDataFingerprint,
-            formData: readFillPayload(fillChanges, fillNode),
+            formData: readFillPayload(fillChanges, fillNode, instance.formData),
             summary: readFillSummary(
               schemaSnapshot,
               fillNode,
@@ -593,7 +616,9 @@ export function InstanceDetailView({
       return;
     }
 
-    const fillableKeys = readNodeFillableFieldKeys(fillNode);
+    // Grant keys, not only whole fields: a column-only table's open cells come
+    // in through its top-level key.
+    const fillableKeys = readNodeFillGrantFieldKeys(fillNode);
     // Only what the approver changed joins the draft: the renderer hands back
     // the whole form, defaults included, on every edit.
     const changed = Object.entries(values).filter(
@@ -1150,6 +1175,7 @@ export function InstanceDetailView({
                       fieldCount: readNodeFillGrantFieldKeys(fillNode).size,
                       onChange: handleFillChange,
                       schema: fillSchema,
+                      tableAccess: fillTableAccess,
                       value: fillValues,
                     }
                   : null

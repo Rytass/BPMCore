@@ -16,7 +16,10 @@ import {
 import { ApprovalInstanceRecord, WorkflowFormData } from '@rytass/bpm-core-client/workflow';
 import { BPMFormField } from '../../../../components/bpm-form-field';
 import { readApplicantFormSchema } from '../../approver-filled-form';
-import { FormRenderer } from '../../../forms/renderer/FormRendererView';
+import {
+  FormRenderer,
+  type FormRendererTableAccess,
+} from '../../../forms/renderer/FormRendererView';
 import type { FormDataSourceFieldState } from '../../../forms/renderer/form-data-source-field';
 import type {
   FileUploadFieldState,
@@ -70,6 +73,12 @@ export interface InstanceFormSectionFill {
   readonly schema: FormDefinitionSchema;
   /** The stored form data with the draft fill on top. */
   readonly value: WorkflowFormData;
+  /**
+   * Per table the node opens only column by column: the open columns the
+   * approver may edit, with the rows locked. Absent when the node opens no
+   * column-only table.
+   */
+  readonly tableAccess?: Readonly<Record<string, FormRendererTableAccess>>;
 }
 
 export interface InstanceFormSectionProps {
@@ -247,6 +256,9 @@ export function InstanceFormSection({
             {...(!canResubmitInstance && fieldAccess ? { fieldAccess } : {})}
             {...(!canResubmitInstance && fieldLabelMarkers
               ? { fieldLabelMarkers }
+              : {})}
+            {...(filling && fill.tableAccess
+              ? { tableAccess: fill.tableAccess }
               : {})}
             onChange={(values): void => {
               if (filling) {
