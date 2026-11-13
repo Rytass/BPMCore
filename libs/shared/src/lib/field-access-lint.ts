@@ -50,7 +50,6 @@ export type FieldAccessIssueCode =
   | 'approverFilledFieldFileUpload'
   | 'approverFilledFieldFormRule'
   | 'approverFilledMultipleFillNodesOnPath'
-  | 'approverFilledRequiredBoolean'
   | 'approverFilledTableDataSourceColumn'
   | 'fieldAccessAutoApprove'
   | 'fieldAccessDuplicate'
@@ -458,8 +457,7 @@ export function referencesFormField(
  * publish-lint order: a `fieldKey` that is not a top-level field of the form,
  * an approver-filled field the form will not let anybody fill in
  * (`readFormFieldFillIssues`, once per field however many nodes fill it in),
- * `fill: 'REQUIRED'` on a boolean (`false` is an answer, so required can never
- * fail), and an applicant's rule that reads an approver-filled field — the
+ * and an applicant's rule that reads an approver-filled field — the
  * rule is evaluated against the submitted form, where that field is still
  * empty, and the evaluation silently compares against nothing.
  */
@@ -486,24 +484,6 @@ export function readFormFieldAccessIssues(
           code: 'fieldAccessUnknownField',
           fieldKeys: [fieldKey],
           message: WORKFLOW_LINT_MESSAGES.fieldAccessUnknownField(
-            node.id,
-            fieldKey,
-          ),
-          nodeIds: [node.id],
-        })),
-  );
-  const requiredBooleanIssues = userTasks.flatMap(
-    (node): readonly FieldAccessIssue[] =>
-      readNodeFieldAccess(node)
-        .filter(
-          ({ fieldKey, fill }): boolean =>
-            fill === 'REQUIRED' &&
-            fieldsByKey.get(fieldKey)?.type === 'boolean',
-        )
-        .map(({ fieldKey }) => ({
-          code: 'approverFilledRequiredBoolean',
-          fieldKeys: [fieldKey],
-          message: WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(
             node.id,
             fieldKey,
           ),
@@ -546,10 +526,5 @@ export function readFormFieldAccessIssues(
     },
   );
 
-  return [
-    ...unknownFieldIssues,
-    ...fieldIssues,
-    ...requiredBooleanIssues,
-    ...applicantRuleIssues,
-  ];
+  return [...unknownFieldIssues, ...fieldIssues, ...applicantRuleIssues];
 }

@@ -340,11 +340,6 @@ describe('readFormFieldAccessIssues', () => {
         nodeIds: [],
       },
       {
-        code: 'approverFilledRequiredBoolean',
-        fieldKeys: ['flag'],
-        nodeIds: ['a'],
-      },
-      {
         code: 'applicantRuleReadsApproverFilled',
         fieldKeys: ['total', 'flag'],
         nodeIds: [],

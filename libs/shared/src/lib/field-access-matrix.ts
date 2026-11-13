@@ -334,11 +334,7 @@ export function readFieldAccessMatrix(
     const isApproverFilled = fillNodeIds.length > 0;
     const fillBlockers = readFormFieldFillIssues(field);
     const fieldDisabledChoices: readonly FieldAccessChoice[] =
-      fillBlockers.length > 0
-        ? FILL_CHOICES
-        : field.type === 'boolean'
-          ? ['FILL_REQUIRED']
-          : [];
+      fillBlockers.length > 0 ? FILL_CHOICES : [];
     const cells = userTasks.map((node, index): FieldAccessMatrixCell => {
       const explicit = accessByNode.get(node.id)?.get(fieldKey) ?? null;
       const filledBefore = isFilledBefore(fillNodeIds, index);

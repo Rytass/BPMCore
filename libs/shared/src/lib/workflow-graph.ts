@@ -172,8 +172,6 @@ export const WORKFLOW_LINT_MESSAGES = Object.freeze({
     secondNodeId: string,
   ): string =>
     `formData.${fieldKey} is filled in by both workflow.nodes.${firstNodeId} and workflow.nodes.${secondNodeId}, which lie on the same path`,
-  approverFilledRequiredBoolean: (nodeId: string, fieldKey: string): string =>
-    `workflow.nodes.${nodeId}.fieldAccess cannot require the boolean field: ${fieldKey}`,
   applicantRuleReadsApproverFilled: (
     fieldKey: string,
     rule: string,

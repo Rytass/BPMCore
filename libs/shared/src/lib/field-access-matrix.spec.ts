@@ -233,7 +233,7 @@ describe('readFieldAccessMatrix', () => {
     expect(matrix.columns[1].fillConflicts).toEqual(['groupPolicy']);
     expect(disabled).toEqual([
       [[], ['FILL_OPTIONAL', 'FILL_REQUIRED']],
-      [['FILL_REQUIRED'], ['FILL_OPTIONAL', 'FILL_REQUIRED']],
+      [[], ['FILL_OPTIONAL', 'FILL_REQUIRED']],
       [
         ['FILL_OPTIONAL', 'FILL_REQUIRED'],
         ['FILL_OPTIONAL', 'FILL_REQUIRED'],
