@@ -21765,6 +21765,34 @@ describe('WorkflowEngineService task node labels', () => {
     ).resolves.toBe(4);
   });
 
+  it('reads the open tasks once when the list and its count are asked together', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+    const isDirectRead = ([options]: readonly unknown[]): boolean =>
+      JSON.stringify(options).includes('"assigneeMemberId":"member-finance"');
+
+    fixture.rootTaskFind.mockClear();
+    const [page, count] = await Promise.all([
+      fixture.service.listInboxTasks('member-finance', {
+        page: 1,
+        pageSize: 2,
+      }),
+      fixture.service.countInboxTasks('member-finance'),
+    ]);
+
+    expect(page).toHaveLength(2);
+    expect(count).toBe(4);
+    expect(fixture.rootTaskFind.mock.calls.filter(isDirectRead)).toHaveLength(
+      1,
+    );
+
+    // Nothing outlives the read: the next request reads again.
+    await fixture.service.countInboxTasks('member-finance');
+
+    expect(fixture.rootTaskFind.mock.calls.filter(isDirectRead)).toHaveLength(
+      2,
+    );
+  });
+
   it('labels approval history tasks too', async (): Promise<void> => {
     const fixture = createLabelFixture();
 

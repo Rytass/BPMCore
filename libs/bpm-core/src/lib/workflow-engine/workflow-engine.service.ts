@@ -683,6 +683,11 @@ const WORKFLOW_READ_ALL_PERMISSIONS = new Set([
 @Injectable()
 export class WorkflowEngineService {
   private readonly logger = new Logger(WorkflowEngineService.name);
+  /** In-flight inbox reads by member; see `readSharedOpenInboxTasks`. */
+  private readonly openInboxReadsInFlight = new Map<
+    string,
+    Promise<readonly TaskEntity[]>
+  >();
   private readonly approvalInstanceFieldFilterCompiler =
     new ApprovalInstanceFieldFilterCompiler();
   private readonly approvalInstanceFilterableFieldPolicy =
@@ -4515,7 +4520,7 @@ export class WorkflowEngineService {
     assigneeMemberId: string,
     options: TaskListPageOptions = {},
   ): Promise<readonly TaskEntity[]> {
-    const openTasks = await this.readOpenInboxTasks(assigneeMemberId);
+    const openTasks = await this.readSharedOpenInboxTasks(assigneeMemberId);
 
     if (!isTaskListPaged(options)) {
       return this.attachTaskCandidateSummaries(openTasks);
@@ -4530,7 +4535,35 @@ export class WorkflowEngineService {
 
   /** How many tasks {@link listInboxTasks} pages through. */
   async countInboxTasks(assigneeMemberId: string): Promise<number> {
-    return (await this.readOpenInboxTasks(assigneeMemberId)).length;
+    return (await this.readSharedOpenInboxTasks(assigneeMemberId)).length;
+  }
+
+  /**
+   * {@link readOpenInboxTasks} for the inbox list and its count, joining a
+   * read for the same member that is still in flight. The client asks for
+   * `inboxTasks` and `inboxTaskCount` in one request and GraphQL resolves the
+   * two side by side, so this turns two identical reads into one. An entry
+   * lives only until its read settles: nothing is cached across requests, and
+   * a read that started earlier is never served once it has finished.
+   */
+  private readSharedOpenInboxTasks(
+    assigneeMemberId: string,
+  ): Promise<readonly TaskEntity[]> {
+    const inFlight = this.openInboxReadsInFlight.get(assigneeMemberId);
+
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const read = this.readOpenInboxTasks(assigneeMemberId).finally(
+      (): void => {
+        this.openInboxReadsInFlight.delete(assigneeMemberId);
+      },
+    );
+
+    this.openInboxReadsInFlight.set(assigneeMemberId, read);
+
+    return read;
   }
 
   /**
