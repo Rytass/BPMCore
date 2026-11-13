@@ -5,10 +5,12 @@ import {
 import {
   decideTask,
   listApprovalHistoryTasks,
+  listApprovalHistoryTasksPage,
   listApprovalInstances,
   listApprovalInstancesPage,
   listFilterableFieldIssues,
   listInboxTasks,
+  listInboxTasksPage,
   listInactiveMembersWithOpenTasks,
   listMemberOpenTasks,
   reassignMemberTasks,
@@ -627,6 +629,103 @@ describe('@rytass/bpm-core-client/workflow', () => {
         expect(request.variables).toEqual({ assigneeMemberId: 'member-001' });
         expect(tasks).toHaveLength(1);
         expect(tasks[0]?.assigneeMemberId).toBe('member-001');
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
+  describe('paged member task lists', () => {
+    const TASK = {
+      assigneeMemberId: 'member-001',
+      assignmentType: 'DIRECT',
+      candidateMemberIds: [],
+      completedAt: null,
+      createdAt: '2026-05-26T00:00:00.000Z',
+      decisionPolicySnapshotJson: '{}',
+      delegationChainJson: '[]',
+      id: 'task-1',
+      instanceId: 'instance-1',
+      nodeId: 'node-1',
+      openedAt: '2026-05-26T00:00:00.000Z',
+      originalAssigneeMemberId: null,
+      slaDueAt: null,
+      status: 'OPEN',
+      tokenId: 'token-1',
+    };
+
+    it('asks for one inbox page and its total in one request', async (): Promise<void> => {
+      const harness = installFetchMock({ inboxTaskCount: 31, inboxTasks: [TASK] });
+      try {
+        const result = await listInboxTasksPage({
+          assigneeMemberId: 'member-001',
+          page: 2,
+          pageSize: 10,
+        });
+        const request = harness.capture();
+
+        expect(request.query).toContain(
+          'inboxTasks(assigneeMemberId: $assigneeMemberId, page: $page, pageSize: $pageSize)',
+        );
+        expect(request.query).toContain('inboxTaskCount');
+        expect(request.query).toContain('openCandidateMemberIds');
+        expect(request.variables).toEqual({
+          assigneeMemberId: 'member-001',
+          page: 2,
+          pageSize: 10,
+        });
+        expect(result.totalCount).toBe(31);
+        expect(result.tasks.map((task) => task.id)).toEqual(['task-1']);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('asks for one history page narrowed to a state, counting with the same state', async (): Promise<void> => {
+      const harness = installFetchMock({
+        approvalHistoryTaskCount: 4,
+        approvalHistoryTasks: [TASK],
+      });
+      try {
+        const result = await listApprovalHistoryTasksPage({
+          assigneeMemberId: 'member-001',
+          instanceState: 'RUNNING',
+          page: 1,
+          pageSize: 20,
+        });
+        const request = harness.capture();
+
+        expect(request.query).toContain('instanceState: $instanceState');
+        expect(request.query).toContain(
+          'approvalHistoryTaskCount(instanceState: $instanceState)',
+        );
+        expect(request.variables).toEqual({
+          assigneeMemberId: 'member-001',
+          instanceState: 'RUNNING',
+          page: 1,
+          pageSize: 20,
+        });
+        expect(result.totalCount).toBe(4);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('sends no state when none is asked for', async (): Promise<void> => {
+      const harness = installFetchMock({
+        approvalHistoryTaskCount: 0,
+        approvalHistoryTasks: [],
+      });
+      try {
+        await listApprovalHistoryTasksPage({
+          assigneeMemberId: 'member-001',
+          page: 1,
+          pageSize: 20,
+        });
+
+        expect(harness.capture().variables).toMatchObject({
+          instanceState: null,
+        });
       } finally {
         harness.restore();
       }

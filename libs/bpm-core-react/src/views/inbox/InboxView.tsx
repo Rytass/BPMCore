@@ -4,8 +4,10 @@ import {
   type CSSProperties,
   type Key,
   ReactElement,
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -25,9 +27,10 @@ import type { TableActions, TableColumn } from '@mezzanine-ui/core/table';
 import {
   ApprovalInstanceRecord,
   type ApprovalInstancesPageResult,
-  listApprovalHistoryTasks,
+  listApprovalHistoryTasksPage,
   listApprovalInstancesPage,
-  listInboxTasks,
+  listInboxTasksPage,
+  type MemberTaskPage,
   listTaskDecisions,
   readApprovalInstance,
   readApprovalInstanceCaseTitle,
@@ -87,6 +90,17 @@ type ApprovalHistoryRow = Readonly<
     }
 >;
 
+type TabPaging = Readonly<{ page: number; pageSize: number }>;
+
+type TabPage<TRow> = Readonly<{
+  loading: boolean;
+  rows: readonly TRow[];
+  total: number;
+}>;
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50];
+
+const FIRST_PAGE: TabPaging = { page: 1, pageSize: 20 };
 
 /**
  * Framework-agnostic view for the BPM "我的待簽" inbox. Mechanical port of
@@ -100,9 +114,57 @@ export function InboxView(): ReactElement {
   const currentMemberId = member?.memberId ?? null;
   const [activeTab, setActiveTab] = useState<InboxTabKey>('pending');
   const [error, setError] = useState<string | null>(null);
-  const [historyRows, setHistoryRows] = useState<ApprovalHistoryRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [pendingRows, setPendingRows] = useState<InboxTaskRow[]>([]);
+  const [pendingPaging, setPendingPaging] = useState<TabPaging>(FIRST_PAGE);
+  const [trackingPaging, setTrackingPaging] =
+    useState<TabPaging>(FIRST_PAGE);
+  const [historyPaging, setHistoryPaging] = useState<TabPaging>(FIRST_PAGE);
+  const pending = useTabPage<InboxTaskRow>(
+    currentMemberId,
+    { enabled: true, paging: pendingPaging, setPaging: setPendingPaging },
+    setError,
+    async (memberId, paging) => {
+      const page = await listInboxTasksPage({
+        assigneeMemberId: memberId,
+        ...paging,
+      });
+
+      return readRows(page, readInboxTaskRows);
+    },
+  );
+  // Tasks of instances still under way: the same history, narrowed on the
+  // server so the badge and the pages count every such task, not one page.
+  const tracking = useTabPage<ApprovalHistoryRow>(
+    currentMemberId,
+    { enabled: true, paging: trackingPaging, setPaging: setTrackingPaging },
+    setError,
+    async (memberId, paging) => {
+      const page = await listApprovalHistoryTasksPage({
+        assigneeMemberId: memberId,
+        instanceState: 'RUNNING',
+        ...paging,
+      });
+
+      return readRows(page, (tasks) => readApprovalHistoryRows(tasks, memberId));
+    },
+  );
+  // History has no badge, so it is read only once its tab is opened.
+  const history = useTabPage<ApprovalHistoryRow>(
+    currentMemberId,
+    {
+      enabled: activeTab === 'history',
+      paging: historyPaging,
+      setPaging: setHistoryPaging,
+    },
+    setError,
+    async (memberId, paging) => {
+      const page = await listApprovalHistoryTasksPage({
+        assigneeMemberId: memberId,
+        ...paging,
+      });
+
+      return readRows(page, (tasks) => readApprovalHistoryRows(tasks, memberId));
+    },
+  );
   const [returnedRows, setReturnedRows] = useState<
     readonly ReturnedInstanceRow[]
   >([]);
@@ -110,10 +172,19 @@ export function InboxView(): ReactElement {
 
   useEffect((): void => {
     if (!currentMemberId) {
+      setReturnedRows([]);
+      setReturnedTruncated(false);
+
       return;
     }
 
-    void refreshTasks();
+    void readReturnedInstances(currentMemberId).then(
+      (returned): void => {
+        setReturnedRows(returned?.rows ?? []);
+        setReturnedTruncated(returned?.truncated ?? false);
+      },
+      (requestError: unknown): void => setError(readErrorMessage(requestError)),
+    );
   }, [currentMemberId]);
 
   const pendingColumns = useMemo(
@@ -277,11 +348,6 @@ export function InboxView(): ReactElement {
     }),
     [router, routes],
   );
-  const trackingRows = useMemo(
-    (): ApprovalHistoryRow[] =>
-      historyRows.filter((row) => row.instanceState === 'RUNNING'),
-    [historyRows],
-  );
 
   function handleTabChange(activeKey: Key): void {
     if (
@@ -294,41 +360,6 @@ export function InboxView(): ReactElement {
     }
 
     setActiveTab('pending');
-  }
-
-  async function refreshTasks(): Promise<void> {
-    setLoading(true);
-    setError(null);
-
-    try {
-      if (!currentMemberId) {
-        setPendingRows([]);
-        setHistoryRows([]);
-        setReturnedRows([]);
-        setReturnedTruncated(false);
-        return;
-      }
-
-      const [nextPendingTasks, nextHistoryTasks, returned] =
-        await Promise.all([
-          listInboxTasks(currentMemberId),
-          listApprovalHistoryTasks(currentMemberId),
-          readReturnedInstances(currentMemberId),
-        ]);
-      const [nextPendingRows, nextHistoryRows] = await Promise.all([
-        readInboxTaskRows(nextPendingTasks),
-        readApprovalHistoryRows(nextHistoryTasks, currentMemberId),
-      ]);
-
-      setPendingRows(nextPendingRows);
-      setHistoryRows(nextHistoryRows);
-      setReturnedRows(returned?.rows ?? []);
-      setReturnedTruncated(returned?.truncated ?? false);
-    } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
-    } finally {
-      setLoading(false);
-    }
   }
 
   return (
@@ -358,13 +389,13 @@ export function InboxView(): ReactElement {
             ) : null}
             <Tab activeKey={activeTab} onChange={handleTabChange} size="sub">
               <TabItem
-                badgeCount={loading ? undefined : pendingRows.length}
+                badgeCount={pending.loading ? undefined : pending.total}
                 key="pending"
               >
                 待簽核
               </TabItem>
               <TabItem
-                badgeCount={loading ? undefined : trackingRows.length}
+                badgeCount={tracking.loading ? undefined : tracking.total}
                 key="tracking"
               >
                 已處理未結束
@@ -404,33 +435,165 @@ export function InboxView(): ReactElement {
               <Table
                 actions={pendingTableActions}
                 columns={pendingColumns}
-                dataSource={pendingRows}
+                dataSource={[...pending.rows]}
                 fullWidth
-                loading={loading}
+                loading={pending.loading}
+                pagination={readTablePagination(
+                  pendingPaging,
+                  pending.total,
+                  setPendingPaging,
+                )}
               />
             ) : null}
             {activeTab === 'tracking' ? (
               <Table
                 actions={historyTableActions}
                 columns={historyColumns}
-                dataSource={trackingRows}
+                dataSource={[...tracking.rows]}
                 fullWidth
-                loading={loading}
+                loading={tracking.loading}
+                pagination={readTablePagination(
+                  trackingPaging,
+                  tracking.total,
+                  setTrackingPaging,
+                )}
               />
             ) : null}
             {activeTab === 'history' ? (
               <Table
                 actions={historyTableActions}
                 columns={historyColumns}
-                dataSource={historyRows}
+                dataSource={[...history.rows]}
                 fullWidth
-                loading={loading}
+                loading={history.loading}
+                pagination={readTablePagination(
+                  historyPaging,
+                  history.total,
+                  setHistoryPaging,
+                )}
               />
             ) : null}
           </Section>
         </SectionGroup>
       </>
   );
+}
+
+/**
+ * One tab's rows for the current member and paging. Only the latest request
+ * may write, so paging quickly cannot let an earlier page's late answer
+ * replace the one asked for last. Nothing is read while `enabled` is false.
+ * A page past the end (the list shrank since it was chosen) moves to the last
+ * page instead of showing an empty table.
+ */
+function useTabPage<TRow>(
+  memberId: string | null,
+  {
+    enabled,
+    paging,
+    setPaging,
+  }: Readonly<{
+    enabled: boolean;
+    paging: TabPaging;
+    setPaging: (paging: TabPaging) => void;
+  }>,
+  onError: (message: string | null) => void,
+  load: (
+    memberId: string,
+    paging: TabPaging,
+  ) => Promise<Readonly<{ rows: readonly TRow[]; total: number }>>,
+): TabPage<TRow> {
+  const [state, setState] = useState<TabPage<TRow>>({
+    loading: true,
+    rows: [],
+    total: 0,
+  });
+  const latestRequestRef = useRef(0);
+  const loadRef = useRef(load);
+
+  loadRef.current = load;
+
+  const refresh = useCallback(async (): Promise<void> => {
+    const request = latestRequestRef.current + 1;
+
+    latestRequestRef.current = request;
+
+    if (!memberId) {
+      setState({ loading: false, rows: [], total: 0 });
+
+      return;
+    }
+
+    setState((previous) => ({ ...previous, loading: true }));
+
+    try {
+      const loaded = await loadRef.current(memberId, paging);
+
+      if (latestRequestRef.current !== request) {
+        return;
+      }
+
+      const lastPage = Math.max(1, Math.ceil(loaded.total / paging.pageSize));
+
+      if (!loaded.rows.length && paging.page > lastPage) {
+        setPaging({ ...paging, page: lastPage });
+
+        return;
+      }
+
+      setState({ loading: false, ...loaded });
+    } catch (requestError: unknown) {
+      if (latestRequestRef.current === request) {
+        onError(readErrorMessage(requestError));
+        setState((previous) => ({ ...previous, loading: false }));
+      }
+    }
+  }, [memberId, onError, paging, setPaging]);
+
+  useEffect((): void => {
+    if (enabled) {
+      void refresh();
+    }
+  }, [enabled, refresh]);
+
+  return state;
+}
+
+async function readRows<TRow>(
+  page: MemberTaskPage,
+  toRows: (tasks: readonly TaskRecord[]) => Promise<TRow[]>,
+): Promise<Readonly<{ rows: readonly TRow[]; total: number }>> {
+  return { rows: await toRows(page.tasks), total: page.totalCount };
+}
+
+function readTablePagination(
+  paging: TabPaging,
+  total: number,
+  setPaging: (paging: TabPaging) => void,
+): Readonly<{
+  current: number;
+  onChange: (page: number) => void;
+  onChangePageSize: (pageSize: number) => void;
+  pageSize: number;
+  pageSizeLabel: string;
+  pageSizeOptions: number[];
+  renderResultSummary: (from: number, to: number, total: number) => string;
+  showPageSizeOptions: boolean;
+  total: number;
+}> {
+  return {
+    current: paging.page,
+    onChange: (page: number): void => setPaging({ ...paging, page }),
+    onChangePageSize: (pageSize: number): void =>
+      setPaging({ page: 1, pageSize }),
+    pageSize: paging.pageSize,
+    pageSizeLabel: '每頁筆數',
+    pageSizeOptions: PAGE_SIZE_OPTIONS,
+    renderResultSummary: (from: number, to: number, count: number): string =>
+      `顯示 ${from}-${to} 筆，共 ${count} 筆`,
+    showPageSizeOptions: true,
+    total,
+  };
 }
 
 function readReturnedSectionHint(

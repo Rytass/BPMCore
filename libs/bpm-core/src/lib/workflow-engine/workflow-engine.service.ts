@@ -505,6 +505,20 @@ const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
  */
 const INACTIVE_MEMBER_COUNT_CONCURRENCY = 5;
 
+/** Paging of a member's task list; both absent means unpaged. */
+export interface TaskListPageOptions {
+  /** 1-based; defaults to 1 once paging is asked for. */
+  readonly page?: number;
+  /** Defaults to 20, at most 100, once paging is asked for. */
+  readonly pageSize?: number;
+}
+
+/** Options of {@link WorkflowEngineService.listApprovalHistoryTasks}. */
+export interface ApprovalHistoryTaskListOptions extends TaskListPageOptions {
+  /** Only tasks of instances in this state. */
+  readonly instanceState?: ApprovalInstanceStateEnum;
+}
+
 /** A deactivated member who still holds open tasks, for the reassignment screen. */
 export interface InactiveMemberOpenTasksRecord {
   readonly email: string;
@@ -670,6 +684,11 @@ const WORKFLOW_READ_ALL_PERMISSIONS = new Set([
 @Injectable()
 export class WorkflowEngineService {
   private readonly logger = new Logger(WorkflowEngineService.name);
+  /** In-flight inbox reads by member; see `readSharedOpenInboxTasks`. */
+  private readonly openInboxReadsInFlight = new Map<
+    string,
+    Promise<readonly TaskEntity[]>
+  >();
   private readonly approvalInstanceFieldFilterCompiler =
     new ApprovalInstanceFieldFilterCompiler();
   private readonly approvalInstanceFilterableFieldPolicy =
@@ -4571,12 +4590,61 @@ export class WorkflowEngineService {
     );
   }
 
+  /**
+   * The member's open tasks, newest first. Without `page` / `pageSize` every
+   * one is returned, as before paging existed. The page is cut from the same
+   * {@link readOpenInboxTasks} result the dashboard counters read, so the list,
+   * {@link countInboxTasks} and the counters cannot disagree; only the page is
+   * given its candidate summaries.
+   */
   async listInboxTasks(
     assigneeMemberId: string,
+    options: TaskListPageOptions = {},
   ): Promise<readonly TaskEntity[]> {
+    const openTasks = await this.readSharedOpenInboxTasks(assigneeMemberId);
+
+    if (!isTaskListPaged(options)) {
+      return this.attachTaskCandidateSummaries(openTasks);
+    }
+
+    const offset = readPageOffset(options.page, options.pageSize);
+
     return this.attachTaskCandidateSummaries(
-      await this.readOpenInboxTasks(assigneeMemberId),
+      openTasks.slice(offset, offset + normalizePageSize(options.pageSize)),
     );
+  }
+
+  /** How many tasks {@link listInboxTasks} pages through. */
+  async countInboxTasks(assigneeMemberId: string): Promise<number> {
+    return (await this.readSharedOpenInboxTasks(assigneeMemberId)).length;
+  }
+
+  /**
+   * {@link readOpenInboxTasks} for the inbox list and its count, joining a
+   * read for the same member that is still in flight. The client asks for
+   * `inboxTasks` and `inboxTaskCount` in one request and GraphQL resolves the
+   * two side by side, so this turns two identical reads into one. An entry
+   * lives only until its read settles: nothing is cached across requests, and
+   * a read that started earlier is never served once it has finished.
+   */
+  private readSharedOpenInboxTasks(
+    assigneeMemberId: string,
+  ): Promise<readonly TaskEntity[]> {
+    const inFlight = this.openInboxReadsInFlight.get(assigneeMemberId);
+
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const read = this.readOpenInboxTasks(assigneeMemberId).finally(
+      (): void => {
+        this.openInboxReadsInFlight.delete(assigneeMemberId);
+      },
+    );
+
+    this.openInboxReadsInFlight.set(assigneeMemberId, read);
+
+    return read;
   }
 
   /**
@@ -4646,38 +4714,120 @@ export class WorkflowEngineService {
     return openTasks.filter((task) => !settledTaskIds.has(task.id));
   }
 
+  /**
+   * The tasks this member has acted on, most recently acted on first: tasks
+   * assigned to them that are COMPLETED, and tasks on which their own
+   * candidate row is COMPLETED. The latter needs no status on the task: a
+   * countersign still waiting on somebody else already carries their vote, and
+   * the inbox has stopped showing it to them.
+   *
+   * "Acted on" is their candidate row's `decided_at`, else the task's
+   * `completed_at`, else its `created_at`; ties fall back to the task id so no
+   * row moves between pages. Paged in SQL. Without `page` / `pageSize` the
+   * latest {@link DEFAULT_APPROVAL_HISTORY_TASK_LIMIT} are returned, as before
+   * paging existed. `instanceState` keeps only tasks of instances in that
+   * state (RUNNING for "acted on, not finished").
+   */
   async listApprovalHistoryTasks(
     assigneeMemberId: string,
+    options: ApprovalHistoryTaskListOptions = {},
   ): Promise<readonly TaskEntity[]> {
-    const directTasks = await this.taskRepository.find({
-      order: { completedAt: 'DESC', createdAt: 'DESC' },
-      take: DEFAULT_APPROVAL_HISTORY_TASK_LIMIT,
-      where: { assigneeMemberId, status: TaskStatusEnum.COMPLETED },
-    });
-    const candidateRows = await this.taskCandidateRepository.find({
-      where: {
-        memberId: assigneeMemberId,
-        status: TaskCandidateStatusEnum.COMPLETED,
-      },
-    });
-    // No status filter on this branch: the candidate row is already COMPLETED,
-    // which means this member has cast their decision. Requiring the task
-    // itself to be COMPLETED hid their own vote for as long as a multi-person
-    // countersign waited on somebody else — and the inbox has, correctly,
-    // stopped showing it to them by then, so it appeared nowhere at all.
-    const candidateTasks = candidateRows.length
-      ? await this.taskRepository.find({
-          order: { completedAt: 'DESC', createdAt: 'DESC' },
-          take: DEFAULT_APPROVAL_HISTORY_TASK_LIMIT,
-          where: {
-            id: In(candidateRows.map((candidate) => candidate.taskId)),
-          },
-        })
-      : [];
+    const paged = isTaskListPaged(options);
+    const tasks = await this.createApprovalHistoryTaskQuery(
+      assigneeMemberId,
+      options.instanceState,
+    )
+      .orderBy(this.readApprovalHistoryActedAtExpression(), 'DESC')
+      .addOrderBy('"task"."id"', 'DESC')
+      .offset(paged ? readPageOffset(options.page, options.pageSize) : 0)
+      .limit(
+        paged
+          ? normalizePageSize(options.pageSize)
+          : DEFAULT_APPROVAL_HISTORY_TASK_LIMIT,
+      )
+      .getMany();
 
-    return this.attachTaskCandidateSummaries(
-      uniqueTasksById([...directTasks, ...candidateTasks]),
+    return this.attachTaskCandidateSummaries(tasks);
+  }
+
+  /** How many tasks {@link listApprovalHistoryTasks} pages through. */
+  async countApprovalHistoryTasks(
+    assigneeMemberId: string,
+    options: Pick<ApprovalHistoryTaskListOptions, 'instanceState'> = {},
+  ): Promise<number> {
+    return this.createApprovalHistoryTaskQuery(
+      assigneeMemberId,
+      options.instanceState,
+    ).getCount();
+  }
+
+  /** The rows of {@link listApprovalHistoryTasks}, unordered and unpaged. */
+  private createApprovalHistoryTaskQuery(
+    assigneeMemberId: string,
+    instanceState: ApprovalInstanceStateEnum | undefined,
+  ): SelectQueryBuilder<TaskEntity> {
+    const candidateTable = this.readQualifiedTableName(
+      this.taskCandidateRepository,
     );
+    const queryBuilder = this.taskRepository
+      .createQueryBuilder('task')
+      .andWhere(
+        `
+          (
+            (
+              "task"."assignee_member_id" = :historyMemberId
+              AND "task"."status" = :historyTaskStatus
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM ${candidateTable} "historyCandidate"
+              WHERE "historyCandidate"."task_id" = "task"."id"
+                AND "historyCandidate"."member_id" = :historyMemberId
+                AND "historyCandidate"."status" = :historyCandidateStatus
+            )
+          )
+        `,
+        {
+          historyCandidateStatus: TaskCandidateStatusEnum.COMPLETED,
+          historyMemberId: assigneeMemberId,
+          historyTaskStatus: TaskStatusEnum.COMPLETED,
+        },
+      );
+
+    if (instanceState) {
+      queryBuilder.andWhere(
+        `
+          EXISTS (
+            SELECT 1
+            FROM ${this.readQualifiedTableName(this.approvalInstanceRepository)} "historyInstance"
+            WHERE "historyInstance"."id" = "task"."instance_id"
+              AND "historyInstance"."state" = :historyInstanceState
+          )
+        `,
+        { historyInstanceState: instanceState },
+      );
+    }
+
+    return queryBuilder;
+  }
+
+  /** When the member acted on a history task; see {@link listApprovalHistoryTasks}. */
+  private readApprovalHistoryActedAtExpression(): string {
+    const candidateTable = this.readQualifiedTableName(
+      this.taskCandidateRepository,
+    );
+
+    return `COALESCE(
+      (
+        SELECT MAX("actedCandidate"."decided_at")
+        FROM ${candidateTable} "actedCandidate"
+        WHERE "actedCandidate"."task_id" = "task"."id"
+          AND "actedCandidate"."member_id" = :historyMemberId
+          AND "actedCandidate"."status" = :historyCandidateStatus
+      ),
+      "task"."completed_at",
+      "task"."created_at"
+    )`;
   }
 
   async listTaskDecisions(
@@ -11026,6 +11176,10 @@ function readPageOffset(
   const normalizedPageSize = normalizePageSize(pageSize);
 
   return (normalizePage(page) - 1) * normalizedPageSize;
+}
+
+function isTaskListPaged(options: TaskListPageOptions): boolean {
+  return options.page !== undefined || options.pageSize !== undefined;
 }
 
 function shouldPaginateList(options: ListApprovalInstancesOptions): boolean {

@@ -220,16 +220,66 @@ export class WorkflowEngineQueries {
   async inboxTasks(
     @Args('assigneeMemberId', { type: () => String }) assigneeMemberId: string,
     @BPMCurrentMemberId() currentMemberId: string,
+    @Args('page', { nullable: true, type: () => Int })
+    page: number | null,
+    @Args('pageSize', { nullable: true, type: () => Int })
+    pageSize: number | null,
   ): Promise<readonly TaskEntity[]> {
-    return this.workflowEngineService.listInboxTasks(currentMemberId);
+    return this.workflowEngineService.listInboxTasks(currentMemberId, {
+      page: page ?? undefined,
+      pageSize: pageSize ?? undefined,
+    });
+  }
+
+  @Query(() => Int, {
+    description: 'How many open tasks inboxTasks pages through.',
+  })
+  async inboxTaskCount(
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<number> {
+    return this.workflowEngineService.countInboxTasks(currentMemberId);
   }
 
   @Query(() => [TaskEntity])
   async approvalHistoryTasks(
     @Args('assigneeMemberId', { type: () => String }) assigneeMemberId: string,
     @BPMCurrentMemberId() currentMemberId: string,
+    @Args('page', { nullable: true, type: () => Int })
+    page: number | null,
+    @Args('pageSize', { nullable: true, type: () => Int })
+    pageSize: number | null,
+    @Args('instanceState', {
+      nullable: true,
+      type: () => ApprovalInstanceStateEnum,
+    })
+    instanceState: ApprovalInstanceStateEnum | null,
   ): Promise<readonly TaskEntity[]> {
-    return this.workflowEngineService.listApprovalHistoryTasks(currentMemberId);
+    return this.workflowEngineService.listApprovalHistoryTasks(
+      currentMemberId,
+      {
+        instanceState: instanceState ?? undefined,
+        page: page ?? undefined,
+        pageSize: pageSize ?? undefined,
+      },
+    );
+  }
+
+  @Query(() => Int, {
+    description:
+      'How many tasks approvalHistoryTasks pages through, for the same instanceState.',
+  })
+  async approvalHistoryTaskCount(
+    @BPMCurrentMemberId() currentMemberId: string,
+    @Args('instanceState', {
+      nullable: true,
+      type: () => ApprovalInstanceStateEnum,
+    })
+    instanceState: ApprovalInstanceStateEnum | null,
+  ): Promise<number> {
+    return this.workflowEngineService.countApprovalHistoryTasks(
+      currentMemberId,
+      { instanceState: instanceState ?? undefined },
+    );
   }
 
   @Query(() => [MemberOpenTaskObject], {

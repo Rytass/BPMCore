@@ -8,7 +8,7 @@ export interface BPMRootIdentityOptions {
 
   /**
    * Whether BPM registers `IdentityQueries` — the `member`, `members`,
-   * `memberCount`, `searchMembers`, and `cachedMembers` GraphQL queries.
+   * `memberCount`, and `searchMembers` GraphQL queries.
    * Defaults to `true`.
    *
    * Those are common names. A host that already publishes its own member API
