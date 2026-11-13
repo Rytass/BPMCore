@@ -6,6 +6,7 @@ import {
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
   readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
   readNodeRequiredFieldKeys,
   readFilterableFieldPaths,
   readFilterableValueProblems,
@@ -5437,7 +5438,7 @@ export class WorkflowEngineService {
    * snapshot without a `nodes` array, and a blank or non-string label all
    * leave the task without a label, as `readWorkflowNodeLabel` does. Only the
    * node's `fieldAccess` leaves the database for the fill flag, which
-   * `readNodeFillableFieldKeys` then reads as tolerantly as the engine does.
+   * `readNodeFillGrantFieldKeys` then reads as tolerantly as the engine does.
    */
   private async readTaskNodeSummaries(
     tasks: readonly TaskEntity[],
@@ -5493,7 +5494,7 @@ export class WorkflowEngineService {
         {
           hasFillableFields:
             row.nodeType === 'userTask' &&
-            readNodeFillableFieldKeys({
+            readNodeFillGrantFieldKeys({
               data: { fieldAccess: row.fieldAccess },
             } as UserTaskNode).size > 0,
           label:
@@ -6598,7 +6599,7 @@ export class WorkflowEngineService {
     task.openCandidateMemberIds = openCandidates.map(
       (candidate) => candidate.memberId,
     );
-    task.hasFillableFields = readNodeFillableFieldKeys(node).size > 0;
+    task.hasFillableFields = readNodeFillGrantFieldKeys(node).size > 0;
 
     await tokenRepository.save({
       ...token,

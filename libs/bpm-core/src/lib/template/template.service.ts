@@ -15,7 +15,7 @@ import {
   readApproverFilledFieldKeys,
   readFormFieldAccessIssues,
   readFormFieldPathTopLevelKey,
-  readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
   readReachableWorkflowNodeIds,
   readTopLevelFieldKey,
 } from '@rytass/bpm-core-shared';
@@ -2185,7 +2185,7 @@ function lintApproverFilledFieldReads(
 
   return fieldKeys.flatMap((fieldKey) => {
     const fillingNodes = userTasks.filter((node) =>
-      readNodeFillableFieldKeys(node).has(fieldKey),
+      readNodeFillGrantFieldKeys(node).has(fieldKey),
     );
     const fillingNodeIds = new Set(fillingNodes.map((node) => node.id));
     const guardNodeIds = new Set(

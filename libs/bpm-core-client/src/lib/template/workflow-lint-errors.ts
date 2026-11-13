@@ -2,7 +2,7 @@ import {
   ExpressionLintCode,
   parseExpressionLintLine,
   readNodeFieldAccess,
-  readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
   readFormFieldPathTopLevelKey,
   UNKNOWN_EXPRESSION_DIALECT_LINT_MESSAGE,
 } from '@rytass/bpm-core-shared';
@@ -799,7 +799,7 @@ function readFillableFieldKeys(
   return new Set(
     nodes.flatMap((node): readonly string[] =>
       node.type === 'userTask' && isRecord(node.data)
-        ? [...readNodeFillableFieldKeys(node)]
+        ? [...readNodeFillGrantFieldKeys(node)]
         : [],
     ),
   );
@@ -820,7 +820,7 @@ function readFillNodesOnPathTranslations(
         (node) =>
           node.type === 'userTask' &&
           isRecord(node.data) &&
-          readNodeFillableFieldKeys(node).has(fieldKey),
+          readNodeFillGrantFieldKeys(node).has(fieldKey),
       );
 
       return fillNodes.flatMap((first, index): readonly Translation[] =>
