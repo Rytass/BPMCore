@@ -116,6 +116,13 @@ export class TemplateQueries {
     return this.templateService.getApprovalTemplate(id);
   }
 
+  @Query(() => ApprovalTemplateEntity)
+  async approvalTemplateByKey(
+    @Args('key', { type: () => String }) key: string,
+  ): Promise<ApprovalTemplateEntity> {
+    return this.templateService.getApprovalTemplateByKey(key);
+  }
+
   @Query(() => [ApprovalTemplateVersionEntity])
   async approvalTemplateVersions(
     @Args('templateId', { type: () => String }) templateId: string,

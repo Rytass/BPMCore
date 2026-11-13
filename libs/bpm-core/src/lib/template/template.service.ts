@@ -648,6 +648,25 @@ export class TemplateService {
     return this.getTemplateOrThrow(id);
   }
 
+  /**
+   * Finds the live template that holds a host key (ADR 27 §6.2). Soft-deleted
+   * rows are excluded, so a deleted template's key reads as not found.
+   */
+  async getApprovalTemplateByKey(key: string): Promise<ApprovalTemplateEntity> {
+    const entity = await this.templates().findOne({
+      relations: { categoryDetail: true },
+      where: { deletedAt: IsNull(), key },
+    });
+
+    if (!entity) {
+      throw new NotFoundException(
+        `Approval template with key ${key} was not found`,
+      );
+    }
+
+    return entity;
+  }
+
   async activateApprovalTemplate(id: string): Promise<ApprovalTemplateEntity> {
     return this.setApprovalTemplateActive(id, true);
   }
