@@ -8,9 +8,17 @@ import {
   readUserTaskFillConflicts,
   UserTaskFillConflict,
 } from './field-access-lint';
-import { readNodeFieldAccess, readNodeFillGrantFieldKeys } from './field-access';
-import type { FormDefinitionSchema, FormFieldDefinition } from './form';
+import {
+  readNodeFieldAccess,
+  readNodeFillGrantFieldKeys,
+} from './field-access';
+import {
+  type FormDefinitionSchema,
+  type FormFieldDefinition,
+  isTableFieldDefinition,
+} from './form';
 import type {
+  FieldAccessColumnEntry,
   FieldAccessEntry,
   FieldAccessFill,
   UserTaskNode,
@@ -19,12 +27,15 @@ import type {
 
 /**
  * What a cell of the field access matrix offers. `DEFAULT` writes nothing for
- * the node, so the field falls back to the derived value; the other four each
- * stand for one `FieldAccessEntry` (`fill` other than `NONE` is always shown,
- * since a hidden fill cannot be published).
+ * the node, so the field falls back to the derived value. `SHOW`, `HIDE`,
+ * `FILL_OPTIONAL` and `FILL_REQUIRED` each stand for one whole-field
+ * `FieldAccessEntry` (`fill` other than `NONE` is always shown, since a hidden
+ * fill cannot be published). `COLUMNS` stands for a column-mode entry (ADR 27
+ * §4(a)) on a table field, whose fillable columns are set per column through
+ * `updateFieldAccessColumnFill`; it may hold zero columns while being edited.
  */
 export type FieldAccessChoice =
-  'DEFAULT' | 'FILL_OPTIONAL' | 'FILL_REQUIRED' | 'HIDE' | 'SHOW';
+  'DEFAULT' | 'FILL_OPTIONAL' | 'FILL_REQUIRED' | 'HIDE' | 'SHOW' | 'COLUMNS';
 
 export const FIELD_ACCESS_CHOICES: readonly FieldAccessChoice[] = [
   'DEFAULT',
@@ -32,21 +43,30 @@ export const FIELD_ACCESS_CHOICES: readonly FieldAccessChoice[] = [
   'HIDE',
   'FILL_OPTIONAL',
   'FILL_REQUIRED',
+  'COLUMNS',
 ];
 
 /**
  * What a viewer at one place in the flow gets for a field. `FILL` is the
  * applicant's own field; `NOT_SHOWN` is an approver-filled field nobody has
  * filled in yet, which BPM leaves off the screen; `HIDDEN` is a node that
- * chose to hide the field (display only, never a permission).
+ * chose to hide the field (display only, never a permission); `FILL_COLUMNS`
+ * is a node that lets its approver fill some columns of a table.
  */
 export type FieldAccessEffective =
   | 'FILL'
+  | 'FILL_COLUMNS'
   | 'FILL_OPTIONAL'
   | 'FILL_REQUIRED'
   | 'HIDDEN'
   | 'NOT_SHOWN'
   | 'READ_ONLY';
+
+/** One column of a table field, as the matrix lists it under the table row. */
+export interface FieldAccessMatrixTableColumn {
+  readonly columnKey: string;
+  readonly label: string;
+}
 
 /**
  * Why a cell reads the way it does: the node lists the field (`EXPLICIT`), an
@@ -85,6 +105,8 @@ export interface FieldAccessMatrixCell {
   /** The fill choices this cell cannot take, for the node or the field. */
   readonly disabledChoices: readonly FieldAccessChoice[];
   readonly effective: FieldAccessEffective;
+  /** The fillable columns of a column-mode entry; empty for any other cell. */
+  readonly columnFills: readonly FieldAccessColumnEntry[];
   readonly explicit: FieldAccessEntry | null;
   readonly nodeId: string;
   readonly reason: FieldAccessCellReason;
@@ -105,6 +127,8 @@ export interface FieldAccessMatrixRow {
   /** Publish-blocking issues that name this field. */
   readonly issues: readonly FieldAccessIssue[];
   readonly notices: readonly FieldAccessNotice[];
+  /** The columns a table field offers per-column access for; empty otherwise. */
+  readonly tableColumns: readonly FieldAccessMatrixTableColumn[];
 }
 
 export interface FieldAccessMatrix {
@@ -117,16 +141,25 @@ export interface FieldAccessMatrix {
   readonly rows: readonly FieldAccessMatrixRow[];
 }
 
-const FILL_CHOICES: readonly FieldAccessChoice[] = [
+/** Every fill choice, whole or per column, a cell cannot take. */
+const BLOCKED_FILL_CHOICES: readonly FieldAccessChoice[] = [
   'FILL_OPTIONAL',
   'FILL_REQUIRED',
+  'COLUMNS',
 ];
+
+/** Per-column fill exists only on a table field, so every other field blocks it. */
+const NON_TABLE_DISABLED_CHOICES: readonly FieldAccessChoice[] = ['COLUMNS'];
 
 export function readFieldAccessChoice(
   entry: FieldAccessEntry | null,
 ): FieldAccessChoice {
   if (entry === null) {
     return 'DEFAULT';
+  }
+
+  if (entry.columns !== undefined) {
+    return 'COLUMNS';
   }
 
   if (entry.fill === 'REQUIRED') {
@@ -141,7 +174,7 @@ export function readFieldAccessChoice(
 }
 
 const CHOICE_FILLS: Readonly<
-  Record<Exclude<FieldAccessChoice, 'DEFAULT'>, FieldAccessFill>
+  Record<Exclude<FieldAccessChoice, 'DEFAULT' | 'COLUMNS'>, FieldAccessFill>
 > = {
   FILL_OPTIONAL: 'OPTIONAL',
   FILL_REQUIRED: 'REQUIRED',
@@ -149,18 +182,60 @@ const CHOICE_FILLS: Readonly<
   SHOW: 'NONE',
 };
 
-/** The entry a choice writes for the field, or `null` for `DEFAULT`. */
+/**
+ * The entry a choice writes for the field, or `null` for `DEFAULT`. `COLUMNS`
+ * writes an empty column list, which the publish lint rejects until a column
+ * is checked, so the drawer must not apply it on its own.
+ */
 export function readFieldAccessEntryForChoice(
   fieldKey: string,
   choice: FieldAccessChoice,
 ): FieldAccessEntry | null {
-  return choice === 'DEFAULT'
-    ? null
-    : {
-        display: choice === 'HIDE' ? 'HIDE' : 'SHOW',
-        fieldKey,
-        fill: CHOICE_FILLS[choice],
-      };
+  if (choice === 'DEFAULT') {
+    return null;
+  }
+
+  if (choice === 'COLUMNS') {
+    return { display: 'SHOW', fieldKey, fill: 'NONE', columns: [] };
+  }
+
+  return {
+    display: choice === 'HIDE' ? 'HIDE' : 'SHOW',
+    fieldKey,
+    fill: CHOICE_FILLS[choice],
+  };
+}
+
+/**
+ * The entry after one column of a table field is set to `fill`, or cleared
+ * when `fill` is `NONE`. The other columns keep their fill and order; a
+ * whole-field entry (no `columns`) starts from an empty column list.
+ */
+export function updateFieldAccessColumnFill(
+  entry: FieldAccessEntry | null,
+  fieldKey: string,
+  columnKey: string,
+  fill: FieldAccessFill,
+): FieldAccessEntry {
+  const others = (entry?.columns ?? []).filter(
+    (column) => column.columnKey !== columnKey,
+  );
+  const columns: readonly FieldAccessColumnEntry[] =
+    fill === 'NONE' ? others : [...others, { columnKey, fill }];
+
+  return { display: 'SHOW', fieldKey, fill: 'NONE', columns };
+}
+
+/** The table columns a field offers per-column access for; none for other fields. */
+export function readTableColumns(
+  field: FormFieldDefinition,
+): readonly FieldAccessMatrixTableColumn[] {
+  return isTableFieldDefinition(field)
+    ? field.columns.map((column) => ({
+        columnKey: column.fieldKey,
+        label: column.label,
+      }))
+    : [];
 }
 
 /**
@@ -243,6 +318,15 @@ function readBranchLabel(
 }
 
 function readExplicitEffective(entry: FieldAccessEntry): FieldAccessEffective {
+  if (entry.columns !== undefined) {
+    // Column mode ignores `fill`; an empty list opens nothing.
+    if (entry.columns.length > 0) {
+      return 'FILL_COLUMNS';
+    }
+
+    return entry.display === 'HIDE' ? 'HIDDEN' : 'READ_ONLY';
+  }
+
   if (entry.fill === 'REQUIRED') {
     return 'FILL_REQUIRED';
   }
@@ -333,8 +417,13 @@ export function readFieldAccessMatrix(
       .map((node) => node.id);
     const isApproverFilled = fillNodeIds.length > 0;
     const fillBlockers = readFormFieldFillIssues(field);
+    const tableColumns = readTableColumns(field);
     const fieldDisabledChoices: readonly FieldAccessChoice[] =
-      fillBlockers.length > 0 ? FILL_CHOICES : [];
+      fillBlockers.length > 0
+        ? BLOCKED_FILL_CHOICES
+        : tableColumns.length > 0
+          ? []
+          : NON_TABLE_DISABLED_CHOICES;
     const cells = userTasks.map((node, index): FieldAccessMatrixCell => {
       const explicit = accessByNode.get(node.id)?.get(fieldKey) ?? null;
       const filledBefore = isFilledBefore(fillNodeIds, index);
@@ -349,9 +438,10 @@ export function readFieldAccessMatrix(
 
       return {
         choice: readFieldAccessChoice(explicit),
+        columnFills: explicit?.columns ?? [],
         disabledChoices:
           columns[index].fillConflicts.length > 0
-            ? FILL_CHOICES
+            ? BLOCKED_FILL_CHOICES
             : fieldDisabledChoices,
         effective:
           explicit !== null
@@ -386,6 +476,7 @@ export function readFieldAccessMatrix(
           fieldKey,
           nodeId: cell.nodeId,
         })),
+      tableColumns,
     };
   });
 

@@ -3,6 +3,8 @@ import {
   readFieldAccessChoice,
   readFieldAccessEntryForChoice,
   readFieldAccessMatrix,
+  readTableColumns,
+  updateFieldAccessColumnFill,
 } from './field-access-matrix';
 import type { FormDefinitionSchema, FormFieldDefinition } from './form';
 import type {
@@ -232,11 +234,11 @@ describe('readFieldAccessMatrix', () => {
 
     expect(matrix.columns[1].fillConflicts).toEqual(['groupPolicy']);
     expect(disabled).toEqual([
-      [[], ['FILL_OPTIONAL', 'FILL_REQUIRED']],
-      [[], ['FILL_OPTIONAL', 'FILL_REQUIRED']],
+      [['COLUMNS'], ['FILL_OPTIONAL', 'FILL_REQUIRED', 'COLUMNS']],
+      [['COLUMNS'], ['FILL_OPTIONAL', 'FILL_REQUIRED', 'COLUMNS']],
       [
-        ['FILL_OPTIONAL', 'FILL_REQUIRED'],
-        ['FILL_OPTIONAL', 'FILL_REQUIRED'],
+        ['FILL_OPTIONAL', 'FILL_REQUIRED', 'COLUMNS'],
+        ['FILL_OPTIONAL', 'FILL_REQUIRED', 'COLUMNS'],
       ],
     ]);
     expect(matrix.rows[2].fillBlockers.map(({ code }) => code)).toEqual([
@@ -306,4 +308,142 @@ describe('field access choices', () => {
         fill: 'REQUIRED',
       }),
     ).toBe('FILL_REQUIRED'));
+
+  it('reads an entry with columns as column mode, even when empty', () => {
+    expect(readFieldAccessEntryForChoice('items', 'COLUMNS')).toEqual({
+      display: 'SHOW',
+      fieldKey: 'items',
+      fill: 'NONE',
+      columns: [],
+    });
+    expect(
+      readFieldAccessChoice({
+        display: 'SHOW',
+        fieldKey: 'items',
+        fill: 'REQUIRED',
+        columns: [],
+      }),
+    ).toBe('COLUMNS');
+  });
+});
+
+describe('column-mode field access', () => {
+  const amount = { columnKey: 'amount', fill: 'OPTIONAL' } as const;
+  const price = { columnKey: 'price', fill: 'REQUIRED' } as const;
+
+  it('adds, replaces and removes one column grant', () => {
+    const added = updateFieldAccessColumnFill(
+      null,
+      'items',
+      'amount',
+      'OPTIONAL',
+    );
+    const replaced = updateFieldAccessColumnFill(
+      { ...added, columns: [amount, price] },
+      'items',
+      'amount',
+      'REQUIRED',
+    );
+    const removed = updateFieldAccessColumnFill(
+      replaced,
+      'items',
+      'price',
+      'NONE',
+    );
+
+    expect(added).toEqual({
+      display: 'SHOW',
+      fieldKey: 'items',
+      fill: 'NONE',
+      columns: [amount],
+    });
+    expect(replaced.columns).toEqual([
+      price,
+      { columnKey: 'amount', fill: 'REQUIRED' },
+    ]);
+    expect(removed.columns).toEqual([
+      { columnKey: 'amount', fill: 'REQUIRED' },
+    ]);
+  });
+
+  it('reads the table columns of a table field and none of any other', () => {
+    const table = field('items', 'table', {
+      columns: [
+        { fieldKey: 'amount', label: '數量', type: 'number' },
+        { fieldKey: 'price', label: '單價', type: 'number' },
+      ],
+    });
+
+    expect(readTableColumns(table)).toEqual([
+      { columnKey: 'amount', label: '數量' },
+      { columnKey: 'price', label: '單價' },
+    ]);
+    expect(readTableColumns(field('text'))).toEqual([]);
+  });
+
+  it('lists each table column under its row and shows column grants as FILL_COLUMNS', () => {
+    const review = userTask('review', [
+      {
+        display: 'SHOW',
+        fieldKey: 'items',
+        fill: 'NONE',
+        columns: [price],
+      },
+    ]);
+    const matrix = readFieldAccessMatrix(
+      definitionOf(
+        [
+          plainNode('start', 'startEvent'),
+          review,
+          plainNode('end', 'endEvent'),
+        ],
+        [edge('start', 'review'), edge('review', 'end')],
+      ),
+      schemaOf([
+        field('items', 'table', {
+          columns: [
+            { fieldKey: 'amount', label: '數量', type: 'number' },
+            { fieldKey: 'price', label: '單價', type: 'number' },
+          ],
+        }),
+      ]),
+    );
+    const [row] = matrix.rows;
+    const [cell] = row.cells;
+
+    expect(row.tableColumns.map(({ columnKey }) => columnKey)).toEqual([
+      'amount',
+      'price',
+    ]);
+    expect(cell.choice).toBe('COLUMNS');
+    expect(cell.effective).toBe('FILL_COLUMNS');
+    expect(cell.columnFills).toEqual([price]);
+    expect(cell.disabledChoices).toEqual([]);
+  });
+
+  it('treats an empty column list as nothing opened', () => {
+    const matrix = readFieldAccessMatrix(
+      definitionOf(
+        [
+          plainNode('start', 'startEvent'),
+          userTask('review', [
+            {
+              display: 'SHOW',
+              fieldKey: 'items',
+              fill: 'REQUIRED',
+              columns: [],
+            },
+          ]),
+          plainNode('end', 'endEvent'),
+        ],
+        [edge('start', 'review'), edge('review', 'end')],
+      ),
+      schemaOf([field('items', 'table', { columns: [] })]),
+    );
+    const [cell] = matrix.rows[0].cells;
+
+    expect(cell.effective).toBe('READ_ONLY');
+    expect(cell.choice).toBe('COLUMNS');
+    expect(cell.columnFills).toEqual([]);
+  });
 });
