@@ -3,6 +3,7 @@ import {
   readNodeFieldAccess,
   type FieldAccessChoice,
   type FieldAccessEffective,
+  type FieldAccessFill,
   type FieldAccessIssue,
   type FieldAccessIssueCode,
   type FieldAccessMatrixColumn,
@@ -18,6 +19,15 @@ export const FIELD_ACCESS_CHOICE_LABELS: Readonly<
   HIDE: '隱藏',
   SHOW: '顯示',
   COLUMNS: '逐欄補填',
+};
+
+/** The per-column fill choices under a table row in column mode. */
+export const FIELD_ACCESS_COLUMN_FILL_LABELS: Readonly<
+  Record<FieldAccessFill, string>
+> = {
+  NONE: '不可補填',
+  OPTIONAL: '選填',
+  REQUIRED: '必填',
 };
 
 export const FIELD_ACCESS_EFFECTIVE_LABELS: Readonly<
