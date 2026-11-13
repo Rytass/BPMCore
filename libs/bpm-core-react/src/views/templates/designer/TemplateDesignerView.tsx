@@ -135,7 +135,10 @@ import {
   readNotifyWebhookTargets,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
-import { readFormBuilder } from '@rytass/bpm-core-client/form';
+import {
+  previewResolveFormFieldOptions,
+  readFormBuilder,
+} from '@rytass/bpm-core-client/form';
 import { readTemplateErrorMessage } from '../template-error-message';
 import {
   OrgUnitPicker,
@@ -280,6 +283,11 @@ import {
   readNotifyWebhookDesignerIssues,
   readNotifyWebhookEndpointOptionId,
 } from './notify-webhook-designer';
+import {
+  readPublishDefaultValueNoticeMessage,
+  readPublishDefaultValueNotices,
+  type PublishDefaultValueNotice,
+} from './publish-default-value-check';
 
 type FlowNodeData = Readonly<{
   approverLines: readonly string[] | null;
@@ -988,6 +996,12 @@ export function TemplateDesignerView({
       editingEdgeId: resolveSetStateAction(action, current.editingEdgeId),
     }));
   const [error, setError] = useState<string | null>(null);
+  // Non-blocking (ADR 27 §8): a publish that succeeded can still leave a
+  // dynamic default the data source no longer offers. Shown after the publish,
+  // never instead of it.
+  const [defaultValueNotices, setDefaultValueNotices] = useState<
+    readonly PublishDefaultValueNotice[]
+  >([]);
   // Kept out of `error` on purpose. `error` is the request-failure banner, and
   // every request path clears it on entry — `handleSearchMembers` starts with
   // `setError(null)`, and editing a DIRECT approver list runs a member search
@@ -1648,6 +1662,14 @@ export function TemplateDesignerView({
   async function commitDesigner(publish: boolean): Promise<void> {
     setSaving(true);
     setError(null);
+    setDefaultValueNotices([]);
+
+    // The form the publish sends: an applied form edit, else the version
+    // already on the template. Read before the branches replace either.
+    const publishFormSchema: FormDefinitionSchema | null =
+      appliedFormDraft?.schema ?? effectiveFormSchema;
+    const publishUiSchema: FormUiSchema =
+      appliedFormDraft?.uiSchema ?? FORM_EDIT_EMPTY_UI_SCHEMA;
 
     try {
       const validationIssue = readWorkflowDefinitionIssue(workflowDefinition);
@@ -1707,6 +1729,17 @@ export function TemplateDesignerView({
         }
 
         await refreshDesigner();
+      }
+
+      // After the publish has succeeded: a warning only, it never fails it.
+      if (publish && publishFormSchema !== null) {
+        setDefaultValueNotices(
+          await readPublishDefaultValueNotices({
+            preview: previewResolveFormFieldOptions,
+            schema: publishFormSchema,
+            uiSchema: publishUiSchema,
+          }),
+        );
       }
     } catch (requestError: unknown) {
       // Shown on the page; the buttons call this fire-and-forget, so a
@@ -2308,6 +2341,17 @@ export function TemplateDesignerView({
                 {error}
               </Typography>
             ) : null}
+            {defaultValueNotices.map(
+              (notice): ReactElement => (
+                <Typography
+                  color="text-warning"
+                  key={`${notice.fieldKey}:${notice.status}`}
+                  variant="body"
+                >
+                  {readPublishDefaultValueNoticeMessage(notice)}
+                </Typography>
+              ),
+            )}
             {/* Scoped to its node, and dropped as soon as that node carries
                   a policy again — the assistant can set one through the
                   toolset without going through `updateUserTaskDecisionPolicy`,
