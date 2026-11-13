@@ -64,8 +64,12 @@ describe('BPM resolver metadata', () => {
     );
     // Class-level `@BPMAuthenticated()` with a method-level `@BPMAdminOnly()`
     // override: the narrower method decorator has to win.
-    expect(find('IdentityQueries', 'member')?.access).toBe('authenticated');
-    expect(find('IdentityQueries', 'cachedMembers')?.access).toBe('admin');
+    expect(find('WorkflowEngineQueries', 'inboxTasks')?.access).toBe(
+      'authenticated',
+    );
+    expect(
+      find('WorkflowEngineQueries', 'inactiveMembersWithOpenTasks')?.access,
+    ).toBe('admin');
 
     // A filter that stopped matching would leave this near zero, and a host
     // would silently get a permission map covering nothing.

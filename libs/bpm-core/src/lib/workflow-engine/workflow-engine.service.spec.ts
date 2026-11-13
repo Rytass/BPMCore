@@ -15028,14 +15028,73 @@ describe('WorkflowEngineService', () => {
 
     await fixture.service.listApprovalHistoryTasks('member-finance');
 
-    expect(fixture.rootTaskFind).toHaveBeenCalledWith({
-      order: { completedAt: 'DESC', createdAt: 'DESC' },
-      take: 50,
-      where: {
-        assigneeMemberId: 'member-finance',
-        status: TaskStatusEnum.COMPLETED,
-      },
+    const builder = fixture.rootTaskQueryBuilder;
+    const [filter, params] = builder.andWhere.mock.calls[0] ?? [];
+
+    // Both branches in one query: assigned and COMPLETED, or their own
+    // candidate row COMPLETED whatever the task's status.
+    expect(filter).toContain('"task"."assignee_member_id" = :historyMemberId');
+    expect(filter).toContain('"task"."status" = :historyTaskStatus');
+    expect(filter).toContain('FROM "bpm"."task_candidates" "historyCandidate"');
+    expect(params).toEqual({
+      historyCandidateStatus: TaskCandidateStatusEnum.COMPLETED,
+      historyMemberId: 'member-finance',
+      historyTaskStatus: TaskStatusEnum.COMPLETED,
     });
+    expect(builder.andWhere).toHaveBeenCalledTimes(1);
+    // Most recently acted on first, the id breaking ties.
+    expect(builder.orderBy.mock.calls[0]?.[0]).toContain(
+      'MAX("actedCandidate"."decided_at")',
+    );
+    expect(builder.orderBy.mock.calls[0]?.[1]).toBe('DESC');
+    expect(builder.addOrderBy).toHaveBeenCalledWith('"task"."id"', 'DESC');
+    // Unpaged: the latest 50, as before paging existed.
+    expect(builder.offset).toHaveBeenCalledWith(0);
+    expect(builder.limit).toHaveBeenCalledWith(50);
+  });
+
+  it('pages approval history in SQL and narrows it to an instance state', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.listApprovalHistoryTasks('member-finance', {
+      instanceState: ApprovalInstanceStateEnum.RUNNING,
+      page: 3,
+      pageSize: 10,
+    });
+
+    const builder = fixture.rootTaskQueryBuilder;
+
+    expect(builder.offset).toHaveBeenCalledWith(20);
+    expect(builder.limit).toHaveBeenCalledWith(10);
+    expect(builder.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('FROM "bpm"."approval_instances" "historyInstance"'),
+      { historyInstanceState: ApprovalInstanceStateEnum.RUNNING },
+    );
+  });
+
+  it('counts approval history with the same filter and no paging', async (): Promise<void> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    fixture.rootTaskFind.mockResolvedValue([
+      createTask({ id: 'task-a' }),
+      createTask({ id: 'task-b' }),
+    ]);
+
+    await expect(
+      fixture.service.countApprovalHistoryTasks('member-finance', {
+        instanceState: ApprovalInstanceStateEnum.RUNNING,
+      }),
+    ).resolves.toBe(2);
+    expect(fixture.rootTaskQueryBuilder.andWhere).toHaveBeenCalledTimes(2);
+    expect(fixture.rootTaskQueryBuilder.limit).not.toHaveBeenCalled();
   });
 
   it('counts and pages filtered approval instances without loading an unpaged list in the client', async (): Promise<void> => {
@@ -21688,6 +21747,24 @@ describe('WorkflowEngineService task node labels', () => {
     expect(task?.nodeLabel).toBe('財務簽核');
   });
 
+  it('pages the inbox from the same open tasks it counts', async (): Promise<void> => {
+    const fixture = createLabelFixture();
+
+    const all = await fixture.service.listInboxTasks('member-finance');
+    const second = await fixture.service.listInboxTasks('member-finance', {
+      page: 2,
+      pageSize: 2,
+    });
+
+    expect(all).toHaveLength(4);
+    expect(second.map((task) => task.id)).toEqual(
+      all.slice(2, 4).map((task) => task.id),
+    );
+    await expect(
+      fixture.service.countInboxTasks('member-finance'),
+    ).resolves.toBe(4);
+  });
+
   it('labels approval history tasks too', async (): Promise<void> => {
     const fixture = createLabelFixture();
 
@@ -21820,6 +21897,7 @@ interface ServiceFixture {
     Promise<readonly ActivityLogEntity[]>,
     [Readonly<Record<string, unknown>>]
   >;
+  readonly rootTaskQueryBuilder: TaskQueryBuilderMock;
   readonly rootTaskFind: jest.Mock<
     Promise<readonly TaskEntity[]>,
     [Readonly<Record<string, unknown>>]
@@ -21861,6 +21939,58 @@ interface ServiceFixture {
     Promise<readonly TaskCandidateEntity[]>,
     [Readonly<{ where?: Readonly<Record<string, unknown>> }>?]
   >;
+}
+
+/**
+ * The task query builder of the history list. Its SQL is not run here, so
+ * `getMany` answers with whatever `rootTaskFind` holds; what the query asks for
+ * is read off the recorded calls.
+ */
+interface TaskQueryBuilderMock {
+  readonly addOrderBy: jest.Mock<TaskQueryBuilderMock, [string, 'ASC' | 'DESC']>;
+  readonly andWhere: jest.Mock<
+    TaskQueryBuilderMock,
+    [string, Readonly<Record<string, unknown>>?]
+  >;
+  readonly getCount: jest.Mock<Promise<number>, []>;
+  readonly getMany: jest.Mock<Promise<readonly TaskEntity[]>, []>;
+  readonly limit: jest.Mock<TaskQueryBuilderMock, [number]>;
+  readonly offset: jest.Mock<TaskQueryBuilderMock, [number]>;
+  readonly orderBy: jest.Mock<TaskQueryBuilderMock, [string, 'ASC' | 'DESC']>;
+}
+
+function createTaskQueryBuilderMock(
+  rootTaskFind: jest.Mock<
+    Promise<readonly TaskEntity[]>,
+    [Readonly<Record<string, unknown>>]
+  >,
+): TaskQueryBuilderMock {
+  const queryBuilder: TaskQueryBuilderMock = {
+    addOrderBy: jest.fn<TaskQueryBuilderMock, [string, 'ASC' | 'DESC']>(
+      (): TaskQueryBuilderMock => queryBuilder,
+    ),
+    andWhere: jest.fn<
+      TaskQueryBuilderMock,
+      [string, Readonly<Record<string, unknown>>?]
+    >((): TaskQueryBuilderMock => queryBuilder),
+    getCount: jest.fn<Promise<number>, []>(
+      async (): Promise<number> => (await rootTaskFind({})).length,
+    ),
+    getMany: jest.fn<Promise<readonly TaskEntity[]>, []>(
+      (): Promise<readonly TaskEntity[]> => rootTaskFind({}),
+    ),
+    limit: jest.fn<TaskQueryBuilderMock, [number]>(
+      (): TaskQueryBuilderMock => queryBuilder,
+    ),
+    offset: jest.fn<TaskQueryBuilderMock, [number]>(
+      (): TaskQueryBuilderMock => queryBuilder,
+    ),
+    orderBy: jest.fn<TaskQueryBuilderMock, [string, 'ASC' | 'DESC']>(
+      (): TaskQueryBuilderMock => queryBuilder,
+    ),
+  };
+
+  return queryBuilder;
 }
 
 interface ApprovalInstanceQueryBuilderMock {
@@ -22107,7 +22237,9 @@ function createServiceFixture({
     ),
   });
   const tokenRepository = createRepository<WorkflowTokenEntity>({});
+  const rootTaskQueryBuilder = createTaskQueryBuilderMock(rootTaskFind);
   const taskRepository = createRepository<TaskEntity>({
+    createQueryBuilder: jest.fn(() => rootTaskQueryBuilder),
     find: rootTaskFind,
     metadata: { schema: 'bpm', tableName: 'tasks' },
     findOne: jest.fn(
@@ -22969,6 +23101,7 @@ function createServiceFixture({
     rootInstanceQueryBuilder,
     rootActivityLogFind,
     rootTaskFind,
+    rootTaskQueryBuilder,
     templateFind,
     templateFindOne,
     transactionalActivityLogFindOne: transactionalActivityRepository.findOne,
