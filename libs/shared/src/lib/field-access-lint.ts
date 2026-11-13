@@ -1,14 +1,10 @@
-import {
-  FormDefinitionSchema,
-  FormFieldDefinition,
-  isFormDataSourceFieldDefinition,
-  isTableFieldDefinition,
-} from './form';
+import { FormDefinitionSchema, FormFieldDefinition } from './form';
 import {
   readApproverFilledFieldKeys,
   readFormFieldPathTopLevelKey,
   readNodeFieldAccess,
   readNodeFillableFieldKeys,
+  readNodeFillUnits,
 } from './field-access';
 import type {
   FieldAccessDisplay,
@@ -137,6 +133,54 @@ export const FIELD_ACCESS_FILLS: readonly FieldAccessFill[] = [
 ];
 
 /**
+ * Whether a stored `columns` list is one the publish lint accepts: a non-empty
+ * array of column entries with a non-blank, unique `columnKey` and a `fill` of
+ * `OPTIONAL` or `REQUIRED`. Absent means whole-field mode and is valid.
+ */
+const isFieldAccessColumnsValid = (columns: unknown): boolean => {
+  if (columns === undefined) {
+    return true;
+  }
+
+  if (!Array.isArray(columns) || columns.length === 0) {
+    return false;
+  }
+
+  const columnKeys = columns.map((column: unknown) =>
+    isPlainRecord(column) && typeof column['columnKey'] === 'string'
+      ? column['columnKey']
+      : undefined,
+  );
+
+  return (
+    columns.every(
+      (column: unknown) =>
+        isPlainRecord(column) &&
+        typeof column['columnKey'] === 'string' &&
+        column['columnKey'].trim() !== '' &&
+        (column['fill'] === 'OPTIONAL' || column['fill'] === 'REQUIRED'),
+    ) && new Set(columnKeys).size === columnKeys.length
+  );
+};
+
+/**
+ * Whether two fill-unit column sets share a unit: a whole-field unit (`null`)
+ * overlaps every column, and two columns overlap only when they are the same.
+ */
+const doFillUnitsOverlap = (
+  left: readonly (string | null)[],
+  right: readonly (string | null)[],
+): boolean =>
+  left.some((leftColumn) =>
+    right.some(
+      (rightColumn) =>
+        leftColumn === null ||
+        rightColumn === null ||
+        leftColumn === rightColumn,
+    ),
+  );
+
+/**
  * Whether a stored entry is one the publish lint accepts. Stricter than
  * `readNodeFieldAccess`, which the engine reads with: a blank `fieldKey`
  * passes there and fails here, so writers check with this one.
@@ -149,7 +193,8 @@ export function isFieldAccessEntryValid(
     typeof entry['fieldKey'] === 'string' &&
     entry['fieldKey'].trim() !== '' &&
     FIELD_ACCESS_DISPLAYS.some((display) => display === entry['display']) &&
-    FIELD_ACCESS_FILLS.some((fill) => fill === entry['fill'])
+    FIELD_ACCESS_FILLS.some((fill) => fill === entry['fill']) &&
+    isFieldAccessColumnsValid(entry['columns'])
   );
 }
 
@@ -209,7 +254,7 @@ export function readNodeFieldAccessIssues(
   }
 
   const fieldKeys = entries.map((entry) => entry.fieldKey);
-  const hasFillableField = readNodeFillableFieldKeys(node).size > 0;
+  const fillableFieldKeys = readNodeFillableFieldKeys(node);
 
   return [
     ...legacyIssues,
@@ -225,7 +270,10 @@ export function readNodeFieldAccessIssues(
         nodeIds: [nodeId],
       })),
     ...readNodeFieldAccess(node)
-      .filter((entry) => entry.fill !== 'NONE' && entry.display === 'HIDE')
+      .filter(
+        (entry) =>
+          entry.display === 'HIDE' && fillableFieldKeys.has(entry.fieldKey),
+      )
       .map((entry): FieldAccessIssue => ({
         code: 'fieldAccessFillHidden',
         fieldKeys: [entry.fieldKey],
@@ -235,7 +283,7 @@ export function readNodeFieldAccessIssues(
         ),
         nodeIds: [nodeId],
       })),
-    ...(hasFillableField ? readUserTaskFillConflicts(node) : []).map(
+    ...(fillableFieldKeys.size > 0 ? readUserTaskFillConflicts(node) : []).map(
       (conflict): FieldAccessIssue => ({
         code: FILL_CONFLICT_ISSUES[conflict].code,
         fieldKeys: [],
@@ -334,27 +382,35 @@ export function readDefinitionFieldAccessIssues(
   );
   const canBothRun = createWorkflowCoRunReader(definition);
   const pathIssues = [...approverFilled].flatMap((fieldKey) => {
-    const fillNodeIds = [
-      ...new Set(
-        userTasks
-          .filter((node) => readNodeFillableFieldKeys(node).has(fieldKey))
-          .map((node) => node.id),
-      ),
-    ];
+    // One filler per (fieldKey, columnKey): two nodes filling different
+    // columns of one table never overwrite each other (ADR 27 §4(a)).
+    const fillers = userTasks
+      .map((node) => ({
+        nodeId: node.id,
+        columnKeys: readNodeFillUnits(node)
+          .filter((unit) => unit.fieldKey === fieldKey)
+          .map((unit) => unit.columnKey),
+      }))
+      .filter((filler) => filler.columnKeys.length > 0);
 
-    return fillNodeIds.flatMap((nodeId, index) =>
-      fillNodeIds
+    return fillers.flatMap((filler, index) =>
+      fillers
         .slice(index + 1)
-        .filter((otherNodeId) => canBothRun(nodeId, otherNodeId))
-        .map((otherNodeId): FieldAccessIssue => ({
+        .filter(
+          (other) =>
+            other.nodeId !== filler.nodeId &&
+            doFillUnitsOverlap(filler.columnKeys, other.columnKeys) &&
+            canBothRun(filler.nodeId, other.nodeId),
+        )
+        .map((other): FieldAccessIssue => ({
           code: 'approverFilledMultipleFillNodesOnPath',
           fieldKeys: [fieldKey],
           message: WORKFLOW_LINT_MESSAGES.approverFilledMultipleFillNodesOnPath(
             fieldKey,
-            nodeId,
-            otherNodeId,
+            filler.nodeId,
+            other.nodeId,
           ),
-          nodeIds: [nodeId, otherNodeId],
+          nodeIds: [filler.nodeId, other.nodeId],
         })),
     );
   });
@@ -366,9 +422,10 @@ export function readDefinitionFieldAccessIssues(
  * Why a form field cannot be one an approver fills in, as the issues the
  * publish lint reports once it is: a form-level rule (`required` / `hidden`
  * set to `true`, the others set at all — `required: false` and
- * `hidden: false`, what the form editor writes for "off", are not rules), a
- * data source, a file upload, or a table with a data-source column. Empty
- * when the field can be filled in.
+ * `hidden: false`, what the form editor writes for "off", are not rules) or a
+ * file upload. A data source, or a table with a data-source column, can be
+ * filled in by the approver (ADR 27 §4(b)). Empty when the field can be filled
+ * in.
  */
 export function readFormFieldFillIssues(
   field: FormFieldDefinition,
@@ -395,30 +452,11 @@ export function readFormFieldFillIssues(
         WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
       ),
     ),
-    ...(isFormDataSourceFieldDefinition(field)
-      ? [
-          issue(
-            'approverFilledFieldDataSource',
-            WORKFLOW_LINT_MESSAGES.approverFilledFieldDataSource(fieldKey),
-          ),
-        ]
-      : []),
     ...(field.type === 'file_upload'
       ? [
           issue(
             'approverFilledFieldFileUpload',
             WORKFLOW_LINT_MESSAGES.approverFilledFieldFileUpload(fieldKey),
-          ),
-        ]
-      : []),
-    ...(isTableFieldDefinition(field) &&
-    field.columns.some(isFormDataSourceFieldDefinition)
-      ? [
-          issue(
-            'approverFilledTableDataSourceColumn',
-            WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(
-              fieldKey,
-            ),
           ),
         ]
       : []),

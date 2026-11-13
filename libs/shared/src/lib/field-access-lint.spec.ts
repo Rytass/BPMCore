@@ -60,6 +60,17 @@ const fill = (
   fillMode: FieldAccessEntry['fill'] = 'REQUIRED',
 ): FieldAccessEntry => ({ display: 'SHOW', fieldKey, fill: fillMode });
 
+const columnsOf = (
+  fieldKey: string,
+  columnKeys: readonly string[],
+  fillMode: Exclude<FieldAccessEntry['fill'], 'NONE'> = 'REQUIRED',
+): FieldAccessEntry => ({
+  display: 'SHOW',
+  fieldKey,
+  fill: 'NONE',
+  columns: columnKeys.map((columnKey) => ({ columnKey, fill: fillMode })),
+});
+
 const definitionOf = (
   nodes: readonly WorkflowNode[],
   edges: readonly WorkflowEdge[],
@@ -279,11 +290,77 @@ describe('readDefinitionFieldAccessIssues', () => {
         ),
       ),
     ).toEqual([]));
+
+  it('allows two chained nodes that fill different columns of one table', () =>
+    expect(
+      readDefinitionFieldAccessIssues(
+        definitionOf(
+          [
+            buildUserTask('a', [columnsOf('items', ['note'])]),
+            buildUserTask('b', [columnsOf('items', ['price'])]),
+          ],
+          [edge('a', 'b')],
+        ),
+      ),
+    ).toEqual([]));
+
+  it('flags two chained nodes that both fill one column of a table', () =>
+    expect(
+      readDefinitionFieldAccessIssues(
+        definitionOf(
+          [
+            buildUserTask('a', [columnsOf('items', ['note', 'price'])]),
+            buildUserTask('b', [columnsOf('items', ['price'])]),
+          ],
+          [edge('a', 'b')],
+        ),
+      ).map(({ code, fieldKeys, nodeIds }) => ({ code, fieldKeys, nodeIds })),
+    ).toEqual([
+      {
+        code: 'approverFilledMultipleFillNodesOnPath',
+        fieldKeys: ['items'],
+        nodeIds: ['a', 'b'],
+      },
+    ]));
+
+  it('flags a whole-table fill against a column fill on one path', () =>
+    expect(
+      readDefinitionFieldAccessIssues(
+        definitionOf(
+          [
+            buildUserTask('a', [fill('items')]),
+            buildUserTask('b', [columnsOf('items', ['price'])]),
+          ],
+          [edge('a', 'b')],
+        ),
+      ).map(({ code, nodeIds }) => ({ code, nodeIds })),
+    ).toEqual([
+      { code: 'approverFilledMultipleFillNodesOnPath', nodeIds: ['a', 'b'] },
+    ]));
 });
 
 describe('readFormFieldFillIssues', () => {
   it('reports nothing for a plain field', () =>
     expect(readFormFieldFillIssues(field('x'))).toEqual([]));
+
+  it('allows a data-source field and a table with a data-source column', () =>
+    expect([
+      ...readFormFieldFillIssues(
+        field('vendor', 'select', {
+          dataSource: { bindings: [], key: 'vendors', version: 1 },
+        }),
+      ),
+      ...readFormFieldFillIssues(
+        field('x', 'table', {
+          columns: [
+            field('code', 'text'),
+            field('vendor', 'select', {
+              dataSource: { bindings: [], key: 'vendors', version: 1 },
+            }),
+          ],
+        }),
+      ),
+    ]).toEqual([]));
 
   it('does not count required: false as a form rule', () =>
     expect(
