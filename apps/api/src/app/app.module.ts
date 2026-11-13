@@ -40,6 +40,7 @@ import {
   WEBHOOK_ALLOWED_URL_PATTERNS_KEY,
   WEBHOOK_SECRET_ENCRYPTION_KEY_KEY,
 } from './api-webhook-settings';
+import { readApiDemoInstanceGuard } from './api-demo-instance-guard';
 import {
   ApiDemoWebhookSigningSecret,
   createApiDemoWebhookRegistry,
@@ -128,6 +129,8 @@ import {
           authContextFactory: buildApiBPMAuthContextFromExecutionContext,
           // Demo host function for expressions; wrapper-app only.
           expressionFunctions: API_DEMO_EXPRESSION_FUNCTIONS,
+          // Demo pre-decision guard (ADR 27 §2); outside production only.
+          instanceGuard: readApiDemoInstanceGuard(process.env.NODE_ENV),
           // Database-managed webhook endpoints (ADR 18 §3.13). Needs both an
           // allowlist and an encryption key; outside production the demo ones
           // below let the back office point endpoints at the local receiver.
