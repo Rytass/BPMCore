@@ -2851,6 +2851,75 @@ describe('WorkflowEngineService', () => {
           financeItems: [{ seq: 1, taxAmount: 5 }, { taxAmount: 6 }],
         });
       });
+
+      it('drops the stored approver cells when the applicant reorders the rows', async (): Promise<void> => {
+        const { fixture } = await resubmit(
+          '{"amount":10,"financeItems":[{"taxAmount":6},{"taxAmount":5}]}',
+          {
+            endUserSubmission: true,
+            formSchema: requiredSeqSchema(),
+            processFormData: {
+              amount: 10,
+              financeItems: [
+                { seq: 1, taxAmount: 5 },
+                { seq: 2, taxAmount: 6 },
+              ],
+            },
+            workflow: columnWorkflow(),
+          },
+        );
+
+        expect(fixture.savedInstance?.formData).toEqual({
+          amount: 10,
+          financeItems: [{ taxAmount: 6 }, { taxAmount: 5 }],
+        });
+      });
+
+      it('keeps the value on an unchanged row when a later row is deleted', async (): Promise<void> => {
+        const { fixture } = await resubmit(
+          '{"amount":10,"financeItems":[{"taxAmount":5}]}',
+          {
+            endUserSubmission: true,
+            formSchema: requiredSeqSchema(),
+            processFormData: {
+              amount: 10,
+              financeItems: [
+                { seq: 1, taxAmount: 5 },
+                { seq: 2, taxAmount: 6 },
+              ],
+            },
+            workflow: columnWorkflow(),
+          },
+        );
+
+        expect(fixture.savedInstance?.formData).toEqual({
+          amount: 10,
+          financeItems: [{ seq: 1, taxAmount: 5 }],
+        });
+      });
+
+      it('does not carry a value onto the row that moves up after an earlier row is deleted', async (): Promise<void> => {
+        const { fixture } = await resubmit(
+          '{"amount":10,"financeItems":[{"taxAmount":6}]}',
+          {
+            endUserSubmission: true,
+            formSchema: requiredSeqSchema(),
+            processFormData: {
+              amount: 10,
+              financeItems: [
+                { seq: 1, taxAmount: 5 },
+                { seq: 2, taxAmount: 6 },
+              ],
+            },
+            workflow: columnWorkflow(),
+          },
+        );
+
+        expect(fixture.savedInstance?.formData).toEqual({
+          amount: 10,
+          financeItems: [{ taxAmount: 6 }],
+        });
+      });
     });
   });
 

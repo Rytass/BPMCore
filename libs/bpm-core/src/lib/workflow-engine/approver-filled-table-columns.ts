@@ -8,6 +8,8 @@ import {
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared';
 
+import { computeStableValueFingerprint } from './form-data-fingerprint';
+
 /**
  * What the user tasks of one workflow let an approver fill (ADR 27 §4(a)),
  * split for a submission.
@@ -102,10 +104,26 @@ export const projectOpenColumnsOptional = (
 });
 
 /**
+ * The cells of a row the applicant owns: every column that is not open.
+ */
+const readApplicantCells = (
+  row: FormRow,
+  openColumns: ReadonlySet<string>,
+): FormRow =>
+  Object.fromEntries(
+    Object.entries(row).filter(([column]) => !openColumns.has(column)),
+  );
+
+/**
  * Settles the open cells of each row of a deferred table. The submitted cell
  * is dropped. The stored cell comes back only for a row the stored data has
- * that cell on; a row past the stored length gets none. `stored` is `null` on
- * a first submission, so no open cell survives it.
+ * that cell on, and only when the applicant's own cells on that row equal the
+ * stored row's at the same position. Rows are matched by position (no row id),
+ * so a reordered, deleted or inserted row that now sits where a different row
+ * was would otherwise inherit an approver's value that judged another record.
+ * Such a row keeps no open cell and the later approver fills it again. A row
+ * past the stored length gets none. `stored` is `null` on a first submission,
+ * so no open cell survives it.
  */
 export const applyOpenColumnCells = (
   formData: FormRow,
@@ -132,20 +150,31 @@ export const applyOpenColumnCells = (
             return row;
           }
 
+          const kept = readApplicantCells(row, openColumns);
           const storedRow = storedRows[index];
-          const kept = Object.fromEntries(
-            Object.entries(row).filter(([column]) => !openColumns.has(column)),
+
+          if (!isFormRow(storedRow)) {
+            return kept;
+          }
+
+          const sameRecord =
+            computeStableValueFingerprint(kept) ===
+            computeStableValueFingerprint(
+              readApplicantCells(storedRow, openColumns),
+            );
+
+          if (!sameRecord) {
+            return kept;
+          }
+
+          const restored = Object.fromEntries(
+            [...openColumns]
+              .filter((column) => hasOwn(storedRow, column))
+              .map((column): readonly [string, unknown] => [
+                column,
+                storedRow[column],
+              ]),
           );
-          const restored = isFormRow(storedRow)
-            ? Object.fromEntries(
-                [...openColumns]
-                  .filter((column) => hasOwn(storedRow, column))
-                  .map((column): readonly [string, unknown] => [
-                    column,
-                    storedRow[column],
-                  ]),
-              )
-            : {};
 
           return { ...kept, ...restored };
         }),
