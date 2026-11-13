@@ -54,7 +54,12 @@ interface WorkflowLintCopy {
     ruleLabel: string,
     approverFilledFieldKey: string,
   ) => string;
-  readonly approverFilledTableDataSourceColumn: (fieldKey: string) => string;
+  readonly approverFilledTableDataSourceColumn: (
+    nodeName: string,
+    fieldKey: string,
+    sourceColumnKey: string,
+    dependentColumnKey: string,
+  ) => string;
   readonly blankNodeLabel: (typeLabel: string) => string;
   readonly cycle: (name: string) => string;
   readonly endEventMissing: string;
@@ -154,12 +159,25 @@ const WORKFLOW_LINT_COPY: Readonly<
       requiredWhen: '"Required when" (條件必填)',
       visibleWhen: '"Visible when" (條件顯示)',
     },
-    approverFilledMultipleFillNodesOnPath: (fieldKey, firstName, secondName): string =>
+    approverFilledMultipleFillNodesOnPath: (
+      fieldKey,
+      firstName,
+      secondName,
+    ): string =>
       `The field "${fieldKey}" is filled in at both "${firstName}" and "${secondName}", which can both run in one case, so the later approver would overwrite the earlier one. Keep one fill-in node per path.`,
-    applicantRuleReadsApproverFilled: (fieldKey, ruleLabel, approverFilledFieldKey): string =>
+    applicantRuleReadsApproverFilled: (
+      fieldKey,
+      ruleLabel,
+      approverFilledFieldKey,
+    ): string =>
       `The ${ruleLabel} rule of the field "${fieldKey}" reads "${approverFilledFieldKey}", which an approver fills in after the applicant submits, so the rule would always see it empty.`,
-    approverFilledTableDataSourceColumn: (fieldKey): string =>
-      `The table "${fieldKey}" is filled in by an approver, so it cannot have a column that uses an option source (選項來源).`,
+    approverFilledTableDataSourceColumn: (
+      nodeName,
+      fieldKey,
+      sourceColumnKey,
+      dependentColumnKey,
+    ): string =>
+      `"${nodeName}" fills in the column "${sourceColumnKey}" of the table "${fieldKey}", and the data-source column "${dependentColumnKey}" reads it, so that node must also fill in "${dependentColumnKey}".`,
     blankNodeLabel: (typeLabel): string =>
       `A "${typeLabel}" node has no display name. Select it, fill in "Display name" (顯示名稱), then publish again.`,
     cycle: (name): string =>
@@ -218,8 +236,7 @@ const WORKFLOW_LINT_COPY: Readonly<
     expressionLintLine: (location, sentence): string =>
       `${location}: ${sentence}`,
     expressionLocations: {
-      fieldPath: (name): string =>
-        `The field the system node "${name}" writes`,
+      fieldPath: (name): string => `The field the system node "${name}" writes`,
       formBinding: (field, column, parameter): string =>
         column === null
           ? `The expression for the query parameter "${parameter}" of the field "${field}"`
@@ -296,12 +313,25 @@ const WORKFLOW_LINT_COPY: Readonly<
       requiredWhen: '「條件必填」',
       visibleWhen: '「條件顯示」',
     },
-    approverFilledMultipleFillNodesOnPath: (fieldKey, firstName, secondName): string =>
+    approverFilledMultipleFillNodesOnPath: (
+      fieldKey,
+      firstName,
+      secondName,
+    ): string =>
       `欄位「${fieldKey}」在「${firstName}」與「${secondName}」都設為補填，兩關在同一張單都會執行，後填的會覆寫先填的。同一條路徑只能保留一個補填關卡。`,
-    applicantRuleReadsApproverFilled: (fieldKey, ruleLabel, approverFilledFieldKey): string =>
+    applicantRuleReadsApproverFilled: (
+      fieldKey,
+      ruleLabel,
+      approverFilledFieldKey,
+    ): string =>
       `欄位「${fieldKey}」的${ruleLabel}讀取了「${approverFilledFieldKey}」，但它由簽核人在送出後才補填，申請時永遠是空的。請改用申請人填寫的欄位。`,
-    approverFilledTableDataSourceColumn: (fieldKey): string =>
-      `表格「${fieldKey}」由簽核人補填，表格裡不能有使用「選項來源」的欄位。`,
+    approverFilledTableDataSourceColumn: (
+      nodeName,
+      fieldKey,
+      sourceColumnKey,
+      dependentColumnKey,
+    ): string =>
+      `「${nodeName}」補填表格「${fieldKey}」的「${sourceColumnKey}」欄，而資料來源欄「${dependentColumnKey}」讀取了它，因此該關卡也必須補填「${dependentColumnKey}」。`,
     blankNodeLabel: (typeLabel): string =>
       `有一個「${typeLabel}」節點沒有顯示名稱。請點選該節點，在「顯示名稱」填入名稱後再發布。`,
     cycle: (name): string =>
@@ -491,8 +521,7 @@ export function readExpressionIssueMessage(
     ? WORKFLOW_LINT_COPY[language]
     : WORKFLOW_LINT_COPY[DEFAULT_WORKFLOW_LINT_LANGUAGE];
   const sentenceFor = copy.expressionLint[issue.code] as
-    | ((subject: string | null) => string)
-    | undefined;
+    ((subject: string | null) => string) | undefined;
   const sentence = sentenceFor
     ? sentenceFor(issue.subject ?? null)
     : copy.expressionLint.EXPR_PARSE_FAILED(null);
@@ -568,8 +597,7 @@ export function readFormBindingExpressionLintMessage(
     ? WORKFLOW_LINT_COPY[language]
     : WORKFLOW_LINT_COPY[DEFAULT_WORKFLOW_LINT_LANGUAGE];
   const sentenceFor = copy.expressionLint[issue.code] as
-    | ((subject: string | null) => string)
-    | undefined;
+    ((subject: string | null) => string) | undefined;
 
   return copy.expressionLintLine(
     copy.expressionLocations.formBinding(
@@ -624,34 +652,71 @@ type Translation = readonly [string, string];
 // here. The unknown part must be a form field key.
 interface PatternTranslation {
   readonly pattern: RegExp;
-  readonly translate: (fieldKey: string) => string;
+  readonly captureCount: number;
+  readonly translate: (captures: readonly string[]) => string;
 }
 
 const PATTERN_PLACEHOLDER = '\u0000';
 
-const FIELD_KEY_PATTERN = '([A-Za-z][A-Za-z0-9_]*)';
+const TABLE_FIELD_PLACEHOLDER = '\u0001';
+
+const TABLE_SOURCE_PLACEHOLDER = '\u0002';
+
+const TABLE_DEPENDENT_PLACEHOLDER = '\u0003';
+
+const FIELD_KEY_PATTERN = '[A-Za-z][A-Za-z0-9_]*';
 
 function readPatternTranslation(
   segment: string,
   patterns: readonly PatternTranslation[],
 ): string | undefined {
-  return patterns.reduce<string | undefined>((found, { pattern, translate }) => {
-    if (found !== undefined) {
-      return found;
-    }
+  return patterns.reduce<string | undefined>(
+    (found, { pattern, captureCount, translate }) => {
+      if (found !== undefined) {
+        return found;
+      }
 
-    const match = pattern.exec(segment);
+      const match = pattern.exec(segment);
 
-    return match ? translate(match[1]) : undefined;
-  }, undefined);
+      return match
+        ? translate(
+            Array.from(
+              { length: captureCount },
+              (_, index): string => match.groups?.[`c${index}`] ?? '',
+            ),
+          )
+        : undefined;
+    },
+    undefined,
+  );
 }
 
-function readLinePattern(line: string): RegExp {
+/**
+ * Each placeholder in `line` becomes one named capture, in the order given.
+ * A placeholder that appears again later in `line` becomes a back-reference to
+ * that capture, so the line must repeat the same value wherever it repeats the
+ * placeholder (duplicate group names are not valid in a regex).
+ */
+function readLinePattern(
+  line: string,
+  placeholders: readonly string[],
+): RegExp {
   const escaped = line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const source = placeholders.reduce((text, placeholder, index) => {
+    const [head = '', ...occurrences] = text.split(placeholder);
 
-  return new RegExp(
-    `^${escaped.replace(PATTERN_PLACEHOLDER, FIELD_KEY_PATTERN)}$`,
-  );
+    return occurrences.reduce(
+      (acc, part, occurrence) =>
+        `${acc}${
+          occurrence === 0
+            ? `(?<c${index}>${FIELD_KEY_PATTERN})`
+            : `\\k<c${index}>`
+        }${part}`,
+      head,
+    );
+  }, escaped);
+
+  return new RegExp(`^${source}$`);
 }
 
 /**
@@ -666,26 +731,80 @@ function readWorkflowLintPatterns(
     ? definition.nodes
     : [];
 
-  return [...readFillableFieldKeys(nodes.filter(isReadableNode))].flatMap(
-    (approverFilledFieldKey): readonly PatternTranslation[] =>
-      APPLICANT_FIELD_CONDITION_RULES.map(
-        (rule): PatternTranslation => ({
+  const readableNodes = nodes.filter(isReadableNode);
+
+  return [
+    ...[...readFillableFieldKeys(readableNodes)].flatMap(
+      (approverFilledFieldKey): readonly PatternTranslation[] =>
+        APPLICANT_FIELD_CONDITION_RULES.map((rule): PatternTranslation => ({
           pattern: readLinePattern(
             WORKFLOW_LINT_MESSAGES.applicantRuleReadsApproverFilled(
               PATTERN_PLACEHOLDER,
               rule,
               approverFilledFieldKey,
             ),
+            [PATTERN_PLACEHOLDER],
           ),
-          translate: (fieldKey): string =>
+          captureCount: 1,
+          translate: ([fieldKey = '']): string =>
             copy.applicantRuleReadsApproverFilled(
               fieldKey,
               copy.approverFilledFormRuleLabels[rule],
               approverFilledFieldKey,
             ),
-        }),
+        })),
+    ),
+    ...readableNodes.flatMap((node): readonly PatternTranslation[] =>
+      readDependentColumnPatterns(node, copy),
+    ),
+  ];
+}
+
+/**
+ * The table lines name the table, the source column and the dependent column,
+ * none of which the designer knows in advance, so each user task gets one
+ * pattern that captures the three names from its own node id.
+ */
+function readDependentColumnPatterns(
+  node: WorkflowNode,
+  copy: WorkflowLintCopy,
+): readonly PatternTranslation[] {
+  if (node.type !== 'userTask') {
+    return [];
+  }
+
+  const name = readNodeName(node, copy);
+  const placeholders = [
+    TABLE_FIELD_PLACEHOLDER,
+    TABLE_SOURCE_PLACEHOLDER,
+    TABLE_DEPENDENT_PLACEHOLDER,
+  ];
+
+  return [
+    {
+      pattern: readLinePattern(
+        WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(
+          node.id,
+          TABLE_FIELD_PLACEHOLDER,
+          TABLE_SOURCE_PLACEHOLDER,
+          TABLE_DEPENDENT_PLACEHOLDER,
+        ),
+        placeholders,
       ),
-  );
+      captureCount: placeholders.length,
+      translate: ([
+        fieldKey = '',
+        sourceColumnKey = '',
+        dependentColumnKey = '',
+      ]): string =>
+        copy.approverFilledTableDataSourceColumn(
+          name,
+          fieldKey,
+          sourceColumnKey,
+          dependentColumnKey,
+        ),
+    },
+  ];
 }
 
 /**
@@ -770,27 +889,25 @@ function readApproverFilledFieldTranslations(
   nodes: readonly WorkflowNode[],
   copy: WorkflowLintCopy,
 ): readonly Translation[] {
-  return [...readFillableFieldKeys(nodes)].flatMap((fieldKey): readonly Translation[] => [
-    ...APPROVER_FILLED_FORM_RULES.map((rule): Translation => [
-      WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
-      copy.approverFilledFieldFormRule(
-        fieldKey,
-        copy.approverFilledFormRuleLabels[rule],
-      ),
-    ]),
-    [
-      WORKFLOW_LINT_MESSAGES.approverFilledFieldDataSource(fieldKey),
-      copy.approverFilledFieldDataSource(fieldKey),
+  return [...readFillableFieldKeys(nodes)].flatMap(
+    (fieldKey): readonly Translation[] => [
+      ...APPROVER_FILLED_FORM_RULES.map((rule): Translation => [
+        WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
+        copy.approverFilledFieldFormRule(
+          fieldKey,
+          copy.approverFilledFormRuleLabels[rule],
+        ),
+      ]),
+      [
+        WORKFLOW_LINT_MESSAGES.approverFilledFieldDataSource(fieldKey),
+        copy.approverFilledFieldDataSource(fieldKey),
+      ],
+      [
+        WORKFLOW_LINT_MESSAGES.approverFilledFieldFileUpload(fieldKey),
+        copy.approverFilledFieldFileUpload(fieldKey),
+      ],
     ],
-    [
-      WORKFLOW_LINT_MESSAGES.approverFilledFieldFileUpload(fieldKey),
-      copy.approverFilledFieldFileUpload(fieldKey),
-    ],
-    [
-      WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(fieldKey),
-      copy.approverFilledTableDataSourceColumn(fieldKey),
-    ],
-  ]);
+  );
 }
 
 function readFillableFieldKeys(
@@ -824,8 +941,9 @@ function readFillNodesOnPathTranslations(
       );
 
       return fillNodes.flatMap((first, index): readonly Translation[] =>
-        fillNodes.slice(index + 1).map(
-          (second): Translation => [
+        fillNodes
+          .slice(index + 1)
+          .map((second): Translation => [
             WORKFLOW_LINT_MESSAGES.approverFilledMultipleFillNodesOnPath(
               fieldKey,
               first.id,
@@ -836,8 +954,7 @@ function readFillNodesOnPathTranslations(
               readNodeName(first, copy),
               readNodeName(second, copy),
             ),
-          ],
-        ),
+          ]),
       );
     },
   );
@@ -857,17 +974,16 @@ function readApproverFilledReadEarlyTranslations(
 ): readonly Translation[] {
   return [...readFillableFieldKeys(nodes)].flatMap(
     (fieldKey): readonly Translation[] => [
-      ...nodes.flatMap(
-        (node): readonly Translation[] =>
-          readNodeReadEarlyLocations(node, copy).map(
-            ([label, location]): Translation => [
-              WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(
-                label,
-                fieldKey,
-              ),
-              copy.approverFilledFieldReadEarly(location, fieldKey),
-            ],
-          ),
+      ...nodes.flatMap((node): readonly Translation[] =>
+        readNodeReadEarlyLocations(node, copy).map(
+          ([label, location]): Translation => [
+            WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(
+              label,
+              fieldKey,
+            ),
+            copy.approverFilledFieldReadEarly(location, fieldKey),
+          ],
+        ),
       ),
       ...edges.flatMap((edge): readonly Translation[] => {
         const source = nodesById.get(edge.source);
@@ -876,18 +992,16 @@ function readApproverFilledReadEarlyTranslations(
           ? [
               WORKFLOW_EXPRESSION_LABELS.edgeCondition(edge.id),
               WORKFLOW_EXPRESSION_LABELS.edgeConditionFieldKey(edge.id),
-            ].map(
-              (label): Translation => [
-                WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(
-                  label,
-                  fieldKey,
-                ),
-                copy.approverFilledFieldReadEarly(
-                  copy.readEarlyLocations.edge(readNodeName(source, copy)),
-                  fieldKey,
-                ),
-              ],
-            )
+            ].map((label): Translation => [
+              WORKFLOW_LINT_MESSAGES.approverFilledFieldReadEarly(
+                label,
+                fieldKey,
+              ),
+              copy.approverFilledFieldReadEarly(
+                copy.readEarlyLocations.edge(readNodeName(source, copy)),
+                fieldKey,
+              ),
+            ])
           : [];
       }),
     ],
@@ -924,7 +1038,9 @@ function readNodeReadEarlyLocations(
       ...(isRecord(resolver) && resolver['type'] === 'EXPRESSION'
         ? ([
             [
-              WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression(node.id),
+              WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression(
+                node.id,
+              ),
               locations.approverExpression(name),
             ],
           ] as const)
@@ -1012,16 +1128,14 @@ function readExpressionLintLocations(
 
   return [
     ['initiatorPolicyCel', copy.expressionLocations.initiatorPolicy],
-    ...nodes.flatMap(
-      (node): readonly (readonly [string, string])[] => [
-        ...readNodeReadEarlyLocations(node, copy),
-        [
-          `workflow.nodes.${node.id}.action.fieldPath`,
-          copy.expressionLocations.fieldPath(readNodeName(node, copy)),
-        ],
-        ...readNotifyWebhookExpressionLocations(node, copy),
+    ...nodes.flatMap((node): readonly (readonly [string, string])[] => [
+      ...readNodeReadEarlyLocations(node, copy),
+      [
+        `workflow.nodes.${node.id}.action.fieldPath`,
+        copy.expressionLocations.fieldPath(readNodeName(node, copy)),
       ],
-    ),
+      ...readNotifyWebhookExpressionLocations(node, copy),
+    ]),
     ...edges.flatMap((edge): readonly (readonly [string, string])[] => {
       const source = nodesById.get(edge.source);
 

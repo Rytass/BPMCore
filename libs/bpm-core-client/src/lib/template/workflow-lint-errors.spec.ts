@@ -434,12 +434,9 @@ describe('readWorkflowLintMessage: field access', (): void => {
     ],
   ];
 
-  it.each(cases)(
-    'writes %s in Chinese',
-    (backend, zhTw): void => {
-      expect(readWorkflowLintMessage(backend, fieldDefinition)).toBe(zhTw);
-    },
-  );
+  it.each(cases)('writes %s in Chinese', (backend, zhTw): void => {
+    expect(readWorkflowLintMessage(backend, fieldDefinition)).toBe(zhTw);
+  });
 
   it.each(cases)('writes %s in English', (backend, _zhTw, en): void => {
     expect(readWorkflowLintMessage(backend, fieldDefinition, 'en')).toBe(en);
@@ -502,7 +499,10 @@ describe('readWorkflowLintMessage: field access', (): void => {
           type: 'serviceTask',
         },
         {
-          data: { action: { fieldPath: 5, type: 'SET_FORM_FIELD' }, label: '壞路徑' },
+          data: {
+            action: { fieldPath: 5, type: 'SET_FORM_FIELD' },
+            label: '壞路徑',
+          },
           id: 'serviceTask_b',
           position: { x: 0, y: 0 },
           type: 'serviceTask',
@@ -624,9 +624,9 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
       'The field "invoiceKind" is filled in by an approver, so it cannot be an attachment (附件) field.',
     ],
     [
-      'formData.items is filled in by an approver, so its table cannot have a data-source column',
-      '表格「items」由簽核人補填，表格裡不能有使用「選項來源」的欄位。',
-      'The table "items" is filled in by an approver, so it cannot have a column that uses an option source (選項來源).',
+      'workflow.nodes.userTask_fill fills in column name of formData.items, and the data-source column label reads it, so the same node must also fill in label',
+      '「財務補填」補填表格「items」的「name」欄，而資料來源欄「label」讀取了它，因此該關卡也必須補填「label」。',
+      '"財務補填" fills in the column "name" of the table "items", and the data-source column "label" reads it, so that node must also fill in "label".',
     ],
   ];
 
@@ -714,14 +714,12 @@ describe('readWorkflowLintMessage: approver-filled fields', (): void => {
     // catch-all in `readWorkflowLintMessage` then returns every line raw, so
     // only a line that does get translated proves nothing threw.
     expect(
-      readWorkflowLintMessage(
-        [translatable, ...rawLines].join('; '),
-        badDraft,
-      ),
+      readWorkflowLintMessage([translatable, ...rawLines].join('; '), badDraft),
     ).toBe(
-      ['欄位「amount」由簽核人補填，表單不能設定「只存不顯示」。', ...rawLines].join(
-        '; ',
-      ),
+      [
+        '欄位「amount」由簽核人補填，表單不能設定「只存不顯示」。',
+        ...rawLines,
+      ].join('; '),
     );
   });
 });
@@ -768,7 +766,10 @@ describe('readWorkflowLintMessage: reads before an approver fills a field in', (
       },
       {
         data: {
-          approverResolver: { expression: 'form.invoiceKind', type: 'EXPRESSION' },
+          approverResolver: {
+            expression: 'form.invoiceKind',
+            type: 'EXPRESSION',
+          },
           entryCondition: 'form.invoiceKind == "B2B"',
           fieldAccess: [
             { display: 'SHOW', fieldKey: 'invoiceKind', fill: 'OPTIONAL' },
@@ -864,7 +865,9 @@ describe('readWorkflowLintMessage: reads before an approver fills a field in', (
       'The entry condition (進入條件) of the node "通知會計" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
     ],
     [
-      early('workflow.nodes.serviceTask_notify.data.action.recipients.expression'),
+      early(
+        'workflow.nodes.serviceTask_notify.data.action.recipients.expression',
+      ),
       '知會節點「通知會計」的通知對象運算式在簽核人補填「invoiceKind」之前就讀取它，這時欄位還是空的，流程會卡住。請把這個條件改到補填那關之後。',
       'The recipients expression of the notify node "通知會計" reads the field "invoiceKind" before an approver fills it in, when it is still empty, so the flow would get stuck. Move this condition to after the approval node that fills it in.',
     ],
@@ -883,7 +886,9 @@ describe('readWorkflowLintMessage: reads before an approver fills a field in', (
       WORKFLOW_EXPRESSION_LABELS.edgeCondition('edge_manager_fill'),
       WORKFLOW_EXPRESSION_LABELS.edgeConditionFieldKey('edge_hook_fill'),
       WORKFLOW_EXPRESSION_LABELS.nodeEntryCondition('userTask_fill'),
-      WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression('userTask_fill'),
+      WORKFLOW_EXPRESSION_LABELS.nodeApproverResolverExpression(
+        'userTask_fill',
+      ),
       WORKFLOW_EXPRESSION_LABELS.nodeActionPayload('serviceTask_hook'),
       WORKFLOW_EXPRESSION_LABELS.nodeActionValue('serviceTask_set'),
       WORKFLOW_EXPRESSION_LABELS.nodeActionRecipientsExpression(
@@ -896,7 +901,9 @@ describe('readWorkflowLintMessage: reads before an approver fills a field in', (
     // Every one is rewritten: none is left as the backend wrote it.
     expect(
       readWorkflowLintMessage(lines.join('; '), readDefinition).split('; '),
-    ).toEqual(lines.map((line) => readWorkflowLintMessage(line, readDefinition)));
+    ).toEqual(
+      lines.map((line) => readWorkflowLintMessage(line, readDefinition)),
+    );
     lines.forEach((line): void => {
       expect(readWorkflowLintMessage(line, readDefinition)).not.toBe(line);
     });
