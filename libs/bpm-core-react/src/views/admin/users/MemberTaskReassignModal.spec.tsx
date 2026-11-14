@@ -451,6 +451,52 @@ describe('MemberTaskReassignModal', () => {
     expect(container.textContent).not.toContain('task-1');
   });
 
+  it('drops a reassignment that finishes after another member is shown', async (): Promise<void> => {
+    // The modal cannot be closed while a request is in flight, so this is only
+    // reachable if the parent swaps the member itself; the late answer must
+    // then neither reload the earlier member nor show its results.
+    let finishCommit: (
+      results: TaskReassignmentResultRecord[],
+    ) => void = (): void => undefined;
+    const OTHER: MemberProfileRecord = {
+      ...MEMBER,
+      memberId: 'member-other',
+      name: '另一位',
+    };
+
+    api.listMemberOpenTasks
+      .mockResolvedValueOnce([TASK])
+      .mockResolvedValueOnce([
+        { ...TASK, instanceTitle: '另一位的案件', taskId: 'other-1' },
+      ]);
+    api.reassignMemberTasks
+      .mockResolvedValueOnce([WOULD_REASSIGN])
+      .mockImplementationOnce(
+        (): Promise<TaskReassignmentResultRecord[]> =>
+          new Promise((resolve): void => {
+            finishCommit = resolve;
+          }),
+      );
+    await render();
+    await chooseTargetAndReason();
+    await clickButton('預覽');
+    await clickButton('確認改派');
+    await act(async (): Promise<void> => {
+      root.render(
+        <MemberTaskReassignModal member={OTHER} onClose={jest.fn()} />,
+      );
+    });
+    await act(async (): Promise<void> => {
+      finishCommit([REASSIGNED]);
+    });
+
+    expect(api.listMemberOpenTasks).toHaveBeenCalledTimes(2);
+    expect(api.listMemberOpenTasks).toHaveBeenLastCalledWith('member-other');
+    expect(container.textContent).toContain('另一位的案件');
+    expect(container.textContent).not.toContain('採購申請');
+    expect(container.textContent).not.toContain('已改派');
+  });
+
   describe('choosing which tasks to reassign', (): void => {
     const THREE = [TASK, TASK_2, TASK_3];
 

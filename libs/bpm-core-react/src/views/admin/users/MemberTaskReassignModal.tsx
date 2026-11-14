@@ -104,6 +104,10 @@ export function MemberTaskReassignModal({
   // Only the latest request may write: switching members while an earlier
   // listing is in flight must not let its late answer replace the current one.
   const latestRequestRef = useRef(0);
+  // The member on screen now. A reassignment that answers after the member
+  // changed belongs to the earlier one and must not write: the counter above
+  // only orders requests, and the commit's reload would be the latest one.
+  const shownMemberIdRef = useRef<string | null>(null);
 
   // `keepCheckedIds` is the selection to carry over after a reassignment;
   // without it (a fresh member) every task starts selected.
@@ -146,6 +150,7 @@ export function MemberTaskReassignModal({
   );
 
   useEffect((): void => {
+    shownMemberIdRef.current = member?.memberId ?? null;
     setTarget(null);
     setReason('');
     setPreview(null);
@@ -182,6 +187,7 @@ export function MemberTaskReassignModal({
     // describe the same selection even if the list reloads while we wait.
     const sentTaskIds = selectedIds;
     const sentTitleById = titleById;
+    const sentMemberId = member.memberId;
 
     setBusy(true);
     setError(null);
@@ -189,11 +195,15 @@ export function MemberTaskReassignModal({
     try {
       const outcomes = await reassignMemberTasks({
         dryRun,
-        fromMemberId: member.memberId,
+        fromMemberId: sentMemberId,
         reason: trimmedReason,
         taskIds: sentTaskIds,
         toMemberId: target.id,
       });
+
+      if (shownMemberIdRef.current !== sentMemberId) {
+        return;
+      }
 
       if (dryRun) {
         setPreview({
@@ -210,10 +220,12 @@ export function MemberTaskReassignModal({
           titleById: sentTitleById,
         });
         setPreview(null);
-        await loadTasks(member.memberId, sentTaskIds);
+        await loadTasks(sentMemberId, sentTaskIds);
       }
     } catch (requestError: unknown) {
-      setError(readErrorMessage(requestError));
+      if (shownMemberIdRef.current === sentMemberId) {
+        setError(readErrorMessage(requestError));
+      }
     } finally {
       setBusy(false);
     }
