@@ -498,7 +498,6 @@ export interface MemberOpenTaskRecord {
   readonly templateName: string | null;
 }
 
-/** An instance that could not move on, as the administrator's stuck list reads it. */
 /** Paging of {@link WorkflowEngineService.listStuckApprovalInstances}. */
 export interface ListStuckApprovalInstancesOptions {
   /** 1-based; defaults to 1. */
@@ -507,6 +506,7 @@ export interface ListStuckApprovalInstancesOptions {
   readonly pageSize?: number;
 }
 
+/** An instance that could not move on, as the administrator's stuck list reads it. */
 export interface StuckApprovalInstanceRecord {
   /** `'SLA_AUTO_APPROVE'` when the failed attempt was the timeout approving. */
   readonly automatic: 'SLA_AUTO_APPROVE' | null;
