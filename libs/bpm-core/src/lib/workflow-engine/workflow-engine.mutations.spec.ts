@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { BPMAuthContext, listBPMResolverHandlers } from '../bpm-auth';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
+import { AdminCancelApprovalInstanceInput } from './dto/admin-cancel-approval-instance.input';
 import { DecideTaskInput } from './dto/decide-task.input';
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
@@ -309,6 +310,30 @@ describe('WorkflowEngineMutations task reassignment', () => {
     });
   });
 
+  it('cancels as the signed-in administrator, never as a member the input names', async (): Promise<void> => {
+    const INSTANCE_ID = '6f1c2a3e-4b5d-4e6f-8a9b-0c1d2e3f4a5b';
+    const adminCancelApprovalInstance = jest.fn(() => Promise.resolve({}));
+    const mutations = new WorkflowEngineMutations({
+      adminCancelApprovalInstance,
+    } as unknown as WorkflowEngineService);
+
+    await mutations.adminCancelApprovalInstance(
+      {
+        // A client could send extra keys through a loosely configured pipe.
+        cancelledByMemberId: 'member-forged',
+        instanceId: INSTANCE_ID,
+        reason: '申請人已離職',
+      } as AdminCancelApprovalInstanceInput,
+      'admin-001',
+    );
+
+    expect(adminCancelApprovalInstance).toHaveBeenCalledWith({
+      cancelledByMemberId: 'admin-001',
+      instanceId: INSTANCE_ID,
+      reason: '申請人已離職',
+    });
+  });
+
   it('hands taskIds of reassignMemberTasks to the service as given, null included', async (): Promise<void> => {
     const reassignMemberTasks = jest.fn(() => Promise.resolve([]));
     const mutations = new WorkflowEngineMutations({
@@ -354,9 +379,15 @@ describe('WorkflowEngineMutations task reassignment', () => {
     expect(access('WorkflowEngineMutations', 'reassignMemberTasks')).toBe(
       'admin',
     );
+    expect(
+      access('WorkflowEngineMutations', 'adminCancelApprovalInstance'),
+    ).toBe('admin');
     expect(access('WorkflowEngineQueries', 'memberOpenTasks')).toBe('admin');
     expect(
       access('WorkflowEngineQueries', 'inactiveMembersWithOpenTasks'),
     ).toBe('admin');
+    expect(access('WorkflowEngineQueries', 'stuckApprovalInstances')).toBe(
+      'admin',
+    );
   });
 });

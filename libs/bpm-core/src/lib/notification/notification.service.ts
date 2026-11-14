@@ -705,7 +705,8 @@ export class NotificationService {
    * Deliver an ad-hoc directive notification (STAGE_NOTIFY /
    * COMPLETION_NOTIFY) to resolved member recipients. Runs inside the
    * caller's transaction `manager` so it commits atomically with the
-   * workflow state change that triggered it.
+   * workflow state change that triggered it. Without `manager` the rows are
+   * written on their own, for a caller whose change has already committed.
    */
   async createAdhocWorkflowNotifications({
     channels,
@@ -717,7 +718,7 @@ export class NotificationService {
   }: {
     readonly channels: readonly NotificationChannelEnum[] | null;
     readonly instance: ApprovalInstanceEntity;
-    readonly manager: EntityManager;
+    readonly manager?: EntityManager;
     readonly message: string;
     readonly payload: Readonly<Record<string, unknown>>;
     readonly recipientMemberIds: readonly string[];

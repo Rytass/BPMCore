@@ -602,6 +602,7 @@ export function isUserMeaningfulActivity(activityLog: ActivityLogRecord): boolea
     activityLog.eventType === 'SLA_TRIGGERED' ||
     activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED' ||
     activityLog.eventType === 'TASK_REASSIGNED' ||
+    activityLog.eventType === 'ADVANCE_FAILED' ||
     isSequentialTaskCreation(activityLog) ||
     isNotifyWebhookActivity(
       activityLog.eventType,
@@ -705,7 +706,20 @@ export function readActivityEventLabel(
   payload: Readonly<Record<string, unknown>>,
 ): string {
   if (eventType === 'INSTANCE_STARTED') return '案件已發起';
-  if (eventType === 'INSTANCE_CANCELLED') return '案件已取消';
+  if (eventType === 'INSTANCE_CANCELLED') {
+    // An administrator's cancellation carries the reason as `comment`; the
+    // applicant's own withdrawal keeps the plain label.
+    return payload.cancelledByAdministrator === true
+      ? `管理員撤銷：${readStringField(payload, 'comment') ?? '-'}`
+      : '案件已取消';
+  }
+  if (eventType === 'ADVANCE_FAILED') {
+    return `${
+      readStringField(payload, 'automatic') === 'SLA_AUTO_APPROVE'
+        ? '系統逾時自動同意失敗'
+        : '往下一關失敗'
+    }：${readStringField(payload, 'message') ?? '-'}`;
+  }
   if (eventType === 'INSTANCE_EXPIRED') return '案件逾期，已由系統終止';
   if (eventType === 'INSTANCE_RESUBMITTED') return '申請人重新送出';
   if (eventType === 'TOKEN_CREATED') return '流程路徑已建立';

@@ -85,6 +85,7 @@ function createNavigationGroups(routes: BPMRoutes): readonly NavigationGroup[] {
         { href: routes.adminUsers(), icon: UserIcon, label: '會員對照', requiresAdmin: true },
         { href: routes.adminDelegations(), icon: ShareIcon, label: '代理設定', requiresAdmin: true },
         { href: routes.adminWebhookEndpoints(), icon: LinkIcon, label: 'Webhook 端點', requiresAdmin: true },
+        { href: routes.adminStuckInstances(), icon: SearchIcon, label: '卡住的案件', requiresAdmin: true },
       ],
     },
   ];

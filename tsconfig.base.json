@@ -187,6 +187,9 @@
       "@rytass/bpm-core-react/views/admin/webhook-endpoints": [
         "./libs/bpm-core-react/src/views/admin/webhook-endpoints/index.ts"
       ],
+      "@rytass/bpm-core-react/views/admin/stuck-instances": [
+        "./libs/bpm-core-react/src/views/admin/stuck-instances/index.ts"
+      ],
       "@rytass/bpm-core-react/pages/root": [
         "./libs/bpm-core-react/src/pages/root/index.tsx"
       ],
@@ -246,6 +249,9 @@
       ],
       "@rytass/bpm-core-react/pages/admin/webhook-endpoints": [
         "./libs/bpm-core-react/src/pages/admin/webhook-endpoints/index.tsx"
+      ],
+      "@rytass/bpm-core-react/pages/admin/stuck-instances": [
+        "./libs/bpm-core-react/src/pages/admin/stuck-instances/index.tsx"
       ]
     },
     "strict": false,

@@ -272,6 +272,7 @@ function createPrefixedRoutes(prefix: string): BPMRoutes {
     adminUsers:            () => `${trim}/admin/users`,
     adminDelegations:      () => `${trim}/admin/delegations`,
     adminWebhookEndpoints: () => `${trim}/admin/webhook-endpoints`,
+    adminStuckInstances:   () => `${trim}/admin/stuck-instances`,
   };
 }
 

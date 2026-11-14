@@ -32,6 +32,7 @@ import { ActivityLogSeq0000000029000 } from './0000000029000-activity-log-seq';
 import { DelegationScopeConditionDialect0000000030000 } from './0000000030000-delegation-scope-condition-dialect';
 import { ApprovalInstanceFormDataGin0000000031000 } from './0000000031000-approval-instance-form-data-gin';
 import { HostIntegrationRound0000000032000 } from './0000000032000-host-integration-round';
+import { ActivityLogAdvanceFailedIndex0000000033000 } from './0000000033000-activity-log-advance-failed-index';
 
 export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   EnablePostgresExtensions0000000000001,
@@ -67,6 +68,7 @@ export const BPM_CORE_MIGRATIONS: readonly (new () => MigrationInterface)[] = [
   DelegationScopeConditionDialect0000000030000,
   ApprovalInstanceFormDataGin0000000031000,
   HostIntegrationRound0000000032000,
+  ActivityLogAdvanceFailedIndex0000000033000,
 ];
 
 export * from './0000000000001-enable-postgres-extensions';
@@ -102,3 +104,4 @@ export * from './0000000029000-activity-log-seq';
 export * from './0000000030000-delegation-scope-condition-dialect';
 export * from './0000000031000-approval-instance-form-data-gin';
 export * from './0000000032000-host-integration-round';
+export * from './0000000033000-activity-log-advance-failed-index';
