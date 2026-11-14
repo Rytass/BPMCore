@@ -23502,8 +23502,9 @@ describe('WorkflowEngineService task node labels', () => {
         createTemplate('template-version-1', true),
       );
 
+      // The key is trimmed before the lookup, as on the instance list.
       const byKey = await fixture.service.listInboxTasks('member-finance', {
-        templateKey: 'expense',
+        templateKey: ' expense ',
       });
       const disjoint = await fixture.service.listInboxTasks('member-finance', {
         templateIds: ['template-b'],

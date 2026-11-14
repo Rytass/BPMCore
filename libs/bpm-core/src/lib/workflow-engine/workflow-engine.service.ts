@@ -5357,10 +5357,9 @@ export class WorkflowEngineService {
   private async readTaskTemplateFilterIds(
     filter: TaskTemplateFilter,
   ): Promise<readonly string[] | null> {
-    const byKey =
-      filter.templateKey === undefined
-        ? null
-        : await this.readTemplateIdsByKey(filter.templateKey);
+    // Trimmed, and a blank key does not filter, as on the instance list.
+    const key = normalizeText(filter.templateKey);
+    const byKey = key ? await this.readTemplateIdsByKey(key) : null;
 
     if (filter.templateIds === undefined) {
       return byKey;
@@ -5375,10 +5374,6 @@ export class WorkflowEngineService {
     );
   }
 
-  /**
-   * The id of the live template carrying `key`, as a list so a key that names
-   * nothing filters everything out. At most one live template holds a key.
-   */
   /**
    * Turns `templateKey` into `templateId` (ADR 27 §6), or `null` when the
    * options can match nothing: an unknown key, or a key naming another
@@ -5403,6 +5398,10 @@ export class WorkflowEngineService {
     return { ...options, templateId };
   }
 
+  /**
+   * The id of the live template carrying `key`, as a list so a key that names
+   * nothing filters everything out. At most one live template holds a key.
+   */
   private async readTemplateIdsByKey(key: string): Promise<readonly string[]> {
     const template = await this.approvalTemplateRepository.findOne({
       select: { id: true },
