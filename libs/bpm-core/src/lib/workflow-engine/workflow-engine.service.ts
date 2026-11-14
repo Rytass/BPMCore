@@ -74,7 +74,6 @@ import {
   In,
   IsNull,
   ObjectLiteral,
-  Raw,
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
@@ -171,6 +170,11 @@ import { readDistinctSubmitterMemberId } from './instance-submitter';
 import { TaskDecisionEntity } from './task-decision.entity';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskEntity } from './task.entity';
+import {
+  countStuckInstances,
+  readStuckFailurePage,
+  readUnresolvedInstanceFailures,
+} from './stuck-approval-instance.query';
 import {
   ActivityLogEventTypeEnum,
   ApprovalInstanceListViewEnum,
@@ -993,8 +997,9 @@ export class WorkflowEngineService {
    * - `RESUBMIT`: the instance is still RETURNED and no later
    *   `INSTANCE_RESUBMITTED` exists.
    *
-   * Shared by the duplicate check when a failure is recorded and by the list
-   * of stuck instances; the caller picks the last row for "the latest".
+   * The rule itself is `readUnresolvedInstanceFailures` in
+   * `stuck-approval-instance.query.ts`, which also holds the SQL the stuck list
+   * pages with; the two must agree. This is the duplicate check's side.
    */
   private async readUnresolvedAdvanceFailures(
     manager: EntityManager,
@@ -6947,10 +6952,11 @@ export class WorkflowEngineService {
    * The instances that could not move on and still cannot, newest failure
    * first, one row each, described by their latest unresolved `ADVANCE_FAILED`.
    *
-   * Which failures are unresolved is decided by
-   * {@link readUnresolvedAdvanceFailures}, the same rule the duplicate check
-   * uses; this only picks the candidates (see {@link readStuckCandidates})
-   * and decorates the result.
+   * Which failures are unresolved, the order and the page are decided by the
+   * database (`readStuckFailurePage`, the SQL form of the rule the duplicate
+   * check applies in {@link readUnresolvedAdvanceFailures}); the stuck set is
+   * still evaluated whole before LIMIT applies, but only the page's rows leave
+   * the database. This decorates that page.
    *
    * Who has to press again is read now, not copied from the failure: a task
    * the administrator has reassigned since shows its new holder.
@@ -6964,12 +6970,51 @@ export class WorkflowEngineService {
   ): Promise<readonly StuckApprovalInstanceRecord[]> {
     return this.approvalInstanceRepository.manager.transaction(
       async (manager): Promise<readonly StuckApprovalInstanceRecord[]> => {
-        // Who is stuck is decided over every candidate; only the page shown
-        // is decorated with its tasks, seats and template names.
-        const offset = readPageOffset(options.page, options.pageSize);
-        const stuck = (await this.readStuckCandidates(manager)).slice(
-          offset,
-          offset + normalizePageSize(options.pageSize),
+        const failureIds = await readStuckFailurePage(
+          manager,
+          OPEN_TASK_STATUSES,
+          {
+            limit: normalizePageSize(options.pageSize),
+            offset: readPageOffset(options.page, options.pageSize),
+          },
+        );
+        const failures = failureIds.length
+          ? await manager
+              .getRepository(ActivityLogEntity)
+              .find({ where: { id: In([...failureIds]) } })
+          : [];
+        const instances = failures.length
+          ? await manager.getRepository(ApprovalInstanceEntity).find({
+              where: {
+                id: In([
+                  ...new Set(failures.map((failure) => failure.instanceId)),
+                ]),
+              },
+            })
+          : [];
+        const failureById = new Map(
+          failures.map((failure): readonly [string, ActivityLogEntity] => [
+            failure.id,
+            failure,
+          ]),
+        );
+        const instanceById = new Map(
+          instances.map(
+            (instance): readonly [string, ApprovalInstanceEntity] => [
+              instance.id,
+              instance,
+            ],
+          ),
+        );
+        // `find` does not keep the order of the ids; the page's order is the
+        // database's.
+        const stuck = failureIds.flatMap(
+          (failureId): readonly StuckInstanceCandidate[] => {
+            const failure = failureById.get(failureId);
+            const instance = failure && instanceById.get(failure.instanceId);
+
+            return failure && instance ? [{ failure, instance }] : [];
+          },
         );
 
         if (stuck.length === 0) {
@@ -7030,89 +7075,7 @@ export class WorkflowEngineService {
   async countStuckApprovalInstances(): Promise<number> {
     return this.approvalInstanceRepository.manager.transaction(
       async (manager): Promise<number> =>
-        (await this.readStuckCandidates(manager)).length,
-    );
-  }
-
-  /**
-   * Every stuck instance with its latest unresolved failure, newest failure
-   * first. One query picks the candidates and
-   * {@link readUnresolvedAdvanceFailuresByInstance} decides which of them are
-   * still stuck, in two more queries for all of them.
-   *
-   * The candidates are the RUNNING or RETURNED instances holding an
-   * `ADVANCE_FAILED` row that may still be unresolved: a `DECISION` whose task
-   * is still open, or a `RESUBMIT` with no later `INSTANCE_RESUBMITTED`. That
-   * is looser than {@link readUnresolvedInstanceFailures} (it does not pair the
-   * kind with the instance state), never tighter, so the TypeScript rule stays
-   * the one that decides. It keeps the cost to the instances still in flight:
-   * failures of finished instances, and ones a later decision or resubmission
-   * has cleared, are never read.
-   */
-  private async readStuckCandidates(
-    manager: EntityManager,
-  ): Promise<StuckCandidates> {
-    const instances = await manager
-      .getRepository(ApprovalInstanceEntity)
-      .find({
-        where: {
-          id: Raw(
-            // `${column}` must be followed by a space: TypeORM quotes the
-            // alias only there, and before a line break leaves it bare, which
-            // Postgres folds to lower case and cannot find.
-            (column): string => `EXISTS (
-              SELECT 1 FROM "activity_logs" "failure"
-              WHERE ${column} = "failure"."instance_id"
-                AND "failure"."event_type" = :stuckFailedEventType
-                AND (
-                  (
-                    "failure"."payload"->>'kind' = 'DECISION'
-                    AND EXISTS (
-                      SELECT 1 FROM "tasks" "failedTask"
-                      WHERE "failedTask"."id" = "failure"."task_id"
-                        AND "failedTask"."status" IN (:...stuckOpenTaskStatuses)
-                    )
-                  )
-                  OR (
-                    "failure"."payload"->>'kind' = 'RESUBMIT'
-                    AND NOT EXISTS (
-                      SELECT 1 FROM "activity_logs" "resubmitted"
-                      WHERE "resubmitted"."instance_id" = "failure"."instance_id"
-                        AND "resubmitted"."event_type" = :stuckResubmittedEventType
-                        AND "resubmitted"."seq" > "failure"."seq"
-                    )
-                  )
-                )
-            )`,
-            {
-              stuckFailedEventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
-              stuckOpenTaskStatuses: [...OPEN_TASK_STATUSES],
-              stuckResubmittedEventType:
-                ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
-            },
-          ),
-          state: In([
-            ApprovalInstanceStateEnum.RUNNING,
-            ApprovalInstanceStateEnum.RETURNED,
-          ]),
-        },
-      });
-    // Batched: two queries however many instances are candidates.
-    const unresolvedByInstance =
-      await this.readUnresolvedAdvanceFailuresByInstance(
-        manager,
-        instances,
-      );
-    const found: StuckCandidates = instances.flatMap(
-      (instance): StuckCandidates => {
-        const unresolved = unresolvedByInstance.get(instance.id) ?? [];
-        const latest = unresolved[unresolved.length - 1];
-
-        return latest ? [{ failure: latest, instance }] : [];
-      },
-    );
-    return [...found].sort((left, right): number =>
-      compareFailuresNewestFirst(left.failure, right.failure),
+        countStuckInstances(manager, OPEN_TASK_STATUSES),
     );
   }
 
@@ -11136,47 +11099,6 @@ function isSameAdvanceFailure(
 }
 
 /**
- * The rule of `readUnresolvedAdvanceFailures` for one instance, given its
- * `ADVANCE_FAILED` and `INSTANCE_RESUBMITTED` rows in `seq` order and the ids
- * of the tasks among them that are still open.
- */
-function readUnresolvedInstanceFailures(
-  instance: ApprovalInstanceEntity,
-  logs: readonly ActivityLogEntity[],
-  openTaskIds: ReadonlySet<string>,
-): readonly ActivityLogEntity[] {
-  return logs.filter((failure, index): boolean => {
-    if (failure.eventType !== ActivityLogEventTypeEnum.ADVANCE_FAILED) {
-      return false;
-    }
-
-    const kind = readStringPayloadValue(failure.payload, 'kind');
-
-    if (kind === 'DECISION') {
-      return (
-        instance.state === ApprovalInstanceStateEnum.RUNNING &&
-        failure.taskId !== null &&
-        openTaskIds.has(failure.taskId)
-      );
-    }
-
-    if (kind === 'RESUBMIT') {
-      return (
-        instance.state === ApprovalInstanceStateEnum.RETURNED &&
-        !logs
-          .slice(index + 1)
-          .some(
-            (log): boolean =>
-              log.eventType === ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
-          )
-      );
-    }
-
-    return false;
-  });
-}
-
-/**
  * Runs the step that moves an instance on and, when it fails with an error an
  * operator is meant to read (an `HttpException` below 500), hands it on as an
  * {@link InstanceAdvanceFailure} so the public method can record it once the
@@ -11207,8 +11129,6 @@ interface StuckInstanceCandidate {
   readonly failure: ActivityLogEntity;
   readonly instance: ApprovalInstanceEntity;
 }
-
-type StuckCandidates = readonly StuckInstanceCandidate[];
 
 function toStuckApprovalInstanceRecord(
   { failure, instance }: StuckInstanceCandidate,
@@ -11282,29 +11202,6 @@ function readTaskHolderMemberIds(
         .map((candidate): string => candidate.memberId),
     ),
   ];
-}
-
-/**
- * Newest first. `created_at` is the transaction start time, so rows written by
- * one transaction tie on it; `seq` is the write order and breaks the tie.
- */
-function compareFailuresNewestFirst(
-  left: ActivityLogEntity,
-  right: ActivityLogEntity,
-): number {
-  const byTime = right.createdAt.getTime() - left.createdAt.getTime();
-
-  if (byTime !== 0) {
-    return byTime;
-  }
-
-  const bySeq = BigInt(right.seq ?? '0') - BigInt(left.seq ?? '0');
-
-  if (bySeq !== BigInt(0)) {
-    return bySeq > BigInt(0) ? 1 : -1;
-  }
-
-  return left.instanceId.localeCompare(right.instanceId);
 }
 
 function readStringPayloadValue(

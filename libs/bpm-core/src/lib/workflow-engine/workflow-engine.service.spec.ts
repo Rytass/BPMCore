@@ -128,6 +128,7 @@ import {
   TaskReassignmentResult,
   WorkflowEngineService,
 } from './workflow-engine.service';
+import { readUnresolvedInstanceFailures } from './stuck-approval-instance.query';
 import {
   BPMInitiatorCustomFieldsInput,
   BPMInitiatorCustomFieldsResolver,
@@ -21228,24 +21229,12 @@ describe('WorkflowEngineService', () => {
               expectedOrder,
             );
             expect(rows[0]?.failedAt).toEqual(LATER);
-            // The candidates come from the instance table; every candidate's
-            // rows are then read in one batch: not one read per instance, and
-            // no read of every ADVANCE_FAILED row ever written.
+            // The database picks the page; only that page's failures and
+            // instances are read back, each in one batch.
             expect(fixture.transactionalActivityLogFind).toHaveBeenCalledTimes(
               1,
             );
-            // The fixture ignores the raw condition, so pin that it is sent:
-            // without it every RUNNING / RETURNED instance is a candidate.
-            const candidateWhere = (
-              fixture.transactionalInstanceFind.mock.calls[0]?.[0] as
-                | { readonly where?: Readonly<Record<string, unknown>> }
-                | undefined
-            )?.where;
-
-            expect(candidateWhere?.id).toBeInstanceOf(FindOperator);
-            expect((candidateWhere?.id as FindOperator<unknown>).type).toBe(
-              'raw',
-            );
+            expect(fixture.transactionalInstanceFind).toHaveBeenCalledTimes(1);
           },
         );
       });
@@ -24403,6 +24392,14 @@ function createServiceFixture({
       });
     }),
     query: managerQuery,
+    createQueryBuilder: jest.fn(
+      (): StuckQueryBuilderFake =>
+        createStuckQueryBuilderFake(() => ({
+          instances: [readInstanceUnderTest(), ...additionalProcessInstances],
+          logs: storedActivityLogs,
+          tasks: processTasks,
+        })),
+    ),
   };
   const transaction = jest.fn(
     async <TResult>(
@@ -24567,6 +24564,128 @@ function createServiceFixture({
  * match-all would leave the very queries a user sees unguarded. Any other
  * operator stays match-all rather than being half-implemented.
  */
+interface StuckQueryBuilderFake {
+  readonly addOrderBy: () => StuckQueryBuilderFake;
+  readonly addSelect: () => StuckQueryBuilderFake;
+  readonly andWhere: () => StuckQueryBuilderFake;
+  readonly distinctOn: () => StuckQueryBuilderFake;
+  readonly from: () => StuckQueryBuilderFake;
+  readonly getParameters: () => Readonly<Record<string, unknown>>;
+  readonly getQuery: () => string;
+  readonly getRawMany: () => Promise<readonly { readonly failureId: string }[]>;
+  readonly getRawOne: () => Promise<{ readonly count: number }>;
+  readonly innerJoin: () => StuckQueryBuilderFake;
+  readonly limit: (limit: number) => StuckQueryBuilderFake;
+  readonly offset: (offset: number) => StuckQueryBuilderFake;
+  readonly orderBy: () => StuckQueryBuilderFake;
+  readonly select: () => StuckQueryBuilderFake;
+  readonly setParameters: () => StuckQueryBuilderFake;
+  readonly subQuery: () => StuckQueryBuilderFake;
+  readonly where: () => StuckQueryBuilderFake;
+}
+
+/**
+ * Stands in for the SQL in `stuck-approval-instance.query.ts`, which the
+ * fixture cannot run: the page and the count of the stuck list are answered
+ * from the fixture's rows with the TypeScript form of the same rule, newest
+ * failure first. That the SQL agrees with this rule was checked on Postgres
+ * (2026-11-15, rolled back on the develop database); CI cannot check it.
+ */
+function createStuckQueryBuilderFake(
+  read: () => {
+    readonly instances: readonly ApprovalInstanceEntity[];
+    readonly logs: readonly ActivityLogEntity[];
+    readonly tasks: readonly TaskEntity[];
+  },
+): StuckQueryBuilderFake {
+  let page: { offset: number; limit: number | null } = {
+    limit: null,
+    offset: 0,
+  };
+  const readLatestFailures = (): readonly ActivityLogEntity[] => {
+    const { instances, logs, tasks } = read();
+    const openTaskIds = new Set(
+      tasks
+        .filter(
+          (task): boolean =>
+            task.status === TaskStatusEnum.PENDING ||
+            task.status === TaskStatusEnum.IN_PROGRESS,
+        )
+        .map((task): string => task.id),
+    );
+    const latest = [
+      ...new Map(instances.map((instance) => [instance.id, instance])).values(),
+    ].flatMap((instance): readonly ActivityLogEntity[] => {
+      const unresolved = readUnresolvedInstanceFailures(
+        instance,
+        logs.filter(
+          (log): boolean =>
+            log.instanceId === instance.id &&
+            (log.eventType === ActivityLogEventTypeEnum.ADVANCE_FAILED ||
+              log.eventType === ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED),
+        ),
+        openTaskIds,
+      );
+      const last = unresolved[unresolved.length - 1];
+
+      return last ? [last] : [];
+    });
+
+    return [...latest].sort((left, right): number => {
+      const byTime = right.createdAt.getTime() - left.createdAt.getTime();
+
+      if (byTime !== 0) {
+        return byTime;
+      }
+
+      const bySeq = BigInt(right.seq ?? '0') - BigInt(left.seq ?? '0');
+
+      if (bySeq !== BigInt(0)) {
+        return bySeq > BigInt(0) ? 1 : -1;
+      }
+
+      return left.instanceId.localeCompare(right.instanceId);
+    });
+  };
+  const fake: StuckQueryBuilderFake = {
+    addOrderBy: () => fake,
+    addSelect: () => fake,
+    andWhere: () => fake,
+    distinctOn: () => fake,
+    from: () => fake,
+    getParameters: () => ({}),
+    getQuery: () => '',
+    getRawMany: () =>
+      Promise.resolve(
+        readLatestFailures()
+          .slice(
+            page.offset,
+            page.limit === null ? undefined : page.offset + page.limit,
+          )
+          .map((failure) => ({ failureId: failure.id })),
+      ),
+    getRawOne: () => Promise.resolve({ count: readLatestFailures().length }),
+    innerJoin: () => fake,
+    limit: (limit: number) => {
+      page = { ...page, limit };
+
+      return fake;
+    },
+    offset: (offset: number) => {
+      page = { ...page, offset };
+
+      return fake;
+    },
+    orderBy: () => fake,
+    select: () => fake,
+    setParameters: () => fake,
+    subQuery: () => fake,
+    where: () => fake,
+  };
+
+  return fake;
+}
+
 function matchesFindWhere<TEntity extends ObjectLiteral>(
   row: TEntity,
   where?: Readonly<Record<string, unknown>>,
