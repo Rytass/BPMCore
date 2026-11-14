@@ -27132,6 +27132,25 @@ describe('instance guard (ADR 27 §2)', (): void => {
     expect(fixture.savedInstance).toBeNull();
   });
 
+  it('hands a resubmit only the keys whose value differs from the stored data', async (): Promise<void> => {
+    const { calls, guard } = guardAnswering([]);
+
+    await resubmitRequest(createResubmitFixture({ instanceGuard: guard }));
+    await createResubmitFixture({ instanceGuard: guard }).service.resubmitApprovalInstance(
+      {
+        formDataJson: '{"amount":10}',
+        initiatorMemberId: 'member-001',
+        instanceId: 'instance-1',
+        title: null,
+      },
+    );
+
+    expect(calls.map((call) => [call.kind, call.changedFieldKeys])).toEqual([
+      ['RESUBMIT', ['amount', 'financeItems']],
+      ['RESUBMIT', ['financeItems']],
+    ]);
+  });
+
   it('refuses a decide with 400, rolls back and writes no decision', async (): Promise<void> => {
     const { calls, guard } = guardAnswering([AMOUNT_ISSUE]);
     const fixture = createDecideFixture({ instanceGuard: guard });

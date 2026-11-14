@@ -39,8 +39,10 @@ export interface BPMInstanceGuardInput {
   readonly action: string | null;
 
   /**
-   * The keys of `formData` the request changed. For `SUBMIT` every submitted
-   * key counts; for `DECIDE` it is the set of approver-filled fields.
+   * The keys of `formData` the request changed, sorted. For `SUBMIT` every
+   * submitted key counts; for `RESUBMIT` the keys whose value differs from the
+   * stored form data, including keys the resubmission drops; for `DECIDE` the
+   * approver-filled fields whose value really changes.
    */
   readonly changedFieldKeys: readonly string[];
 

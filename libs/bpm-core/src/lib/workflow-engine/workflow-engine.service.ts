@@ -2751,7 +2751,10 @@ export class WorkflowEngineService {
             actorMemberId: input.initiatorMemberId,
             authContext: authContext ?? null,
             automatic: null,
-            changedFieldKeys: Object.keys(formData),
+            changedFieldKeys: listChangedFormDataKeys(
+              instance.formData,
+              formData,
+            ),
             formData,
             instance,
             kind: 'RESUBMIT',
@@ -14073,4 +14076,25 @@ function throwBusinessKeyConflictOrRethrow(
   }
 
   throw error;
+}
+
+/**
+ * The keys whose value differs between the stored form data and the data a
+ * resubmission replaces it with, sorted. A key present on only one side counts.
+ */
+function listChangedFormDataKeys(
+  previous: Readonly<Record<string, unknown>>,
+  next: Readonly<Record<string, unknown>>,
+): string[] {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+
+  return [...keys]
+    .filter(
+      (fieldKey) =>
+        Object.prototype.hasOwnProperty.call(previous, fieldKey) !==
+          Object.prototype.hasOwnProperty.call(next, fieldKey) ||
+        computeStableValueFingerprint(previous[fieldKey]) !==
+          computeStableValueFingerprint(next[fieldKey]),
+    )
+    .sort();
 }
