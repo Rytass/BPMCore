@@ -21220,6 +21220,7 @@ describe('WorkflowEngineService', () => {
             });
 
             fixture.transactionalActivityLogFind.mockClear();
+            fixture.transactionalInstanceFind.mockClear();
 
             const rows = await listStuck(fixture);
 
@@ -21227,10 +21228,23 @@ describe('WorkflowEngineService', () => {
               expectedOrder,
             );
             expect(rows[0]?.failedAt).toEqual(LATER);
-            // The candidates, then every candidate's rows in one batch: not
-            // one read per instance.
+            // The candidates come from the instance table; every candidate's
+            // rows are then read in one batch: not one read per instance, and
+            // no read of every ADVANCE_FAILED row ever written.
             expect(fixture.transactionalActivityLogFind).toHaveBeenCalledTimes(
-              2,
+              1,
+            );
+            // The fixture ignores the raw condition, so pin that it is sent:
+            // without it every RUNNING / RETURNED instance is a candidate.
+            const candidateWhere = (
+              fixture.transactionalInstanceFind.mock.calls[0]?.[0] as
+                | { readonly where?: Readonly<Record<string, unknown>> }
+                | undefined
+            )?.where;
+
+            expect(candidateWhere?.id).toBeInstanceOf(FindOperator);
+            expect((candidateWhere?.id as FindOperator<unknown>).type).toBe(
+              'raw',
             );
           },
         );
@@ -23250,6 +23264,7 @@ interface ServiceFixture {
   // that pin the order of what a transaction does.
   readonly transactionalActivityLogFind: jest.Mock;
   readonly transactionalInstanceFindOne: jest.Mock;
+  readonly transactionalInstanceFind: jest.Mock;
   // The repository manager's `transaction`: one call per engine transaction.
   readonly transaction: jest.Mock;
   // `AttachmentService.releaseUnreferencedFormAttachments`, one call per release.
@@ -24458,6 +24473,8 @@ function createServiceFixture({
       transactionalActivityRepository.find as unknown as jest.Mock,
     transactionalInstanceFindOne:
       transactionalInstanceRepository.findOne as unknown as jest.Mock,
+    transactionalInstanceFind:
+      transactionalInstanceRepository.find as unknown as jest.Mock,
     releaseUnreferencedFormAttachments:
       attachmentService.releaseUnreferencedFormAttachments as jest.Mock,
     bindFormDataAttachmentsToInstance:

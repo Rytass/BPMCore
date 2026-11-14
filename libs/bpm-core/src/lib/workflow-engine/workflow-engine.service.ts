@@ -74,6 +74,7 @@ import {
   In,
   IsNull,
   ObjectLiteral,
+  Raw,
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
@@ -6948,8 +6949,8 @@ export class WorkflowEngineService {
    *
    * Which failures are unresolved is decided by
    * {@link readUnresolvedAdvanceFailures}, the same rule the duplicate check
-   * uses; this only picks the candidates (an instance that is RUNNING or
-   * RETURNED and has an `ADVANCE_FAILED` at all) and decorates the result.
+   * uses; this only picks the candidates (see {@link readStuckCandidates})
+   * and decorates the result.
    *
    * Who has to press again is read now, not copied from the failure: a task
    * the administrator has reassigned since shows its new holder.
@@ -7035,35 +7036,61 @@ export class WorkflowEngineService {
 
   /**
    * Every stuck instance with its latest unresolved failure, newest failure
-   * first: the candidates are the RUNNING or RETURNED instances with any
-   * `ADVANCE_FAILED` row, and {@link readUnresolvedAdvanceFailuresByInstance}
-   * decides which of them are still stuck, in two queries for all of them.
+   * first. One query picks the candidates and
+   * {@link readUnresolvedAdvanceFailuresByInstance} decides which of them are
+   * still stuck, in two more queries for all of them.
+   *
+   * The candidates are the RUNNING or RETURNED instances holding an
+   * `ADVANCE_FAILED` row that may still be unresolved: a `DECISION` whose task
+   * is still open, or a `RESUBMIT` with no later `INSTANCE_RESUBMITTED`. That
+   * is looser than {@link readUnresolvedInstanceFailures} (it does not pair the
+   * kind with the instance state), never tighter, so the TypeScript rule stays
+   * the one that decides. It keeps the cost to the instances still in flight:
+   * failures of finished instances, and ones a later decision or resubmission
+   * has cleared, are never read.
    */
   private async readStuckCandidates(
     manager: EntityManager,
   ): Promise<StuckCandidates> {
-    const failedInstanceIds = [
-      ...new Set(
-        (
-          await manager.getRepository(ActivityLogEntity).find({
-            select: { instanceId: true },
-            where: {
-              eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
-            },
-          })
-        ).map((log): string => log.instanceId),
-      ),
-    ];
-
-    if (failedInstanceIds.length === 0) {
-      return [];
-    }
-
     const instances = await manager
       .getRepository(ApprovalInstanceEntity)
       .find({
         where: {
-          id: In(failedInstanceIds),
+          id: Raw(
+            // `${column}` must be followed by a space: TypeORM quotes the
+            // alias only there, and before a line break leaves it bare, which
+            // Postgres folds to lower case and cannot find.
+            (column): string => `EXISTS (
+              SELECT 1 FROM "activity_logs" "failure"
+              WHERE ${column} = "failure"."instance_id"
+                AND "failure"."event_type" = :stuckFailedEventType
+                AND (
+                  (
+                    "failure"."payload"->>'kind' = 'DECISION'
+                    AND EXISTS (
+                      SELECT 1 FROM "tasks" "failedTask"
+                      WHERE "failedTask"."id" = "failure"."task_id"
+                        AND "failedTask"."status" IN (:...stuckOpenTaskStatuses)
+                    )
+                  )
+                  OR (
+                    "failure"."payload"->>'kind' = 'RESUBMIT'
+                    AND NOT EXISTS (
+                      SELECT 1 FROM "activity_logs" "resubmitted"
+                      WHERE "resubmitted"."instance_id" = "failure"."instance_id"
+                        AND "resubmitted"."event_type" = :stuckResubmittedEventType
+                        AND "resubmitted"."seq" > "failure"."seq"
+                    )
+                  )
+                )
+            )`,
+            {
+              stuckFailedEventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+              stuckOpenTaskStatuses: [...OPEN_TASK_STATUSES],
+              stuckResubmittedEventType:
+                ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
+            },
+          ),
           state: In([
             ApprovalInstanceStateEnum.RUNNING,
             ApprovalInstanceStateEnum.RETURNED,
