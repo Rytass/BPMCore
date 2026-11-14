@@ -4,6 +4,7 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -11,6 +12,14 @@ import {
 } from 'typeorm';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 
+/**
+ * `key` is unique among live templates only; a soft-deleted template frees its
+ * key. Created by `HostIntegrationRound0000000032000`.
+ */
+@Index('UQ_approval_templates_key_live', ['key'], {
+  unique: true,
+  where: '"key" IS NOT NULL AND "deleted_at" IS NULL',
+})
 @Entity('approval_templates')
 @ObjectType('ApprovalTemplate')
 export class ApprovalTemplateEntity {
