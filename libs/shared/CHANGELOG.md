@@ -1,3 +1,46 @@
+## 0.23.0 (2026-11-14)
+
+### 🚀 Features
+
+- **form-data-source:** locate approver-fill VALUE_NOT_RESOLVED on its field or cell ([1a17907a](https://github.com/Rytass/BPMCore/commit/1a17907a))
+- **shared:** add column mode to field access matrix ([d0658f54](https://github.com/Rytass/BPMCore/commit/d0658f54))
+- **bpm-core-client:** expose host error code on BPMGraphQLRequestError ([3a388721](https://github.com/Rytass/BPMCore/commit/3a388721))
+- **workflow-command:** keep column grants in field access matrix ([ce50a7b0](https://github.com/Rytass/BPMCore/commit/ce50a7b0))
+- **bpm-core-react:** pass column-mode table access to approver fill ([c4fcb87d](https://github.com/Rytass/BPMCore/commit/c4fcb87d))
+- **bpm-core-react:** add per-table access to form renderer ([98cd5208](https://github.com/Rytass/BPMCore/commit/98cd5208))
+- **field-access:** reject publish when a table dependent column is not opened ([a4f64372](https://github.com/Rytass/BPMCore/commit/a4f64372))
+- **field-access:** export dependency break helper for column fills ([d25212c6](https://github.com/Rytass/BPMCore/commit/d25212c6))
+- **field-access:** allow approver-filled data-source columns in column mode ([3b8cb06a](https://github.com/Rytass/BPMCore/commit/3b8cb06a))
+- **field-access:** lint per-column fill conflicts and approver data sources ([2d081bb2](https://github.com/Rytass/BPMCore/commit/2d081bb2))
+- **field-access:** read per-column fill units for table fields ([996bffcc](https://github.com/Rytass/BPMCore/commit/996bffcc))
+- **workflow-engine:** expose recordTaskAutoDecisionFailed on the engine token ([40d69180](https://github.com/Rytass/BPMCore/commit/40d69180))
+- **instance-event:** expose admin list and retry resolvers ([4cbb84ac](https://github.com/Rytass/BPMCore/commit/4cbb84ac))
+- **instance-event:** purge delivered rows past retention ([69d19f9a](https://github.com/Rytass/BPMCore/commit/69d19f9a))
+- **instance-event:** schedule periodic delivery scans ([ac9b7dc3](https://github.com/Rytass/BPMCore/commit/ac9b7dc3))
+- **instance-event:** deliver on commit via subscriber ([53641feb](https://github.com/Rytass/BPMCore/commit/53641feb))
+- **instance-event:** add outbox delivery service ([b7ddcd3f](https://github.com/Rytass/BPMCore/commit/b7ddcd3f))
+- **instance-event:** add outbox event writer ([fd891be4](https://github.com/Rytass/BPMCore/commit/fd891be4))
+- **instance-event:** add lifecycle event outbox and observer wiring ([74dcdffd](https://github.com/Rytass/BPMCore/commit/74dcdffd))
+- **workflow-engine:** add pre-decision host guard for submit, resubmit and decide ([8d450dd3](https://github.com/Rytass/BPMCore/commit/8d450dd3))
+- **form:** add HOST_RULE issue reason with optional host code ([3d58779d](https://github.com/Rytass/BPMCore/commit/3d58779d))
+- **shared:** allow REQUIRED on approver-filled boolean fields ([2b669b75](https://github.com/Rytass/BPMCore/commit/2b669b75))
+- **instances:** filter approval instances by template key ([18d496c7](https://github.com/Rytass/BPMCore/commit/18d496c7))
+- **conditions:** optionally read unfilled form fields as null ([958d3be6](https://github.com/Rytass/BPMCore/commit/958d3be6))
+- **template:** add a HOST_ONLY launch mode to template versions ([d83db05e](https://github.com/Rytass/BPMCore/commit/d83db05e))
+- **initiator:** let a host add customFields to the built snapshot ([609bc5ab](https://github.com/Rytass/BPMCore/commit/609bc5ab))
+- **inbox:** filter inbox and approval history by template ([6870883a](https://github.com/Rytass/BPMCore/commit/6870883a))
+- **migrations:** add the host integration round schema ([34eef9b2](https://github.com/Rytass/BPMCore/commit/34eef9b2))
+
+### 🩹 Fixes
+
+- **workflow-engine:** report only changed keys to the resubmit guard ([53d7bdb2](https://github.com/Rytass/BPMCore/commit/53d7bdb2))
+- **field-access:** lint column-mode fills of data-source columns ([314ba31d](https://github.com/Rytass/BPMCore/commit/314ba31d))
+- **field-access:** keep column-mode fills out of whole-field write paths ([dca765de](https://github.com/Rytass/BPMCore/commit/dca765de))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.22.0 (2026-11-13)
 
 ### 🚀 Features

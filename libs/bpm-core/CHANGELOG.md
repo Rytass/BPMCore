@@ -1,3 +1,67 @@
+## 0.23.0 (2026-11-14)
+
+### 🚀 Features
+
+- **form-data-source:** gate approver runtime options by fill units ([f6659766](https://github.com/Rytass/BPMCore/commit/f6659766))
+- **workflow-engine:** list approver fill units for open tasks ([86d517b5](https://github.com/Rytass/BPMCore/commit/86d517b5))
+- **workflow-engine:** answer approver-fill VALUE_NOT_RESOLVED as 400 formDataErrors ([3bb29a51](https://github.com/Rytass/BPMCore/commit/3bb29a51))
+- **form-data-source:** locate approver-fill VALUE_NOT_RESOLVED on its field or cell ([1a17907a](https://github.com/Rytass/BPMCore/commit/1a17907a))
+- **bpm-core-client:** expose host error code on BPMGraphQLRequestError ([3a388721](https://github.com/Rytass/BPMCore/commit/3a388721))
+- **bpm-core-react:** pass column-mode table access to approver fill ([c4fcb87d](https://github.com/Rytass/BPMCore/commit/c4fcb87d))
+- **bpm-core-react:** add per-table access to form renderer ([98cd5208](https://github.com/Rytass/BPMCore/commit/98cd5208))
+- **field-access:** reject publish when a table dependent column is not opened ([a4f64372](https://github.com/Rytass/BPMCore/commit/a4f64372))
+- **workflow-engine:** fail closed when a dependent column's source changes ([576de175](https://github.com/Rytass/BPMCore/commit/576de175))
+- **field-access:** export dependency break helper for column fills ([d25212c6](https://github.com/Rytass/BPMCore/commit/d25212c6))
+- **field-access:** allow approver-filled data-source columns in column mode ([3b8cb06a](https://github.com/Rytass/BPMCore/commit/3b8cb06a))
+- **workflow-engine:** resolve approver-filled data-source cells on decide ([dd80b145](https://github.com/Rytass/BPMCore/commit/dd80b145))
+- **workflow-engine:** enforce column-mode cell locks on decide ([16bb16ef](https://github.com/Rytass/BPMCore/commit/16bb16ef))
+- **workflow-engine:** settle column-mode approver cells on submit and resubmit ([31655ee2](https://github.com/Rytass/BPMCore/commit/31655ee2))
+- **workflow-engine:** resolve approver-filled data-source options on decide ([bd300033](https://github.com/Rytass/BPMCore/commit/bd300033))
+- **field-access:** lint per-column fill conflicts and approver data sources ([2d081bb2](https://github.com/Rytass/BPMCore/commit/2d081bb2))
+- **field-access:** read per-column fill units for table fields ([996bffcc](https://github.com/Rytass/BPMCore/commit/996bffcc))
+- **notification:** keep SLA auto-approve open when the instance guard blocks it ([894a45ac](https://github.com/Rytass/BPMCore/commit/894a45ac))
+- **workflow-engine:** expose recordTaskAutoDecisionFailed on the engine token ([40d69180](https://github.com/Rytass/BPMCore/commit/40d69180))
+- **workflow-engine:** record case lifecycle instance events ([b7b5f791](https://github.com/Rytass/BPMCore/commit/b7b5f791))
+- **instance-event:** export writer and expose enabled getter ([864e9db5](https://github.com/Rytass/BPMCore/commit/864e9db5))
+- **instance-event:** expose admin list and retry resolvers ([4cbb84ac](https://github.com/Rytass/BPMCore/commit/4cbb84ac))
+- **instance-event:** purge delivered rows past retention ([69d19f9a](https://github.com/Rytass/BPMCore/commit/69d19f9a))
+- **instance-event:** schedule periodic delivery scans ([ac9b7dc3](https://github.com/Rytass/BPMCore/commit/ac9b7dc3))
+- **instance-event:** deliver on commit via subscriber ([53641feb](https://github.com/Rytass/BPMCore/commit/53641feb))
+- **instance-event:** add outbox delivery service ([b7ddcd3f](https://github.com/Rytass/BPMCore/commit/b7ddcd3f))
+- **instance-event:** add outbox event writer ([fd891be4](https://github.com/Rytass/BPMCore/commit/fd891be4))
+- **instance-event:** add lifecycle event outbox and observer wiring ([74dcdffd](https://github.com/Rytass/BPMCore/commit/74dcdffd))
+- **workflow-engine:** add pre-decision host guard for submit, resubmit and decide ([8d450dd3](https://github.com/Rytass/BPMCore/commit/8d450dd3))
+- **form:** add HOST_RULE issue reason with optional host code ([3d58779d](https://github.com/Rytass/BPMCore/commit/3d58779d))
+- **template:** exclude host-managed templates from lists by default ([54fac148](https://github.com/Rytass/BPMCore/commit/54fac148))
+- **form:** exclude host-managed forms from lists by default ([416fa081](https://github.com/Rytass/BPMCore/commit/416fa081))
+- **template:** add approvalTemplateByKey query ([c936675c](https://github.com/Rytass/BPMCore/commit/c936675c))
+- **template:** add service-only hostManaged flag to templates and forms ([cd292961](https://github.com/Rytass/BPMCore/commit/cd292961))
+- **template:** upsert approval template by key on compose ([7c0b635e](https://github.com/Rytass/BPMCore/commit/7c0b635e))
+- **template:** add a host-owned key to approval templates ([2aa09ba3](https://github.com/Rytass/BPMCore/commit/2aa09ba3))
+- **form:** allow defaults on dynamic sources without value dependencies ([0e553c0a](https://github.com/Rytass/BPMCore/commit/0e553c0a))
+- **bpm-core:** accept a required boolean the approver fills in ([5a0b4757](https://github.com/Rytass/BPMCore/commit/5a0b4757))
+- **instances:** filter approval instances by template key ([18d496c7](https://github.com/Rytass/BPMCore/commit/18d496c7))
+- **conditions:** optionally read unfilled form fields as null ([958d3be6](https://github.com/Rytass/BPMCore/commit/958d3be6))
+- **template:** add a HOST_ONLY launch mode to template versions ([d83db05e](https://github.com/Rytass/BPMCore/commit/d83db05e))
+- **initiator:** let a host add customFields to the built snapshot ([609bc5ab](https://github.com/Rytass/BPMCore/commit/609bc5ab))
+- **inbox:** filter inbox and approval history by template ([6870883a](https://github.com/Rytass/BPMCore/commit/6870883a))
+- **migrations:** add the host integration round schema ([34eef9b2](https://github.com/Rytass/BPMCore/commit/34eef9b2))
+
+### 🩹 Fixes
+
+- **workflow-engine:** trim the task filter template key ([b74446b8](https://github.com/Rytass/BPMCore/commit/b74446b8))
+- **workflow-engine:** report only changed keys to the resubmit guard ([53d7bdb2](https://github.com/Rytass/BPMCore/commit/53d7bdb2))
+- **template:** declare the live template key index on the entity ([49b37f69](https://github.com/Rytass/BPMCore/commit/49b37f69))
+- **workflow-engine:** pass the approver auth context to the decide guard ([0569d7db](https://github.com/Rytass/BPMCore/commit/0569d7db))
+- **workflow-engine:** skip the open-cell schema read for nodes without column fills ([5842bfb7](https://github.com/Rytass/BPMCore/commit/5842bfb7))
+- **workflow-engine:** restore approver cells only on unchanged rows ([0d166129](https://github.com/Rytass/BPMCore/commit/0d166129))
+- **workflow-engine:** read grant units for summaries and keep whole-field writes ([2fa00549](https://github.com/Rytass/BPMCore/commit/2fa00549))
+- **workflow-engine:** record the deciding member as the actor of rejection and return events ([07ab1888](https://github.com/Rytass/BPMCore/commit/07ab1888))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.22.0 (2026-11-13)
 
 ### 🚀 Features

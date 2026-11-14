@@ -1,3 +1,54 @@
+## 0.23.0 (2026-11-14)
+
+### 🚀 Features
+
+- **form-data-source:** locate approver-fill VALUE_NOT_RESOLVED on its field or cell ([1a17907a](https://github.com/Rytass/BPMCore/commit/1a17907a))
+- **bpm-core-react:** edit per-column fill under table rows in field access drawer ([948dca5f](https://github.com/Rytass/BPMCore/commit/948dca5f))
+- **bpm-core-react:** add per-column fill labels for field access matrix ([9c9b23e6](https://github.com/Rytass/BPMCore/commit/9c9b23e6))
+- **bpm-core-react:** show column-mode labels and per-column fill counts ([8564d50a](https://github.com/Rytass/BPMCore/commit/8564d50a))
+- **bpm-core-react:** lock table rows and surface fill error codes ([bf0cbc0a](https://github.com/Rytass/BPMCore/commit/bf0cbc0a))
+- **bpm-core-client:** expose host error code on BPMGraphQLRequestError ([3a388721](https://github.com/Rytass/BPMCore/commit/3a388721))
+- **bpm-core-react:** pass column-mode table access to approver fill ([c4fcb87d](https://github.com/Rytass/BPMCore/commit/c4fcb87d))
+- **bpm-core-react:** add per-table access to form renderer ([98cd5208](https://github.com/Rytass/BPMCore/commit/98cd5208))
+- **bpm-core-react:** support column-mode approver fill helpers ([b1229c6a](https://github.com/Rytass/BPMCore/commit/b1229c6a))
+- **field-access:** reject publish when a table dependent column is not opened ([a4f64372](https://github.com/Rytass/BPMCore/commit/a4f64372))
+- **field-access:** export dependency break helper for column fills ([d25212c6](https://github.com/Rytass/BPMCore/commit/d25212c6))
+- **field-access:** lint per-column fill conflicts and approver data sources ([2d081bb2](https://github.com/Rytass/BPMCore/commit/2d081bb2))
+- **field-access:** read per-column fill units for table fields ([996bffcc](https://github.com/Rytass/BPMCore/commit/996bffcc))
+- **workflow-engine:** expose recordTaskAutoDecisionFailed on the engine token ([40d69180](https://github.com/Rytass/BPMCore/commit/40d69180))
+- **instance-event:** expose admin list and retry resolvers ([4cbb84ac](https://github.com/Rytass/BPMCore/commit/4cbb84ac))
+- **instance-event:** purge delivered rows past retention ([69d19f9a](https://github.com/Rytass/BPMCore/commit/69d19f9a))
+- **instance-event:** schedule periodic delivery scans ([ac9b7dc3](https://github.com/Rytass/BPMCore/commit/ac9b7dc3))
+- **instance-event:** deliver on commit via subscriber ([53641feb](https://github.com/Rytass/BPMCore/commit/53641feb))
+- **instance-event:** add outbox delivery service ([b7ddcd3f](https://github.com/Rytass/BPMCore/commit/b7ddcd3f))
+- **instance-event:** add outbox event writer ([fd891be4](https://github.com/Rytass/BPMCore/commit/fd891be4))
+- **instance-event:** add lifecycle event outbox and observer wiring ([74dcdffd](https://github.com/Rytass/BPMCore/commit/74dcdffd))
+- **workflow-engine:** add pre-decision host guard for submit, resubmit and decide ([8d450dd3](https://github.com/Rytass/BPMCore/commit/8d450dd3))
+- **form:** add HOST_RULE issue reason with optional host code ([3d58779d](https://github.com/Rytass/BPMCore/commit/3d58779d))
+- **designer:** carry launch mode through the compose wizard ([e9a246e1](https://github.com/Rytass/BPMCore/commit/e9a246e1))
+- **designer:** add 發起方式 control and send launch mode ([6dfd6982](https://github.com/Rytass/BPMCore/commit/6dfd6982))
+- **designer:** add launch mode options and helpers ([e8e91ec5](https://github.com/Rytass/BPMCore/commit/e8e91ec5))
+- **form:** warn when a publish leaves a dynamic default unresolved ([27c42583](https://github.com/Rytass/BPMCore/commit/27c42583))
+- **form:** let dynamic source fields keep a fixed default ([d931ec64](https://github.com/Rytass/BPMCore/commit/d931ec64))
+- **form:** resolve untouched dynamic defaults on render ([61f1aa07](https://github.com/Rytass/BPMCore/commit/61f1aa07))
+- **bpm-core-react:** drop the boolean REQUIRED note from the matrix drawer ([39e0c4d6](https://github.com/Rytass/BPMCore/commit/39e0c4d6))
+- **instances:** filter approval instances by template key ([18d496c7](https://github.com/Rytass/BPMCore/commit/18d496c7))
+- **conditions:** optionally read unfilled form fields as null ([958d3be6](https://github.com/Rytass/BPMCore/commit/958d3be6))
+- **template:** add a HOST_ONLY launch mode to template versions ([d83db05e](https://github.com/Rytass/BPMCore/commit/d83db05e))
+- **initiator:** let a host add customFields to the built snapshot ([609bc5ab](https://github.com/Rytass/BPMCore/commit/609bc5ab))
+- **inbox:** filter inbox and approval history by template ([6870883a](https://github.com/Rytass/BPMCore/commit/6870883a))
+- **migrations:** add the host integration round schema ([34eef9b2](https://github.com/Rytass/BPMCore/commit/34eef9b2))
+
+### 🩹 Fixes
+
+- **workflow-engine:** report only changed keys to the resubmit guard ([53d7bdb2](https://github.com/Rytass/BPMCore/commit/53d7bdb2))
+- **bpm-core-react:** use grant units for fill labels and visibility ([0ff2e6ab](https://github.com/Rytass/BPMCore/commit/0ff2e6ab))
+- **bpm-core-react:** send untouched required boolean fill values ([4713526e](https://github.com/Rytass/BPMCore/commit/4713526e))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.22.0 (2026-11-13)
 
 ### 🚀 Features
