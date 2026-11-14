@@ -94,8 +94,11 @@ test.describe('Develop seeded workspace journey', () => {
 
     await page.goto('/search');
     await expect(page.getByRole('heading', { name: '案件搜尋' })).toBeVisible();
+    // Earlier specs submit cases whose title can repeat a seeded one (the
+    // DataSource golden path files one titled after its plant), so the newest
+    // title may appear on several rows.
     await expect(
-      page.getByText(readApprovalInstanceCaseTitle(searchInstances[0])),
+      page.getByText(readApprovalInstanceCaseTitle(searchInstances[0])).first(),
     ).toBeVisible();
   });
 
