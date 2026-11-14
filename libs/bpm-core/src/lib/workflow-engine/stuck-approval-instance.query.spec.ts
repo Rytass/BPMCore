@@ -83,6 +83,8 @@ describe('stuck approval instance queries', (): void => {
     expect(sql).toContain('LIMIT 20 OFFSET 40');
     expect(sql).toContain(`TRIM("failure"."payload"->>'kind') = 'DECISION'`);
     expect(sql).toContain('"stuckInstance"."state" = ');
+    // A literal, so the partial index on ADVANCE_FAILED rows can serve it.
+    expect(sql).toContain(`"failure"."event_type" = 'ADVANCE_FAILED'`);
     expect(sql).toContain('"resubmitted"."seq" > "failure"."seq"');
     expect(sql).not.toMatch(BARE_ALIAS);
   });

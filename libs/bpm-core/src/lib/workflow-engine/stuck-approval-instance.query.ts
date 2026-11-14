@@ -112,8 +112,11 @@ function createUnresolvedFailureQuery(
     .andWhere('resubmitted.seq > failure.seq ')
     .getQuery();
 
+  // The event type is a literal, not a parameter: Postgres can use the
+  // partial index `IDX_activity_logs_advance_failed` (migration 0000000033000)
+  // only when the plan can see the value matches its WHERE clause.
   return query
-    .where('failure.eventType = :stuckFailedEventType ')
+    .where(`failure.eventType = '${ActivityLogEventTypeEnum.ADVANCE_FAILED}' `)
     .andWhere(
       new Brackets((either): void => {
         either
@@ -126,7 +129,6 @@ function createUnresolvedFailureQuery(
       }),
     )
     .setParameters({
-      stuckFailedEventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
       stuckOpenTaskStatuses: [...openTaskStatuses],
       stuckResubmittedEventType: ActivityLogEventTypeEnum.INSTANCE_RESUBMITTED,
       stuckReturnedState: ApprovalInstanceStateEnum.RETURNED,
