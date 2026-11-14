@@ -7,10 +7,13 @@ import { readNodeActorSourceIssues } from '@rytass/bpm-core-shared/workflow-grap
 import {
   EXCLUDE_NODE_ACTORS_STAGE_HINT,
   NODE_ACTOR_STAGE_HINT,
+  NO_CONTINUABLE_CHAIN_HINT,
   NO_EXCLUDABLE_STAGE_HINT,
   NO_UPSTREAM_USER_TASK_HINT,
   ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT,
   ORG_MANAGER_CHAIN_STAGE_HINT,
+  readChainContinuationGraphIssues,
+  readChainContinuationSourceChoice,
   readExcludeNodeActorsGraphIssues,
   readExcludeNodeActorStageChoice,
   readNodeActorGraphIssues,
@@ -838,5 +841,311 @@ describe('readExcludeNodeActorsGraphIssues', () => {
       expect.stringMatching(/^簽核節點「關卡 me」：.*不會經過/),
       expect.stringMatching(/^簽核節點「關卡 me」：.*不在 .* 的上游/),
     ]);
+  });
+});
+
+function chainNode(
+  id: string,
+  resolver: Readonly<Record<string, unknown>> = {},
+  data: Readonly<Record<string, unknown>> = {},
+): WorkflowNode {
+  return taskNode(id, {
+    approverResolver: {
+      minPositionLevel: 30,
+      type: 'ORG_MANAGER_CHAIN',
+      ...resolver,
+    },
+    ...data,
+  });
+}
+
+function continuing(
+  sourceId: string,
+  minPositionLevel: number,
+  data: Readonly<Record<string, unknown>> = {},
+): WorkflowNode {
+  return chainNode(
+    'me',
+    {
+      minPositionLevel,
+      startFrom: { nodeId: sourceId, type: 'CHAIN_CONTINUATION' },
+    },
+    data,
+  );
+}
+
+function chainLine(me: WorkflowNode): WorkflowDefinition {
+  // Every stage sits on the one path to `me`; each ineligible one has exactly
+  // one defect, so leaving it out says something about that defect.
+  return graph(
+    [
+      plainNode('start', 'startEvent'),
+      chainNode('m1'),
+      chainNode('m2', {
+        startFrom: { nodeIds: ['m1'], type: 'NODE_ACTOR' },
+      }),
+      taskNode('plain'),
+      // A sound continuation of `m1` (its level is above m1's), so its only
+      // defect as a stage is being a continuation itself.
+      chainNode('cont', {
+        minPositionLevel: 40,
+        startFrom: { nodeId: 'm1', type: 'CHAIN_CONTINUATION' },
+      }),
+      chainNode('form', {
+        startFrom: { formPath: 'owner', type: 'FORM_MEMBER' },
+      }),
+      chainNode('cond', {}, { entryCondition: 'amount > 1' }),
+      chainNode('skipn', {}, { excludeInitiator: { whenEmpty: 'SKIP_NODE' } }),
+      chainNode('reached', {
+        skipWhenStartReached: true,
+        minPositionLevel: 99,
+      }),
+      me,
+      plainNode('end', 'endEvent'),
+    ],
+    [
+      link('start', 'm1'),
+      link('m1', 'm2'),
+      link('m2', 'plain'),
+      link('plain', 'cont'),
+      link('cont', 'form'),
+      link('form', 'cond'),
+      link('cond', 'skipn'),
+      link('skipn', 'reached'),
+      link('reached', 'me'),
+      link('me', 'end'),
+    ],
+  );
+}
+
+describe('readChainContinuationSourceChoice', () => {
+  it('lists only the upstream manager chains the shared check accepts', () => {
+    const choice = readChainContinuationSourceChoice(
+      chainLine(chainNode('me', { minPositionLevel: 40 })),
+      'me',
+      null,
+    );
+
+    expect(choice.options.map((option) => option.id)).toEqual([
+      'm1',
+      'm2',
+      'reached',
+    ]);
+    expect(choice.selected).toBeNull();
+    expect(choice.problems).toEqual([]);
+  });
+
+  it('leaves out a non-chain stage, a continuation, a form-field start, an entry condition and a skip-node stage', () => {
+    const ids = readChainContinuationSourceChoice(
+      chainLine(chainNode('me', { minPositionLevel: 40 })),
+      'me',
+      null,
+    ).options.map((option) => option.id);
+
+    expect(ids).not.toContain('plain');
+    expect(ids).not.toContain('cont');
+    expect(ids).not.toContain('form');
+    expect(ids).not.toContain('cond');
+    expect(ids).not.toContain('skipn');
+    expect(ids).not.toContain('me');
+  });
+
+  it('still lists a stage that has 起點本人已達簽到職等時略過 (the engine reads its skip record)', () => {
+    const choice = readChainContinuationSourceChoice(
+      chainLine(chainNode('me', { minPositionLevel: 40 })),
+      'me',
+      null,
+    );
+
+    expect(choice.options).toContainEqual({
+      id: 'reached',
+      name: '關卡 reached',
+    });
+  });
+
+  it('does not let the level or the hand-over to the initiator manager decide the list', () => {
+    // `reached` has level 99, far above this node's 40, and this node hands
+    // over to the initiator's manager: both are lines about this node, not
+    // about the stage it would continue.
+    const choice = readChainContinuationSourceChoice(
+      chainLine(
+        chainNode(
+          'me',
+          { minPositionLevel: 40 },
+          {
+            excludeInitiator: { whenEmpty: 'INITIATOR_MANAGER' },
+            excludeNodeActors: {
+              nodeIds: ['m1'],
+              whenEmpty: 'INITIATOR_MANAGER',
+            },
+          },
+        ),
+      ),
+      'me',
+      null,
+    );
+
+    expect(choice.options.map((option) => option.id)).toEqual([
+      'm1',
+      'm2',
+      'reached',
+    ]);
+  });
+
+  it('leaves out a stage that is not on every path to the node', () => {
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        plainNode('gw', 'exclusiveGateway'),
+        chainNode('x'),
+        chainNode('y'),
+        chainNode('me', { minPositionLevel: 40 }),
+        plainNode('end', 'endEvent'),
+      ],
+      [
+        link('start', 'gw'),
+        link('gw', 'x'),
+        link('gw', 'y'),
+        link('x', 'me'),
+        link('y', 'me'),
+        link('me', 'end'),
+      ],
+    );
+    const choice = readChainContinuationSourceChoice(definition, 'me', null);
+
+    expect(choice.options).toEqual([]);
+    expect(choice.problems).toEqual([NO_CONTINUABLE_CHAIN_HINT]);
+  });
+
+  it('leaves out a stage after the node', () => {
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        chainNode('me', { minPositionLevel: 40 }),
+        chainNode('later'),
+        plainNode('end', 'endEvent'),
+      ],
+      [link('start', 'me'), link('me', 'later'), link('later', 'end')],
+    );
+
+    expect(
+      readChainContinuationSourceChoice(definition, 'me', null).options,
+    ).toEqual([]);
+  });
+
+  it('shows the stored stage selected, with no problem, when it qualifies', () => {
+    const choice = readChainContinuationSourceChoice(
+      chainLine(continuing('m1', 40)),
+      'me',
+      'm1',
+    );
+
+    expect(choice.selected).toEqual({ id: 'm1', name: '關卡 m1' });
+    expect(choice.problems).toEqual([]);
+  });
+
+  it('keeps a stored stage that no longer qualifies, marked, with the reason', () => {
+    const choice = readChainContinuationSourceChoice(
+      chainLine(continuing('plain', 40)),
+      'me',
+      'plain',
+    );
+
+    expect(choice.selected).toEqual({
+      id: 'plain',
+      name: '關卡 plain（無法使用）',
+    });
+    expect(choice.options[choice.options.length - 1]).toBe(
+      choice.selected,
+    );
+    expect(choice.problems.length).toBeGreaterThan(0);
+  });
+
+  it('keeps a stored stage that is gone, marked as gone', () => {
+    const choice = readChainContinuationSourceChoice(
+      chainLine(continuing('gone', 40)),
+      'me',
+      'gone',
+    );
+
+    expect(choice.selected).toEqual({ id: 'gone', name: 'gone（已不存在）' });
+    expect(choice.problems.length).toBeGreaterThan(0);
+  });
+
+  it('treats a blank stored id as nothing chosen', () => {
+    const choice = readChainContinuationSourceChoice(
+      chainLine(continuing('', 40)),
+      'me',
+      '',
+    );
+
+    expect(choice.selected).toBeNull();
+    expect(choice.problems).toEqual([]);
+  });
+});
+
+describe('readChainContinuationGraphIssues', () => {
+  it('names the continuing node on every issue of its stage', () => {
+    const issues = readChainContinuationGraphIssues(
+      chainLine(continuing('plain', 40)),
+    );
+
+    expect(issues.length).toBeGreaterThan(0);
+    expect(
+      issues.every((issue) => issue.startsWith('簽核節點「關卡 me」：')),
+    ).toBe(true);
+  });
+
+  it('shows the 必須高於 problem when the level is not above the stage', () => {
+    const issues = readChainContinuationGraphIssues(
+      chainLine(continuing('m1', 30)),
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('必須高於');
+  });
+
+  it('is empty for a sound continuation and for chains that do not continue', () => {
+    expect(
+      readChainContinuationGraphIssues(chainLine(continuing('m1', 40))),
+    ).toEqual([]);
+    expect(
+      readChainContinuationGraphIssues(
+        chainLine(chainNode('me', { minPositionLevel: 40 })),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('a manager chain with 起點本人已達簽到職等時略過 as a NODE_ACTOR source', () => {
+  const definition = graph(
+    [
+      plainNode('start', 'startEvent'),
+      chainNode('a', { skipWhenStartReached: true }),
+      taskNode('me', {
+        approverResolver: { nodeIds: ['a'], type: 'NODE_ACTOR' },
+      }),
+      plainNode('end', 'endEvent'),
+    ],
+    [link('start', 'a'), link('a', 'me'), link('me', 'end')],
+  );
+
+  it('is no longer offered as a source stage', () => {
+    expect(
+      readNodeActorStageChoice(definition, 'me', []).options.map(
+        (option) => option.id,
+      ),
+    ).not.toContain('a');
+    expect(
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options,
+    ).toEqual([]);
+  });
+
+  it('is reported when it is already the source', () => {
+    const issues = readNodeActorGraphIssues(definition);
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('簽核節點「關卡 me」：');
+    expect(issues[0]).toContain('主管鏈在起點本人已達簽到職等時會整關略過');
   });
 });

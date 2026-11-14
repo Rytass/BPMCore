@@ -167,6 +167,16 @@ export type ApproverResolver =
       readonly fallback?: ApproverResolverFallback;
       readonly minPositionLevel: number;
       /**
+       * `true` skips the whole stage when the start person's own highest
+       * position level (over every active membership) already reaches
+       * `minPositionLevel`: nobody above them needs to sign. A start with no
+       * position level, or no start at all, does not skip. Omitted, `false`
+       * or `null` keeps today's behaviour. Cannot be combined with a
+       * `CHAIN_CONTINUATION` start, and a notify node cannot use it. Older
+       * engines ignore this key and run the stage as before.
+       */
+      readonly skipWhenStartReached?: boolean | null;
+      /**
        * Whose manager the chain starts climbing from. Omitted (or
        * `INITIATOR`) keeps today's behaviour: the chain starts at the
        * initiator. Older engines ignore this key and start at the initiator.
@@ -352,17 +362,23 @@ export function isFallbackCapableApproverResolverType(type: string): boolean {
  * - `FORM_MEMBER`: the one person picked on the form field `formPath`.
  * - `NODE_ACTOR`: the one person who actually approved the earlier node(s)
  *   `nodeIds` (read the way `NODE_ACTOR` reads them).
+ * - `CHAIN_CONTINUATION`: continue the earlier manager-chain stage `nodeId`.
+ *   The chain climbs from that stage's start but only signs managers above the
+ *   position level that stage actually reached; when that stage already
+ *   reached this stage's `minPositionLevel`, this stage is skipped.
  */
 export type OrgManagerChainStart =
   | { readonly type: 'INITIATOR' }
   | { readonly formPath: string; readonly type: 'FORM_MEMBER' }
-  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' };
+  | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' }
+  | { readonly nodeId: string; readonly type: 'CHAIN_CONTINUATION' };
 
 // Keyed by the union so that adding a start type fails to compile until it is
 // listed here: the engine, the publish lint and the designer read this table.
 const KNOWN_ORG_MANAGER_CHAIN_START_TYPES: Readonly<
   Record<OrgManagerChainStart['type'], true>
 > = {
+  CHAIN_CONTINUATION: true,
   FORM_MEMBER: true,
   INITIATOR: true,
   NODE_ACTOR: true,
@@ -417,6 +433,35 @@ export function isOrgManagerChainStartedFromInitiator(
 }
 
 /**
+ * `true` when the chain continues an earlier manager-chain stage
+ * (`startFrom.type` is `CHAIN_CONTINUATION`). The named stage is not read.
+ */
+export function isOrgManagerChainContinuation(
+  resolver: Pick<OrgManagerChainResolver, 'startFrom'>,
+): boolean {
+  const startFrom: unknown = resolver.startFrom;
+
+  return (
+    typeof startFrom === 'object' &&
+    startFrom !== null &&
+    (startFrom as { readonly type?: unknown }).type === 'CHAIN_CONTINUATION'
+  );
+}
+
+/**
+ * `true` when the chain skips its whole stage once the start person's own
+ * position level reaches `minPositionLevel`: `skipWhenStartReached` is exactly
+ * `true`. Absent, `false`, `null` and anything else read as not skipping.
+ */
+export function isOrgManagerChainSkippingWhenStartReached(
+  resolver: Pick<OrgManagerChainResolver, 'skipWhenStartReached'>,
+): boolean {
+  const skip: unknown = resolver.skipWhenStartReached;
+
+  return skip === true;
+}
+
+/**
  * The position level below which managers are walked past, or `null` when the
  * chain has no start level (absent or `null`; anything that is not a finite
  * number is read as absent too, the publish lint refuses it).
@@ -432,14 +477,19 @@ export function readOrgManagerChainStartPositionLevel(
 /**
  * The chain's dry-run placeholder. The dry run cannot look the organisation
  * up, so it names what the runtime would resolve. Grammar, with `<from>` one
- * of `formMember` / `nodeActor` and `<key>` the form path or the node ids
- * joined by `,` (it may itself hold a colon, so it is always the last part):
+ * of `formMember` / `nodeActor` / `continue` and `<key>` the form path, the
+ * node ids joined by `,` or the continued node id (it may itself hold a colon,
+ * so it is always the last part):
  *
  *     orgManagerChain:<min>                      neither setting: as before
  *     orgManagerChain:<min>:<startLevel>         only startPositionLevel
  *     orgManagerChain:<min>:<startLevel>:<from>:<key>
  *                                                `<startLevel>` is empty when
  *                                                the chain has none
+ *
+ * A chain with `skipWhenStartReached: true` writes the kind
+ * `orgManagerChainSkipReached` in place of `orgManagerChain`; every other part
+ * is the same.
  *
  * Starting at the initiator is the same as not saying so, so an `INITIATOR`
  * start adds nothing.
@@ -448,9 +498,14 @@ export function formatOrgManagerChainPlaceholder(
   resolver: Pick<
     OrgManagerChainResolver,
     'minPositionLevel' | 'startFrom' | 'startPositionLevel'
-  >,
+  > &
+    Partial<Pick<OrgManagerChainResolver, 'skipWhenStartReached'>>,
 ): string {
-  const base = `orgManagerChain:${resolver.minPositionLevel}`;
+  const kind =
+    resolver.skipWhenStartReached === true
+      ? 'orgManagerChainSkipReached'
+      : 'orgManagerChain';
+  const base = `${kind}:${resolver.minPositionLevel}`;
   const startLevel = readOrgManagerChainStartPositionLevel(resolver);
   const level = startLevel === null ? '' : String(startLevel);
   const startFrom = resolver.startFrom;
@@ -463,14 +518,21 @@ export function formatOrgManagerChainPlaceholder(
     return `${base}:${level}:nodeActor:${startFrom.nodeIds.join(',')}`;
   }
 
+  if (startFrom?.type === 'CHAIN_CONTINUATION') {
+    return `${base}:${level}:continue:${startFrom.nodeId}`;
+  }
+
   return startLevel === null ? base : `${base}:${level}`;
 }
 
 export interface OrgManagerChainPlaceholder {
   readonly minPositionLevel: number;
+  /** Present, and `true`, only for the `orgManagerChainSkipReached` kind. */
+  readonly skipWhenStartReached?: true;
   readonly startFrom:
     | { readonly formPath: string; readonly type: 'FORM_MEMBER' }
     | { readonly nodeIds: readonly string[]; readonly type: 'NODE_ACTOR' }
+    | { readonly nodeId: string; readonly type: 'CHAIN_CONTINUATION' }
     | null;
   readonly startPositionLevel: number | null;
 }
@@ -495,7 +557,7 @@ export function parseOrgManagerChainPlaceholder(
   const [kind, min, level, from, ...keyParts] = placeholder.split(':');
 
   if (
-    kind !== 'orgManagerChain' ||
+    (kind !== 'orgManagerChain' && kind !== 'orgManagerChainSkipReached') ||
     !PLACEHOLDER_NUMBER_PATTERN.test(min ?? '')
   ) {
     return null;
@@ -513,10 +575,17 @@ export function parseOrgManagerChainPlaceholder(
     return null;
   }
 
+  // Only the skip kind carries the key, so every other placeholder reads back
+  // with exactly the parts it always had.
+  const skip =
+    kind === 'orgManagerChainSkipReached'
+      ? ({ skipWhenStartReached: true } as const)
+      : {};
+
   if (from === undefined) {
     return level === ''
       ? null
-      : { minPositionLevel, startFrom: null, startPositionLevel };
+      : { minPositionLevel, ...skip, startFrom: null, startPositionLevel };
   }
 
   const key = keyParts.join(':');
@@ -528,7 +597,17 @@ export function parseOrgManagerChainPlaceholder(
   if (from === 'formMember') {
     return {
       minPositionLevel,
+      ...skip,
       startFrom: { formPath: key, type: 'FORM_MEMBER' },
+      startPositionLevel,
+    };
+  }
+
+  if (from === 'continue') {
+    return {
+      minPositionLevel,
+      ...skip,
+      startFrom: { nodeId: key, type: 'CHAIN_CONTINUATION' },
       startPositionLevel,
     };
   }
@@ -536,6 +615,7 @@ export function parseOrgManagerChainPlaceholder(
   return from === 'nodeActor'
     ? {
         minPositionLevel,
+        ...skip,
         startFrom: { nodeIds: key.split(','), type: 'NODE_ACTOR' },
         startPositionLevel,
       }

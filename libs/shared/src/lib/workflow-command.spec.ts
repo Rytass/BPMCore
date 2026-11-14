@@ -788,6 +788,73 @@ describe('user task return and SLA commands', () => {
     expect(readUserTaskNode(result.state).data.approverResolver).toEqual(chain);
   });
 
+  it.each<readonly [string, ApproverResolver]>([
+    [
+      'a continuation start',
+      {
+        minPositionLevel: 40,
+        startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+        startPositionLevel: 35,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+    ],
+    [
+      'the skip flag',
+      {
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+    ],
+  ])('stores %s on the node as given', (_label, chain) => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const result = applyWorkflowCommand(state, {
+      approverResolver: chain,
+      nodeId,
+      type: 'setUserTaskApprover',
+    });
+
+    expect(readUserTaskNode(result.state).data.approverResolver).toEqual(chain);
+  });
+
+  it('replaces the skip flag rather than merging it into the new approver', () => {
+    const state = stateWithUserTask();
+    const nodeId = readUserTaskNode(state).id;
+    const skipping = applyWorkflowCommand(state, {
+      approverResolver: {
+        minPositionLevel: 30,
+        skipWhenStartReached: true,
+        type: 'ORG_MANAGER_CHAIN',
+      },
+      nodeId,
+      type: 'setUserTaskApprover',
+    });
+    const plainChain = applyWorkflowCommand(skipping.state, {
+      approverResolver: { minPositionLevel: 30, type: 'ORG_MANAGER_CHAIN' },
+      nodeId,
+      type: 'setUserTaskApprover',
+    });
+
+    expect(readUserTaskNode(plainChain.state).data.approverResolver).toEqual({
+      minPositionLevel: 30,
+      type: 'ORG_MANAGER_CHAIN',
+    });
+  });
+
+  it('still switches a policy that would end a continuing chain early to SEQUENTIAL', () => {
+    expect(
+      afterApproverChange(
+        { type: 'SINGLE' },
+        {
+          minPositionLevel: 40,
+          startFrom: { nodeId: 'unit', type: 'CHAIN_CONTINUATION' },
+          type: 'ORG_MANAGER_CHAIN',
+        },
+      ),
+    ).toEqual({ type: 'SEQUENTIAL' });
+  });
+
   it('replaces a chain start rather than merging it into the new approver', () => {
     const state = stateWithUserTask();
     const nodeId = readUserTaskNode(state).id;
