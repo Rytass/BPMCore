@@ -8,12 +8,15 @@ export interface ApprovalTemplateRecord {
   readonly categoryId: string | null;
   readonly currentVersionId: string | null;
   readonly description: string | null;
+  readonly hostManaged: boolean;
   readonly id: string;
   readonly isActive: boolean;
+  readonly key: string | null;
   readonly name: string;
   readonly updatedAt: string;
 }
 
+export type ApprovalTemplateLaunchMode = 'HOST_ONLY' | 'OPEN';
 export type ApprovalTemplateListStatus = 'DRAFT' | 'PUBLISHED';
 export type ApprovalTemplateActivationStatus = 'ACTIVE' | 'ALL' | 'INACTIVE';
 export type ApprovalTemplateCategoryStatus = 'ACTIVE' | 'ALL' | 'INACTIVE';
@@ -33,6 +36,7 @@ export interface ApprovalTemplateVersionRecord {
   readonly formDefinitionVersionId: string | null;
   readonly id: string;
   readonly initiatorPolicyCel: string | null;
+  readonly launchMode: ApprovalTemplateLaunchMode;
   readonly notificationConfigJson: string | null;
   readonly publishedAt: string | null;
   readonly slaDefaultsJson: string | null;
@@ -120,6 +124,10 @@ interface ApprovalTemplatesQueryData {
 
 interface ApprovalTemplatesPageQueryData extends ApprovalTemplatesQueryData {
   readonly approvalTemplateCount: number;
+}
+
+interface ApprovalTemplateByKeyQueryData {
+  readonly approvalTemplateByKey: ApprovalTemplateRecord;
 }
 
 interface ApprovalTemplateCategoriesPageQueryData {
@@ -244,8 +252,10 @@ export async function listApprovalTemplates(): Promise<
         }
         currentVersionId
         description
+        hostManaged
         id
         isActive
+        key
         name
         updatedAt
       }
@@ -257,6 +267,7 @@ export async function listApprovalTemplates(): Promise<
 
 export async function listApprovalTemplatesPage({
   activationStatus,
+  includeHostManaged,
   page,
   pageSize,
   searchText,
@@ -265,6 +276,8 @@ export async function listApprovalTemplatesPage({
 }: {
   readonly activationStatus?: ApprovalTemplateActivationStatus | null;
   readonly categoryId?: string | null;
+  /** Opt-in. Only `true` sends the flag; the server default leaves host-managed templates out. */
+  readonly includeHostManaged?: boolean;
   readonly page: number;
   readonly pageSize: number;
   readonly searchText?: string;
@@ -278,10 +291,12 @@ export async function listApprovalTemplatesPage({
       $searchText: String
       $status: ApprovalTemplateListStatus
       $categoryId: String
+      $includeHostManaged: Boolean
     ) {
       approvalTemplates(
         activationStatus: $activationStatus
         categoryId: $categoryId
+        includeHostManaged: $includeHostManaged
         page: $page
         pageSize: $pageSize
         searchText: $searchText
@@ -296,14 +311,17 @@ export async function listApprovalTemplatesPage({
         }
         currentVersionId
         description
+        hostManaged
         id
         isActive
+        key
         name
         updatedAt
       }
       approvalTemplateCount(
         activationStatus: $activationStatus
         categoryId: $categoryId
+        includeHostManaged: $includeHostManaged
         searchText: $searchText
         status: $status
       )
@@ -315,6 +333,7 @@ export async function listApprovalTemplatesPage({
       pageSize,
       searchText,
       status: status ?? null,
+      ...(includeHostManaged === true ? { includeHostManaged: true } : {}),
     },
   );
 
@@ -322,6 +341,39 @@ export async function listApprovalTemplatesPage({
     templates: data.approvalTemplates,
     totalCount: data.approvalTemplateCount,
   };
+}
+
+/**
+ * Looks up the live template holding a host key. Rejects when none matches.
+ * Host-managed templates are returned; this lookup is not filtered by includeHostManaged.
+ */
+export async function getApprovalTemplateByKey(
+  key: string,
+): Promise<ApprovalTemplateRecord> {
+  const data = await requestGraphQl<ApprovalTemplateByKeyQueryData>(
+    `query ApprovalTemplateByKey($key: String!) {
+      approvalTemplateByKey(key: $key) {
+        category
+        categoryId
+        categoryDetail {
+          id
+          isActive
+          name
+        }
+        currentVersionId
+        description
+        hostManaged
+        id
+        isActive
+        key
+        name
+        updatedAt
+      }
+    }`,
+    { key },
+  );
+
+  return data.approvalTemplateByKey;
 }
 
 export async function listApprovalTemplateCategoriesPage({
@@ -514,8 +566,10 @@ export async function readTemplateDesigner(
         }
         currentVersionId
         description
+        hostManaged
         id
         isActive
+        key
         name
         updatedAt
       }
@@ -524,6 +578,7 @@ export async function readTemplateDesigner(
         formDefinitionVersionId
         id
         initiatorPolicyCel
+        launchMode
         notificationConfigJson
         publishedAt
         slaDefaultsJson
@@ -647,11 +702,14 @@ export async function searchMemberOptions(
 export async function updateApprovalTemplateDraft({
   formDefinitionVersionId,
   initiatorPolicyCel,
+  launchMode,
   versionId,
   workflowDefinition,
 }: {
   readonly formDefinitionVersionId: string | null;
   readonly initiatorPolicyCel: string | null;
+  /** Omitted when undefined so the stored launch mode is kept. */
+  readonly launchMode?: ApprovalTemplateLaunchMode;
   readonly versionId: string;
   readonly workflowDefinition: WorkflowDefinition;
 }): Promise<ApprovalTemplateVersionRecord> {
@@ -662,6 +720,7 @@ export async function updateApprovalTemplateDraft({
         formDefinitionVersionId
         id
         initiatorPolicyCel
+        launchMode
         notificationConfigJson
         publishedAt
         slaDefaultsJson
@@ -675,6 +734,7 @@ export async function updateApprovalTemplateDraft({
       input: {
         formDefinitionVersionId,
         initiatorPolicyCel,
+        ...(launchMode === undefined ? {} : { launchMode }),
         notificationConfigJson: null,
         slaDefaultsJson: null,
         versionId,
@@ -696,6 +756,7 @@ export async function forkApprovalTemplate(
         formDefinitionVersionId
         id
         initiatorPolicyCel
+        launchMode
         notificationConfigJson
         publishedAt
         slaDefaultsJson
@@ -721,6 +782,7 @@ export async function publishApprovalTemplateVersion(
         formDefinitionVersionId
         id
         initiatorPolicyCel
+        launchMode
         notificationConfigJson
         publishedAt
         slaDefaultsJson
@@ -746,6 +808,7 @@ export async function rollbackApprovalTemplateVersion(
         formDefinitionVersionId
         id
         initiatorPolicyCel
+        launchMode
         notificationConfigJson
         publishedAt
         slaDefaultsJson
@@ -763,11 +826,14 @@ export async function rollbackApprovalTemplateVersion(
 
 export async function dryRunApprovalWorkflow({
   formData,
+  formSchema,
   initiatorMemberId,
   initiatorMetadataSnapshot,
   workflowDefinition,
 }: {
   readonly formData: Readonly<Record<string, unknown>>;
+  /** Omitted when undefined; the server then dry-runs without a form schema. */
+  readonly formSchema?: FormDefinitionSchema;
   readonly initiatorMemberId: string;
   readonly initiatorMetadataSnapshot: Readonly<Record<string, unknown>> | null;
   readonly workflowDefinition: WorkflowDefinition;
@@ -798,6 +864,9 @@ export async function dryRunApprovalWorkflow({
     {
       input: {
         formDataJson: JSON.stringify(formData),
+        ...(formSchema === undefined
+          ? {}
+          : { formSchemaJson: JSON.stringify(formSchema) }),
         initiatorMemberId,
         initiatorMetadataSnapshotJson: initiatorMetadataSnapshot
           ? JSON.stringify(initiatorMetadataSnapshot)
@@ -817,12 +886,14 @@ export async function composeApprovalTemplateWithForm({
   formDescription,
   formName,
   initiatorPolicyCel,
+  launchMode,
   notificationConfig,
   publish,
   schema,
   slaDefaults,
   templateDescription,
   templateId,
+  templateKey,
   templateName,
   uiSchema,
   workflowDefinition,
@@ -833,12 +904,16 @@ export async function composeApprovalTemplateWithForm({
   readonly formDescription: string | null;
   readonly formName: string;
   readonly initiatorPolicyCel: string | null;
+  /** Omitted when undefined so the stored launch mode is kept. */
+  readonly launchMode?: ApprovalTemplateLaunchMode;
   readonly notificationConfig: Readonly<Record<string, unknown>> | null;
   readonly publish: boolean;
   readonly schema: FormDefinitionSchema;
   readonly slaDefaults: Readonly<Record<string, unknown>> | null;
   readonly templateDescription: string | null;
   readonly templateId: string | null;
+  /** Host key used to find the template when templateId is absent. Omitted when undefined. */
+  readonly templateKey?: string | null;
   readonly templateName: string;
   readonly uiSchema: FormUiSchema;
   readonly workflowDefinition: WorkflowDefinition;
@@ -865,6 +940,7 @@ export async function composeApprovalTemplateWithForm({
           formDefinitionVersionId
           id
           initiatorPolicyCel
+          launchMode
           notificationConfigJson
           publishedAt
           slaDefaultsJson
@@ -883,6 +959,7 @@ export async function composeApprovalTemplateWithForm({
         formDescription,
         formName,
         initiatorPolicyCel,
+        ...(launchMode === undefined ? {} : { launchMode }),
         notificationConfigJson: notificationConfig
           ? JSON.stringify(notificationConfig)
           : null,
@@ -891,6 +968,7 @@ export async function composeApprovalTemplateWithForm({
         slaDefaultsJson: slaDefaults ? JSON.stringify(slaDefaults) : null,
         templateDescription,
         templateId,
+        ...(templateKey === undefined ? {} : { templateKey }),
         templateName,
         uiSchemaJson: JSON.stringify(uiSchema),
         workflowDefinitionJson: JSON.stringify(workflowDefinition),

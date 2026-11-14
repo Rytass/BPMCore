@@ -510,9 +510,26 @@ export function useFormDataSourceField(
       heldValueBaseline.value === currentValueSignature &&
       heldValueBaseline.bindings !== settledBindingsRefreshSignature,
   );
+  // A default on a dynamic source is only a guess until the source confirms it:
+  // nothing in a new case says it was picked from the options (ADR 27 §8). The
+  // untouched default is therefore resolved once, like a stale value, so its
+  // label comes from the source and a default the source no longer offers is
+  // flagged instead of passing as a valid pick.
+  const untouchedDefault = Boolean(
+    dynamicField &&
+      !snapshot &&
+      typeof input.initialFormData === 'undefined' &&
+      typeof input.initialValue === 'undefined' &&
+      typeof dynamicField.defaultValue !== 'undefined' &&
+      currentValueSignature ===
+        readFormDataSourceValueSignature(dynamicField.defaultValue),
+  );
   const isStale = Boolean(
     (snapshot || hasValue) &&
-      (valueChanged || bindingsChanged || expressionInputsChanged),
+      (valueChanged ||
+        bindingsChanged ||
+        expressionInputsChanged ||
+        untouchedDefault),
   );
   // A stale field with a value is only trustworthy once the host has resolved
   // it: display options may still carry the value through the snapshot merge.

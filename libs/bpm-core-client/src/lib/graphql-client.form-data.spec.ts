@@ -2,6 +2,7 @@ import { configureBPMClient } from './client-config';
 import {
   BPMGraphQLRequestError,
   readFormDataIssues,
+  readRequestErrorCode,
   requestGraphQl,
 } from './graphql-client';
 
@@ -105,5 +106,46 @@ describe('requestGraphQl form data issues', (): void => {
     expect(readFormDataIssues(error)).toEqual([]);
     expect(readFormDataIssues(new Error('plain'))).toEqual([]);
     expect(readFormDataIssues(null)).toEqual([]);
+  });
+});
+
+describe('requestGraphQl error code', (): void => {
+  afterEach((): void => {
+    configureBPMClient({});
+  });
+
+  it('carries the host error code beside the prose message', async (): Promise<void> => {
+    mockGraphQlResponse({
+      data: null,
+      errors: [
+        {
+          extensions: {
+            originalError: { code: 'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED' },
+          },
+          message: '補填時不能新增、刪除或調整明細列的順序',
+        },
+      ],
+    });
+
+    const error: unknown = await requestGraphQl('mutation M { m }').catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(BPMGraphQLRequestError);
+    expect(readRequestErrorCode(error)).toBe(
+      'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED',
+    );
+  });
+
+  it('answers null when the host sent no code', async (): Promise<void> => {
+    mockGraphQlResponse({ errors: [{ message: 'Unauthorized' }] });
+
+    const error: unknown = await requestGraphQl('{ q }').catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(readRequestErrorCode(error)).toBeNull();
+    expect(readRequestErrorCode(new Error('plain'))).toBeNull();
+    expect(readRequestErrorCode(null)).toBeNull();
   });
 });

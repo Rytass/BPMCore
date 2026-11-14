@@ -16,7 +16,10 @@ import {
 import { ApprovalInstanceRecord, WorkflowFormData } from '@rytass/bpm-core-client/workflow';
 import { BPMFormField } from '../../../../components/bpm-form-field';
 import { readApplicantFormSchema } from '../../approver-filled-form';
-import { FormRenderer } from '../../../forms/renderer/FormRendererView';
+import {
+  FormRenderer,
+  type FormRendererTableAccess,
+} from '../../../forms/renderer/FormRendererView';
 import type { FormDataSourceFieldState } from '../../../forms/renderer/form-data-source-field';
 import type {
   FileUploadFieldState,
@@ -70,6 +73,12 @@ export interface InstanceFormSectionFill {
   readonly schema: FormDefinitionSchema;
   /** The stored form data with the draft fill on top. */
   readonly value: WorkflowFormData;
+  /**
+   * Per table the node opens only column by column: the open columns the
+   * approver may edit, with the rows locked. Absent when the node opens no
+   * column-only table.
+   */
+  readonly tableAccess?: Readonly<Record<string, FormRendererTableAccess>>;
 }
 
 export interface InstanceFormSectionProps {
@@ -231,12 +240,13 @@ export function InstanceFormSection({
           <FormRenderer
             attachments={attachments}
             dataSourceContext={
-              canResubmitInstance
+              canResubmitInstance || filling
                 ? {
                     // Instance-scoped only: the runtime query rejects a context
-                    // that names both, and a returned instance must resolve its
-                    // options against its own form definition snapshot rather
-                    // than whatever version the template publishes today.
+                    // that names both. A returned instance resolves against its
+                    // own form definition snapshot, and an approver filling in a
+                    // node resolves under the approver's identity on the same
+                    // snapshot (ADR 27 §4.2).
                     instanceId: instance.id,
                     kind: 'runtime',
                   }
@@ -247,6 +257,9 @@ export function InstanceFormSection({
             {...(!canResubmitInstance && fieldAccess ? { fieldAccess } : {})}
             {...(!canResubmitInstance && fieldLabelMarkers
               ? { fieldLabelMarkers }
+              : {})}
+            {...(filling && fill.tableAccess
+              ? { tableAccess: fill.tableAccess }
               : {})}
             onChange={(values): void => {
               if (filling) {
@@ -264,7 +277,9 @@ export function InstanceFormSection({
               canResubmitInstance ? onUploadAttachment : undefined
             }
             optionSnapshots={instance.formDataOptionSnapshot}
-            readonly={!canResubmitInstance}
+            // A fill node opens only the fields and columns the viewer may
+            // fill (`fieldAccess`, `tableAccess`); every other cell stays locked.
+            readonly={!canResubmitInstance && !filling}
             schema={displayedSchema}
             uiSchema={instance.formDefinitionSnapshot.uiSchema}
             value={

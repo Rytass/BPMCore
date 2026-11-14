@@ -935,10 +935,18 @@ function applySetFieldAccessMatrix(
 
       const fieldAccess = command.entries
         .filter((entry) => entry.nodeId === node.id)
-        .map(({ display, fieldKey, fill }): FieldAccessEntry => ({
+        .map(({ columns, display, fieldKey, fill }): FieldAccessEntry => ({
           display,
           fieldKey,
           fill,
+          ...(columns === undefined
+            ? {}
+            : {
+                columns: columns.map(({ columnKey, fill: columnFill }) => ({
+                  columnKey,
+                  fill: columnFill,
+                })),
+              }),
         }));
 
       return fieldAccess.length

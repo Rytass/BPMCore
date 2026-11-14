@@ -1324,6 +1324,159 @@ export async function listApprovalHistoryTasks(
   return normalizeTaskRecords(data.approvalHistoryTasks);
 }
 
+const MEMBER_TASK_SELECTION = `
+adhocDirectiveId
+adhocOriginTaskId
+adhocType
+assigneeMemberId
+assignmentType
+candidateMemberIds
+openCandidateMemberIds
+completedAt
+createdAt
+decisionPolicySnapshotJson
+delegationChainJson
+hasFillableFields
+id
+instanceId
+isAdhoc
+nodeId
+nodeLabel
+openedAt
+originalAssigneeMemberId
+slaDueAt
+status
+tokenId
+`;
+
+/** One page of a member's task list, with the total across every page. */
+export interface MemberTaskPage {
+  readonly tasks: readonly TaskRecord[];
+  readonly totalCount: number;
+}
+
+interface InboxTasksPageQueryData {
+  readonly inboxTaskCount: number;
+  readonly inboxTasks: readonly TaskRecord[];
+}
+
+interface ApprovalHistoryTasksPageQueryData {
+  readonly approvalHistoryTaskCount: number;
+  readonly approvalHistoryTasks: readonly TaskRecord[];
+}
+
+/**
+ * Narrows a member task page to some templates (ADR 27 §7). Absent or `null`
+ * fields do not filter; an empty `templateIds` matches nothing; both given
+ * means both must match.
+ */
+export interface MemberTaskTemplateFilter {
+  readonly templateIds?: readonly string[] | null;
+  readonly templateKey?: string | null;
+}
+
+/**
+ * One page of the signed-in member's open tasks, newest first, with their
+ * total. The server caps a page at 100.
+ */
+export async function listInboxTasksPage({
+  assigneeMemberId,
+  page,
+  pageSize,
+  templateIds = null,
+  templateKey = null,
+}: {
+  readonly assigneeMemberId: string;
+  readonly page: number;
+  readonly pageSize: number;
+} & MemberTaskTemplateFilter): Promise<MemberTaskPage> {
+  const data = await requestGraphQl<InboxTasksPageQueryData>(
+    `query InboxTasksPage(
+      $assigneeMemberId: String!
+      $page: Int
+      $pageSize: Int
+      $templateIds: [String!]
+      $templateKey: String
+    ) {
+      inboxTasks(
+        assigneeMemberId: $assigneeMemberId
+        page: $page
+        pageSize: $pageSize
+        templateIds: $templateIds
+        templateKey: $templateKey
+      ) {
+        ${MEMBER_TASK_SELECTION}
+      }
+      inboxTaskCount(templateIds: $templateIds, templateKey: $templateKey)
+    }`,
+    { assigneeMemberId, page, pageSize, templateIds, templateKey },
+  );
+
+  return {
+    tasks: normalizeTaskRecords(data.inboxTasks),
+    totalCount: data.inboxTaskCount,
+  };
+}
+
+/**
+ * One page of the tasks the signed-in member has acted on, most recently
+ * acted on first, with their total. `instanceState: 'RUNNING'` keeps only
+ * instances still under way. The server caps a page at 100.
+ */
+export async function listApprovalHistoryTasksPage({
+  assigneeMemberId,
+  instanceState = null,
+  page,
+  pageSize,
+  templateIds = null,
+  templateKey = null,
+}: {
+  readonly assigneeMemberId: string;
+  readonly instanceState?: ApprovalInstanceState | null;
+  readonly page: number;
+  readonly pageSize: number;
+} & MemberTaskTemplateFilter): Promise<MemberTaskPage> {
+  const data = await requestGraphQl<ApprovalHistoryTasksPageQueryData>(
+    `query ApprovalHistoryTasksPage(
+      $assigneeMemberId: String!
+      $instanceState: ApprovalInstanceState
+      $page: Int
+      $pageSize: Int
+      $templateIds: [String!]
+      $templateKey: String
+    ) {
+      approvalHistoryTasks(
+        assigneeMemberId: $assigneeMemberId
+        instanceState: $instanceState
+        page: $page
+        pageSize: $pageSize
+        templateIds: $templateIds
+        templateKey: $templateKey
+      ) {
+        ${MEMBER_TASK_SELECTION}
+      }
+      approvalHistoryTaskCount(
+        instanceState: $instanceState
+        templateIds: $templateIds
+        templateKey: $templateKey
+      )
+    }`,
+    {
+      assigneeMemberId,
+      instanceState,
+      page,
+      pageSize,
+      templateIds,
+      templateKey,
+    },
+  );
+
+  return {
+    tasks: normalizeTaskRecords(data.approvalHistoryTasks),
+    totalCount: data.approvalHistoryTaskCount,
+  };
+}
+
 export async function readWorkflowDashboardSummary({
   currentMemberId,
   from,
@@ -2316,18 +2469,21 @@ export async function reassignTask({
 }
 
 /**
- * Administrator: moves every open task `fromMemberId` holds to `toMemberId`,
- * one result per task. A refused task does not stop the others.
+ * Administrator: moves the open tasks `fromMemberId` holds (all of them, or
+ * only `taskIds`) to `toMemberId`, one result per task. A refused task does not stop the others. Pass
+ * `taskIds` to move only those tasks; leave it out for every open task.
  */
 export async function reassignMemberTasks({
   dryRun = false,
   fromMemberId,
   reason,
+  taskIds,
   toMemberId,
 }: {
   readonly dryRun?: boolean;
   readonly fromMemberId: string;
   readonly reason: string;
+  readonly taskIds?: readonly string[];
   readonly toMemberId: string;
 }): Promise<readonly TaskReassignmentResultRecord[]> {
   const data = await requestGraphQl<ReassignMemberTasksMutationData>(
@@ -2337,7 +2493,13 @@ export async function reassignMemberTasks({
       }
     }`,
     {
-      input: { dryRun, fromMemberId, reason, toMemberId },
+      input: {
+        dryRun,
+        fromMemberId,
+        reason,
+        ...(taskIds !== undefined ? { taskIds } : {}),
+        toMemberId,
+      },
     },
   );
 

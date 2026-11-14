@@ -7,6 +7,8 @@ import type {
   FormDefinitionSchema,
   FormUiSchema,
 } from '@rytass/bpm-core-shared/form';
+import type { ApprovalTemplateLaunchMode } from '@rytass/bpm-core-client/template';
+import { readLaunchModeOption } from '../../designer/launch-mode';
 import type {
   WorkflowDefinition,
   WorkflowNode,
@@ -38,6 +40,7 @@ export interface ComposeReviewStepProps {
   readonly formUiSchema: FormUiSchema;
   readonly workflowDefinition: WorkflowDefinition | null;
   readonly initiatorPolicyCel: string | null;
+  readonly launchMode: ApprovalTemplateLaunchMode;
   readonly publishError: string | null;
 }
 
@@ -45,6 +48,7 @@ export function ComposeReviewStep({
   formSchema,
   formUiSchema,
   initiatorPolicyCel,
+  launchMode,
   name,
   publishError,
   workflowDefinition,
@@ -105,6 +109,9 @@ export function ComposeReviewStep({
             <Table columns={BRANCH_COLUMNS} dataSource={branchRows} fullWidth />
           </>
         ) : null}
+        <Typography color="text-neutral" variant="caption">
+          發起方式：{readLaunchModeOption(launchMode).name}
+        </Typography>
         {initiatorPolicyCel ? (
           <Typography color="text-neutral" variant="caption">
             發起權限：{initiatorPolicyCel}

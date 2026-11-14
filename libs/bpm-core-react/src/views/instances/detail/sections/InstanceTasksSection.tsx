@@ -24,7 +24,7 @@ import {
   Typography,
 } from '@mezzanine-ui/react';
 import type { TableColumn } from '@mezzanine-ui/core/table';
-import { readNodeFillableFieldKeys } from '@rytass/bpm-core-shared';
+import { readNodeFillGrantFieldKeys } from '@rytass/bpm-core-shared';
 import {
   AdhocDirectiveRecord,
   AdhocPreApprovalRejectBehavior,
@@ -39,7 +39,7 @@ import {
   requestAdhocPreApproval,
   searchMembers,
 } from '@rytass/bpm-core-client/workflow';
-import { readFormDataIssues } from '@rytass/bpm-core-client';
+import { readFormDataIssues, readRequestErrorCode } from '@rytass/bpm-core-client';
 import type { FormDataIssue } from '@rytass/bpm-core-shared/form';
 import { formatDateTime } from '../../../../lib/format-date-time';
 import { readTaskNodeText } from '../../../../lib/task-node-label';
@@ -155,6 +155,7 @@ export interface InstanceTasksSectionProps {
   readonly onFillApproveError?: (
     message: string,
     formDataIssues?: readonly FormDataIssue[],
+    code?: string | null,
   ) => boolean;
   /** All tasks for this instance. */
   readonly tasks: readonly TaskRecord[];
@@ -579,6 +580,7 @@ export const InstanceTasksSection = forwardRef<
         onFillApproveError?.(
           requestError.message,
           readFormDataIssues(requestError),
+          readRequestErrorCode(requestError),
         ) === true
       ) {
         setApproveModalOpen(false);
@@ -1403,5 +1405,5 @@ function readOpenTaskFillFieldCount(
     (candidate) => candidate.id === task.nodeId,
   );
 
-  return node?.type === 'userTask' ? readNodeFillableFieldKeys(node).size : 0;
+  return node?.type === 'userTask' ? readNodeFillGrantFieldKeys(node).size : 0;
 }

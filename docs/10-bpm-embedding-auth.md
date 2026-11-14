@@ -194,6 +194,7 @@ BPMCore 不再提供 mock fallback；
         provide: ATTACHMENT_STORAGE,
         useFactory: () => createHostStorageAdapter(),
       },
+      expressionMissingFormFieldsAsNull: false, // 預設值，見 docs/11 §2e 與 docs/05 §5.1.2
       notificationEmailEnabled: 'auto',
       notificationEmailSmtpHost: 'smtp.example.com',
       notificationEmailSmtpPort: 587,
@@ -243,6 +244,51 @@ Authentication 只回答「誰登入」。BPM domain authorization 仍要在 BPM
 - delegation admin 可管理所有代理；一般使用者只能管理自己的個人代理。
 - `processApprovalInstance` 是 system/admin 操作；一般送出與簽核決策會在 service
   內部推進流程，不需要 client 額外呼叫。
+
+## 案件事件與決策前檢查
+
+BPM 可在案件狀態改變時寫入事件（outbox），也可在狀態寫入前交給宿主檢查。兩者都是選用功能：
+宿主未註冊時不寫任何事件，引擎也不會為事件多查一次模板。
+
+### 案件事件
+
+- 宿主以 `instanceEventObserverProvider`（接線）或 `instanceEventObserver`（執行期）註冊
+  `BPMInstanceEventObserver`。兩者都沒給時，不寫 `approval_instance_events`。
+- 事件與案件狀態變更在同一交易內寫入；observer 於 commit 後呼叫，**至少一次**。宿主請以 `event.id` 去重。
+- 事件不含 `formData`。
+- 事件型別：
+  - `INSTANCE_SUBMITTED`、`INSTANCE_RESUBMITTED`：送出與退回後重送，payload 含 `actorMemberId`。
+  - `NODE_ACTIVATED`：建立待辦，payload 含 `nodeId`、`taskIds`。
+  - `INSTANCE_APPROVED`、`INSTANCE_REJECTED`、`INSTANCE_RETURNED`、`INSTANCE_CANCELLED`、`INSTANCE_EXPIRED`：案件終局或退回。
+  - `TASK_AUTO_DECISION_FAILED`：SLA 自動核准被決策前檢查擋下（見下節）。
+- `actorMemberId` 是實際做決策的成員。REJECTED 與 RETURNED 若由候選人決策，值為該候選人，
+  不一定是待辦的 assignee。
+- `INSTANCE_APPROVED` 每個案件只寫一次，即使多條完成路徑都會經過完成判斷。
+
+### 決策前檢查（instance guard）
+
+宿主可註冊 `BPMInstanceGuard`（執行期選項 `instanceGuard`，或接線選項 `instanceGuardProvider`），
+在引擎寫入前檢查即將提交的狀態：
+
+- `SUBMIT`：送出，案件存入前，同一交易內。
+- `RESUBMIT`：退回案件重送，案件存入前。
+- `DECIDE`：簽核決策，決策存入前。SLA 自動核准時 `automatic` 為 `'SLA_AUTO_APPROVE'`。
+
+回傳非空的 `BPMInstanceGuardIssue` 陣列即擋下，回 400，`formDataErrors` 形狀與表單驗證相同。
+檢查逾時（`instanceGuardTimeoutMs`，預設 5000 ms）回 503 `BPM_INSTANCE_GUARD_TIMEOUT`，採 fail closed；
+其他錯誤回 503 `BPM_INSTANCE_GUARD_FAILED`。完整契約見 `docs/api-reference.md`。
+
+### SLA 自動核准被擋下
+
+SLA 逾時的自動核准若被 guard 擋下，系統會：
+
+1. 保持待辦開啟，案件狀態不變。
+2. 另開一個交易寫入 `TASK_AUTO_DECISION_FAILED`（payload 含 `reason`、`taskId`）。
+3. 記一筆 warning，繼續掃描其他待辦。
+4. 非 guard 造成的錯誤照常拋出。
+
+SLA 逾時動作只在逾期通知第一次建立時執行一次，之後的掃描不會重試自動核准，也不會再寫事件。
+待辦會一直開啟到有人決策；host 收到這個事件後，應自行通知負責人或決定後續處理。
 
 ## Attachment Storage Contract
 

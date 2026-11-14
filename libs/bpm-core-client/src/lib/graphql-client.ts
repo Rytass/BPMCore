@@ -20,16 +20,38 @@ interface GraphQlError {
  * A GraphQL operation the host refused. `message` is the host's message, as
  * it has always been. `formDataIssues` lists the form values the host refused,
  * one per value, with `path` addressing the field, row or cell; it is empty
- * when the refusal was not about form data.
+ * when the refusal was not about form data. `code` is the host's stable error
+ * code (`extensions.originalError.code`), or `null`; `message` may be prose
+ * that changes, so callers that branch on a refusal read the code.
  */
 export class BPMGraphQLRequestError extends Error {
+  readonly code: string | null;
   readonly formDataIssues: readonly FormDataIssue[];
 
-  constructor(message: string, formDataIssues: readonly FormDataIssue[]) {
+  constructor(
+    message: string,
+    formDataIssues: readonly FormDataIssue[],
+    code: string | null = null,
+  ) {
     super(message);
     this.name = 'BPMGraphQLRequestError';
+    this.code = code;
     this.formDataIssues = formDataIssues;
   }
+}
+
+/**
+ * The stable error code a failed request carries, or `null` when it carries
+ * none. Duck-typed on `code`, like {@link readFormDataIssues}.
+ */
+export function readRequestErrorCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) {
+    return null;
+  }
+
+  const code = (error as Readonly<{ code?: unknown }>).code;
+
+  return typeof code === 'string' && code.length > 0 ? code : null;
 }
 
 /**
@@ -72,6 +94,26 @@ function readGraphQlFormDataIssues(
   });
 
   return entries.every(isFormDataIssue) ? entries : [];
+}
+
+/**
+ * The host's `extensions.originalError.code` of the first error that carries
+ * one, or `null`.
+ */
+function readGraphQlErrorCode(errors: readonly GraphQlError[]): string | null {
+  for (const error of errors) {
+    const original = error.extensions?.['originalError'];
+    const code =
+      typeof original === 'object' && original !== null
+        ? (original as Readonly<Record<string, unknown>>)['code']
+        : undefined;
+
+    if (typeof code === 'string' && code.length > 0) {
+      return code;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -140,6 +182,7 @@ export async function requestGraphQl<TData>(
     throw new BPMGraphQLRequestError(
       payload.errors.map((error) => error.message).join('; '),
       readGraphQlFormDataIssues(payload.errors),
+      readGraphQlErrorCode(payload.errors),
     );
   }
 

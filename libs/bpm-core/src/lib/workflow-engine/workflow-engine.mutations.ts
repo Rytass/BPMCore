@@ -49,6 +49,7 @@ export class WorkflowEngineMutations {
         // service keep approver-filled fields out of the submission.
         endUserSubmission: true,
         initiatorMemberId: currentMemberId,
+        initiatorCustomFields: null,
         initiatorMetadataSnapshotJson: null,
         // Never read from the input: the person pressing submit is whoever is
         // signed in, so a client cannot claim someone else filed the document.
@@ -72,6 +73,7 @@ export class WorkflowEngineMutations {
   async decideTask(
     @Args('input') input: DecideTaskInput,
     @BPMCurrentMemberId() currentMemberId: string,
+    @BPMCurrentAuthContext() authContext: BPMAuthContext,
   ): Promise<TaskDecisionEntity> {
     // "Sent" means not null and not undefined, so '{}' counts. A host calling
     // the service may leave the fingerprint out; a screen may not, or it would
@@ -87,17 +89,25 @@ export class WorkflowEngineMutations {
       );
     }
 
-    return this.workflowEngineService.decideTask({
-      ...input,
-      decidedByMemberId: currentMemberId,
-    });
+    return this.workflowEngineService.decideTask(
+      {
+        ...input,
+        decidedByMemberId: currentMemberId,
+      },
+      // The signed-in approver's own context: data-source providers see who
+      // is deciding, so an approver-filled option is judged as their pick.
+      { approverAuthContext: authContext },
+    );
   }
 
   @Mutation(() => [TaskReassignmentResultObject], {
     description:
-      'Administrator: moves every open task the source member holds to the ' +
-      'target, one transaction per task, one result per task. Set dryRun to ' +
-      'report the outcomes without writing.',
+      'Administrator: moves the open tasks the source member holds (all of ' +
+      'them, or only taskIds) to the target, one transaction per task, one ' +
+      'result per task. Set dryRun to ' +
+      'report the outcomes without writing. Set taskIds to move only those ' +
+      'tasks (ids the member does not hold return no result row); omit it for ' +
+      'every open task, and an empty list is refused.',
   })
   @BPMAdminOnly()
   async reassignMemberTasks(
@@ -109,6 +119,7 @@ export class WorkflowEngineMutations {
       dryRun: input.dryRun,
       fromMemberId: input.fromMemberId,
       reason: input.reason,
+      taskIds: input.taskIds,
       toMemberId: input.toMemberId,
     });
   }

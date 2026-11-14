@@ -72,6 +72,7 @@ jest.mock('@mezzanine-ui/react', () => {
     return (
       <input
         data-mock-input=""
+        disabled={props.disabled === true}
         onChange={props.onChange as never}
         readOnly={false}
         value={String(props.value ?? '')}
@@ -85,6 +86,8 @@ jest.mock('@mezzanine-ui/react', () => {
     return (
       <textarea
         data-mock-textarea=""
+        disabled={props.disabled === true}
+        onBlur={props.onBlur as never}
         onChange={props.onChange as never}
         value={String(props.value ?? '')}
       />
@@ -1410,6 +1413,239 @@ describe('FormBuilderView field settings', () => {
 
       expect(harness.readSchema().fields[0]?.fieldKey).toBe('purpose');
       expect(harness.readUiSchema().layout[0]?.fieldKey).toBe('purpose');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  // ADR 27 §8: a dynamic source keeps a fixed default while nothing feeds it.
+  it('keeps a fixed default on a dynamic source with no dependencies', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+      typeInto(harness.container, 'fieldDefaultValue', 'option_a');
+
+      expect(harness.readSchema().fields[0]).toMatchObject({
+        dataSource: { key: 'demo.cost-centers', version: 1 },
+        defaultValue: 'option_a',
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('commits a multi-value dynamic default when the text leaves the field', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'multiple',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+      const textarea = harness.container.querySelector(
+        '[data-mock-form-field="fieldDefaultValue"] textarea',
+      ) as HTMLTextAreaElement | null;
+
+      if (!textarea) {
+        throw new Error('The default value textarea was not rendered.');
+      }
+
+      setControlValue(textarea, 'a\nb');
+      act((): void => {
+        textarea.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      });
+
+      expect(harness.readSchema().fields[0]).toMatchObject({
+        defaultValue: ['a', 'b'],
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('disables the default value of a dynamic source that depends on another field', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'plant', label: '工廠', required: false, type: 'text' },
+        {
+          dataSource: {
+            bindings: [
+              { from: { fieldKey: 'plant', kind: 'FIELD' }, parameter: 'plant' },
+            ],
+            key: 'demo.cost-centers',
+            version: 1,
+          },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+      const input = harness.container.querySelector(
+        '[data-mock-form-field="fieldDefaultValue"] input',
+      ) as HTMLInputElement | null;
+
+      expect(input?.disabled).toBe(true);
+      expect(harness.container.textContent).toContain('選項依賴其他欄位的值');
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('binds a dependency without a prompt when the field has no default', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'plant', label: '工廠', required: false, type: 'text' },
+        {
+          dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+      selectBindingOption(harness.container, 'plant', 'plant');
+
+      expect(harness.container.querySelector('[data-mock-modal]')).toBeNull();
+      expect(harness.readSchema().fields[1]).toMatchObject({
+        dataSource: {
+          bindings: [
+            { from: { fieldKey: 'plant', kind: 'FIELD' }, parameter: 'plant' },
+          ],
+        },
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  // The dependency clears the default, so the designer asks before dropping it.
+  it('asks before a new dependency drops the fixed default of a field', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        { fieldKey: 'plant', label: '工廠', required: false, type: 'text' },
+        {
+          dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+          defaultValue: 'option_a',
+          fieldKey: 'costCenter',
+          label: '成本中心',
+          mode: 'single',
+          required: false,
+          type: 'select',
+        },
+      ]),
+    );
+
+    try {
+      selectField(harness.container, 'costCenter');
+      selectBindingOption(harness.container, 'plant', 'plant');
+
+      expect(harness.container.textContent).toContain(
+        '選項來源改為依賴其他欄位的值後',
+      );
+      expect(harness.readSchema().fields[1]).toMatchObject({
+        defaultValue: 'option_a',
+      });
+
+      confirmModal(harness.container);
+
+      expect(harness.readSchema().fields[1]?.defaultValue).toBeUndefined();
+      expect(harness.readSchema().fields[1]).toMatchObject({
+        dataSource: {
+          bindings: [
+            { from: { fieldKey: 'plant', kind: 'FIELD' }, parameter: 'plant' },
+          ],
+        },
+      });
+    } finally {
+      await unmount(harness);
+    }
+  });
+
+  it('asks before a row binding drops the fixed default of a table column', async (): Promise<void> => {
+    listDataSourcesMock.mockResolvedValue([createDescriptor()]);
+    const harness = await mountBuilder(
+      createSchema([
+        {
+          columns: [
+            { fieldKey: 'plant', label: '工廠', required: true, type: 'text' },
+            {
+              dataSource: { bindings: [], key: 'demo.cost-centers', version: 1 },
+              defaultValue: 'option_a',
+              fieldKey: 'costCenter',
+              label: '成本中心',
+              mode: 'single',
+              required: false,
+              type: 'select',
+            },
+          ],
+          fieldKey: 'items',
+          label: '請購明細',
+          required: false,
+          type: 'table',
+        },
+      ]),
+    );
+
+    try {
+      expandTableRow(harness.container, 1);
+      selectBindingOption(harness.container, 'plant', '__ROW_FIELD__:plant');
+
+      expect(harness.container.textContent).toContain(
+        '選項來源改為依賴其他欄位的值後',
+      );
+      expect(readColumns(harness.readSchema())[1]).toMatchObject({
+        defaultValue: 'option_a',
+      });
+
+      confirmModal(harness.container);
+
+      expect(readColumns(harness.readSchema())[1]?.defaultValue).toBeUndefined();
+      expect(readColumns(harness.readSchema())[1]).toMatchObject({
+        dataSource: {
+          bindings: [
+            {
+              from: { columnKey: 'plant', kind: 'ROW_FIELD' },
+              parameter: 'plant',
+            },
+          ],
+        },
+      });
     } finally {
       await unmount(harness);
     }

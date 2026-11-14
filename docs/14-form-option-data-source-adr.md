@@ -215,8 +215,10 @@ Select 可使用 bounded list 或分頁來源。AutoComplete 可使用搜尋來�
 descriptor 的 minimum search length、page size 與 result limit 保護上游服務。若來源需要
 大量搜尋，不應偽裝成 Radio／Checkbox。
 
-動態來源的 default value 不納入 V1，因為不同填寫者及 bindings 可能讓設計時選到的預設
-值失效。靜態選項維持既有 default value 行為。
+動態來源的 default value 原則上不納入 V1，因為不同填寫者及 bindings 可能讓設計時選到的預設
+值失效。此限制已在 [ADR 27 §8](./27-host-integration-round-adr.md) 條件放寬：bindings 為空或
+只含 `CONSTANT` 時允許 default value；含 `FIELD`、`ROW_FIELD` 或 `EXPRESSION` 依賴時仍拒絕。
+靜態選項維持既有 default value 行為。
 
 ### 3.6 分離 Designer Catalog、Designer Preview 與 Runtime Query
 
@@ -259,7 +261,9 @@ Read-only resolve 採**部分解析回報**：provider 正常回應但解不出�
 Runtime query（search 與 resolve 皆同）必須從權威資料取得 DataSource reference：
 
 - 發起頁：以 published form version／launch context 為準，並檢查目前使用者可發起該
-  template。
+  template。（後續修訂：改以單一範本的發起權限判斷，initiator `customFields`
+  resolver 收到 `purpose: 'FORM_OPTIONS'`，宿主可只為查選項放行只准後端送審的範本；
+  可發起列表與送單不受影響。）
 - 退回編輯：以 instance 的 form definition snapshot 為準，並檢查目前使用者可讀且可
   resubmit 該 instance。
 - 唯讀案件：不呼叫 Runtime Query，只讀案件 snapshot。

@@ -4,6 +4,8 @@ import {
   overlayStoredFormDataKeys,
   readApproverFilledFieldKeys,
   readNodeFieldAccess,
+  readNodeFillGrantFieldKeys,
+  readNodeFillUnits,
   readNodeFillableFieldKeys,
   readNodeRequiredFieldKeys,
   readRevealedFieldKeys,
@@ -231,6 +233,153 @@ describe('resolveFieldAccess', () => {
     expect(Object.keys(access({ nodeId: 'task_head' })).sort()).toEqual(
       [...FORM_FIELD_KEYS].sort(),
     ));
+});
+
+describe('table column fill readers (ADR 27 §4(a))', () => {
+  const columnDefinition = (
+    fieldAccess: readonly FieldAccessEntry[],
+  ): WorkflowDefinition => ({
+    edges: [],
+    meta: { schemaVersion: 1 },
+    nodes: [buildUserTask('task_col', fieldAccess)],
+  });
+
+  const columnNode = (columns: unknown, fill: unknown = 'NONE') =>
+    nodeWith({
+      fieldAccess: [{ columns, display: 'SHOW', fieldKey: 'items', fill }],
+    });
+
+  it('reads columns on an entry and keeps whole-field entries unchanged', () => {
+    const entries = readNodeFieldAccess(
+      buildUserTask('t', [
+        {
+          columns: [
+            { columnKey: 'note', fill: 'REQUIRED' },
+            { columnKey: 'price', fill: 'OPTIONAL' },
+          ],
+          display: 'SHOW',
+          fieldKey: 'items',
+          fill: 'NONE',
+        },
+        { display: 'SHOW', fieldKey: 'amount', fill: 'OPTIONAL' },
+      ]),
+    );
+
+    expect(entries[0]).toEqual({
+      columns: [
+        { columnKey: 'note', fill: 'REQUIRED' },
+        { columnKey: 'price', fill: 'OPTIONAL' },
+      ],
+      display: 'SHOW',
+      fieldKey: 'items',
+      fill: 'NONE',
+    });
+    expect(entries[1]).not.toHaveProperty('columns');
+  });
+
+  it('skips malformed columns and lets the first duplicate columnKey win', () => {
+    const [entry] = readNodeFieldAccess(
+      columnNode([
+        null,
+        { columnKey: '', fill: 'REQUIRED' },
+        { columnKey: 'bad', fill: 'NONE' },
+        { columnKey: 'note', fill: 'OPTIONAL' },
+        { columnKey: 'note', fill: 'REQUIRED' },
+      ]),
+    );
+
+    expect(entry.columns).toEqual([{ columnKey: 'note', fill: 'OPTIONAL' }]);
+  });
+
+  it('treats a non-array columns value as no column mode', () => {
+    const [entry] = readNodeFieldAccess(columnNode('note', 'REQUIRED'));
+
+    expect(entry).not.toHaveProperty('columns');
+    expect(entry.fill).toBe('REQUIRED');
+  });
+
+  it('keeps column mode when every column was malformed (fail closed)', () => {
+    const node = columnNode([{ columnKey: 'x', fill: 'WRONG' }], 'REQUIRED');
+
+    expect(readNodeFillUnits(node)).toEqual([]);
+    expect(readNodeFillableFieldKeys(node)).toEqual(new Set());
+  });
+
+  it('gives one unit per open column and ignores the entry fill', () => {
+    const node = buildUserTask('t', [
+      {
+        columns: [
+          { columnKey: 'note', fill: 'REQUIRED' },
+          { columnKey: 'price', fill: 'OPTIONAL' },
+        ],
+        display: 'SHOW',
+        fieldKey: 'items',
+        fill: 'REQUIRED',
+      },
+    ]);
+
+    expect(readNodeFillUnits(node)).toEqual([
+      { columnKey: 'note', fieldKey: 'items', fill: 'REQUIRED' },
+      { columnKey: 'price', fieldKey: 'items', fill: 'OPTIONAL' },
+    ]);
+    expect(readNodeFillableFieldKeys(node)).toEqual(new Set());
+    expect(readNodeFillGrantFieldKeys(node)).toEqual(new Set(['items']));
+    expect(readNodeRequiredFieldKeys(node)).toEqual(new Set());
+  });
+
+  it('gives a whole-field unit with a null columnKey', () => {
+    expect(
+      readNodeFillUnits(
+        buildUserTask('t', [
+          { display: 'SHOW', fieldKey: 'amount', fill: 'REQUIRED' },
+          { display: 'SHOW', fieldKey: 'note', fill: 'NONE' },
+        ]),
+      ),
+    ).toEqual([{ columnKey: null, fieldKey: 'amount', fill: 'REQUIRED' }]);
+  });
+
+  it('keeps a column-only table non-editable until per-cell merge lands (fail closed)', () => {
+    const definition = columnDefinition([
+      {
+        columns: [{ columnKey: 'price', fill: 'REQUIRED' }],
+        display: 'SHOW',
+        fieldKey: 'items',
+        fill: 'NONE',
+      },
+    ]);
+
+    expect(
+      resolveFieldAccess({
+        definition,
+        fieldKeys: ['items'],
+        isAdhocTask: false,
+        nodeId: 'task_col',
+        revealedFieldKeys: new Set(),
+      }),
+    ).toEqual({ items: { editable: false, visible: true } });
+    expect(
+      readNodeFillableFieldKeys(definition.nodes[0] as UserTaskNode).has('items'),
+    ).toBe(false);
+    expect(
+      readNodeFillGrantFieldKeys(definition.nodes[0] as UserTaskNode).has('items'),
+    ).toBe(true);
+  });
+
+  it('keeps a whole-field fill on the same entry editable and writable', () => {
+    const definition = columnDefinition([
+      { display: 'SHOW', fieldKey: 'amount', fill: 'OPTIONAL' },
+    ]);
+
+    expect(
+      resolveFieldAccess({
+        definition,
+        fieldKeys: ['amount'],
+        isAdhocTask: false,
+        nodeId: 'task_col',
+        revealedFieldKeys: new Set(),
+      }),
+    ).toEqual({ amount: { editable: true, visible: true } });
+  });
 });
 
 describe('form data key helpers', () => {

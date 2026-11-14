@@ -496,6 +496,16 @@ BPMRootModule.forRoot({ organizationTimeZone: 'UTC' });
   `<BPMNextProviders organizationTimeZone="UTC">`（或 `<Providers>`）；不設就兩邊都用 `Asia/Taipei`。
   前端遇到不存在的時區不會報錯，而是退回 `Asia/Taipei` 並在 console 警告一次。
 
+### 2e. 未填欄位當 null（選用）
+
+```typescript
+BPMRootModule.forRoot({ expressionMissingFormFieldsAsNull: true }); // 預設 false
+```
+
+- 開啟後，條件、閘道、resolver 等 CEL 運算式讀到尚未填寫的表單欄位時，視為 `null`，不再因缺鍵而丟錯。
+- 代價是未填欄位的 `has(form.x)` 會從 `false` 變成 `true`，模板若用 `has()` 判斷「未填」，要先改成 `form.x == null`。完整對照表見 `docs/05-conditions-cel.md` §5.1.2。
+- 補值只在評估時發生，不寫回 `form_data`。
+
 ### 3. Bootstrap（**不要** 用 `setGlobalPrefix`）
 
 ```ts
@@ -567,6 +577,25 @@ includeStacktraceInErrorResponses: false,
 **`HttpException` 那個判斷是必要的**：`409` 之類未列入對應表的 `HttpException` 也是
 `INTERNAL_SERVER_ERROR`，若只看 `code` 就替換訊息，這些 `HttpException` 的訊息（含前端賴以顯示文案的錯誤碼前綴）
 會一起被吃掉。此為簡化範例；`apps/api` 的實際設定可參考 `apps/api/src/app/app.module.ts`（其 `formatError` 另以 `redactInvalidVariableValue` 處理 variables）。
+
+### 3b. 案件事件與決策前檢查（選用）
+
+兩個功能都是選用。不註冊時，引擎不寫事件，也不為事件多查模板。
+
+```ts
+BPMRootModule.forRoot({
+  // ...既有選項
+  instanceEventObserver: new HostInstanceEventObserver(), // 實作 BPMInstanceEventObserver
+  instanceGuard: hostInstanceGuard, // 實作 BPMInstanceGuard，check() 回傳 BPMInstanceGuardIssue[]
+  instanceGuardTimeoutMs: 5000, // 預設值
+}),
+```
+
+- **事件**：`onInstanceEvent(event)` 於 commit 後呼叫，**至少一次**。以 `event.id` 去重。`event` 不含 `formData`。
+  型別與 payload 見 `docs/10-bpm-embedding-auth.md` 的「案件事件與決策前檢查」。
+- **決策前檢查**：`SUBMIT`、`RESUBMIT`、`DECIDE` 寫入前呼叫。回傳非空陣列即擋下，回 400，`formDataErrors` 形狀同表單驗證；
+  逾時回 503 `BPM_INSTANCE_GUARD_TIMEOUT`（fail closed），其他錯誤回 503 `BPM_INSTANCE_GUARD_FAILED`。
+- **SLA 自動核准**被擋下時，待辦保持開啟，寫入 `TASK_AUTO_DECISION_FAILED`。逾時動作只執行一次，之後的掃描不重試、不再寫事件。
 
 ### 4. 跑 migrations（**必要，且只在 deploy 時跑一次**）
 

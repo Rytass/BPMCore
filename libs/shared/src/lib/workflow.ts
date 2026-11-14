@@ -598,15 +598,30 @@ export type FieldAccessDisplay = 'SHOW' | 'HIDE';
 export type FieldAccessFill = 'NONE' | 'OPTIONAL' | 'REQUIRED';
 
 /**
+ * One column of a table field opened for filling at a user task (ADR 27 §4(a)).
+ * Only the listed columns accept values from this node's approver.
+ */
+export interface FieldAccessColumnEntry {
+  readonly columnKey: string;
+  readonly fill: Exclude<FieldAccessFill, 'NONE'>;
+}
+
+/**
  * How one top-level form field behaves at a user task. A field with `fill`
  * other than `NONE` can be filled in only by the approver of a non-ad-hoc task
  * at this node, when approving; the server enforces it. `display: 'HIDE'` only
  * hides the field on screen, it is not a permission boundary.
+ *
+ * `columns` narrows a table field to per-column fill. Without it the whole
+ * table is editable at `fill`. With it, `fill` is ignored and only the listed
+ * columns accept values; the rows keep their count and order (the engine
+ * rejects row changes with `FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED`).
  */
 export interface FieldAccessEntry {
   readonly display: FieldAccessDisplay;
   readonly fieldKey: string;
   readonly fill: FieldAccessFill;
+  readonly columns?: readonly FieldAccessColumnEntry[];
 }
 
 /**

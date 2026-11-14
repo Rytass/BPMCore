@@ -25,6 +25,11 @@ import {
   FormDataSourceModule,
   FormDataSourceModuleOptions,
 } from '../form-data-source';
+import {
+  InstanceEventModule,
+  InstanceEventModuleOptions,
+} from '../instance-event/instance-event.module';
+import type { BPMInstanceEventObserver } from '../instance-event/instance-event.token';
 import { IdentityModule } from '../identity/identity.module';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
 import { NotificationModule } from '../notification/notification.module';
@@ -40,6 +45,7 @@ import { SignatureModule } from '../signature/signature.module';
 import { TemplateModule } from '../template/template.module';
 import { WorkflowEngineModule } from '../workflow-engine/workflow-engine.module';
 import { BPMInitiatorCustomFieldsResolver } from '../workflow-engine/initiator-custom-fields-resolver.token';
+import { BPMInstanceGuard } from '../workflow-engine/instance-guard.token';
 import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
 import {
   BPM_ROOT_OPTIONS,
@@ -126,6 +132,27 @@ interface BPMRootModuleWiringOptions extends Pick<ModuleMetadata, 'imports'> {
    * provider and the runtime twin reach the same place. When none is given, `customFields` of an engine-built snapshot is `{}`.
    */
   readonly initiatorCustomFieldsResolverProvider?: Provider<BPMInitiatorCustomFieldsResolver>;
+
+  /**
+   * Host-provided pre-decision guard, as a Nest provider for
+   * `BPM_INSTANCE_GUARD`. Runs on submit, resubmit and decide, inside the
+   * engine transaction.
+   *
+   * Runtime twin: {@link BPMRootRuntimeOptions.instanceGuard}. When both are
+   * given this provider wins. When neither is given the engine behaves as it
+   * did before the guard existed.
+   */
+  readonly instanceGuardProvider?: Provider<BPMInstanceGuard>;
+
+  /**
+   * Host-provided instance lifecycle event observer, as a Nest provider for
+   * `BPM_INSTANCE_EVENT_OBSERVER`.
+   *
+   * Runtime twin: {@link BPMRootRuntimeOptions.instanceEventObserver}. When both
+   * are given this provider wins. When neither is given, no outbox rows are
+   * written.
+   */
+  readonly instanceEventObserverProvider?: Provider<BPMInstanceEventObserver>;
 
   /**
    * Host-provided member resolver, as a Nest provider.
@@ -345,6 +372,7 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
     imports: wiring.imports,
     initiatorCustomFieldsResolverProvider:
       wiring.initiatorCustomFieldsResolverProvider,
+    instanceGuardProvider: wiring.instanceGuardProvider,
     serviceTaskDispatcherProvider: wiring.workflowServiceTaskDispatcherProvider,
   });
 
@@ -396,5 +424,9 @@ function createBPMFeatureModules(wiring: BPMRootWiring): BPMModuleImport[] {
       imports: wiring.imports,
       registryProvider: wiring.workflowWebhookRegistryProvider,
     } satisfies WorkflowWebhookModuleOptions),
+    InstanceEventModule.forRoot({
+      imports: wiring.imports,
+      observerProvider: wiring.instanceEventObserverProvider,
+    } satisfies InstanceEventModuleOptions),
   ];
 }

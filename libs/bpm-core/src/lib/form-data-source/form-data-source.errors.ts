@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import type { FormDataIssueLocation } from '../form/form-data-issue';
 
 export const BPM_FORM_DATA_SOURCE_ERROR_CODES = {
   DATA_SOURCE_MISSING: 'FORM_DATA_SOURCE_MISSING',
@@ -34,6 +35,21 @@ export class BPMFormDataSourceException extends BadRequestException {
   constructor(code: BPMFormDataSourceErrorCode) {
     super({ code, message: code });
     this.code = code;
+  }
+}
+
+/**
+ * `VALUE_NOT_RESOLVED` raised for one addressed field or table cell. The body
+ * stays the plain `{ code, message }` of its parent (submit and resubmit answer
+ * with that); `location` is what the decide path needs to turn the refusal into
+ * a `formDataErrors` entry (ADR 27 §4.2).
+ */
+export class BPMFormDataSourceValueNotResolvedException extends BPMFormDataSourceException {
+  readonly location: FormDataIssueLocation;
+
+  constructor(location: FormDataIssueLocation) {
+    super(BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED);
+    this.location = location;
   }
 }
 

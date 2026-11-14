@@ -15,7 +15,7 @@ import {
   readApproverFilledFieldKeys,
   readFormFieldAccessIssues,
   readFormFieldPathTopLevelKey,
-  readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
   readReachableWorkflowNodeIds,
   readTopLevelFieldKey,
 } from '@rytass/bpm-core-shared';
@@ -80,6 +80,10 @@ import { FormService } from '../form/form.service';
 import { lintWorkflowWebhookTargets } from '../workflow-webhook/workflow-webhook.validator';
 import { WorkflowWebhookService } from '../workflow-webhook/workflow-webhook.service';
 import { assertTemplateFilterableFieldsEnabled } from './filterable-field-guard';
+import {
+  normalizeTemplateKey,
+  translateTemplateKeyConflict,
+} from './template-key';
 import { ComposeApprovalTemplateWithFormInput } from './dto/compose-approval-template.input';
 import { ComposeApprovalTemplateWithFormObject } from './compose-approval-template.object';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
@@ -101,6 +105,7 @@ import {
 import {
   ApprovalTemplateActivationStatusEnum,
   ApprovalTemplateCategoryStatusEnum,
+  ApprovalTemplateLaunchModeEnum,
   ApprovalTemplateListStatusEnum,
   ApprovalTemplateVersionStatusEnum,
 } from './template.enums';
@@ -141,6 +146,7 @@ interface ListApprovalTemplatesOptions {
   readonly categoryId?: string;
   readonly searchText?: string;
   readonly status?: ApprovalTemplateListStatusEnum;
+  readonly includeHostManaged?: boolean;
 }
 
 interface ListApprovalTemplateCategoriesOptions {
@@ -189,7 +195,9 @@ export class TemplateService {
 
     return manager
       ? run(manager)
-      : this.templateRepository.manager.transaction(run);
+      : translateTemplateKeyConflict(
+          this.templateRepository.manager.transaction(run),
+        );
   }
 
   private async createApprovalTemplateWithManager(
@@ -217,10 +225,12 @@ export class TemplateService {
         createdByMemberId: input.createdByMemberId,
         currentVersionId: null,
         description: input.description,
+        hostManaged: input.hostManaged ?? false,
         // Stated rather than left to the column default, because publishing
         // reads `isActive` back and a template that never carried the value
         // in memory would read as deactivated.
         isActive: true,
+        key: normalizeTemplateKey(input.key),
         name: input.name,
       }),
     );
@@ -230,6 +240,7 @@ export class TemplateService {
         archivedAt: null,
         formDefinitionVersionId: input.formDefinitionVersionId,
         initiatorPolicyCel: null,
+        launchMode: ApprovalTemplateLaunchModeEnum.OPEN,
         notificationConfig: null,
         publishedAt: null,
         publishedByMemberId: null,
@@ -256,85 +267,141 @@ export class TemplateService {
     input: ComposeApprovalTemplateWithFormInput,
     currentMemberId: string | null,
   ): Promise<ComposeApprovalTemplateWithFormObject> {
-    const { event, result } = await this.templateRepository.manager.transaction(
-      async (
-        manager,
-      ): Promise<{
-        readonly event: BPMTemplateChangedEvent;
-        readonly result: ComposeApprovalTemplateWithFormObject;
-      }> => {
-        // ADR 25 §15: an existing template's row is locked before anything
-        // else, so this compose takes the template lock before it forks or
-        // writes the draft row, the same order a standalone publish uses.
-        // Taking it later (after the draft write, inside publishVersion) let a
-        // concurrent publish of the same draft deadlock against this one.
-        if (input.templateId) {
-          await this.readLockedTemplateOrThrow(manager, input.templateId);
-        }
+    // Validated before any lock is taken. `undefined` keeps the stored key.
+    const key =
+      input.key === undefined ? undefined : normalizeTemplateKey(input.key);
+    const templateKey = normalizeTemplateKey(input.templateKey);
 
-        const formDefinitionVersion = await this.resolveComposedFormVersion(
+    if (key !== undefined && templateKey !== null && key !== templateKey) {
+      throw new BadRequestException(
+        'key and templateKey must match when both are given',
+      );
+    }
+
+    // The key the template row ends up with. `templateKey` names the template
+    // when `templateId` is absent, so it is also the key written on create.
+    const writtenKey = key !== undefined ? key : (templateKey ?? undefined);
+
+    const { event, result } = await translateTemplateKeyConflict(
+      this.templateRepository.manager.transaction(
+        async (
           manager,
-          input,
-          currentMemberId,
-        );
-        const templateDraftVersion =
-          await this.resolveComposedTemplateDraftVersion(
+        ): Promise<{
+          readonly event: BPMTemplateChangedEvent;
+          readonly result: ComposeApprovalTemplateWithFormObject;
+        }> => {
+          // ADR 25 §15: an existing template's row is locked before anything
+          // else, so this compose takes the template lock before it forks or
+          // writes the draft row, the same order a standalone publish uses.
+          // Taking it later (after the draft write, inside publishVersion) let a
+          // concurrent publish of the same draft deadlock against this one.
+          // ADR 27 §6.2: without a templateId, a live template holding the
+          // templateKey is versioned instead of creating a second one. Soft-
+          // deleted rows are skipped, so their key is free again.
+          const keyed =
+            templateKey === null
+              ? null
+              : await manager.getRepository(ApprovalTemplateEntity).findOne({
+                  where: { deletedAt: IsNull(), key: templateKey },
+                });
+
+          if (input.templateId && keyed && keyed.id !== input.templateId) {
+            throw new BadRequestException(
+              'templateId and templateKey point at different templates',
+            );
+          }
+
+          const targetTemplateId = input.templateId ?? keyed?.id ?? null;
+
+          if (targetTemplateId) {
+            const locked = await this.readLockedTemplateOrThrow(
+              manager,
+              targetTemplateId,
+            );
+
+            // Only the fields the caller supplied are written; absent keeps the
+            // stored value, as in `updateApprovalTemplate`.
+            const hostPatch = {
+              ...(writtenKey !== undefined ? { key: writtenKey } : {}),
+              ...(input.hostManaged !== undefined
+                ? { hostManaged: input.hostManaged }
+                : {}),
+            };
+
+            if (Object.keys(hostPatch).length > 0) {
+              await manager
+                .getRepository(ApprovalTemplateEntity)
+                .update({ id: locked.id }, hostPatch);
+            }
+          }
+
+          const formDefinitionVersion = await this.resolveComposedFormVersion(
             manager,
             input,
             currentMemberId,
           );
+          const templateDraftVersion =
+            await this.resolveComposedTemplateDraftVersion(
+              manager,
+              input,
+              targetTemplateId,
+              writtenKey,
+              currentMemberId,
+            );
 
-        let templateVersion = await this.updateApprovalTemplateDraft(
-          {
-            formDefinitionVersionId: formDefinitionVersion.id,
-            initiatorPolicyCel: input.initiatorPolicyCel,
-            notificationConfigJson: input.notificationConfigJson,
-            slaDefaultsJson: input.slaDefaultsJson,
-            versionId: templateDraftVersion.id,
-            workflowDefinitionJson: input.workflowDefinitionJson,
-          },
-          manager,
-        );
-        let previousVersionId: string | null = null;
-
-        if (input.publish) {
-          const published = await this.publishVersion(
-            templateDraftVersion.id,
-            currentMemberId ?? undefined,
+          let templateVersion = await this.updateApprovalTemplateDraft(
+            {
+              formDefinitionVersionId: formDefinitionVersion.id,
+              initiatorPolicyCel: input.initiatorPolicyCel,
+              launchMode: input.launchMode ?? null,
+              notificationConfigJson: input.notificationConfigJson,
+              slaDefaultsJson: input.slaDefaultsJson,
+              versionId: templateDraftVersion.id,
+              workflowDefinitionJson: input.workflowDefinitionJson,
+            },
             manager,
           );
+          let previousVersionId: string | null = null;
 
-          previousVersionId = published.previousVersionId;
-          templateVersion = published.version;
-        }
+          if (input.publish) {
+            const published = await this.publishVersion(
+              templateDraftVersion.id,
+              currentMemberId ?? undefined,
+              manager,
+            );
 
-        const formDefinition = await manager
-          .getRepository(FormDefinitionEntity)
-          .findOneByOrFail({ id: formDefinitionVersion.formDefinitionId });
-        const template = await manager
-          .getRepository(ApprovalTemplateEntity)
-          .findOneByOrFail({ id: templateVersion.templateId });
+            previousVersionId = published.previousVersionId;
+            templateVersion = published.version;
+          }
 
-        return {
-          event: {
-            action: BPMTemplateChangeActionEnum.COMPOSED,
-            actorMemberId: currentMemberId,
-            previousVersionId: input.publish
-              ? previousVersionId
-              : template.currentVersionId,
-            published: input.publish,
-            template,
-            version: templateVersion,
-          },
-          result: {
-            formDefinition,
-            formDefinitionVersion,
-            published: input.publish,
-            template,
-            templateVersion,
-          },
-        };
-      },
+          const formDefinition = await manager
+            .getRepository(FormDefinitionEntity)
+            .findOneByOrFail({ id: formDefinitionVersion.formDefinitionId });
+          const template = await manager
+            .getRepository(ApprovalTemplateEntity)
+            .findOneByOrFail({ id: templateVersion.templateId });
+
+          return {
+            event: {
+              action: BPMTemplateChangeActionEnum.COMPOSED,
+              actorMemberId: currentMemberId,
+              previousVersionId: input.publish
+                ? previousVersionId
+                : template.currentVersionId,
+              published: input.publish,
+              template,
+              version: templateVersion,
+            },
+            result: {
+              formDefinition,
+              formDefinitionVersion,
+              published: input.publish,
+              template,
+              templateVersion,
+            },
+          };
+        },
+      ),
     );
 
     await this.notifyTemplateObserver(event);
@@ -352,6 +419,7 @@ export class TemplateService {
         {
           createdByMemberId: currentMemberId,
           description: input.formDescription,
+          hostManaged: input.hostManaged,
           name: input.formName,
           schemaJson: input.schemaJson,
           uiSchemaJson: input.uiSchemaJson,
@@ -376,6 +444,17 @@ export class TemplateService {
             manager,
           )
         : draft;
+    }
+
+    // Absent keeps the form's stored flag; a value is written under the same
+    // transaction as the draft below.
+    if (input.hostManaged !== undefined) {
+      await manager
+        .getRepository(FormDefinitionEntity)
+        .update(
+          { id: input.formDefinitionId },
+          { hostManaged: input.hostManaged },
+        );
     }
 
     const existingDraft = await this.formService.findDraftVersion(
@@ -419,9 +498,11 @@ export class TemplateService {
   private async resolveComposedTemplateDraftVersion(
     manager: EntityManager,
     input: ComposeApprovalTemplateWithFormInput,
+    templateId: string | null,
+    key: string | null | undefined,
     currentMemberId: string | null,
   ): Promise<ApprovalTemplateVersionEntity> {
-    if (!input.templateId) {
+    if (!templateId) {
       const template = await this.createApprovalTemplate(
         {
           category: input.category,
@@ -429,6 +510,8 @@ export class TemplateService {
           createdByMemberId: currentMemberId,
           description: input.templateDescription,
           formDefinitionVersionId: null,
+          hostManaged: input.hostManaged,
+          key,
           name: input.templateName,
         },
         manager,
@@ -445,8 +528,8 @@ export class TemplateService {
     }
 
     return (
-      (await this.findDraftTemplateVersion(input.templateId, manager)) ??
-      (await this.forkApprovalTemplate(input.templateId, manager))
+      (await this.findDraftTemplateVersion(templateId, manager)) ??
+      (await this.forkApprovalTemplate(templateId, manager))
     );
   }
 
@@ -469,35 +552,42 @@ export class TemplateService {
       input.categoryId === undefined
         ? undefined
         : await this.validateOptionalTemplateCategory(input.categoryId);
+    // Validated before the lock is taken. `undefined` keeps the stored key.
+    const key =
+      input.key === undefined ? undefined : normalizeTemplateKey(input.key);
 
-    await this.templateRepository.manager.transaction(
-      async (manager): Promise<void> => {
-        const existing = await this.readLockedTemplateOrThrow(
-          manager,
-          input.id,
-        );
-        const templates = manager.getRepository(ApprovalTemplateEntity);
-        const next = templates.merge(existing, {
-          category:
-            input.category !== undefined
-              ? input.category
-              : category !== undefined
-                ? (category?.name ?? null)
-                : existing.category,
-          description: input.description ?? existing.description,
-          name: input.name ?? existing.name,
-        });
+    await translateTemplateKeyConflict(
+      this.templateRepository.manager.transaction(
+        async (manager): Promise<void> => {
+          const existing = await this.readLockedTemplateOrThrow(
+            manager,
+            input.id,
+          );
+          const templates = manager.getRepository(ApprovalTemplateEntity);
+          const next = templates.merge(existing, {
+            category:
+              input.category !== undefined
+                ? input.category
+                : category !== undefined
+                  ? (category?.name ?? null)
+                  : existing.category,
+            description: input.description ?? existing.description,
+            hostManaged: input.hostManaged ?? existing.hostManaged,
+            key: key !== undefined ? key : existing.key,
+            name: input.name ?? existing.name,
+          });
 
-        // Assigned outside `merge` because the relation, not the `categoryId`
-        // scalar, owns `category_id`. Leaving `categoryDetail` untouched when the
-        // caller omitted `categoryId` keeps the loaded relation, which persists
-        // the current category unchanged.
-        if (category !== undefined) {
-          next.categoryDetail = category;
-        }
+          // Assigned outside `merge` because the relation, not the `categoryId`
+          // scalar, owns `category_id`. Leaving `categoryDetail` untouched when
+          // the caller omitted `categoryId` keeps the loaded relation, which
+          // persists the current category unchanged.
+          if (category !== undefined) {
+            next.categoryDetail = category;
+          }
 
-        await templates.save(next);
-      },
+          await templates.save(next);
+        },
+      ),
     );
 
     // Re-read rather than returning the saved entity: `categoryId` is not
@@ -528,6 +618,7 @@ export class TemplateService {
       where: createApprovalTemplateWhere({
         activationStatus: options.activationStatus,
         categoryId: options.categoryId,
+        includeHostManaged: options.includeHostManaged,
         searchText: options.searchText,
         status: options.status,
       }),
@@ -537,11 +628,13 @@ export class TemplateService {
   async countApprovalTemplates({
     activationStatus,
     categoryId,
+    includeHostManaged,
     searchText,
     status,
   }: {
     readonly activationStatus?: ApprovalTemplateActivationStatusEnum;
     readonly categoryId?: string;
+    readonly includeHostManaged?: boolean;
     readonly searchText?: string;
     readonly status?: ApprovalTemplateListStatusEnum;
   } = {}): Promise<number> {
@@ -549,6 +642,7 @@ export class TemplateService {
       where: createApprovalTemplateWhere({
         activationStatus,
         categoryId,
+        includeHostManaged,
         searchText,
         status,
       }),
@@ -557,6 +651,25 @@ export class TemplateService {
 
   async getApprovalTemplate(id: string): Promise<ApprovalTemplateEntity> {
     return this.getTemplateOrThrow(id);
+  }
+
+  /**
+   * Finds the live template that holds a host key (ADR 27 §6.2). Soft-deleted
+   * rows are excluded, so a deleted template's key reads as not found.
+   */
+  async getApprovalTemplateByKey(key: string): Promise<ApprovalTemplateEntity> {
+    const entity = await this.templates().findOne({
+      relations: { categoryDetail: true },
+      where: { deletedAt: IsNull(), key },
+    });
+
+    if (!entity) {
+      throw new NotFoundException(
+        `Approval template with key ${key} was not found`,
+      );
+    }
+
+    return entity;
   }
 
   async activateApprovalTemplate(id: string): Promise<ApprovalTemplateEntity> {
@@ -730,6 +843,9 @@ export class TemplateService {
         const next = versionRepository.merge(existing, {
           formDefinitionVersionId: input.formDefinitionVersionId,
           initiatorPolicyCel: input.initiatorPolicyCel,
+          // Absent keeps the draft's: a caller that predates the field must
+          // not turn a HOST_ONLY draft back to OPEN by saving it.
+          launchMode: input.launchMode ?? existing.launchMode,
           notificationConfig: parseOptionalJsonObject(
             input.notificationConfigJson,
           ),
@@ -799,6 +915,7 @@ export class TemplateService {
         archivedAt: null,
         formDefinitionVersionId: source?.formDefinitionVersionId ?? null,
         initiatorPolicyCel: source?.initiatorPolicyCel ?? null,
+        launchMode: source?.launchMode ?? ApprovalTemplateLaunchModeEnum.OPEN,
         notificationConfig: source?.notificationConfig ?? null,
         publishedAt: null,
         publishedByMemberId: null,
@@ -1655,6 +1772,7 @@ function createApprovalTemplateWhere(
   options: Readonly<{
     readonly activationStatus?: ApprovalTemplateActivationStatusEnum;
     readonly categoryId?: string;
+    readonly includeHostManaged?: boolean;
     readonly searchText?: string;
     readonly status?: ApprovalTemplateListStatusEnum;
   }>,
@@ -1664,6 +1782,10 @@ function createApprovalTemplateWhere(
   const activeTemplateWhere: FindOptionsWhere<ApprovalTemplateEntity> = {
     deletedAt: IsNull(),
   };
+  // Host-managed templates stay out of lists unless the caller opts in
+  // (ADR 27 §6.2). The filter sits in baseWhere so every search clause keeps it.
+  const hostWhere: FindOptionsWhere<ApprovalTemplateEntity> =
+    options.includeHostManaged === true ? {} : { hostManaged: false };
   // Administrative activation is orthogonal to the version-derived publication
   // status, so an omitted filter keeps both active and deactivated templates.
   const activationWhere: FindOptionsWhere<ApprovalTemplateEntity> =
@@ -1683,6 +1805,7 @@ function createApprovalTemplateWhere(
       : {};
   const baseWhere: FindOptionsWhere<ApprovalTemplateEntity> = {
     ...activeTemplateWhere,
+    ...hostWhere,
     ...activationWhere,
     ...(options.categoryId ? { categoryId: options.categoryId } : {}),
     ...statusWhere,
@@ -2062,7 +2185,7 @@ function lintApproverFilledFieldReads(
 
   return fieldKeys.flatMap((fieldKey) => {
     const fillingNodes = userTasks.filter((node) =>
-      readNodeFillableFieldKeys(node).has(fieldKey),
+      readNodeFillGrantFieldKeys(node).has(fieldKey),
     );
     const fillingNodeIds = new Set(fillingNodes.map((node) => node.id));
     const guardNodeIds = new Set(

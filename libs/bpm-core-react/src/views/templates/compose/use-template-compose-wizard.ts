@@ -8,9 +8,11 @@ import type {
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { useBPMLanguage } from '../../../lib/language-provider';
 import {
+  ApprovalTemplateLaunchMode,
   ComposeApprovalTemplateWithFormResult,
   composeApprovalTemplateWithForm,
 } from '@rytass/bpm-core-client/template';
+import { DEFAULT_LAUNCH_MODE } from '../designer/launch-mode';
 import { readTemplateErrorMessage } from '../template-error-message';
 
 export type ComposeWizardStep = 0 | 1 | 2;
@@ -40,6 +42,7 @@ export interface TemplateComposeWizard {
   readonly formUiSchema: FormUiSchema;
   readonly workflowDefinition: WorkflowDefinition | null;
   readonly initiatorPolicyCel: string | null;
+  readonly launchMode: ApprovalTemplateLaunchMode;
   readonly publishPhase: ComposePublishPhase;
   readonly publishError: string | null;
   readonly canLeaveBasics: boolean;
@@ -54,6 +57,7 @@ export interface TemplateComposeWizard {
   }) => void;
   readonly setWorkflowDefinition: (definition: WorkflowDefinition) => void;
   readonly setInitiatorPolicyCel: (cel: string | null) => void;
+  readonly setLaunchMode: (launchMode: ApprovalTemplateLaunchMode) => void;
   readonly publish: () => Promise<ComposeApprovalTemplateWithFormResult | null>;
 }
 
@@ -82,6 +86,9 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
   const [initiatorPolicyCel, setInitiatorPolicyCelState] = useState<
     string | null
   >(null);
+  const [launchMode, setLaunchMode] = useState<ApprovalTemplateLaunchMode>(
+    DEFAULT_LAUNCH_MODE,
+  );
   const [publishPhase, setPublishPhase] = useState<ComposePublishPhase>('idle');
   const [publishError, setPublishError] = useState<string | null>(null);
 
@@ -142,6 +149,7 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
           // One UI name fans out to both persisted columns.
           formName: name,
           initiatorPolicyCel,
+          launchMode,
           notificationConfig: null,
           publish: true,
           schema: formSchema,
@@ -170,6 +178,7 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
       formUiSchema,
       initiatorPolicyCel,
       language,
+      launchMode,
       name,
       workflowDefinition,
     ]);
@@ -184,6 +193,7 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
     goNext,
     goToStep,
     initiatorPolicyCel,
+    launchMode,
     name,
     publish,
     publishError,
@@ -191,6 +201,7 @@ export function useTemplateComposeWizard(): TemplateComposeWizard {
     setCategoryId,
     setFormValue,
     setInitiatorPolicyCel,
+    setLaunchMode,
     setName,
     setWorkflowDefinition,
     workflowDefinition,

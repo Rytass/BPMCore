@@ -21,12 +21,16 @@ import {
   readFieldAccessEntryForChoice,
   readFieldAccessMatrix,
   readNodeFieldAccess,
+  updateFieldAccessColumnFill,
   type FieldAccessChoice,
+  type FieldAccessEntry,
+  type FieldAccessFill,
   type FieldAccessMatrix,
   type FieldAccessMatrixCell,
   type FieldAccessMatrixColumn,
   type FieldAccessMatrixEntry,
   type FieldAccessMatrixRow,
+  type FieldAccessMatrixTableColumn,
 } from '@rytass/bpm-core-shared';
 import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import type {
@@ -36,8 +40,8 @@ import type {
 import { readWorkflowLintMessage } from '@rytass/bpm-core-client/template';
 import type { BPMLanguage } from '../../../../lib/language-provider';
 import {
-  FIELD_ACCESS_BOOLEAN_REQUIRED_NOTE,
   FIELD_ACCESS_CHOICE_LABELS,
+  FIELD_ACCESS_COLUMN_FILL_LABELS,
   FIELD_ACCESS_EFFECTIVE_LABELS,
   FIELD_ACCESS_FILL_BLOCKER_LABELS,
   FIELD_ACCESS_HIDE_NOTE,
@@ -69,7 +73,26 @@ export interface FieldAccessMatrixDrawerProps {
 type MatrixTableRow = {
   readonly key: string;
   readonly row: FieldAccessMatrixRow;
+  // Set on a sub-row: one table column under a field in column mode.
+  readonly tableColumn?: FieldAccessMatrixTableColumn;
 };
+
+const COLUMN_FILL_CHOICES: readonly FieldAccessFill[] = [
+  'NONE',
+  'OPTIONAL',
+  'REQUIRED',
+];
+
+const COLUMN_FILL_OPTIONS: readonly {
+  readonly id: FieldAccessFill;
+  readonly name: string;
+}[] = COLUMN_FILL_CHOICES.map((fill) => ({
+  id: fill,
+  name: FIELD_ACCESS_COLUMN_FILL_LABELS[fill],
+}));
+
+const EMPTY_COLUMN_MESSAGE =
+  '逐欄補填沒有選任何欄位，請至少選一欄或改回預設。';
 
 const BODY_STYLE: CSSProperties = {
   display: 'grid',
@@ -152,6 +175,60 @@ export function updateFieldAccessDraft(
   );
 }
 
+/** Sets one table column's fill in column mode; `NONE` takes that column out. */
+export function updateFieldAccessColumnDraft(
+  entries: readonly FieldAccessMatrixEntry[],
+  nodeId: string,
+  fieldKey: string,
+  columnKey: string,
+  fill: FieldAccessFill,
+): readonly FieldAccessMatrixEntry[] {
+  const current =
+    entries.find(
+      (candidate) =>
+        candidate.nodeId === nodeId && candidate.fieldKey === fieldKey,
+    ) ?? null;
+  const next = updateFieldAccessColumnFill(current, fieldKey, columnKey, fill);
+
+  return setFieldAccessDraftEntry(entries, nodeId, fieldKey, {
+    ...next,
+    nodeId,
+  });
+}
+
+/** Sub-rows are shown only under a field whose cell is in column mode. */
+function readMatrixTableRows(
+  rows: readonly FieldAccessMatrixRow[],
+): readonly MatrixTableRow[] {
+  return rows.flatMap((row): readonly MatrixTableRow[] => [
+    { key: row.fieldKey, row },
+    ...(row.cells.some((cell) => cell.choice === 'COLUMNS')
+      ? row.tableColumns.map(
+          (tableColumn): MatrixTableRow => ({
+            key: `${row.fieldKey}::${tableColumn.columnKey}`,
+            row,
+            tableColumn,
+          }),
+        )
+      : []),
+  ]);
+}
+
+/** A column-mode cell that ends up with no fillable column. */
+function readRowHasEmptyColumnMode(row: FieldAccessMatrixRow): boolean {
+  return row.cells.some(
+    (cell) => cell.choice === 'COLUMNS' && cell.columnFills.length === 0,
+  );
+}
+
+function readHasEmptyColumnEntry(
+  entries: readonly FieldAccessMatrixEntry[],
+): boolean {
+  return entries.some(
+    (entry) => entry.columns !== undefined && entry.columns.length === 0,
+  );
+}
+
 function readEntryKey(entry: FieldAccessMatrixEntry): string {
   return `${entry.nodeId}\u0000${entry.fieldKey}`;
 }
@@ -205,13 +282,23 @@ function readUserTaskIds(definition: WorkflowDefinition): ReadonlySet<string> {
   );
 }
 
-/** The definition with the draft applied, through the same command `套用` dispatches. */
+/** A column-mode entry with no fillable column; the command rejects it. */
+function readIsEmptyColumnEntry(entry: FieldAccessMatrixEntry): boolean {
+  return entry.columns !== undefined && entry.columns.length === 0;
+}
+
+/**
+ * The definition with the draft applied. The command rejects a zero-column
+ * entry (publish must not store one), so the preview writes those entries onto
+ * their nodes afterwards; the cell then stays in column mode while the draft is
+ * open. `套用` still dispatches the full command and its checks.
+ */
 function readDraftDefinition(
   definition: WorkflowDefinition,
   formSchema: FormDefinitionSchema | null,
   entries: readonly FieldAccessMatrixEntry[],
 ): WorkflowDefinition {
-  return applyWorkflowCommand(
+  const applied = applyWorkflowCommand(
     {
       definition,
       editingEdgeId: null,
@@ -221,8 +308,40 @@ function readDraftDefinition(
       selectedEdgeIds: [],
       selectedNodeId: null,
     },
-    { entries, type: 'setFieldAccessMatrix' },
+    {
+      entries: entries.filter((entry) => !readIsEmptyColumnEntry(entry)),
+      type: 'setFieldAccessMatrix',
+    },
   ).state.definition;
+  const emptyColumnEntries = entries.filter(readIsEmptyColumnEntry);
+
+  return {
+    ...applied,
+    nodes: applied.nodes.map((node) => {
+      const pending = emptyColumnEntries.filter(
+        (entry) => entry.nodeId === node.id,
+      );
+
+      if (node.type !== 'userTask' || pending.length === 0) {
+        return node;
+      }
+
+      const pendingFieldKeys = new Set(pending.map((entry) => entry.fieldKey));
+      const kept = (node.data.fieldAccess ?? []).filter(
+        (entry) => !pendingFieldKeys.has(entry.fieldKey),
+      );
+      const added = pending.map(
+        ({ columns, display, fieldKey, fill }): FieldAccessEntry => ({
+          columns,
+          display,
+          fieldKey,
+          fill,
+        }),
+      );
+
+      return { ...node, data: { ...node.data, fieldAccess: [...kept, ...added] } };
+    }),
+  };
 }
 
 /**
@@ -254,13 +373,36 @@ function readStoredEntryKey(entry: unknown): unknown {
     return entry;
   }
 
-  const { display, fieldKey, fill } = entry as {
+  const { display, fieldKey, fill, columns } = entry as {
     readonly display?: unknown;
     readonly fieldKey?: unknown;
     readonly fill?: unknown;
+    readonly columns?: unknown;
   };
 
-  return [display, fieldKey, fill];
+  return [display, fieldKey, fill, readStoredColumnsKey(columns)];
+}
+
+// Column mode is `columns` being present at all, so `[]` and absent differ.
+function readStoredColumnsKey(columns: unknown): unknown {
+  if (!Array.isArray(columns)) {
+    return columns ?? null;
+  }
+
+  return columns.map((column: unknown) => readStoredColumnKey(column));
+}
+
+function readStoredColumnKey(column: unknown): unknown {
+  if (typeof column !== 'object' || column === null) {
+    return column;
+  }
+
+  const { columnKey, fill } = column as {
+    readonly columnKey?: unknown;
+    readonly fill?: unknown;
+  };
+
+  return [columnKey, fill];
 }
 
 function isSameEntries(
@@ -449,13 +591,42 @@ export function FieldAccessMatrixDrawer({
     );
   }
 
-  function apply(): void {
-    const error =
-      entries === null ||
-      (isSameEntries(entries, readDefinitionEntries(definition)) &&
-        isStoredAsRead(definition))
+  function changeColumnFill(
+    nodeId: string,
+    fieldKey: string,
+    columnKey: string,
+    fill: FieldAccessFill,
+  ): void {
+    setApplyError(null);
+    setSession((current) =>
+      current === null
         ? null
-        : onApply(entries);
+        : {
+            ...current,
+            draft: updateFieldAccessColumnDraft(
+              current.draft,
+              nodeId,
+              fieldKey,
+              columnKey,
+              fill,
+            ),
+            pinnedFieldKeys: new Set([...current.pinnedFieldKeys, fieldKey]),
+          },
+    );
+  }
+
+  function apply(): void {
+    // A column-mode entry with no column would be stored as an empty list,
+    // which the publish lint rejects, so it is refused here instead.
+    const error =
+      entries === null
+        ? null
+        : readHasEmptyColumnEntry(entries)
+          ? EMPTY_COLUMN_MESSAGE
+          : isSameEntries(entries, readDefinitionEntries(definition)) &&
+              isStoredAsRead(definition)
+            ? null
+            : onApply(entries);
 
     if (error !== null) {
       // The drawer stays open on its draft, so nothing edited is lost.
@@ -472,27 +643,43 @@ export function FieldAccessMatrixDrawer({
       ellipsis: false,
       fixed: 'start',
       key: 'field',
-      render: ({ row }): ReactElement => (
-        <div style={FIELD_CELL_STYLE}>
-          <Typography variant="label-primary">{row.field.label}</Typography>
-          <Typography color="text-neutral" variant="caption">
-            {row.fieldKey}
-          </Typography>
-          {expressionReferences?.get(row.fieldKey)?.length ? (
-            <Badge
-              text={`運算式引用 ${expressionReferences.get(row.fieldKey)?.length ?? 0}`}
-              variant="dot-info"
-            />
-          ) : null}
-        </div>
-      ),
+      render: ({ row, tableColumn }): ReactElement => {
+        if (tableColumn !== undefined) {
+          return (
+            <div style={FIELD_CELL_STYLE}>
+              <Typography variant="body">{tableColumn.label}</Typography>
+              <Typography color="text-neutral" variant="caption">
+                {tableColumn.columnKey}
+              </Typography>
+            </div>
+          );
+        }
+
+        return (
+          <div style={FIELD_CELL_STYLE}>
+            <Typography variant="label-primary">{row.field.label}</Typography>
+            <Typography color="text-neutral" variant="caption">
+              {row.fieldKey}
+            </Typography>
+            {expressionReferences?.get(row.fieldKey)?.length ? (
+              <Badge
+                text={`運算式引用 ${expressionReferences.get(row.fieldKey)?.length ?? 0}`}
+                variant="dot-info"
+              />
+            ) : null}
+          </div>
+        );
+      },
       title: '欄位',
       width: 180,
     },
     {
       ellipsis: false,
       key: 'applicant',
-      render: ({ row }): string => readApplicantText(row, matrix.columns),
+      render: ({ row, tableColumn }): string | null =>
+        tableColumn === undefined
+          ? readApplicantText(row, matrix.columns)
+          : null,
       title: '申請人',
       width: 160,
     },
@@ -500,8 +687,46 @@ export function FieldAccessMatrixDrawer({
       (column, columnIndex): TableColumn<MatrixTableRow> => ({
         ellipsis: false,
         key: `node:${column.nodeId}`,
-        render: ({ row }): ReactElement => {
+        render: ({ row, tableColumn }): ReactElement | null => {
           const cell = row.cells[columnIndex];
+
+          if (tableColumn !== undefined) {
+            // Only a column-mode cell has per-column fills to set.
+            if (cell.choice !== 'COLUMNS') {
+              return null;
+            }
+
+            const fill =
+              cell.columnFills.find(
+                (candidate) => candidate.columnKey === tableColumn.columnKey,
+              )?.fill ?? 'NONE';
+
+            return (
+              <Select
+                clearable={false}
+                inputProps={{
+                  'aria-label': `${row.field.label} · ${tableColumn.label} 在${readFieldAccessStageLabel(column)}的補填設定`,
+                }}
+                onChange={(option): void =>
+                  changeColumnFill(
+                    column.nodeId,
+                    row.fieldKey,
+                    tableColumn.columnKey,
+                    COLUMN_FILL_OPTIONS.find(
+                      (candidate) => candidate.id === option?.id,
+                    )?.id ?? 'NONE',
+                  )
+                }
+                options={[...COLUMN_FILL_OPTIONS]}
+                size="sub"
+                value={
+                  COLUMN_FILL_OPTIONS.find((option) => option.id === fill) ??
+                  null
+                }
+              />
+            );
+          }
+
           const options = readCellOptions(cell);
 
           return (
@@ -541,7 +766,8 @@ export function FieldAccessMatrixDrawer({
     {
       ellipsis: false,
       key: 'check',
-      render: ({ row }): ReactElement => renderCheck(row),
+      render: ({ row, tableColumn }): ReactElement | null =>
+        tableColumn === undefined ? renderCheck(row) : null,
       title: '檢查',
       width: 280,
     },
@@ -566,18 +792,25 @@ export function FieldAccessMatrixDrawer({
 
               return label ? [label] : [];
             }),
-            ...(row.field.type === 'boolean'
-              ? [FIELD_ACCESS_BOOLEAN_REQUIRED_NOTE]
-              : []),
           ]
         : [];
 
-    if (warnings.length + notices.length + blockers.length === 0) {
+    const emptyColumns = readRowHasEmptyColumnMode(row)
+      ? [EMPTY_COLUMN_MESSAGE]
+      : [];
+
+    if (
+      warnings.length + notices.length + blockers.length + emptyColumns.length ===
+      0
+    ) {
       return <Badge text="沒有問題" variant="dot-success" />;
     }
 
     return (
       <div style={STACK_STYLE}>
+        {emptyColumns.map((text) => (
+          <Badge key={`empty:${text}`} text={text} variant="dot-error" />
+        ))}
         {warnings.map((text) => (
           <Badge key={`warning:${text}`} text={text} variant="dot-warning" />
         ))}
@@ -660,10 +893,7 @@ export function FieldAccessMatrixDrawer({
         ) : (
           <Table
             columns={columns}
-            dataSource={visibleRows.map((row): MatrixTableRow => ({
-              key: row.fieldKey,
-              row,
-            }))}
+            dataSource={[...readMatrixTableRows(visibleRows)]}
             fullWidth
           />
         )}

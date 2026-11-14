@@ -94,6 +94,10 @@ test.describe('Seeded form option DataSource golden path', () => {
       'costCenterAutocompleteMultiple',
       'TW01 成本中心 005',
     );
+    // A multiple AutoComplete keeps its listbox open after a choice
+    // (Mezzanine 1.10), and the open menu covers the checkbox group below.
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('listbox')).toBeHidden();
     await page
       .locator(
         '[data-form-field-key="costCenterRadio"] input[value="CC-TW01-006"]',

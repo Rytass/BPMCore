@@ -23,6 +23,13 @@ import {
   readDecisionPolicyHint,
   readDecisionPolicyOption,
 } from './decision-policy-options';
+import {
+  buildDraftLaunchModeInput,
+  DEFAULT_LAUNCH_MODE,
+  LAUNCH_MODE_OPTIONS,
+  readLaunchMode,
+  readLaunchModeOption,
+} from './launch-mode';
 import { useWorkflowDesignerController } from './use-workflow-designer-controller';
 import { WorkflowChatDrawer } from './workflow-chat-drawer';
 import { FieldAccessMatrixDrawer } from './field-access-matrix/FieldAccessMatrixDrawer';
@@ -135,7 +142,10 @@ import {
   readNotifyWebhookTargets,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
-import { readFormBuilder } from '@rytass/bpm-core-client/form';
+import {
+  previewResolveFormFieldOptions,
+  readFormBuilder,
+} from '@rytass/bpm-core-client/form';
 import { readTemplateErrorMessage } from '../template-error-message';
 import {
   OrgUnitPicker,
@@ -171,6 +181,7 @@ import {
   readOrganizationDirectory,
 } from '@rytass/bpm-core-client/organization';
 import {
+  ApprovalTemplateLaunchMode,
   ApprovalTemplateVersionRecord,
   WorkflowDryRunResultRecord,
   composeApprovalTemplateWithForm,
@@ -280,6 +291,11 @@ import {
   readNotifyWebhookDesignerIssues,
   readNotifyWebhookEndpointOptionId,
 } from './notify-webhook-designer';
+import {
+  readPublishDefaultValueNoticeMessage,
+  readPublishDefaultValueNotices,
+  type PublishDefaultValueNotice,
+} from './publish-default-value-check';
 
 type FlowNodeData = Readonly<{
   approverLines: readonly string[] | null;
@@ -792,6 +808,14 @@ export interface TemplateDesignerViewProps {
    */
   readonly initialInitiatorPolicyCel?: string | null;
   /**
+   * In embedded mode: the initial 發起方式. Falls back to `OPEN` when omitted.
+   */
+  readonly initialLaunchMode?: ApprovalTemplateLaunchMode;
+  /**
+   * In embedded mode: called whenever the 發起方式 changes.
+   */
+  readonly onLaunchModeChange?: (launchMode: ApprovalTemplateLaunchMode) => void;
+  /**
    * In embedded mode: called whenever the workflow definition changes so the
    * host can persist the current canvas state.
    */
@@ -831,8 +855,10 @@ export function TemplateDesignerView({
   embedded = false,
   formSchemaOverride,
   initialInitiatorPolicyCel,
+  initialLaunchMode,
   initialWorkflowDefinition,
   onInitiatorPolicyChange,
+  onLaunchModeChange,
   onWorkflowChange,
   showAiAssistant = false,
   showDryRun = true,
@@ -988,6 +1014,12 @@ export function TemplateDesignerView({
       editingEdgeId: resolveSetStateAction(action, current.editingEdgeId),
     }));
   const [error, setError] = useState<string | null>(null);
+  // Non-blocking (ADR 27 §8): a publish that succeeded can still leave a
+  // dynamic default the data source no longer offers. Shown after the publish,
+  // never instead of it.
+  const [defaultValueNotices, setDefaultValueNotices] = useState<
+    readonly PublishDefaultValueNotice[]
+  >([]);
   // Kept out of `error` on purpose. `error` is the request-failure banner, and
   // every request path clears it on entry — `handleSearchMembers` starts with
   // `setError(null)`, and editing a DIRECT approver list runs a member search
@@ -1011,6 +1043,12 @@ export function TemplateDesignerView({
   useEffect((): void => {
     setPolicyNotice(null);
   }, [selectedNodeId]);
+  // 發起方式 lives beside the workflow state, not in the shared
+  // WorkflowDesignerState, so the AI toolset cannot change it.
+  const [launchMode, setLaunchMode] = useState<ApprovalTemplateLaunchMode>(
+    (): ApprovalTemplateLaunchMode =>
+      embedded ? readLaunchMode(initialLaunchMode) : DEFAULT_LAUNCH_MODE,
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [formVersionLoading, setFormVersionLoading] = useState(false);
@@ -1022,9 +1060,10 @@ export function TemplateDesignerView({
       JSON.stringify({
         formDefinitionVersionId,
         initiatorPolicyCel,
+        launchMode,
         workflowDefinition,
       }),
-    [formDefinitionVersionId, initiatorPolicyCel, workflowDefinition],
+    [formDefinitionVersionId, initiatorPolicyCel, launchMode, workflowDefinition],
   );
   const hasUnsavedChanges =
     Boolean(loadedDesignerSnapshot) &&
@@ -1424,6 +1463,12 @@ export function TemplateDesignerView({
     }
   }, [embedded, initiatorPolicyCel]);
 
+  useEffect((): void => {
+    if (embedded) {
+      onLaunchModeChange?.(launchMode);
+    }
+  }, [embedded, launchMode]);
+
   /**
    * Embedded mode: load only the organisation data needed for approver pickers.
    * Does not touch the workflow / form-version / snapshot state.
@@ -1492,14 +1537,17 @@ export function TemplateDesignerView({
         nextRecord.formVersions[0]?.id ??
         null;
       const nextInitiatorPolicyCel = sourceVersion?.initiatorPolicyCel ?? null;
+      const nextLaunchMode = readLaunchMode(sourceVersion?.launchMode);
 
       setWorkflowDefinition(nextWorkflowDefinition);
       setFormDefinitionVersionId(nextFormDefinitionVersionId);
       setInitiatorPolicyCel(nextInitiatorPolicyCel);
+      setLaunchMode(nextLaunchMode);
       setLoadedDesignerSnapshot(
         JSON.stringify({
           formDefinitionVersionId: nextFormDefinitionVersionId,
           initiatorPolicyCel: nextInitiatorPolicyCel,
+          launchMode: nextLaunchMode,
           workflowDefinition: nextWorkflowDefinition,
         }),
       );
@@ -1648,6 +1696,14 @@ export function TemplateDesignerView({
   async function commitDesigner(publish: boolean): Promise<void> {
     setSaving(true);
     setError(null);
+    setDefaultValueNotices([]);
+
+    // The form the publish sends: an applied form edit, else the version
+    // already on the template. Read before the branches replace either.
+    const publishFormSchema: FormDefinitionSchema | null =
+      appliedFormDraft?.schema ?? effectiveFormSchema;
+    const publishUiSchema: FormUiSchema =
+      appliedFormDraft?.uiSchema ?? FORM_EDIT_EMPTY_UI_SCHEMA;
 
     try {
       const validationIssue = readWorkflowDefinitionIssue(workflowDefinition);
@@ -1676,6 +1732,7 @@ export function TemplateDesignerView({
             record?.template.name ??
             '表單',
           initiatorPolicyCel,
+          launchMode,
           notificationConfig: null,
           publish,
           schema: appliedFormDraft.schema,
@@ -1698,6 +1755,7 @@ export function TemplateDesignerView({
           initiatorPolicyCel,
           versionId: targetDraft.id,
           workflowDefinition,
+          ...buildDraftLaunchModeInput(launchMode),
         });
 
         setDraft(nextDraft);
@@ -1707,6 +1765,17 @@ export function TemplateDesignerView({
         }
 
         await refreshDesigner();
+      }
+
+      // After the publish has succeeded: a warning only, it never fails it.
+      if (publish && publishFormSchema !== null) {
+        setDefaultValueNotices(
+          await readPublishDefaultValueNotices({
+            preview: previewResolveFormFieldOptions,
+            schema: publishFormSchema,
+            uiSchema: publishUiSchema,
+          }),
+        );
       }
     } catch (requestError: unknown) {
       // Shown on the page; the buttons call this fire-and-forget, so a
@@ -1760,6 +1829,7 @@ export function TemplateDesignerView({
       const formData = parseDryRunFormData(dryRunFormDataJson);
       const result = await dryRunApprovalWorkflow({
         formData,
+        formSchema: webhookFormSchema ?? undefined,
         initiatorMemberId: DRY_RUN_MEMBER_ID,
         initiatorMetadataSnapshot: readDryRunInitiatorMetadataSnapshot(
           DRY_RUN_MEMBER_ID,
@@ -2308,6 +2378,17 @@ export function TemplateDesignerView({
                 {error}
               </Typography>
             ) : null}
+            {defaultValueNotices.map(
+              (notice): ReactElement => (
+                <Typography
+                  color="text-warning"
+                  key={`${notice.fieldKey}:${notice.status}`}
+                  variant="body"
+                >
+                  {readPublishDefaultValueNoticeMessage(notice)}
+                </Typography>
+              ),
+            )}
             {/* Scoped to its node, and dropped as soon as that node carries
                   a policy again — the assistant can set one through the
                   toolset without going through `updateUserTaskDecisionPolicy`,
@@ -2883,6 +2964,22 @@ export function TemplateDesignerView({
               policyModeOptions,
               initiatorPolicyDraft.mode,
             )}
+          />
+        </BPMFormField>
+        <BPMFormField
+          hintText={readLaunchModeOption(launchMode).description}
+          label="發起方式"
+          name="launchMode"
+          required
+        >
+          <Select
+            clearable={false}
+            onChange={(option): void => {
+              setLaunchMode(readLaunchMode(option?.id ?? null));
+            }}
+            options={[...LAUNCH_MODE_OPTIONS]}
+            placeholder="選擇發起方式"
+            value={readSelectOption(LAUNCH_MODE_OPTIONS, launchMode)}
           />
         </BPMFormField>
         {initiatorPolicyDraft.mode === 'CUSTOM' ? (

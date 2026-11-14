@@ -12,6 +12,14 @@ describe('readErrorMessage', () => {
     expect(message).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
   });
 
+  it('translates a stale selected option into words', () => {
+    expect(
+      readErrorMessage(
+        new Error('FORM_DATA_SOURCE_VALUE_NOT_RESOLVED: 選項已失效'),
+      ),
+    ).toBe('已選取的選項已失效，請重新選擇。');
+  });
+
   it('passes any other server message through', () => {
     expect(
       readErrorMessage(new Error('Approval template is deactivated')),

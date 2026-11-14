@@ -35,7 +35,7 @@ import {
   readUnsupportedApproverResolverType,
   readUnsupportedOrgManagerChainStartType,
 } from './workflow';
-import { readNodeFillableFieldKeys } from './field-access';
+import { readNodeFillGrantFieldKeys } from './field-access';
 import {
   isOnOwnParallelBranch,
   readReachableWorkflowNodeIds,
@@ -91,7 +91,8 @@ export const APPROVER_FILLED_FORM_RULES = [
   'defaultValue',
 ] as const;
 
-export type ApproverFilledFormRule = (typeof APPROVER_FILLED_FORM_RULES)[number];
+export type ApproverFilledFormRule =
+  (typeof APPROVER_FILLED_FORM_RULES)[number];
 
 /**
  * The form rules of an applicant's field that are evaluated against the form
@@ -142,9 +143,7 @@ export const WORKFLOW_DECISION_NODE_TYPES: readonly WorkflowNode['type'][] =
 
 /** Whether an edge leaving a node of this type has a `lastDecision` to read. */
 export function hasWorkflowLastDecision(nodeType: string): boolean {
-  return (WORKFLOW_DECISION_NODE_TYPES as readonly string[]).includes(
-    nodeType,
-  );
+  return (WORKFLOW_DECISION_NODE_TYPES as readonly string[]).includes(nodeType);
 }
 
 /**
@@ -172,16 +171,19 @@ export const WORKFLOW_LINT_MESSAGES = Object.freeze({
     secondNodeId: string,
   ): string =>
     `formData.${fieldKey} is filled in by both workflow.nodes.${firstNodeId} and workflow.nodes.${secondNodeId}, which lie on the same path`,
-  approverFilledRequiredBoolean: (nodeId: string, fieldKey: string): string =>
-    `workflow.nodes.${nodeId}.fieldAccess cannot require the boolean field: ${fieldKey}`,
   applicantRuleReadsApproverFilled: (
     fieldKey: string,
     rule: string,
     approverFilledFieldKey: string,
   ): string =>
     `formData.${fieldKey}.${rule} reads formData.${approverFilledFieldKey}, which an approver fills in after the applicant submits`,
-  approverFilledTableDataSourceColumn: (fieldKey: string): string =>
-    `formData.${fieldKey} is filled in by an approver, so its table cannot have a data-source column`,
+  approverFilledTableDataSourceColumn: (
+    nodeId: string,
+    fieldKey: string,
+    sourceColumnKey: string,
+    dependentColumnKey: string,
+  ): string =>
+    `workflow.nodes.${nodeId} fills in column ${sourceColumnKey} of formData.${fieldKey}, and the data-source column ${dependentColumnKey} reads it, so the same node must also fill in ${dependentColumnKey}`,
   blankNodeLabel: (index: number): string =>
     `workflow.nodes[${index}].data.label must be a non-empty string`,
   cycle: (nodeId: string): string =>
@@ -700,7 +702,12 @@ export function insertWorkflowNodeIntoDefinition({
   }
 
   if (selectedNode) {
-    return insertWorkflowNodeAfterNode(definition, node, selectedNode, createId);
+    return insertWorkflowNodeAfterNode(
+      definition,
+      node,
+      selectedNode,
+      createId,
+    );
   }
 
   return {
@@ -1074,9 +1081,7 @@ export function readWorkflowDefinitionIssue(
       return false;
     }
 
-    const outgoing = definition.edges.filter(
-      (edge) => edge.source === node.id,
-    );
+    const outgoing = definition.edges.filter((edge) => edge.source === node.id);
 
     return outgoing.length > 0 && !outgoing.some((edge) => edge.data.isDefault);
   });
@@ -1319,7 +1324,7 @@ export function readExcludeNodeActorsIssues(
 
   return config.whenEmpty === 'SKIP_NODE' &&
     self?.type === 'userTask' &&
-    readNodeFillableFieldKeys(self).size > 0
+    readNodeFillGrantFieldKeys(self).size > 0
     ? [
         `簽核節點 ${labelOf(nodeId)} 有可由簽核人填寫的欄位，「不可與前面關卡同一人」不能選擇略過此節點。`,
       ]
@@ -1536,10 +1541,7 @@ export function readApproverResolverIssue(
  * which stages qualify.
  */
 export type NodeActorSourceSkipReason =
-  | 'autoApprove'
-  | 'entryCondition'
-  | 'skipNode'
-  | 'skipNodeByNodeActors';
+  'autoApprove' | 'entryCondition' | 'skipNode' | 'skipNodeByNodeActors';
 
 export function readNodeActorSourceSkipReasons(
   node: UserTaskNode,
@@ -1653,20 +1655,18 @@ function readSourceStageIssues(
   const startNodeIds = definition.nodes
     .filter((node) => node.type === 'startEvent')
     .map((node) => node.id);
-  const coverageIssues = coverageGroups.flatMap(
-    (group): readonly string[] =>
-      readReachableWorkflowNodeIds(
-        definition.edges,
-        startNodeIds,
-        new Set(group),
-      ).has(nodeId)
-        ? [texts.coverage(group.map(labelOf), labelOf(nodeId))]
-        : [],
+  const coverageIssues = coverageGroups.flatMap((group): readonly string[] =>
+    readReachableWorkflowNodeIds(
+      definition.edges,
+      startNodeIds,
+      new Set(group),
+    ).has(nodeId)
+      ? [texts.coverage(group.map(labelOf), labelOf(nodeId))]
+      : [],
   );
   const notUpstreamIssues = stageIds
     .filter(
-      (id) =>
-        !readReachableWorkflowNodeIds(definition.edges, [id]).has(nodeId),
+      (id) => !readReachableWorkflowNodeIds(definition.edges, [id]).has(nodeId),
     )
     .map((id) => texts.notUpstream(labelOf(id), labelOf(nodeId)));
 
@@ -1859,9 +1859,9 @@ export function hasConfiguredConditionEdges(
       isExclusiveGatewaySourceEdge(edge, definition.nodes) &&
       Boolean(
         edge.data.condition ||
-          edge.data.conditionFieldKey ||
-          edge.data.conditionOperator ||
-          edge.data.conditionValue,
+        edge.data.conditionFieldKey ||
+        edge.data.conditionOperator ||
+        edge.data.conditionValue,
       ),
   );
 }
