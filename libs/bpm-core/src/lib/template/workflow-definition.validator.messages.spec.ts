@@ -140,6 +140,9 @@ describe('workflow lint message wording', (): void => {
     expect(WORKFLOW_LINT_MESSAGES.fieldAccessGroupPolicy('n1')).toBe(
       'workflow.nodes.n1.fieldAccess cannot make fields fillable on a PARALLEL_ALL or QUORUM node',
     );
+    expect(WORKFLOW_LINT_MESSAGES.fieldAccessManagerChainReached('n1')).toBe(
+      'workflow.nodes.n1.approverResolver cannot set skipWhenStartReached or continue another chain on a node with fillable fields',
+    );
     expect(WORKFLOW_LINT_MESSAGES.fieldAccessSkipNode('n1')).toBe(
       'workflow.nodes.n1.excludeInitiator.whenEmpty cannot be SKIP_NODE on a node with fillable fields',
     );

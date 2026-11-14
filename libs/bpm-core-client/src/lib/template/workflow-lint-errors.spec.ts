@@ -428,6 +428,11 @@ describe('readWorkflowLintMessage: field access', (): void => {
       'The approval node "財務補填" has fields to fill in, so what "Initiator cannot self-approve" (申請人不能自簽) does when nobody is left to sign cannot be "Skip this step" (跳過此關); otherwise the case would be approved with nobody filling them in.',
     ],
     [
+      'workflow.nodes.userTask_fill.approverResolver cannot set skipWhenStartReached or continue another chain on a node with fillable fields',
+      '簽核節點「財務補填」有補填欄位，主管鏈不能設定「起點本人已達簽到職等時略過」，也不能接續前一段主管鏈；此關可能因主管鏈已簽到職等而整關略過，不能有簽核人補填的欄位，否則這張單沒有人補填就核准了。',
+      'The approval node "財務補填" has fields to fill in, so its manager chain cannot skip the whole step once the starting person already holds the required level, nor continue an earlier chain; the step could be skipped and the case approved with nobody filling them in.',
+    ],
+    [
       'workflow.nodes.serviceTask_set.action.fieldPath cannot write a field an approver fills in: items',
       '系統節點「回寫金額」不能寫入由簽核人補填的欄位「items」。',
       'The system node "回寫金額" cannot write the field "items", which an approver fills in.',
