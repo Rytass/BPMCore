@@ -1,6 +1,6 @@
 'use client';
 
-import { ChangeEvent, ReactElement, useEffect, useState } from 'react';
+import { ChangeEvent, ReactElement, useEffect, useRef, useState } from 'react';
 import { Input, Modal, Typography } from '@mezzanine-ui/react';
 import {
   adminCancelApprovalInstance,
@@ -26,6 +26,9 @@ export function StuckInstanceCancelModal({
 }): ReactElement {
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
+  // `busy` only reaches the handler after a re-render; a second press that
+  // lands before it would send a second cancellation.
+  const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   const trimmedReason = reason.trim();
@@ -37,6 +40,7 @@ export function StuckInstanceCancelModal({
     setReason('');
     setError(null);
     setBusy(false);
+    busyRef.current = false;
   }, [instanceId]);
 
   // While the request is in flight every close path is a no-op: the cancel
@@ -50,10 +54,11 @@ export function StuckInstanceCancelModal({
   };
 
   async function handleConfirm(): Promise<void> {
-    if (!instance || !trimmedReason || busy) {
+    if (!instance || !trimmedReason || busyRef.current) {
       return;
     }
 
+    busyRef.current = true;
     setBusy(true);
     setError(null);
 
@@ -69,6 +74,7 @@ export function StuckInstanceCancelModal({
       },
     );
 
+    busyRef.current = false;
     setBusy(false);
 
     if (succeeded) {

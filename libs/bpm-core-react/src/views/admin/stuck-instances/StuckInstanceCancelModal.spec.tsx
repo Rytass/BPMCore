@@ -194,6 +194,18 @@ describe('StuckInstanceCancelModal', () => {
     expect(onCancelled).toHaveBeenCalledTimes(1);
   });
 
+  it('sends one cancellation when confirm is pressed twice before it re-renders', async (): Promise<void> => {
+    api.adminCancelApprovalInstance.mockResolvedValue(undefined);
+    await render({});
+    await typeReason('下一關設定有誤');
+    await act(async (): Promise<void> => {
+      button('確認撤銷').click();
+      button('確認撤銷').click();
+    });
+
+    expect(api.adminCancelApprovalInstance).toHaveBeenCalledTimes(1);
+  });
+
   it('shows the error inside the window and stays open when cancelling fails', async (): Promise<void> => {
     const onCancelled = jest.fn();
     const onClose = jest.fn();
