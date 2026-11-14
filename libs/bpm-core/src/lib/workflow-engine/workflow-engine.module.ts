@@ -27,6 +27,7 @@ import { WorkflowEngineQueries } from './workflow-engine.queries';
 import { WorkflowEngineService } from './workflow-engine.service';
 import { BPM_WORKFLOW_ENGINE_SERVICE } from './workflow-engine.tokens';
 import { BPMInitiatorCustomFieldsResolver } from './initiator-custom-fields-resolver.token';
+import { BPMInstanceGuard } from './instance-guard.token';
 import { BPMWorkflowServiceTaskDispatcher } from './workflow-service-task-dispatcher.token';
 import { WorkflowTokenEntity } from './workflow-token.entity';
 
@@ -35,6 +36,7 @@ export interface WorkflowEngineModuleOptions extends Pick<
   'imports'
 > {
   readonly initiatorCustomFieldsResolverProvider?: Provider<BPMInitiatorCustomFieldsResolver>;
+  readonly instanceGuardProvider?: Provider<BPMInstanceGuard>;
   readonly serviceTaskDispatcherProvider?: Provider<BPMWorkflowServiceTaskDispatcher>;
 }
 
@@ -87,6 +89,9 @@ export class WorkflowEngineModule {
           : []),
         ...(options.initiatorCustomFieldsResolverProvider
           ? [options.initiatorCustomFieldsResolverProvider]
+          : []),
+        ...(options.instanceGuardProvider
+          ? [options.instanceGuardProvider]
           : []),
       ],
     };

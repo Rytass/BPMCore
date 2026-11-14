@@ -215,8 +215,10 @@ Select 可使用 bounded list 或分頁來源。AutoComplete 可使用搜尋來�
 descriptor 的 minimum search length、page size 與 result limit 保護上游服務。若來源需要
 大量搜尋，不應偽裝成 Radio／Checkbox。
 
-動態來源的 default value 不納入 V1，因為不同填寫者及 bindings 可能讓設計時選到的預設
-值失效。靜態選項維持既有 default value 行為。
+動態來源的 default value 原則上不納入 V1，因為不同填寫者及 bindings 可能讓設計時選到的預設
+值失效。此限制已在 [ADR 27 §8](./27-host-integration-round-adr.md) 條件放寬：bindings 為空或
+只含 `CONSTANT` 時允許 default value；含 `FIELD`、`ROW_FIELD` 或 `EXPRESSION` 依賴時仍拒絕。
+靜態選項維持既有 default value 行為。
 
 ### 3.6 分離 Designer Catalog、Designer Preview 與 Runtime Query
 

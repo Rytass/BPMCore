@@ -1035,6 +1035,36 @@ describe('field access commands', () => {
     ]);
   });
 
+  it('keeps column grants written by the matrix', () => {
+    const state = stateWithTwoUserTasks();
+    const [first] = readUserTasks(state);
+    const written = applyWorkflowCommand(state, {
+      entries: [
+        {
+          columns: [{ columnKey: 'qty', fill: 'REQUIRED' }],
+          display: 'SHOW',
+          fieldKey: 'items',
+          fill: 'OPTIONAL',
+          nodeId: first.id,
+        },
+      ],
+      type: 'setFieldAccessMatrix',
+    });
+
+    expect(written.error).toBeNull();
+    expect(readUserTasks(written.state)[0].data.fieldAccess).toEqual([
+      {
+        columns: [{ columnKey: 'qty', fill: 'REQUIRED' }],
+        display: 'SHOW',
+        fieldKey: 'items',
+        fill: 'OPTIONAL',
+      },
+    ]);
+    expect(
+      'columns' in (readUserTasks(written.state)[1].data.fieldAccess?.[0] ?? {}),
+    ).toBe(false);
+  });
+
   it('refuses an entry outside nodeIds and a non user task in nodeIds', () => {
     const state = stateWithTwoUserTasks();
     const [first, second] = readUserTasks(state);

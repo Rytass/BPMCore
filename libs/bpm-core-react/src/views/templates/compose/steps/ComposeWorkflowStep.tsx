@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import { Typography } from '@mezzanine-ui/react';
 import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import type { ApprovalTemplateLaunchMode } from '@rytass/bpm-core-client/template';
 import { TemplateDesignerView } from '../../designer';
 
 export interface ComposeWorkflowStepProps {
@@ -12,6 +13,8 @@ export interface ComposeWorkflowStepProps {
   readonly initiatorPolicyCel: string | null;
   readonly onWorkflowChange: (definition: WorkflowDefinition) => void;
   readonly onInitiatorPolicyChange: (cel: string | null) => void;
+  readonly launchMode: ApprovalTemplateLaunchMode;
+  readonly onLaunchModeChange: (launchMode: ApprovalTemplateLaunchMode) => void;
   /**
    * Show the AI assistant button inside the embedded designer's side panel.
    * Follows the same opt-in contract as the standalone designer page; default
@@ -29,7 +32,9 @@ export function ComposeWorkflowStep({
   aiAssistantAvailable = false,
   formSchema,
   initiatorPolicyCel,
+  launchMode,
   onInitiatorPolicyChange,
+  onLaunchModeChange,
   onWorkflowChange,
   showAiAssistant = false,
   workflowDefinition,
@@ -44,8 +49,10 @@ export function ComposeWorkflowStep({
         embedded
         formSchemaOverride={formSchema}
         initialInitiatorPolicyCel={initiatorPolicyCel}
+        initialLaunchMode={launchMode}
         initialWorkflowDefinition={workflowDefinition ?? undefined}
         onInitiatorPolicyChange={onInitiatorPolicyChange}
+        onLaunchModeChange={onLaunchModeChange}
         onWorkflowChange={onWorkflowChange}
         showAiAssistant={showAiAssistant}
       />

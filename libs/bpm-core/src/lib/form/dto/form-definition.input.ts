@@ -26,6 +26,12 @@ export class CreateFormDefinitionInput {
   @IsOptional()
   @IsString()
   uiSchemaJson!: string | null;
+
+  /**
+   * Host-owned flag (ADR 27 §6). Service-only: deliberately has no `@Field`,
+   * so GraphQL callers cannot set it. Absent creates the form with `false`.
+   */
+  hostManaged?: boolean;
 }
 
 @InputType()

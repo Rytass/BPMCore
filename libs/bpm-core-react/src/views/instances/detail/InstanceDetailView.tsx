@@ -49,7 +49,7 @@ import {
   FormFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
 import {
-  readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
   readTopLevelFieldKey,
   type ResolvedFieldAccess,
 } from '@rytass/bpm-core-shared';
@@ -121,12 +121,15 @@ import {
 } from './sections/shared';
 import { readSubmittedOnBehalfLabel } from './submitted-by';
 import {
+  FILL_TABLE_ROWS_LOCKED_CODE,
   isFillConflictMessage,
   readApplicantFormSchema,
   readApplicantSubmission,
+  readFillColumnModeFieldKeys,
   readFillDisplaySchema,
   readFillLabelMarkers,
   readFillChanges,
+  readFillOpenColumns,
   readFillOrgUnitIds,
   readFillPayload,
   readFillServerErrors,
@@ -139,6 +142,10 @@ import {
   type FormDataSourceFieldState,
 } from '../../forms/renderer/form-data-source-field';
 import { useFileUploadFieldStates } from '../../forms/renderer/file-upload-field';
+import type { FormRendererTableAccess } from '../../forms/renderer/FormRendererView';
+
+const FILL_TABLE_ROWS_LOCKED_MESSAGE =
+  '補填時不能新增、刪除或調整明細列的順序，請只修改開放的欄位。';
 
 /** Counts fields, not cells: a table with three bad cells is one field. */
 function readFillIncompleteMessage(
@@ -467,7 +474,7 @@ export function InstanceDetailView({
       currentTask &&
       !currentTask.isAdhoc &&
       currentTaskNode?.type === 'userTask' &&
-      readNodeFillableFieldKeys(currentTaskNode).size > 0
+      readNodeFillGrantFieldKeys(currentTaskNode).size > 0
         ? currentTaskNode
         : null,
     [currentTask, currentTaskNode],
@@ -536,6 +543,27 @@ export function InstanceDetailView({
         : undefined,
     [activityLogs, currentTask, instance, tasks],
   );
+  // A column-only table lets the approver edit its open columns and nothing
+  // else: the rows are the applicant's (ADR 27 §4(a)).
+  const fillTableAccess = useMemo(
+    (): Readonly<Record<string, FormRendererTableAccess>> | undefined =>
+      fillNode
+        ? Object.fromEntries(
+            [...readFillColumnModeFieldKeys(fillNode)].map(
+              (fieldKey): readonly [string, FormRendererTableAccess] => [
+                fieldKey,
+                {
+                  editableColumns: [
+                    ...readFillOpenColumns(fillNode, fieldKey).keys(),
+                  ],
+                  lockRows: true,
+                },
+              ],
+            ),
+          )
+        : undefined,
+    [fillNode],
+  );
   const fillLabelMarkers = useMemo(
     (): Readonly<Record<string, string>> | undefined =>
       instance
@@ -561,7 +589,7 @@ export function InstanceDetailView({
       fillNode && fillValues && schemaSnapshot && instance?.formDataFingerprint
         ? {
             expectedFormDataFingerprint: instance.formDataFingerprint,
-            formData: readFillPayload(fillChanges, fillNode),
+            formData: readFillPayload(fillChanges, fillNode, instance.formData),
             summary: readFillSummary(
               schemaSnapshot,
               fillNode,
@@ -592,7 +620,9 @@ export function InstanceDetailView({
       return;
     }
 
-    const fillableKeys = readNodeFillableFieldKeys(fillNode);
+    // Grant keys, not only whole fields: a column-only table's open cells come
+    // in through its top-level key.
+    const fillableKeys = readNodeFillGrantFieldKeys(fillNode);
     // Only what the approver changed joins the draft: the renderer hands back
     // the whole form, defaults included, on every edit.
     const changed = Object.entries(values).filter(
@@ -663,9 +693,17 @@ export function InstanceDetailView({
   function handleFillApproveError(
     message: string,
     formDataIssues: readonly FormDataIssue[] = [],
+    code: string | null = null,
   ): boolean {
     if (!fillNode || !schemaSnapshot) {
       return false;
+    }
+
+    // The server's message is English; the code is what identifies it.
+    if (code === FILL_TABLE_ROWS_LOCKED_CODE) {
+      Message.warning(FILL_TABLE_ROWS_LOCKED_MESSAGE);
+
+      return true;
     }
 
     if (isFillConflictMessage(message)) {
@@ -1146,9 +1184,10 @@ export function InstanceDetailView({
                 fillSchema && fillValues && fillNode
                   ? {
                       errors: fillErrors,
-                      fieldCount: readNodeFillableFieldKeys(fillNode).size,
+                      fieldCount: readNodeFillGrantFieldKeys(fillNode).size,
                       onChange: handleFillChange,
                       schema: fillSchema,
+                      tableAccess: fillTableAccess,
                       value: fillValues,
                     }
                   : null

@@ -80,6 +80,23 @@ import { FORM_CONTROL_MENU_MAX_HEIGHT } from './form-control-menu';
 import { MemberFieldControl } from './member-field';
 import { OrgUnitFieldControl } from './org-unit-field';
 
+/**
+ * What a viewer may do inside one table field, for approver fill in column mode
+ * (ADR 27 §4(a)). Keyed by the table's `fieldKey` in `FormRendererProps.tableAccess`.
+ */
+export interface FormRendererTableAccess {
+  /**
+   * Column `fieldKey`s whose cells the viewer may edit. Every other column is
+   * read-only in that table.
+   */
+  readonly editableColumns: readonly string[];
+  /**
+   * When true, the row actions and the add-row button are hidden, so the viewer
+   * cannot add, remove or reorder rows.
+   */
+  readonly lockRows: boolean;
+}
+
 export interface FormRendererProps {
   readonly dataSourceContext?: FormRendererDataSourceContext;
   readonly dataSourceInitialValues?: FormRendererValues;
@@ -100,6 +117,15 @@ export interface FormRendererProps {
    * map leaves out follows `readonly`; leaving the prop out changes nothing.
    */
   readonly fieldAccess?: Readonly<Record<string, ResolvedFieldAccess>>;
+  /**
+   * Per table field, which columns this viewer may edit and whether it may add
+   * or remove rows (ADR 27 §4(a)). A table listed here takes its cell
+   * editability from this map instead of `fieldAccess`, so a column-only grant
+   * does not lock the whole table; `fieldAccess` still decides visibility. The
+   * form's `readonly` prop still locks every cell. Tables left out follow
+   * `fieldAccess` and `readonly` as before.
+   */
+  readonly tableAccess?: Readonly<Record<string, FormRendererTableAccess>>;
   /**
    * Short text shown after a field's label (Mezzanine `labelOptionalMarker`),
    * per top-level field — e.g. 「本關補填」 on the fields an approver fills.
@@ -217,6 +243,7 @@ export function FormRenderer({
   readonly = false,
   schema,
   singleColumn = false,
+  tableAccess,
   uiSchema,
   value,
 }: FormRendererProps): ReactElement {
@@ -325,11 +352,14 @@ export function FormRenderer({
           fileUpload={fileUpload}
           onDataSourceStateChange={onDataSourceStateChange}
           optionSnapshots={optionSnapshots}
-          readonly={readFieldAccessReadonly(
+          readonly={readFieldRendererReadonly(
+            field,
             readOwnFieldAccess(fieldAccess, field.fieldKey),
+            readOwnTableAccess(tableAccess, field.fieldKey),
             readonly,
           )}
           schema={schema}
+          tableAccess={readOwnTableAccess(tableAccess, field.fieldKey)}
           style={{
             ...FORM_RENDERER_FIELD_STYLE,
             gridColumn: `span ${
@@ -366,6 +396,34 @@ function readFieldAccessReadonly(
   return access === undefined ? formReadonly : !access.editable;
 }
 
+function readOwnTableAccess(
+  tableAccess: Readonly<Record<string, FormRendererTableAccess>> | undefined,
+  fieldKey: string,
+): FormRendererTableAccess | undefined {
+  return tableAccess !== undefined &&
+    Object.prototype.hasOwnProperty.call(tableAccess, fieldKey)
+    ? tableAccess[fieldKey]
+    : undefined;
+}
+
+/**
+ * A table with a `tableAccess` entry is editable per cell, so its field-level
+ * readonly follows the form's `readonly` alone; `fieldAccess` would otherwise
+ * lock every cell of a column-only grant.
+ */
+function readFieldRendererReadonly(
+  field: FormFieldDefinition,
+  access: ResolvedFieldAccess | undefined,
+  tableAccess: FormRendererTableAccess | undefined,
+  formReadonly: boolean,
+): boolean {
+  if (tableAccess !== undefined && isTableFieldDefinition(field)) {
+    return formReadonly;
+  }
+
+  return readFieldAccessReadonly(access, formReadonly);
+}
+
 function FormRendererField({
   dataSourceContext,
   dataSourceInitialValues,
@@ -381,6 +439,7 @@ function FormRendererField({
   readonly,
   schema,
   style,
+  tableAccess,
   value,
   values,
   uiSchema,
@@ -413,6 +472,7 @@ function FormRendererField({
   readonly readonly: boolean;
   readonly schema: FormDefinitionSchema;
   readonly style: CSSProperties;
+  readonly tableAccess?: FormRendererTableAccess;
   readonly uiSchema: FormUiSchema;
   readonly value: FormFieldValue | undefined;
   readonly values: FormRendererValues;
@@ -478,6 +538,7 @@ function FormRendererField({
             optionSnapshots={optionSnapshots}
             readonly={fieldReadonly}
             schema={schema}
+            tableAccess={tableAccess}
             uiSchema={uiSchema}
             value={value}
             values={values}
@@ -599,6 +660,7 @@ function FormTableField({
   optionSnapshots,
   readonly,
   schema,
+  tableAccess,
   uiSchema,
   value,
   values,
@@ -621,12 +683,17 @@ function FormTableField({
   readonly optionSnapshots?: FormDataSourceValueSnapshots;
   readonly readonly: boolean;
   readonly schema: FormDefinitionSchema;
+  readonly tableAccess?: FormRendererTableAccess;
   readonly uiSchema: FormUiSchema;
   readonly value: FormFieldValue | undefined;
   readonly values: FormRendererValues;
 }): ReactElement {
   const rows = readFormTableRows(value);
   const bounds = readFormTableRowBounds(field);
+  const rowsLocked = tableAccess?.lockRows === true;
+  const isColumnEditable = (columnKey: string): boolean =>
+    tableAccess === undefined ||
+    tableAccess.editableColumns.includes(columnKey);
   const rowIdSequenceRef = useRef(0);
   const [rowIds, setRowIds] = useState<readonly string[]>(() =>
     rows.map((): string => createRowId(rowIdSequenceRef)),
@@ -709,7 +776,7 @@ function FormTableField({
             row.index,
             column.fieldKey,
           )}
-          readonly={readonly}
+          readonly={readonly || !isColumnEditable(column.fieldKey)}
           rowValues={rows[row.index] ?? {}}
           schema={schema}
           uiSchema={uiSchema}
@@ -718,22 +785,25 @@ function FormTableField({
       title: column.label || column.fieldKey,
     }),
   );
-  const actions: TableActions<FormTableRowRecord> | undefined = readonly
-    ? undefined
-    : {
-        render: (row): ReturnType<TableActions<FormTableRowRecord>['render']> => [
-          {
-            disabled: (): boolean => rows.length <= bounds.minRows,
-            icon: TrashIcon,
-            iconType: 'icon-only',
-            name: '刪除此列',
-            onClick: (): void => handleRemoveRow(row.index),
-            variant: 'destructive-ghost',
-          },
-        ],
-        fixed: 'end',
-        width: 56,
-      };
+  const actions: TableActions<FormTableRowRecord> | undefined =
+    readonly || rowsLocked
+      ? undefined
+      : {
+          render: (
+            row,
+          ): ReturnType<TableActions<FormTableRowRecord>['render']> => [
+            {
+              disabled: (): boolean => rows.length <= bounds.minRows,
+              icon: TrashIcon,
+              iconType: 'icon-only',
+              name: '刪除此列',
+              onClick: (): void => handleRemoveRow(row.index),
+              variant: 'destructive-ghost',
+            },
+          ],
+          fixed: 'end',
+          width: 56,
+        };
 
   return (
     <div style={TABLE_FIELD_STYLE}>
@@ -753,7 +823,7 @@ function FormTableField({
         showHeader
         size="sub"
       />
-      {readonly ? null : (
+      {readonly || rowsLocked ? null : (
         <div style={TABLE_FIELD_ACTIONS_STYLE}>
           <Button
             disabled={rows.length >= bounds.maxRows}

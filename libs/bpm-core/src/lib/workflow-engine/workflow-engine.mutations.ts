@@ -48,6 +48,7 @@ export class WorkflowEngineMutations {
         // service keep approver-filled fields out of the submission.
         endUserSubmission: true,
         initiatorMemberId: currentMemberId,
+        initiatorCustomFields: null,
         initiatorMetadataSnapshotJson: null,
         // Never read from the input: the person pressing submit is whoever is
         // signed in, so a client cannot claim someone else filed the document.
@@ -71,6 +72,7 @@ export class WorkflowEngineMutations {
   async decideTask(
     @Args('input') input: DecideTaskInput,
     @BPMCurrentMemberId() currentMemberId: string,
+    @BPMCurrentAuthContext() authContext: BPMAuthContext,
   ): Promise<TaskDecisionEntity> {
     // "Sent" means not null and not undefined, so '{}' counts. A host calling
     // the service may leave the fingerprint out; a screen may not, or it would
@@ -86,10 +88,15 @@ export class WorkflowEngineMutations {
       );
     }
 
-    return this.workflowEngineService.decideTask({
-      ...input,
-      decidedByMemberId: currentMemberId,
-    });
+    return this.workflowEngineService.decideTask(
+      {
+        ...input,
+        decidedByMemberId: currentMemberId,
+      },
+      // The signed-in approver's own context: data-source providers see who
+      // is deciding, so an approver-filled option is judged as their pick.
+      { approverAuthContext: authContext },
+    );
   }
 
   @Mutation(() => [TaskReassignmentResultObject], {

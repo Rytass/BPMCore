@@ -22,4 +22,9 @@ export interface BPMWorkflowEngineService {
   expireApprovalInstance(
     input: ExpireApprovalInstanceCommand,
   ): Promise<ApprovalInstanceEntity>;
+  recordTaskAutoDecisionFailed(input: {
+    readonly instanceId: string;
+    readonly reason: string;
+    readonly taskId: string;
+  }): Promise<void>;
 }

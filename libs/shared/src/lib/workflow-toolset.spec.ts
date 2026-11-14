@@ -1261,6 +1261,77 @@ describe('field access tools', () => {
     ).toContain('欄位設定=amount:SHOW/REQUIRED');
   });
 
+  it('writes column-mode grants and reads them back', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const result = await executeWorkflowTool(
+      state,
+      'set_field_access_matrix',
+      {
+        entries: [
+          {
+            columns: [
+              { columnKey: 'qty', fill: 'REQUIRED' },
+              { columnKey: 'note', fill: 'OPTIONAL' },
+            ],
+            display: 'SHOW',
+            fieldKey: 'items',
+            fill: 'OPTIONAL',
+            nodeId,
+          },
+        ],
+        nodeIds: [nodeId],
+      },
+      deterministicIds,
+    );
+
+    if (!result.ok || result.kind === 'query') {
+      throw new Error('Expected a mutation result');
+    }
+
+    expect(
+      result.result.state.definition.nodes.find((node) => node.id === nodeId)
+        ?.data,
+    ).toMatchObject({
+      fieldAccess: [
+        {
+          columns: [
+            { columnKey: 'qty', fill: 'REQUIRED' },
+            { columnKey: 'note', fill: 'OPTIONAL' },
+          ],
+          display: 'SHOW',
+          fieldKey: 'items',
+          fill: 'OPTIONAL',
+        },
+      ],
+    });
+    expect(
+      result.snapshot.nodes.find((node) => node.id === nodeId)?.summary,
+    ).toContain('items:SHOW/OPTIONAL[qty:REQUIRED,note:OPTIONAL]');
+  });
+
+  it('refuses a column grant with fill NONE', async () => {
+    const { nodeId, state } = await stateWithUserTask();
+    const result = await executeWorkflowTool(
+      state,
+      'set_field_access_matrix',
+      {
+        entries: [
+          {
+            columns: [{ columnKey: 'qty', fill: 'NONE' }],
+            display: 'SHOW',
+            fieldKey: 'items',
+            fill: 'OPTIONAL',
+            nodeId,
+          },
+        ],
+        nodeIds: [nodeId],
+      },
+      deterministicIds,
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
   it('refuses an entry with an unknown fill', async () => {
     const { nodeId, state } = await stateWithUserTask();
     const result = await executeWorkflowTool(

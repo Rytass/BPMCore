@@ -90,6 +90,25 @@ describe('useTemplateComposeWizard publish errors', (): void => {
     expect(await publish()).toBe('流程至少要有一個「結束」節點。');
   });
 
+  it('sends OPEN unless the author picks HOST_ONLY', async (): Promise<void> => {
+    render();
+
+    await publish();
+
+    expect(composeApprovalTemplateWithForm).toHaveBeenLastCalledWith(
+      expect.objectContaining({ launchMode: 'OPEN' }),
+    );
+
+    act((): void => {
+      wizard?.setLaunchMode('HOST_ONLY');
+    });
+    await publish();
+
+    expect(composeApprovalTemplateWithForm).toHaveBeenLastCalledWith(
+      expect.objectContaining({ launchMode: 'HOST_ONLY' }),
+    );
+  });
+
   it('writes the unknown-error fallback in the active language', async (): Promise<void> => {
     composeApprovalTemplateWithForm.mockRejectedValue('not an Error');
     render('en');

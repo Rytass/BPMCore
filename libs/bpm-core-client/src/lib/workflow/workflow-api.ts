@@ -1329,6 +1329,16 @@ interface ApprovalHistoryTasksPageQueryData {
 }
 
 /**
+ * Narrows a member task page to some templates (ADR 27 §7). Absent or `null`
+ * fields do not filter; an empty `templateIds` matches nothing; both given
+ * means both must match.
+ */
+export interface MemberTaskTemplateFilter {
+  readonly templateIds?: readonly string[] | null;
+  readonly templateKey?: string | null;
+}
+
+/**
  * One page of the signed-in member's open tasks, newest first, with their
  * total. The server caps a page at 100.
  */
@@ -1336,19 +1346,33 @@ export async function listInboxTasksPage({
   assigneeMemberId,
   page,
   pageSize,
+  templateIds = null,
+  templateKey = null,
 }: {
   readonly assigneeMemberId: string;
   readonly page: number;
   readonly pageSize: number;
-}): Promise<MemberTaskPage> {
+} & MemberTaskTemplateFilter): Promise<MemberTaskPage> {
   const data = await requestGraphQl<InboxTasksPageQueryData>(
-    `query InboxTasksPage($assigneeMemberId: String!, $page: Int, $pageSize: Int) {
-      inboxTasks(assigneeMemberId: $assigneeMemberId, page: $page, pageSize: $pageSize) {
+    `query InboxTasksPage(
+      $assigneeMemberId: String!
+      $page: Int
+      $pageSize: Int
+      $templateIds: [String!]
+      $templateKey: String
+    ) {
+      inboxTasks(
+        assigneeMemberId: $assigneeMemberId
+        page: $page
+        pageSize: $pageSize
+        templateIds: $templateIds
+        templateKey: $templateKey
+      ) {
         ${MEMBER_TASK_SELECTION}
       }
-      inboxTaskCount
+      inboxTaskCount(templateIds: $templateIds, templateKey: $templateKey)
     }`,
-    { assigneeMemberId, page, pageSize },
+    { assigneeMemberId, page, pageSize, templateIds, templateKey },
   );
 
   return {
@@ -1367,30 +1391,47 @@ export async function listApprovalHistoryTasksPage({
   instanceState = null,
   page,
   pageSize,
+  templateIds = null,
+  templateKey = null,
 }: {
   readonly assigneeMemberId: string;
   readonly instanceState?: ApprovalInstanceState | null;
   readonly page: number;
   readonly pageSize: number;
-}): Promise<MemberTaskPage> {
+} & MemberTaskTemplateFilter): Promise<MemberTaskPage> {
   const data = await requestGraphQl<ApprovalHistoryTasksPageQueryData>(
     `query ApprovalHistoryTasksPage(
       $assigneeMemberId: String!
       $instanceState: ApprovalInstanceState
       $page: Int
       $pageSize: Int
+      $templateIds: [String!]
+      $templateKey: String
     ) {
       approvalHistoryTasks(
         assigneeMemberId: $assigneeMemberId
         instanceState: $instanceState
         page: $page
         pageSize: $pageSize
+        templateIds: $templateIds
+        templateKey: $templateKey
       ) {
         ${MEMBER_TASK_SELECTION}
       }
-      approvalHistoryTaskCount(instanceState: $instanceState)
+      approvalHistoryTaskCount(
+        instanceState: $instanceState
+        templateIds: $templateIds
+        templateKey: $templateKey
+      )
     }`,
-    { assigneeMemberId, instanceState, page, pageSize },
+    {
+      assigneeMemberId,
+      instanceState,
+      page,
+      pageSize,
+      templateIds,
+      templateKey,
+    },
   );
 
   return {

@@ -4,6 +4,7 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -11,6 +12,14 @@ import {
 } from 'typeorm';
 import { ApprovalTemplateCategoryEntity } from './approval-template-category.entity';
 
+/**
+ * `key` is unique among live templates only; a soft-deleted template frees its
+ * key. Created by `HostIntegrationRound0000000032000`.
+ */
+@Index('UQ_approval_templates_key_live', ['key'], {
+  unique: true,
+  where: '"key" IS NOT NULL AND "deleted_at" IS NULL',
+})
 @Entity('approval_templates')
 @ObjectType('ApprovalTemplate')
 export class ApprovalTemplateEntity {
@@ -63,6 +72,33 @@ export class ApprovalTemplateEntity {
   @Column('uuid', { name: 'current_version_id', nullable: true })
   @Field(() => ID, { nullable: true })
   currentVersionId!: string | null;
+
+  /**
+   * A stable key the host declares for a template it owns (ADR 27 §6), so it
+   * can find "its" template without keeping its own id registry. Unique among
+   * templates that are not soft-deleted; `null` when no host claimed one.
+   */
+  @Column('text', { nullable: true })
+  @Field(() => String, {
+    description:
+      'Stable key a host declares for a template it owns. Unique among templates that are not deleted; null when none was set.',
+    nullable: true,
+  })
+  key!: string | null;
+
+  /**
+   * The template's definition is maintained by host code (ADR 27 §9). BPM's
+   * template and form lists leave it out unless `includeHostManaged` is
+   * passed. It is **not** a lock: anyone who reaches the template by id can
+   * still change it. It also says nothing about who may start an instance;
+   * that is the version's `launchMode`.
+   */
+  @Column('boolean', { default: false, name: 'host_managed' })
+  @Field({
+    description:
+      'The definition is maintained by host code. Template lists leave it out unless includeHostManaged is true. Not a lock, and unrelated to launchMode (who may start an instance).',
+  })
+  hostManaged!: boolean;
 
   @Column('boolean', { default: true, name: 'is_active' })
   @Field()

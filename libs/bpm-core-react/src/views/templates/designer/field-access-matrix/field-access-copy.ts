@@ -1,7 +1,9 @@
 import {
+  readNodeFillUnits,
   readNodeFieldAccess,
   type FieldAccessChoice,
   type FieldAccessEffective,
+  type FieldAccessFill,
   type FieldAccessIssue,
   type FieldAccessIssueCode,
   type FieldAccessMatrixColumn,
@@ -16,12 +18,23 @@ export const FIELD_ACCESS_CHOICE_LABELS: Readonly<
   FILL_REQUIRED: '補填（必填）',
   HIDE: '隱藏',
   SHOW: '顯示',
+  COLUMNS: '逐欄補填',
+};
+
+/** The per-column fill choices under a table row in column mode. */
+export const FIELD_ACCESS_COLUMN_FILL_LABELS: Readonly<
+  Record<FieldAccessFill, string>
+> = {
+  NONE: '不可補填',
+  OPTIONAL: '選填',
+  REQUIRED: '必填',
 };
 
 export const FIELD_ACCESS_EFFECTIVE_LABELS: Readonly<
   Record<FieldAccessEffective, string>
 > = {
   FILL: '填寫',
+  FILL_COLUMNS: '逐欄補填',
   FILL_OPTIONAL: '補填（選填）',
   FILL_REQUIRED: '補填（必填）',
   HIDDEN: '隱藏',
@@ -40,11 +53,9 @@ export const FIELD_ACCESS_FILL_BLOCKER_LABELS: Readonly<
   approverFilledFieldDataSource: '選項來自資料來源，不能補填',
   approverFilledFieldFileUpload: '檔案上傳欄位不能補填',
   approverFilledFieldFormRule: '表單已設定必填、顯示或預設值等規則，不能補填',
-  approverFilledTableDataSourceColumn: '表格含資料來源欄，不能補填',
+  approverFilledTableDataSourceColumn:
+    '此欄是其他資料來源欄的選項依據，相依欄也必須開放給同一節點補填',
 };
-
-export const FIELD_ACCESS_BOOLEAN_REQUIRED_NOTE =
-  '開關欄位只能選填補填：開關關著也是答案，不能要求必填。';
 
 export const FIELD_ACCESS_HIDE_NOTE =
   '「隱藏」只影響這一關的畫面，不是權限：資料查詢仍拿得到值，不能用來保密。';
@@ -64,14 +75,14 @@ export interface FieldAccessNodeCounts {
 export function readFieldAccessNodeCounts(
   node: UserTaskNode,
 ): FieldAccessNodeCounts {
-  const entries = readNodeFieldAccess(node);
+  const units = readNodeFillUnits(node);
 
   return {
-    fill: entries.filter((entry) => entry.fill !== 'NONE').length,
-    hidden: entries.filter(
+    fill: units.length,
+    hidden: readNodeFieldAccess(node).filter(
       (entry) => entry.fill === 'NONE' && entry.display === 'HIDE',
     ).length,
-    required: entries.filter((entry) => entry.fill === 'REQUIRED').length,
+    required: units.filter((unit) => unit.fill === 'REQUIRED').length,
   };
 }
 

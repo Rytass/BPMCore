@@ -1152,6 +1152,145 @@ describe('FormDataSourceService', () => {
       code: 'FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN',
     });
   });
+
+  // ADR 27 §4.2 gap 1: an approver of a RUNNING instance reads only the fields
+  // their open tasks' fill units authorize, per column for tables.
+  it('lets an approver with a whole-field fill unit query that field', async (): Promise<void> => {
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [{ label: 'CC-001', value: 'CC-001' }] }),
+    );
+    const listApproverFillUnits = jest.fn(() =>
+      Promise.resolve([
+        { columnKey: null, fieldKey: 'costCenter', fill: 'OPTIONAL' as const },
+      ]),
+    );
+    const service = createService(createSource({ search }), {
+      workflowEngineService: createInstanceEngine(
+        createRunningInstance(),
+        listApproverFillUnits,
+      ),
+    });
+
+    const result = await service.formFieldOptions(
+      {
+        fieldKey: 'costCenter',
+        formDataJson: JSON.stringify({ plant: 'TPE' }),
+        instanceId: 'running-instance-1',
+      },
+      authContext,
+    );
+
+    expect(result.options).toEqual([{ label: 'CC-001', value: 'CC-001' }]);
+    expect(listApproverFillUnits).toHaveBeenCalledWith(
+      'running-instance-1',
+      authContext.memberId,
+    );
+    expect(search).toHaveBeenCalled();
+  });
+
+  it('forbids an approver whose open tasks grant no unit for the field', async (): Promise<void> => {
+    const search = jest.fn();
+    const service = createService(createSource({ search }), {
+      workflowEngineService: createInstanceEngine(
+        createRunningInstance(),
+        jest.fn(() =>
+          Promise.resolve([
+            { columnKey: null, fieldKey: 'plant', fill: 'OPTIONAL' as const },
+          ]),
+        ),
+      ),
+    });
+
+    await expect(
+      service.formFieldOptions(
+        { fieldKey: 'costCenter', instanceId: 'running-instance-1' },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN',
+    });
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it('forbids a RUNNING instance whose member is not an actor (no units)', async (): Promise<void> => {
+    const service = createService(createSource(), {
+      workflowEngineService: createInstanceEngine(
+        createRunningInstance(),
+        jest.fn(() => Promise.resolve([])),
+      ),
+    });
+
+    await expect(
+      service.formFieldOptions(
+        { fieldKey: 'costCenter', instanceId: 'running-instance-1' },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN',
+    });
+  });
+
+  it('checks an approver table option column against its own column unit', async (): Promise<void> => {
+    const search = jest.fn(
+      (): Promise<BPMFormDataSourceSearchResult> =>
+        Promise.resolve({ options: [{ label: 'CC-001', value: 'CC-001' }] }),
+    );
+    const service = createService(createSource({ search }), {
+      workflowEngineService: createInstanceEngine(
+        createRunningInstance({ schema: createTwoOptionColumnTableSchema() }),
+        jest.fn(() =>
+          Promise.resolve([
+            { columnKey: 'costCenter', fieldKey: 'items', fill: 'REQUIRED' as const },
+          ]),
+        ),
+      ),
+    });
+
+    await expect(
+      service.formFieldOptions(
+        {
+          fieldKey: 'items.costCenter',
+          instanceId: 'running-instance-1',
+          rowValuesJson: JSON.stringify({ plant: 'TPE' }),
+        },
+        authContext,
+      ),
+    ).resolves.toMatchObject({ options: [{ label: 'CC-001', value: 'CC-001' }] });
+    await expect(
+      service.formFieldOptions(
+        {
+          fieldKey: 'items.costType',
+          instanceId: 'running-instance-1',
+          rowValuesJson: JSON.stringify({ plant: 'TPE' }),
+        },
+        authContext,
+      ),
+    ).rejects.toMatchObject({
+      code: 'FORM_DATA_SOURCE_RUNTIME_CONTEXT_FORBIDDEN',
+    });
+  });
+
+  it('lets the applicant of a returned instance query without fill units', async (): Promise<void> => {
+    const listApproverFillUnits = jest.fn(() => Promise.resolve([]));
+    const service = createService(createSource(), {
+      workflowEngineService: createInstanceEngine(
+        createRunningInstance({
+          initiatorMemberId: authContext.memberId,
+          state: ApprovalInstanceStateEnum.RETURNED,
+        }),
+        listApproverFillUnits,
+      ),
+    });
+
+    await expect(
+      service.formFieldOptions(
+        { fieldKey: 'costCenter', instanceId: 'returned-instance-2' },
+        authContext,
+      ),
+    ).resolves.toMatchObject({ options: expect.any(Array) });
+    expect(listApproverFillUnits).not.toHaveBeenCalled();
+  });
 });
 
 function createService(
@@ -1304,6 +1443,84 @@ function createSchema({
         label: 'Cost center',
         required: true,
         type: 'select',
+      },
+    ],
+    schemaVersion: 1,
+  };
+}
+
+function createRunningInstance(
+  overrides: {
+    readonly initiatorMemberId?: string;
+    readonly schema?: FormDefinitionSchema;
+    readonly state?: ApprovalInstanceStateEnum;
+  } = {},
+): {
+  readonly formDefinitionSnapshot: {
+    readonly schema: FormDefinitionSchema;
+    readonly uiSchema: { readonly layout: readonly never[]; readonly schemaVersion: number };
+  };
+  readonly initiatorMemberId: string;
+  readonly state: ApprovalInstanceStateEnum;
+} {
+  return {
+    formDefinitionSnapshot: {
+      schema: overrides.schema ?? createSchema(),
+      uiSchema: { layout: [], schemaVersion: 1 },
+    },
+    initiatorMemberId: overrides.initiatorMemberId ?? 'other-member',
+    state: overrides.state ?? ApprovalInstanceStateEnum.RUNNING,
+  };
+}
+
+function createInstanceEngine(
+  instance: ReturnType<typeof createRunningInstance>,
+  listApproverFillUnits: jest.Mock,
+): WorkflowEngineService {
+  return {
+    getApprovalInstance: jest.fn(() => Promise.resolve(instance)),
+    listApproverFillUnits,
+  } as unknown as WorkflowEngineService;
+}
+
+function createTwoOptionColumnTableSchema(): FormDefinitionSchema {
+  const dataSource = {
+    bindings: [
+      {
+        from: { columnKey: 'plant', kind: 'ROW_FIELD' as const },
+        parameter: 'plant',
+      },
+    ],
+    key: 'demo.cost-centers',
+    version: 1,
+  };
+
+  return {
+    fields: [
+      {
+        columns: [
+          { fieldKey: 'plant', label: 'Plant', required: true, type: 'text' },
+          {
+            dataSource,
+            fieldKey: 'costCenter',
+            label: 'Cost center',
+            mode: 'single',
+            required: false,
+            type: 'select',
+          },
+          {
+            dataSource,
+            fieldKey: 'costType',
+            label: 'Cost type',
+            mode: 'single',
+            required: false,
+            type: 'select',
+          },
+        ],
+        fieldKey: 'items',
+        label: 'Items',
+        required: false,
+        type: 'table',
       },
     ],
     schemaVersion: 1,

@@ -173,9 +173,8 @@ interface FieldAccessEntry {
 | 補填節點設 `sla.onTimeout: 'AUTO_APPROVE'` | 自動核准每次都會被「一律驗證」擋下，SLA 實際上失效 | 自動核准改為「必填已有值才自動核准」 |
 | 補填節點設 `excludeInitiator.whenEmpty: 'SKIP_NODE'` | 該關被跳過就沒人補填，案件卻照樣核准 | 無，請改用會指派到別人的選項 |
 | `SET_FORM_FIELD` 寫補填欄位 | 繞過「只有補填節點簽核人能寫」 | 無 |
-| 補填欄位是 DataSource 欄位、`file_upload`，或表格內含 DataSource 欄 | `decideTask` 不重解選項快照、不收附件 | 讓 decide 走與送出相同的快照與附件流程 |
+| 補填欄位是 `file_upload` | `decideTask` 不收附件 | 讓 decide 走與送出相同的附件流程 |
 | 補填欄位在表單層設 `required`／`requiredWhen`／`visibleWhen`／`readonlyWhen`／`hidden`／`defaultValue` | 表單層規則在送出時評估，此時補填欄位一定沒有值 | 無；必填改由節點宣告 |
-| 節點 `required` 的補填欄位是 boolean | `false` 是有效答案，會被「為空」檢查擋下 | 改為「有被填過」語意 |
 | DYNAMIC_FORM 的 `formPath` 指向補填欄位 | 兩邊檢查互相衝突，怎麼設都擋 | 無 |
 | 同一個欄位在同一條流程路徑上有兩個以上補填節點 | 後填的會覆寫先填的值，簽章與責任歸屬不清 | 無；互斥分支（例如北區、南區財務各走一條）不受限。並行分支（parallelGateway 兩條分支）各自補填同一欄位視同同一路徑，會被擋 |
 | 條件、閘道、resolver、NOTIFY 收件人等在補填之前讀補填欄位 | 該鍵不存在，CEL 讀缺鍵會在上一關核准的交易中丟錯，案件卡死 | 無；請調整流程順序 |
@@ -184,7 +183,7 @@ interface FieldAccessEntry {
 另有兩項行為限制，不擋發布：
 
 - `SEQUENTIAL` 節點每位候選人核准都驗，所以**第一位就必須填**。
-- 表格補填是**整張可改**（增刪列、改任何欄）。需要「只填某幾欄」的 host 自行比對。
+- 表格補填若未逐欄宣告，是**整張可改**（增刪列、改任何欄）。需要「只填某幾欄」時改用逐欄宣告（`columns`，ADR 27 §4(a)）：只有宣告的欄可改，列數與順序鎖定，見 `docs/27-host-integration-round-adr.md`。
 
 ### 3.5 早讀檢查以圖可達性判斷
 
@@ -271,7 +270,7 @@ WHERE workflow_snapshot::text LIKE '%"fieldPermissions"%';
 ### 成本
 
 - 發布檢查新增十多條規則與一套正則式早讀判斷，是後續最需要維護的部分。
-- 「補填節點」是受限的特殊節點：不能多人決策、不能自動核准、表格只能整張可改。
+- 「補填節點」是受限的特殊節點：不能多人決策、不能自動核准；表格未逐欄宣告時只能整張可改，逐欄宣告後只開放指定欄（見 ADR 27 §4(a)）。
 - PR2 完成前，BPM 內建簽核畫面無法補填，只有 host 經 API 能用。
 - 改名需要修改 #109 已完成的實作、測試與文件（docs/08 §8、api-reference）。
 

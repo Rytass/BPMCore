@@ -492,3 +492,74 @@ function createManager(
         : versionRepository,
   } as unknown as EntityManager;
 }
+
+describe('FormService host-managed filtering (ADR 27 §9.2)', () => {
+  const createListService = (): {
+    readonly service: FormService;
+    readonly find: jest.Mock;
+    readonly count: jest.Mock;
+  } => {
+    const find = jest.fn().mockResolvedValue([]);
+    const count = jest.fn().mockResolvedValue(0);
+    const service = new FormService(
+      { count, find } as unknown as Repository<FormDefinitionEntity>,
+      {} as Repository<FormDefinitionVersionEntity>,
+    );
+
+    return { count, find, service };
+  };
+
+  it('excludes host-managed forms from the list by default', async (): Promise<void> => {
+    const { find, service } = createListService();
+
+    await service.listFormDefinitions({ page: 1, pageSize: 5 });
+
+    expect(find.mock.calls[0][0].where).toEqual(
+      expect.objectContaining({ hostManaged: false }),
+    );
+  });
+
+  it('drops the host-managed filter from the list when includeHostManaged is true', async (): Promise<void> => {
+    const { find, service } = createListService();
+
+    await service.listFormDefinitions({ includeHostManaged: true });
+
+    expect(find.mock.calls[0][0].where).not.toHaveProperty('hostManaged');
+  });
+
+  it('keeps the host-managed filter for draft and published status lists', async (): Promise<void> => {
+    const { find, service } = createListService();
+
+    await service.listFormDefinitions({
+      status: FormDefinitionListStatusEnum.DRAFT,
+    });
+    await service.listFormDefinitions({
+      status: FormDefinitionListStatusEnum.PUBLISHED,
+    });
+
+    expect(find.mock.calls[0][0].where).toEqual(
+      expect.objectContaining({ hostManaged: false }),
+    );
+    expect(find.mock.calls[1][0].where).toEqual(
+      expect.objectContaining({ hostManaged: false }),
+    );
+  });
+
+  it('excludes host-managed forms from the count by default', async (): Promise<void> => {
+    const { count, service } = createListService();
+
+    await service.countFormDefinitions();
+
+    expect(count.mock.calls[0][0].where).toEqual(
+      expect.objectContaining({ hostManaged: false }),
+    );
+  });
+
+  it('drops the host-managed filter from the count when includeHostManaged is true', async (): Promise<void> => {
+    const { count, service } = createListService();
+
+    await service.countFormDefinitions(undefined, true);
+
+    expect(count.mock.calls[0][0].where).not.toHaveProperty('hostManaged');
+  });
+});

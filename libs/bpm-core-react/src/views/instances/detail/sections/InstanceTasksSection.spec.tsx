@@ -1,5 +1,6 @@
 import { act, createRef, type ReactElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { BPMGraphQLRequestError } from '@rytass/bpm-core-client';
 import {
   decideTask,
   type ApprovalInstanceRecord,
@@ -418,8 +419,30 @@ describe('InstanceTasksSection approver fill', () => {
 
     await approve(ref);
 
-    expect(onFillApproveError).toHaveBeenCalledWith(message, []);
+    expect(onFillApproveError).toHaveBeenCalledWith(message, [], null);
     expect(container.querySelector('[data-modal="簽核意見"]')).toBeNull();
+  });
+
+  it('hands the host error code to the container with the message', async (): Promise<void> => {
+    const message = '補填時不能新增、刪除或調整明細列的順序';
+    const onFillApproveError = jest.fn(() => true);
+
+    jest.mocked(decideTask).mockRejectedValue(
+      new BPMGraphQLRequestError(
+        message,
+        [],
+        'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED',
+      ),
+    );
+    const ref = await render([task({ id: 'task-1' })], onFillApproveError);
+
+    await approve(ref);
+
+    expect(onFillApproveError).toHaveBeenCalledWith(
+      message,
+      [],
+      'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED',
+    );
   });
 
   it('keeps the dialog open with the message when the container does not', async (): Promise<void> => {

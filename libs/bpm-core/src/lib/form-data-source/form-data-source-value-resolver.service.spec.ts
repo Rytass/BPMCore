@@ -201,6 +201,46 @@ describe('FormDataSourceValueResolverService', () => {
     });
   });
 
+  it('rejects a submitted default that the source no longer offers', async (): Promise<void> => {
+    // A default is pre-filled by the renderer, so a stale one arrives here as
+    // an ordinary submitted value. The submit must refuse it, not write it.
+    // The source answers for the requested value with nothing: it is no longer
+    // selectable. (Answering with another value would be a contract breach.)
+    const service = createService(
+      createSource({
+        resolve: (): Promise<readonly FormFieldOption[]> => Promise.resolve([]),
+      }),
+    );
+
+    await expect(
+      service.resolveFormDataOptionSnapshots({
+        authContext,
+        formData: { costCenter: 'CC-OLD' },
+        revalidateAll: true,
+        schema: createDefaultedSchema('CC-OLD'),
+      }),
+    ).rejects.toMatchObject({
+      code: BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+    });
+  });
+
+  it('writes a submitted default the source still offers', async (): Promise<void> => {
+    const service = createService(createSource());
+
+    const snapshots = await service.resolveFormDataOptionSnapshots({
+      authContext,
+      formData: { costCenter: 'CC-001' },
+      revalidateAll: true,
+      schema: createDefaultedSchema('CC-001'),
+    });
+
+    expect(snapshots.costCenter).toEqual(
+      expect.objectContaining({
+        options: [{ label: 'Cost center TPE', value: 'CC-001' }],
+      }),
+    );
+  });
+
   it('fails initial resolution when the registered source version is unavailable', async (): Promise<void> => {
     const service = createService(null);
 
@@ -752,6 +792,35 @@ function createWideSchema(fieldCount: number): FormDefinitionSchema {
         fieldKey: `costCenter${index}`,
       })),
     ] as FormDefinitionSchema['fields'],
+    schemaVersion: 1,
+  };
+}
+
+/**
+ * A dynamic field with a default. Defaults are allowed only when the bindings
+ * are CONSTANT (ADR 27 §8), so `plant` is a constant here rather than a FIELD.
+ */
+function createDefaultedSchema(defaultValue: string): FormDefinitionSchema {
+  return {
+    fields: [
+      {
+        dataSource: {
+          bindings: [
+            {
+              from: { kind: 'CONSTANT', value: 'TPE' },
+              parameter: 'plant',
+            },
+          ],
+          key: 'demo.cost-centers',
+          version: 1,
+        },
+        defaultValue,
+        fieldKey: 'costCenter',
+        label: 'Cost center',
+        required: true,
+        type: 'select',
+      },
+    ],
     schemaVersion: 1,
   };
 }

@@ -3,12 +3,15 @@ import {
   FormFieldDefinition,
   isFormDataSourceFieldDefinition,
   isTableFieldDefinition,
+  TableFieldDefinition,
 } from './form';
 import {
+  FieldAccessFillUnit,
   readApproverFilledFieldKeys,
   readFormFieldPathTopLevelKey,
   readNodeFieldAccess,
-  readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
+  readNodeFillUnits,
 } from './field-access';
 import type {
   FieldAccessDisplay,
@@ -50,7 +53,6 @@ export type FieldAccessIssueCode =
   | 'approverFilledFieldFileUpload'
   | 'approverFilledFieldFormRule'
   | 'approverFilledMultipleFillNodesOnPath'
-  | 'approverFilledRequiredBoolean'
   | 'approverFilledTableDataSourceColumn'
   | 'fieldAccessAutoApprove'
   | 'fieldAccessDuplicate'
@@ -138,6 +140,54 @@ export const FIELD_ACCESS_FILLS: readonly FieldAccessFill[] = [
 ];
 
 /**
+ * Whether a stored `columns` list is one the publish lint accepts: a non-empty
+ * array of column entries with a non-blank, unique `columnKey` and a `fill` of
+ * `OPTIONAL` or `REQUIRED`. Absent means whole-field mode and is valid.
+ */
+const isFieldAccessColumnsValid = (columns: unknown): boolean => {
+  if (columns === undefined) {
+    return true;
+  }
+
+  if (!Array.isArray(columns) || columns.length === 0) {
+    return false;
+  }
+
+  const columnKeys = columns.map((column: unknown) =>
+    isPlainRecord(column) && typeof column['columnKey'] === 'string'
+      ? column['columnKey']
+      : undefined,
+  );
+
+  return (
+    columns.every(
+      (column: unknown) =>
+        isPlainRecord(column) &&
+        typeof column['columnKey'] === 'string' &&
+        column['columnKey'].trim() !== '' &&
+        (column['fill'] === 'OPTIONAL' || column['fill'] === 'REQUIRED'),
+    ) && new Set(columnKeys).size === columnKeys.length
+  );
+};
+
+/**
+ * Whether two fill-unit column sets share a unit: a whole-field unit (`null`)
+ * overlaps every column, and two columns overlap only when they are the same.
+ */
+const doFillUnitsOverlap = (
+  left: readonly (string | null)[],
+  right: readonly (string | null)[],
+): boolean =>
+  left.some((leftColumn) =>
+    right.some(
+      (rightColumn) =>
+        leftColumn === null ||
+        rightColumn === null ||
+        leftColumn === rightColumn,
+    ),
+  );
+
+/**
  * Whether a stored entry is one the publish lint accepts. Stricter than
  * `readNodeFieldAccess`, which the engine reads with: a blank `fieldKey`
  * passes there and fails here, so writers check with this one.
@@ -150,7 +200,8 @@ export function isFieldAccessEntryValid(
     typeof entry['fieldKey'] === 'string' &&
     entry['fieldKey'].trim() !== '' &&
     FIELD_ACCESS_DISPLAYS.some((display) => display === entry['display']) &&
-    FIELD_ACCESS_FILLS.some((fill) => fill === entry['fill'])
+    FIELD_ACCESS_FILLS.some((fill) => fill === entry['fill']) &&
+    isFieldAccessColumnsValid(entry['columns'])
   );
 }
 
@@ -210,7 +261,7 @@ export function readNodeFieldAccessIssues(
   }
 
   const fieldKeys = entries.map((entry) => entry.fieldKey);
-  const hasFillableField = readNodeFillableFieldKeys(node).size > 0;
+  const fillableFieldKeys = readNodeFillGrantFieldKeys(node);
 
   return [
     ...legacyIssues,
@@ -226,7 +277,10 @@ export function readNodeFieldAccessIssues(
         nodeIds: [nodeId],
       })),
     ...readNodeFieldAccess(node)
-      .filter((entry) => entry.fill !== 'NONE' && entry.display === 'HIDE')
+      .filter(
+        (entry) =>
+          entry.display === 'HIDE' && fillableFieldKeys.has(entry.fieldKey),
+      )
       .map((entry): FieldAccessIssue => ({
         code: 'fieldAccessFillHidden',
         fieldKeys: [entry.fieldKey],
@@ -236,7 +290,7 @@ export function readNodeFieldAccessIssues(
         ),
         nodeIds: [nodeId],
       })),
-    ...(hasFillableField ? readUserTaskFillConflicts(node) : []).map(
+    ...(fillableFieldKeys.size > 0 ? readUserTaskFillConflicts(node) : []).map(
       (conflict): FieldAccessIssue => ({
         code: FILL_CONFLICT_ISSUES[conflict].code,
         fieldKeys: [],
@@ -335,27 +389,35 @@ export function readDefinitionFieldAccessIssues(
   );
   const canBothRun = createWorkflowCoRunReader(definition);
   const pathIssues = [...approverFilled].flatMap((fieldKey) => {
-    const fillNodeIds = [
-      ...new Set(
-        userTasks
-          .filter((node) => readNodeFillableFieldKeys(node).has(fieldKey))
-          .map((node) => node.id),
-      ),
-    ];
+    // One filler per (fieldKey, columnKey): two nodes filling different
+    // columns of one table never overwrite each other (ADR 27 §4(a)).
+    const fillers = userTasks
+      .map((node) => ({
+        nodeId: node.id,
+        columnKeys: readNodeFillUnits(node)
+          .filter((unit) => unit.fieldKey === fieldKey)
+          .map((unit) => unit.columnKey),
+      }))
+      .filter((filler) => filler.columnKeys.length > 0);
 
-    return fillNodeIds.flatMap((nodeId, index) =>
-      fillNodeIds
+    return fillers.flatMap((filler, index) =>
+      fillers
         .slice(index + 1)
-        .filter((otherNodeId) => canBothRun(nodeId, otherNodeId))
-        .map((otherNodeId): FieldAccessIssue => ({
+        .filter(
+          (other) =>
+            other.nodeId !== filler.nodeId &&
+            doFillUnitsOverlap(filler.columnKeys, other.columnKeys) &&
+            canBothRun(filler.nodeId, other.nodeId),
+        )
+        .map((other): FieldAccessIssue => ({
           code: 'approverFilledMultipleFillNodesOnPath',
           fieldKeys: [fieldKey],
           message: WORKFLOW_LINT_MESSAGES.approverFilledMultipleFillNodesOnPath(
             fieldKey,
-            nodeId,
-            otherNodeId,
+            filler.nodeId,
+            other.nodeId,
           ),
-          nodeIds: [nodeId, otherNodeId],
+          nodeIds: [filler.nodeId, other.nodeId],
         })),
     );
   });
@@ -367,9 +429,10 @@ export function readDefinitionFieldAccessIssues(
  * Why a form field cannot be one an approver fills in, as the issues the
  * publish lint reports once it is: a form-level rule (`required` / `hidden`
  * set to `true`, the others set at all — `required: false` and
- * `hidden: false`, what the form editor writes for "off", are not rules), a
- * data source, a file upload, or a table with a data-source column. Empty
- * when the field can be filled in.
+ * `hidden: false`, what the form editor writes for "off", are not rules) or a
+ * file upload. A data source, or a table with a data-source column, can be
+ * filled in by the approver (ADR 27 §4(b)). Empty when the field can be filled
+ * in.
  */
 export function readFormFieldFillIssues(
   field: FormFieldDefinition,
@@ -396,30 +459,11 @@ export function readFormFieldFillIssues(
         WORKFLOW_LINT_MESSAGES.approverFilledFieldFormRule(fieldKey, rule),
       ),
     ),
-    ...(isFormDataSourceFieldDefinition(field)
-      ? [
-          issue(
-            'approverFilledFieldDataSource',
-            WORKFLOW_LINT_MESSAGES.approverFilledFieldDataSource(fieldKey),
-          ),
-        ]
-      : []),
     ...(field.type === 'file_upload'
       ? [
           issue(
             'approverFilledFieldFileUpload',
             WORKFLOW_LINT_MESSAGES.approverFilledFieldFileUpload(fieldKey),
-          ),
-        ]
-      : []),
-    ...(isTableFieldDefinition(field) &&
-    field.columns.some(isFormDataSourceFieldDefinition)
-      ? [
-          issue(
-            'approverFilledTableDataSourceColumn',
-            WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(
-              fieldKey,
-            ),
           ),
         ]
       : []),
@@ -442,15 +486,109 @@ export function referencesFormField(
   expression: string,
   fieldKey: string,
 ): boolean {
-  const escapedKey = fieldKey.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-  // Not preceded by an identifier character or a dot, so `myform` and
-  // `a.form` do not pass for the root.
-  const root = '(?<![\\p{L}\\p{N}_.])(?:formData|form)\\s*';
+  return referencesRootedKey(expression, '(?:formData|form)', fieldKey);
+}
+
+/**
+ * The same match as `referencesFormField`, for an arbitrary root: `root` is a
+ * regex alternation (`(?:formData|form)`, `row`) placed before `.key` or
+ * `["key"]`. The root may not be preceded by an identifier character or a dot.
+ */
+function referencesRootedKey(
+  expression: string,
+  root: string,
+  key: string,
+): boolean {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const rootPattern = `(?<![\\p{L}\\p{N}_.])${root}\\s*`;
 
   return [
-    new RegExp(`${root}\\.\\s*${escapedKey}(?![\\p{L}\\p{N}_])`, 'u'),
-    new RegExp(`${root}\\[\\s*["']${escapedKey}["']\\s*\\]`, 'u'),
+    new RegExp(`${rootPattern}\\.\\s*${escapedKey}(?![\\p{L}\\p{N}_])`, 'u'),
+    new RegExp(`${rootPattern}\\[\\s*["']${escapedKey}["']\\s*\\]`, 'u'),
   ].some((pattern) => pattern.test(expression));
+}
+
+/**
+ * A data-source column of a column-mode table that reads another column of the
+ * same table (ADR 27 §4.3) while the approver may fill in the read column but
+ * not this one. Once the read column changes, this column still holds the
+ * value its old source gave.
+ */
+export interface FieldAccessDependencyBreak {
+  readonly fieldKey: string;
+  readonly sourceColumnKey: string;
+  readonly dependentColumnKey: string;
+}
+
+const readDependentColumnKeys = (
+  table: TableFieldDefinition,
+  sourceColumnKey: string,
+): readonly string[] =>
+  table.columns
+    .filter(
+      (column): boolean =>
+        isFormDataSourceFieldDefinition(column) &&
+        column.dataSource.bindings.some(({ from }): boolean =>
+          from.kind === 'ROW_FIELD'
+            ? from.columnKey === sourceColumnKey
+            : from.kind === 'EXPRESSION' &&
+              referencesRootedKey(from.expression, 'row', sourceColumnKey),
+        ),
+    )
+    .map((column): string => column.fieldKey);
+
+/**
+ * Every column the approver may fill in that a data-source column of the same
+ * table reads, while that data-source column is not open to the same node.
+ * A table granted whole is skipped: every column of it is then open. An
+ * EXPRESSION source counts only through a `row` reference, the way the cell
+ * reads its own row. Empty when `schema` is null.
+ */
+export function readFieldAccessDependencyBreaks(
+  schema: FormDefinitionSchema | null,
+  units: readonly FieldAccessFillUnit[],
+): readonly FieldAccessDependencyBreak[] {
+  if (schema === null) {
+    return [];
+  }
+
+  const wholeFieldKeys = new Set(
+    units
+      .filter(({ columnKey }): boolean => columnKey === null)
+      .map(({ fieldKey }): string => fieldKey),
+  );
+
+  return schema.fields.flatMap(
+    (field): readonly FieldAccessDependencyBreak[] => {
+      if (
+        !isTableFieldDefinition(field) ||
+        wholeFieldKeys.has(field.fieldKey)
+      ) {
+        return [];
+      }
+
+      const openColumnKeys = new Set(
+        units.flatMap(({ fieldKey, columnKey }): readonly string[] =>
+          fieldKey === field.fieldKey && columnKey !== null ? [columnKey] : [],
+        ),
+      );
+
+      return [...openColumnKeys].flatMap(
+        (sourceColumnKey): readonly FieldAccessDependencyBreak[] =>
+          readDependentColumnKeys(field, sourceColumnKey)
+            .filter(
+              (dependentColumnKey): boolean =>
+                dependentColumnKey !== sourceColumnKey &&
+                !openColumnKeys.has(dependentColumnKey),
+            )
+            .map((dependentColumnKey) => ({
+              dependentColumnKey,
+              fieldKey: field.fieldKey,
+              sourceColumnKey,
+            })),
+      );
+    },
+  );
 }
 
 /**
@@ -458,8 +596,7 @@ export function referencesFormField(
  * publish-lint order: a `fieldKey` that is not a top-level field of the form,
  * an approver-filled field the form will not let anybody fill in
  * (`readFormFieldFillIssues`, once per field however many nodes fill it in),
- * `fill: 'REQUIRED'` on a boolean (`false` is an answer, so required can never
- * fail), and an applicant's rule that reads an approver-filled field — the
+ * and an applicant's rule that reads an approver-filled field — the
  * rule is evaluated against the submitted form, where that field is still
  * empty, and the evaluation silently compares against nothing.
  */
@@ -486,24 +623,6 @@ export function readFormFieldAccessIssues(
           code: 'fieldAccessUnknownField',
           fieldKeys: [fieldKey],
           message: WORKFLOW_LINT_MESSAGES.fieldAccessUnknownField(
-            node.id,
-            fieldKey,
-          ),
-          nodeIds: [node.id],
-        })),
-  );
-  const requiredBooleanIssues = userTasks.flatMap(
-    (node): readonly FieldAccessIssue[] =>
-      readNodeFieldAccess(node)
-        .filter(
-          ({ fieldKey, fill }): boolean =>
-            fill === 'REQUIRED' &&
-            fieldsByKey.get(fieldKey)?.type === 'boolean',
-        )
-        .map(({ fieldKey }) => ({
-          code: 'approverFilledRequiredBoolean',
-          fieldKeys: [fieldKey],
-          message: WORKFLOW_LINT_MESSAGES.approverFilledRequiredBoolean(
             node.id,
             fieldKey,
           ),
@@ -546,10 +665,30 @@ export function readFormFieldAccessIssues(
     },
   );
 
+  // A column the approver fills in whose data-source dependent the same node
+  // leaves open would keep its upstream value after the approver changes its
+  // source, so the publish refuses it (ADR 27 §4.3).
+  const dependencyIssues = userTasks.flatMap(
+    (node): readonly FieldAccessIssue[] =>
+      readFieldAccessDependencyBreaks(schema, readNodeFillUnits(node)).map(
+        ({ fieldKey, sourceColumnKey, dependentColumnKey }) => ({
+          code: 'approverFilledTableDataSourceColumn',
+          fieldKeys: [fieldKey],
+          message: WORKFLOW_LINT_MESSAGES.approverFilledTableDataSourceColumn(
+            node.id,
+            fieldKey,
+            sourceColumnKey,
+            dependentColumnKey,
+          ),
+          nodeIds: [node.id],
+        }),
+      ),
+  );
+
   return [
     ...unknownFieldIssues,
     ...fieldIssues,
-    ...requiredBooleanIssues,
+    ...dependencyIssues,
     ...applicantRuleIssues,
   ];
 }

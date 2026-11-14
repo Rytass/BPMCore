@@ -4,6 +4,7 @@ import {
   UserTaskNode,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared/workflow';
+import { ConflictException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import {
   EntityManager,
@@ -18,6 +19,12 @@ import {
   BPMBusinessCalendar,
 } from '../calendar/business-calendar.token';
 import { ActivityLogEntity } from '../workflow-engine/activity-log.entity';
+import {
+  BPMInstanceGuard,
+  BPMInstanceGuardInput,
+  BPMInstanceGuardIssue,
+} from '../workflow-engine/instance-guard.token';
+import { runInstanceGuard } from '../workflow-engine/instance-guard.runner';
 import { ApprovalInstanceEntity } from '../workflow-engine/approval-instance.entity';
 import { TaskCandidateEntity } from '../workflow-engine/task-candidate.entity';
 import { TaskEntity } from '../workflow-engine/task.entity';
@@ -114,8 +121,8 @@ describe('NotificationService', () => {
       }): Promise<readonly NotificationEntity[]> =>
         Promise.resolve(notifications.slice(skip, skip + take)),
     );
-    const count = jest.fn(
-      (): Promise<number> => Promise.resolve(notifications.length),
+    const count = jest.fn((): Promise<number> =>
+      Promise.resolve(notifications.length),
     );
     const service = new NotificationService(
       {
@@ -739,9 +746,7 @@ describe('NotificationService', () => {
 
       it.each([undefined, false])(
         'leaves the key out of the payload when requireApprovalComment is %j',
-        async (
-          requireApprovalComment: boolean | undefined,
-        ): Promise<void> => {
+        async (requireApprovalComment: boolean | undefined): Promise<void> => {
           const payload = await createdPayload({
             isAdhoc: false,
             requireApprovalComment,
@@ -861,7 +866,9 @@ describe('NotificationService', () => {
 
       expect(harness.saved).toHaveLength(1);
       expect(harness.saved[0]?.recipientMemberId).toBe('member-applicant');
-      expect(harness.saved[0]?.body).toMatch(/已完成。（由 王助理 代為送出）$/u);
+      expect(harness.saved[0]?.body).toMatch(
+        /已完成。（由 王助理 代為送出）$/u,
+      );
       expect(harness.saved[0]?.payload).toEqual(
         expect.objectContaining({ submittedByMemberId: 'member-assistant' }),
       );
@@ -913,9 +920,8 @@ describe('NotificationService', () => {
           (): Promise<{ readonly name: string }> =>
             new Promise<{ readonly name: string }>(() => undefined),
         );
-        const pending = harness.service.readMemberDisplayName(
-          'member-assistant',
-        );
+        const pending =
+          harness.service.readMemberDisplayName('member-assistant');
 
         await jest.advanceTimersByTimeAsync(2000);
 
@@ -1684,6 +1690,177 @@ describe('NotificationService', () => {
       taskId: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
     });
   });
+  describe('SLA auto-approve refused by the instance guard', (): void => {
+    const overdueAt = new Date('2026-05-10T09:01:00.000Z');
+    const instanceId = 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2';
+    const taskId = 'f4fae7b0-eab0-40de-8dfa-7dfbff746980';
+    const secondTaskId = '0b7d2c1e-6a4f-4e3b-9c8d-2f1a3b4c5d6e';
+
+    const refusingGuard = (code?: string): BPMInstanceGuard => ({
+      check: (): Promise<readonly BPMInstanceGuardIssue[]> =>
+        Promise.resolve([
+          {
+            ...(code === undefined ? {} : { code }),
+            message: '簽核前需完成簽章',
+            path: 'signature',
+            reason: 'HOST_RULE',
+          },
+        ]),
+    });
+    const hangingGuard: BPMInstanceGuard = {
+      check: (): Promise<readonly BPMInstanceGuardIssue[]> =>
+        new Promise((): void => undefined),
+    };
+    const brokenGuard: BPMInstanceGuard = {
+      check: (): Promise<readonly BPMInstanceGuardIssue[]> =>
+        Promise.reject(new Error('guard backend unreachable')),
+    };
+
+    const buildOverdueTask = (id: string): TaskEntity =>
+      Object.assign(new TaskEntity(), {
+        assigneeMemberId: 'member-a',
+        createdAt: new Date('2026-05-10T08:00:00.000Z'),
+        delegationChain: [],
+        id,
+        instanceId,
+        nodeId: 'task_review',
+        slaDueAt: new Date('2026-05-10T09:00:00.000Z'),
+        status: TaskStatusEnum.PENDING,
+      });
+
+    it('keeps the task open and records the refusal with the first issue code', async (): Promise<void> => {
+      const fixture = createEscalationFixture({
+        decideTaskImpl: createGuardedDecision(
+          refusingGuard('SIGNATURE_REQUIRED'),
+          1000,
+        ),
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).resolves.toEqual({
+        overdueCount: 1,
+        warningCount: 0,
+      });
+      expect(fixture.decideTask).toHaveBeenCalledTimes(1);
+      expect(fixture.cancelApprovalInstance).not.toHaveBeenCalled();
+      expect(fixture.recordTaskAutoDecisionFailed).toHaveBeenCalledTimes(1);
+      expect(fixture.recordTaskAutoDecisionFailed).toHaveBeenCalledWith({
+        instanceId,
+        reason: 'SIGNATURE_REQUIRED',
+        taskId,
+      });
+    });
+
+    it('records HOST_RULE when the refused issue carries no code', async (): Promise<void> => {
+      const fixture = createEscalationFixture({
+        decideTaskImpl: createGuardedDecision(refusingGuard(), 1000),
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+      });
+
+      await fixture.service.runSlaScan(overdueAt);
+
+      expect(fixture.recordTaskAutoDecisionFailed).toHaveBeenCalledWith({
+        instanceId,
+        reason: 'HOST_RULE',
+        taskId,
+      });
+    });
+
+    it('keeps the task open and records BPM_INSTANCE_GUARD_TIMEOUT when the guard does not answer', async (): Promise<void> => {
+      const fixture = createEscalationFixture({
+        decideTaskImpl: createGuardedDecision(hangingGuard, 1),
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).resolves.toEqual({
+        overdueCount: 1,
+        warningCount: 0,
+      });
+      expect(fixture.cancelApprovalInstance).not.toHaveBeenCalled();
+      expect(fixture.recordTaskAutoDecisionFailed).toHaveBeenCalledWith({
+        instanceId,
+        reason: 'BPM_INSTANCE_GUARD_TIMEOUT',
+        taskId,
+      });
+    });
+
+    it('records BPM_INSTANCE_GUARD_FAILED when the guard throws', async (): Promise<void> => {
+      const fixture = createEscalationFixture({
+        decideTaskImpl: createGuardedDecision(brokenGuard, 1000),
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+      });
+
+      await fixture.service.runSlaScan(overdueAt);
+
+      expect(fixture.recordTaskAutoDecisionFailed).toHaveBeenCalledWith({
+        instanceId,
+        reason: 'BPM_INSTANCE_GUARD_FAILED',
+        taskId,
+      });
+    });
+
+    it('rethrows a failure that is not a guard error and records nothing', async (): Promise<void> => {
+      const fixture = createEscalationFixture({
+        decideTaskImpl: (): Promise<Record<string, unknown>> =>
+          Promise.reject(new Error('database connection lost')),
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).rejects.toThrow(
+        'database connection lost',
+      );
+      expect(fixture.recordTaskAutoDecisionFailed).not.toHaveBeenCalled();
+    });
+
+    it('rethrows an HttpException the guard did not raise and records nothing', async (): Promise<void> => {
+      const fixture = createEscalationFixture({
+        decideTaskImpl: (): Promise<Record<string, unknown>> =>
+          Promise.reject(new ConflictException('task already decided')),
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(fixture.recordTaskAutoDecisionFailed).not.toHaveBeenCalled();
+    });
+
+    it('keeps scanning after a refused task and decides the next overdue task', async (): Promise<void> => {
+      const refused = createGuardedDecision(
+        refusingGuard('SIGNATURE_REQUIRED'),
+        1000,
+      );
+      let decisionCount = 0;
+      const fixture = createEscalationFixture({
+        decideTaskImpl: (): Promise<Record<string, unknown>> => {
+          decisionCount += 1;
+
+          return decisionCount === 1 ? refused() : Promise.resolve({});
+        },
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+        tasks: [buildOverdueTask(taskId), buildOverdueTask(secondTaskId)],
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).resolves.toEqual({
+        overdueCount: 2,
+        warningCount: 0,
+      });
+      expect(fixture.decideTask).toHaveBeenCalledTimes(2);
+      expect(fixture.recordTaskAutoDecisionFailed).toHaveBeenCalledTimes(1);
+      expect(fixture.recordTaskAutoDecisionFailed).toHaveBeenCalledWith({
+        instanceId,
+        reason: 'SIGNATURE_REQUIRED',
+        taskId,
+      });
+    });
+  });
 });
 
 function createSlaScanService(task: TaskEntity): NotificationService {
@@ -1719,25 +1896,31 @@ function createSlaScanService(task: TaskEntity): NotificationService {
 }
 
 function createEscalationFixture({
+  decideTaskImpl = (): Promise<Record<string, unknown>> => Promise.resolve({}),
   delegationChain,
   onTimeout = 'ESCALATE',
+  tasks,
 }: {
+  readonly decideTaskImpl?: () => Promise<Record<string, unknown>>;
   readonly delegationChain: readonly Readonly<Record<string, unknown>>[];
   readonly onTimeout?: SlaConfig['onTimeout'];
+  readonly tasks?: readonly TaskEntity[];
 }): {
   readonly cancelApprovalInstance: jest.Mock;
   readonly decideTask: jest.Mock;
   readonly expireApprovalInstance: jest.Mock;
+  readonly recordTaskAutoDecisionFailed: jest.Mock;
   readonly service: NotificationService;
 } {
-  const decideTask = jest.fn(
-    (): Promise<Record<string, unknown>> => Promise.resolve({}),
+  const decideTask = jest.fn(decideTaskImpl);
+  const recordTaskAutoDecisionFailed = jest.fn((): Promise<void> =>
+    Promise.resolve(),
   );
-  const cancelApprovalInstance = jest.fn(
-    (): Promise<Record<string, unknown>> => Promise.resolve({}),
+  const cancelApprovalInstance = jest.fn((): Promise<Record<string, unknown>> =>
+    Promise.resolve({}),
   );
-  const expireApprovalInstance = jest.fn(
-    (): Promise<Record<string, unknown>> => Promise.resolve({}),
+  const expireApprovalInstance = jest.fn((): Promise<Record<string, unknown>> =>
+    Promise.resolve({}),
   );
   const task = Object.assign(new TaskEntity(), {
     assigneeMemberId: 'member-a',
@@ -1762,7 +1945,8 @@ function createEscalationFixture({
         Promise.resolve(null),
     } as unknown as Repository<NotificationPreferenceEntity>,
     {
-      find: (): Promise<readonly TaskEntity[]> => Promise.resolve([task]),
+      find: (): Promise<readonly TaskEntity[]> =>
+        Promise.resolve(tasks ?? [task]),
     } as unknown as Repository<TaskEntity>,
     createRepository<TaskCandidateEntity>(),
     {
@@ -1783,7 +1967,12 @@ function createEscalationFixture({
               resolveManagerMemberId: (): Promise<string> =>
                 Promise.resolve('member-manager'),
             }
-          : { cancelApprovalInstance, decideTask, expireApprovalInstance },
+          : {
+              cancelApprovalInstance,
+              decideTask,
+              expireApprovalInstance,
+              recordTaskAutoDecisionFailed,
+            },
     } as unknown as ModuleRef,
     {
       ...DEFAULT_BPM_NOTIFICATION_OPTIONS,
@@ -1793,7 +1982,25 @@ function createEscalationFixture({
     },
   );
 
-  return { cancelApprovalInstance, decideTask, expireApprovalInstance, service };
+  return {
+    cancelApprovalInstance,
+    decideTask,
+    expireApprovalInstance,
+    recordTaskAutoDecisionFailed,
+    service,
+  };
+}
+
+/** A decision that goes through the real instance guard runner, as the engine does. */
+function createGuardedDecision(
+  guard: BPMInstanceGuard,
+  timeoutMs: number,
+): () => Promise<Record<string, unknown>> {
+  return async (): Promise<Record<string, unknown>> => {
+    await runInstanceGuard(guard, {} as BPMInstanceGuardInput, timeoutMs);
+
+    return {};
+  };
 }
 
 function createNotification(id: string): NotificationEntity {

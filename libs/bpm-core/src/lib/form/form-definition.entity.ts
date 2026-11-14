@@ -36,6 +36,17 @@ export class FormDefinitionEntity {
   @Field(() => Date, { nullable: true })
   currentVersionPublishedAt?: Date | null;
 
+  /**
+   * The form is maintained by host code (ADR 27 §9). `formDefinitions` leaves
+   * it out unless `includeHostManaged` is passed. Not a lock.
+   */
+  @Column('boolean', { default: false, name: 'host_managed' })
+  @Field({
+    description:
+      'The form is maintained by host code. formDefinitions leaves it out unless includeHostManaged is true. Not a lock.',
+  })
+  hostManaged!: boolean;
+
   @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz' })
   @Field(() => Date, { nullable: true })
   deletedAt!: Date | null;

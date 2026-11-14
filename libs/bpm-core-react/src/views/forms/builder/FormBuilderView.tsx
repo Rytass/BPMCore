@@ -213,8 +213,26 @@ type OptionFieldChangeRequester = (
  */
 type DataSourceBindingScope = Readonly<{
   commit: (nextField: FormDataSourceOptionFieldDefinition) => void;
+  /**
+   * Asks before a binding that depends on other values is written. Used when
+   * such a binding would drop the field's `defaultValue` (ADR 27 §8); `impact`
+   * tells the designer what is lost.
+   */
+  requestDependencyChange: (
+    currentField: FormOptionFieldDefinition,
+    nextField: FormDataSourceOptionFieldDefinition,
+    impact: string,
+  ) => void;
   rowColumns?: readonly TableColumnDefinition[];
 }>;
+
+/**
+ * Shown when a dependency binding (FIELD, ROW_FIELD or EXPRESSION) is added to a
+ * dynamic field that has a default. The default is dropped, because such a
+ * source resolves only from the values it depends on (ADR 27 §8).
+ */
+const DEPENDENCY_CLEARS_DEFAULT_IMPACT =
+  '選項來源改為依賴其他欄位的值後，目前的預設值會被清除，之後由使用者在表單中自行選擇。';
 
 type PendingBuilderConfirmation =
   | Readonly<{
@@ -1349,9 +1367,11 @@ export function FormBuilderView({
       return;
     }
 
-    const { options, defaultValue, ...baseField } = field;
+    // The default is kept: it may still resolve against the new source, and the
+    // designer's publish check reports it when it does not. Only a dependency
+    // binding clears it (ADR 27 §8).
+    const { options, ...baseField } = field;
     void options;
-    void defaultValue;
     commit({
       ...baseField,
       dataSource: {
@@ -1831,6 +1851,7 @@ export function FormBuilderView({
           field,
           commitSelectedField,
           requestDataSourceFieldChange,
+          requestDataSourceFieldChange,
         )}
         {isTextFieldDefinition(field)
           ? renderSettingsFormRow(
@@ -1946,6 +1967,7 @@ export function FormBuilderView({
     field: FormFieldDefinition,
     commit: FieldCommit<FormFieldDefinition>,
     requestChange: OptionFieldChangeRequester,
+    requestDependencyChange: DataSourceBindingScope['requestDependencyChange'],
     /**
      * The sibling columns a `ROW_FIELD` binding may address. Present only when
      * the field being edited is itself a table column (ADR 16 §3.4).
@@ -1969,6 +1991,7 @@ export function FormBuilderView({
         field,
         commit,
         requestChange,
+        requestDependencyChange,
         rowColumns,
       );
     }
@@ -2314,6 +2337,16 @@ export function FormBuilderView({
               );
             }
           },
+          // A dependency binding drops the column's default, so it asks first.
+          (currentColumn, nextColumn, impact): void =>
+            setPendingBuilderConfirmation({
+              columnIndex,
+              columnKey: currentColumn.fieldKey,
+              fieldKey: field.fieldKey,
+              impact,
+              kind: 'replace-column',
+              nextColumn: nextColumn as TableColumnDefinition,
+            }),
           field.columns,
         )}
       </div>
@@ -2527,6 +2560,7 @@ export function FormBuilderView({
     field: FormOptionFieldDefinition,
     commit: FieldCommit<FormOptionFieldDefinition>,
     requestChange: OptionFieldChangeRequester,
+    requestDependencyChange: DataSourceBindingScope['requestDependencyChange'],
     rowColumns?: readonly TableColumnDefinition[],
   ): ReactElement {
     const compatibleDescriptors = readCompatibleFormDataSourceDescriptors(
@@ -2535,6 +2569,7 @@ export function FormBuilderView({
     );
     const bindingScope: DataSourceBindingScope = {
       commit: (nextField): void => commit(nextField),
+      requestDependencyChange,
       rowColumns,
     };
     const currentSourceId = isFormDataSourceFieldDefinition(field)
@@ -2621,6 +2656,68 @@ export function FormBuilderView({
     );
   }
 
+  /**
+   * Sets a fixed default for a dynamic source (ADR 27 §8). The options are not
+   * known at design time, so the default is typed by value. A dependency
+   * binding disables the row, because the default would be stale per row.
+   */
+  function renderDataSourceDefaultValueRow(
+    field: FormDataSourceOptionFieldDefinition,
+    scope: DataSourceBindingScope,
+  ): ReactElement {
+    const dependent = readHasDependencyBinding(field);
+    const hint: SettingsFormRowHint | undefined = dependent
+      ? {
+          severity: 'info',
+          text: '選項依賴其他欄位的值，不能設定固定預設值；由使用者自行選擇。',
+        }
+      : undefined;
+
+    if (readFormFieldSelectionMode(field) === 'multiple') {
+      const defaultValues = Array.isArray(field.defaultValue)
+        ? field.defaultValue.filter(
+            (item): item is string => typeof item === 'string',
+          )
+        : undefined;
+
+      return renderSettingsFormRow(
+        '預設值',
+        'fieldDefaultValue',
+        <DataSourceListDefaultInput
+          // Remounts when a dependency appears or clears, so the draft text
+          // cannot outlive the default it was typed for.
+          key={`${field.fieldKey}:${String(dependent)}`}
+          disabled={dependent}
+          onCommit={(values): void =>
+            scope.commit({ ...field, defaultValue: values ? [...values] : undefined })
+          }
+          value={defaultValues}
+        />,
+        true,
+        hint,
+      );
+    }
+
+    return renderSettingsFormRow(
+      '預設值',
+      'fieldDefaultValue',
+      <Input
+        // Mezzanine types Input's disabled as `true`, not boolean.
+        disabled={dependent ? true : undefined}
+        onChange={(event: ChangeEvent<HTMLInputElement>): void =>
+          scope.commit({
+            ...field,
+            defaultValue: event.target.value || undefined,
+          })
+        }
+        placeholder="輸入預設選項的值"
+        value={readStringDefaultValue(field.defaultValue)}
+      />,
+      false,
+      hint,
+    );
+  }
+
   function renderDataSourceFieldSettings(
     field: FormDataSourceOptionFieldDefinition,
     compatibleDescriptors: readonly FormDataSourceDescriptorRecord[],
@@ -2660,6 +2757,9 @@ export function FormBuilderView({
         {descriptor ? renderDataSourceDescriptorSummary(descriptor) : null}
         {descriptor && descriptor.parameters.length > 0
           ? renderDataSourceParameterTable(field, descriptor, scope)
+          : null}
+        {descriptor
+          ? renderDataSourceDefaultValueRow(field, scope)
           : null}
         {compatibleDescriptors.length === 0 && !dataSourceCatalogError ? (
           <Typography color="text-warning" variant="body">
@@ -3168,12 +3268,14 @@ export function FormBuilderView({
       return;
     }
 
-    scope.commit(
+    commitDataSourceBinding(
+      field,
       upsertFormDataSourceFieldBinding(
         field,
         parameterKey,
         readNextDataSourceBinding(parameterKey, parameterType, optionId),
       ),
+      scope,
     );
   }
 
@@ -3183,11 +3285,13 @@ export function FormBuilderView({
     expression: string,
     scope: DataSourceBindingScope,
   ): void {
-    scope.commit(
+    commitDataSourceBinding(
+      field,
       upsertFormDataSourceFieldBinding(field, parameterKey, {
         from: { expression, kind: 'EXPRESSION' },
         parameter: parameterKey,
       }),
+      scope,
     );
   }
 
@@ -3197,11 +3301,13 @@ export function FormBuilderView({
     value: FormDataSourceConstantValue,
     scope: DataSourceBindingScope,
   ): void {
-    scope.commit(
+    commitDataSourceBinding(
+      field,
       upsertFormDataSourceFieldBinding(field, parameterKey, {
         from: { kind: 'CONSTANT', value },
         parameter: parameterKey,
       }),
+      scope,
     );
   }
 
@@ -4413,6 +4519,80 @@ function parseStringList(value: string): readonly string[] | undefined {
 
 function readStringListInput(value: readonly string[] | undefined): string {
   return value?.join('\n') ?? '';
+}
+
+/**
+ * A binding that reads anything but a CONSTANT makes the source depend on other
+ * values — `FIELD`, `ROW_FIELD`, `EXPRESSION`, or a kind this version does not
+ * know (ADR 27 §8). Such a source cannot carry a `defaultValue`.
+ */
+function readHasDependencyBinding(
+  field: FormDataSourceOptionFieldDefinition,
+): boolean {
+  return field.dataSource.bindings.some(
+    (binding) => binding.from.kind !== 'CONSTANT',
+  );
+}
+
+/**
+ * Multi-value default for a dynamic source, one value per line or comma. It
+ * commits on blur: reparsing each keystroke would drop a trailing newline.
+ */
+function DataSourceListDefaultInput({
+  disabled,
+  onCommit,
+  value,
+}: {
+  readonly disabled: boolean;
+  readonly onCommit: (values: readonly string[] | undefined) => void;
+  readonly value: readonly string[] | undefined;
+}): ReactElement {
+  const [draft, setDraft] = useState<string>(readStringListInput(value));
+
+  return (
+    <Textarea
+      aria-label="fieldDefaultValue"
+      disabled={disabled}
+      onBlur={(): void => onCommit(parseStringList(draft))}
+      onChange={(event: ChangeEvent<HTMLTextAreaElement>): void =>
+        setDraft(event.target.value)
+      }
+      placeholder="每行或以逗號分隔一個預設值"
+      ref={applyFullWidthTextareaHost}
+      resize="vertical"
+      rows={3}
+      style={FIELD_SETTINGS_TEXTAREA_STYLE}
+      value={draft}
+    />
+  );
+}
+
+/**
+ * Writes a binding change. Adding the first dependency to a field that has a
+ * default asks first, because the default is dropped with it (ADR 27 §8).
+ */
+function commitDataSourceBinding(
+  field: FormDataSourceOptionFieldDefinition,
+  nextField: FormDataSourceOptionFieldDefinition,
+  scope: DataSourceBindingScope,
+): void {
+  if (
+    field.defaultValue === undefined ||
+    readHasDependencyBinding(field) ||
+    !readHasDependencyBinding(nextField)
+  ) {
+    scope.commit(nextField);
+
+    return;
+  }
+
+  const { defaultValue, ...withoutDefault } = nextField;
+  void defaultValue;
+  scope.requestDependencyChange(
+    field,
+    withoutDefault as FormDataSourceOptionFieldDefinition,
+    DEPENDENCY_CLEARS_DEFAULT_IMPACT,
+  );
 }
 
 function stringifyJson(value: unknown): string {

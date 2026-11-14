@@ -49,13 +49,14 @@ describe('ApprovalInstanceFormDataGin0000000031000', (): void => {
     );
   });
 
-  it('is registered last in the migration list', (): void => {
+  it('is registered right after the delegation scope dialect migration', (): void => {
     const names = BPM_CORE_MIGRATIONS.map(
       (registered): string => registered.name,
     );
+    const index = names.indexOf('ApprovalInstanceFormDataGin0000000031000');
 
-    expect(names[names.length - 1]).toBe(
-      'ApprovalInstanceFormDataGin0000000031000',
+    expect(names[index - 1]).toBe(
+      'DelegationScopeConditionDialect0000000030000',
     );
   });
 });
