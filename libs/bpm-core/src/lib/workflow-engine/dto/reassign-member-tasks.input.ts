@@ -1,5 +1,12 @@
-import { Field, InputType } from '@nestjs/graphql';
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { Field, ID, InputType } from '@nestjs/graphql';
+import {
+  ArrayNotEmpty,
+  IsArray,
+  IsBoolean,
+  IsOptional,
+  IsString,
+  IsUUID,
+} from 'class-validator';
 
 @InputType()
 export class ReassignMemberTasksInput {
@@ -20,4 +27,12 @@ export class ReassignMemberTasksInput {
   @IsOptional()
   @IsBoolean()
   dryRun?: boolean | null;
+
+  /** Only these tasks; omitted or null means every open task, as before. */
+  @Field(() => [ID], { nullable: true })
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsUUID('all', { each: true })
+  taskIds?: string[] | null;
 }
