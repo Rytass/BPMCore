@@ -2797,6 +2797,7 @@ export class WorkflowEngineService {
       `${label}「${node.data.label}」`,
       '簽核人',
       exclusions.memberIds,
+      null,
     );
     // Ad-hoc approvers are picked by a person, not walked up a manager chain,
     // so the chain's grade rule does not apply to them.
@@ -3421,6 +3422,8 @@ export class WorkflowEngineService {
         buildAdhocApproverResolver(targetValue),
         '臨時通知對象',
         '通知對象',
+        [],
+        null,
       );
 
       await this.notificationService.createAdhocWorkflowNotifications({
@@ -7373,7 +7376,7 @@ export class WorkflowEngineService {
   }
 
   /**
-   * What the walk of `node`'s manager chain has to know first, or `undefined`
+   * What the walk of `node`'s manager chain has to know first, or `null`
    * for a node that is not a manager chain using one of the two settings that
    * need it (continuing an earlier chain, or skipping when the start already
    * qualifies); such a node is resolved exactly as before.
@@ -7392,14 +7395,14 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     node: UserTaskNode,
     label: string,
-  ): Promise<OrgManagerChainContext | undefined> {
+  ): Promise<OrgManagerChainContext | null> {
     const resolver = node.data.approverResolver;
 
     if (
       resolver.type !== 'ORG_MANAGER_CHAIN' ||
       !usesOrgManagerChainSettings(resolver)
     ) {
-      return undefined;
+      return null;
     }
 
     const shapeIssue = readOrgManagerChainIssue(resolver, '簽核節點');
@@ -7987,9 +7990,11 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     resolver: ApproverResolver,
     label: string,
-    subject: ResolvedSubject = '簽核人',
-    skippedChainMemberIds: readonly string[] = [],
-    chainContext?: OrgManagerChainContext,
+    subject: ResolvedSubject,
+    skippedChainMemberIds: readonly string[],
+    // Required, so a new entry point has to say it has none: only task
+    // creation works one out, and a chain that needs it refuses without it.
+    chainContext: OrgManagerChainContext | null,
   ): Promise<readonly ResolvedApproverCandidate[]> {
     const memberIds = await this.resolveApproverMemberIds(
       manager,
@@ -8015,7 +8020,7 @@ export class WorkflowEngineService {
     label: string,
     subject: ResolvedSubject,
     skippedChainMemberIds: readonly string[],
-    chainContext?: OrgManagerChainContext,
+    chainContext: OrgManagerChainContext | null,
   ): Promise<readonly string[]> {
     if (resolver.type === 'DIRECT') {
       return readMemberIdsFromValue(resolver.memberIds, label, subject);
@@ -8522,7 +8527,7 @@ export class WorkflowEngineService {
     label: string,
     subject: ResolvedSubject,
     skippedMemberIds: readonly string[],
-    chainContext?: OrgManagerChainContext,
+    chainContext: OrgManagerChainContext | null,
   ): Promise<readonly string[]> {
     const { fallback, minPositionLevel } = resolver;
     const startPositionLevel = readOrgManagerChainStartPositionLevel(resolver);
@@ -8530,7 +8535,7 @@ export class WorkflowEngineService {
 
     if (
       usesOrgManagerChainSettings(resolver) &&
-      (chainContext === undefined ||
+      (!chainContext ||
         (isOrgManagerChainContinuation(resolver) && continuation === null))
     ) {
       throw new ConflictException(
@@ -9486,6 +9491,10 @@ export class WorkflowEngineService {
             action.recipients,
             `知會節點「${node.data.label}」`,
             '通知對象',
+            [],
+            // A notify node has no task to build the context: a chain that
+            // needs one is refused (publish lint forbids it here already).
+            null,
           );
     const recipientMemberIds = uniqueTexts(
       recipients.map((recipient) => recipient.memberId),

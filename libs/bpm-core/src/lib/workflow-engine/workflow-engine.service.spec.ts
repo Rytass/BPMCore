@@ -13288,6 +13288,9 @@ describe('WorkflowEngineService', () => {
               instance: ApprovalInstanceEntity,
               resolver: ApproverResolver,
               label: string,
+              subject: string,
+              skippedChainMemberIds: readonly string[],
+              chainContext: null,
             ) => Promise<unknown>;
           };
 
@@ -13297,6 +13300,9 @@ describe('WorkflowEngineService', () => {
               {} as ApprovalInstanceEntity,
               chain(setting),
               '簽核節點「X」',
+              '簽核人',
+              [],
+              null,
             ),
           ).rejects.toThrow(`簽核節點「X」 無法建立待簽任務：${refusal}`);
         },
