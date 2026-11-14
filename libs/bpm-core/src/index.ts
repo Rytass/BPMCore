@@ -10,6 +10,7 @@ export * from './lib/expression-function';
 export * from './lib/form';
 export * from './lib/form-data-source';
 export * from './lib/identity';
+export * from './lib/instance-event';
 export * from './lib/notification';
 export * from './lib/organization';
 export * from './lib/signature';

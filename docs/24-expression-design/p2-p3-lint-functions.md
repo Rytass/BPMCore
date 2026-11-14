@@ -115,7 +115,7 @@ export function lintExpressionAst(
 
 **規則**：型別名稱只能取自白名單；未知型別一律 `dyn`，不得拋錯。
 
-**選填欄位**：lint 規則 `EXPR_OPTIONAL_FIELD_WITHOUT_HAS` 只作為警告（不擋發布）。條件為：欄位 `required: false`，且表達式直接讀取 `form.<key>`，未先以 `has(form.<key>)` 或 `form.<key> != null` 守護。
+**選填欄位**：lint 規則 `EXPR_OPTIONAL_FIELD_WITHOUT_HAS` 只作為警告（不擋發布）。條件為：欄位 `required: false`，且表達式直接讀取 `form.<key>`，未先以 `has(form.<key>)` 守護。（更正，ADR 27 §3：原文也把 `form.<key> != null` 列為守護，但未填欄位沒有 key 時它擋不住缺 key 錯誤；只有 host 開啟 `expressionMissingFormFieldsAsNull` 後才成立，見 [05 §5.1.2](../05-conditions-cel.md)。）
 
 **隱藏欄位複製**：`fieldPath` 指向的欄位若在 schema 中標為隱藏，而表達式寫入可見欄位，列為警告。注意：本設計只定義警告的資料來源（schema 的 visibility），實際判斷規則待 P2 實作時以既有 `field-access-lint.ts` 的測試為準。
 

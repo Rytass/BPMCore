@@ -1,17 +1,38 @@
 import { Field, ID, InputType, Int } from '@nestjs/graphql';
 import {
   IsBoolean,
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
+  ValidateIf,
 } from 'class-validator';
+import { TEMPLATE_KEY_PATTERN } from '../template-key';
+import { ApprovalTemplateLaunchModeEnum } from '../template.enums';
+
+const TEMPLATE_KEY_DESCRIPTION =
+  'Stable key the host declares for a template it owns (ADR 27 §6). Starts with a letter or digit; then letters, digits, ".", "_" or "-"; at most 128 characters. Unique among live templates. An empty string clears it.';
 
 @InputType()
 export class CreateApprovalTemplateInput {
   @Field()
   @IsString()
   name!: string;
+
+  /** Stable host key (ADR 27 §6). Omitted or empty means no key. */
+  @Field(() => String, {
+    description: TEMPLATE_KEY_DESCRIPTION,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_object: object, value: unknown): boolean => value !== '')
+  @IsString()
+  @Matches(TEMPLATE_KEY_PATTERN, {
+    message: 'key must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$',
+  })
+  key?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
@@ -37,6 +58,9 @@ export class CreateApprovalTemplateInput {
   @IsOptional()
   @IsUUID()
   formDefinitionVersionId?: string | null;
+
+  /** Host-owned flag (ADR 27 §6). Service-only: no `@Field`. Absent means `false`. */
+  hostManaged?: boolean;
 }
 
 @InputType()
@@ -54,6 +78,22 @@ export class UpdateApprovalTemplateInput {
   @IsOptional()
   @IsString()
   description?: string | null;
+
+  /**
+   * Host key, as a three-state value: omitted keeps the key, `null` or an
+   * empty string clears it, anything else sets it.
+   */
+  @Field(() => String, {
+    description: TEMPLATE_KEY_DESCRIPTION,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_object: object, value: unknown): boolean => value !== '')
+  @IsString()
+  @Matches(TEMPLATE_KEY_PATTERN, {
+    message: 'key must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$',
+  })
+  key?: string | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()
@@ -75,6 +115,12 @@ export class UpdateApprovalTemplateInput {
   @IsOptional()
   @IsUUID()
   categoryId?: string | null;
+
+  /**
+   * Host-owned flag (ADR 27 §6). Service-only: no `@Field`, so GraphQL cannot
+   * set it. Absent keeps the stored value.
+   */
+  hostManaged?: boolean;
 }
 
 @InputType()
@@ -145,6 +191,20 @@ export class UpdateApprovalTemplateDraftInput {
   @IsOptional()
   @IsString()
   initiatorPolicyCel?: string | null;
+
+  /**
+   * `HOST_ONLY` keeps the template off the launch page and refuses submission
+   * and resubmission through GraphQL; the host's backend submits it through
+   * the service (ADR 27 §5). Absent keeps the draft's current value.
+   */
+  @Field(() => ApprovalTemplateLaunchModeEnum, {
+    description:
+      'OPEN (default): members start it from the launch page. HOST_ONLY: only the host backend submits it; it is left out of the launchable list and GraphQL submit and resubmit are refused with 403. Absent keeps the draft value.',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsEnum(ApprovalTemplateLaunchModeEnum)
+  launchMode?: ApprovalTemplateLaunchModeEnum | null;
 
   @Field(() => String, { nullable: true })
   @IsOptional()

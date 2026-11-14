@@ -11,6 +11,8 @@ import { BPMAuthModuleOptions } from '../bpm-auth/bpm-auth.options';
 import { BPMBusinessCalendar } from '../calendar/business-calendar.token';
 import type { BPMExpressionFunction } from '../expression-function/expression-function.types';
 import { BPMFormDataSourceRegistry } from '../form-data-source/form-data-source.types';
+import type { BPMInstanceEventDeliveryOptions } from '../instance-event/instance-event.options';
+import type { BPMInstanceEventObserver } from '../instance-event/instance-event.token';
 import { BPMRootIdentityOptions } from '../identity/identity-options';
 import { BPMMemberResolver } from '../identity/member-resolver.interface';
 import { BPMRootNotificationOptions } from '../notification/notification-options';
@@ -20,6 +22,7 @@ import {
 } from '../organization/organization-time-zone';
 import { BPMRootSignatureOptions } from '../signature/signature-options';
 import { BPMInitiatorCustomFieldsResolver } from '../workflow-engine/initiator-custom-fields-resolver.token';
+import { BPMInstanceGuard } from '../workflow-engine/instance-guard.token';
 import { BPMWorkflowServiceTaskDispatcher } from '../workflow-engine/workflow-service-task-dispatcher.token';
 import { BPMRootWorkflowWebhookOptions } from '../workflow-webhook/workflow-webhook-options';
 import { BPMWorkflowWebhookRegistry } from '../workflow-webhook/workflow-webhook.types';
@@ -101,6 +104,29 @@ export interface BPMRootRuntimeOptions
   readonly expressionFunctions?: readonly BPMExpressionFunction[];
 
   /**
+   * Reads a form field the case has no value for as `null` (a table as `[]`)
+   * instead of failing the expression with a missing key (ADR 27 §3). Only
+   * top-level fields of the case's form schema are filled; table columns are
+   * not, and nothing is written back to `form_data`. Applies to every
+   * workflow expression on a case (entry conditions, gateways, approver
+   * expressions, WEBHOOK payloads, `SET_FORM_FIELD`), to delegation
+   * `scopeConditionCel`, and to dry runs given the form schema.
+   *
+   * Defaults to `false`. Turning it on changes what existing expressions mean
+   * for an unfilled field `x`:
+   *
+   * | expression       | off                 | on                       |
+   * | ---------------- | ------------------- | ------------------------ |
+   * | `has(form.x)`    | `false`             | `true`                   |
+   * | `form.x == null` | missing-key error   | `true`                   |
+   * | `form.x > 5`     | missing-key error   | type error (still fails) |
+   *
+   * A template that tests "not filled" with `has(form.x)` must switch to
+   * `form.x == null` before the host turns this on.
+   */
+  readonly expressionMissingFormFieldsAsNull?: boolean;
+
+  /**
    * Versioned form option DataSource catalog, as a ready instance. When
    * omitted, BPM exposes an empty catalog.
    */
@@ -123,6 +149,42 @@ export interface BPMRootRuntimeOptions
    * given. When omitted, `customFields` is `{}`.
    */
   readonly initiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver;
+
+  /**
+   * Pre-decision guard that can refuse a submit, resubmit or decide before the
+   * engine commits it, as a ready instance. Refusals come back as a 400 with
+   * `formDataErrors` (reason `HOST_RULE`); a timeout or a failing guard comes
+   * back as a 503. The guard runs inside the engine transaction, so a refusal
+   * rolls the whole change back.
+   *
+   * `instanceGuardProvider` takes precedence when both are given. When omitted,
+   * no guard runs.
+   */
+  readonly instanceGuard?: BPMInstanceGuard;
+
+  /**
+   * Time the guard gets to answer, in milliseconds. Default 5000. A guard that
+   * does not answer in time fails closed (503 `BPM_INSTANCE_GUARD_TIMEOUT`).
+   * Only read when a guard is bound.
+   */
+  readonly instanceGuardTimeoutMs?: number;
+
+  /**
+   * Receives instance lifecycle events (ADR 27 §1), as a ready instance. BPM
+   * writes one outbox row per event in the same transaction as the state change
+   * and calls the observer after commit, at least once per event. Hosts dedupe
+   * on `event.id`.
+   *
+   * `instanceEventObserverProvider` takes precedence when both are given. When
+   * omitted, no outbox rows are written.
+   */
+  readonly instanceEventObserver?: BPMInstanceEventObserver;
+
+  /**
+   * Outbox tuning for instance lifecycle events (ADR 27 §1.4). Unset or
+   * non-positive fields take the webhook-matching defaults.
+   */
+  readonly instanceEventDelivery?: Partial<BPMInstanceEventDeliveryOptions>;
 
   /**
    * Host identity source, as a ready instance.

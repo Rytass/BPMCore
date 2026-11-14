@@ -1,9 +1,11 @@
 import {
   isFormDataValueEmpty,
   omitFormDataKeys,
-  readApproverFilledFieldKeys,
   readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
+  readNodeFillUnits,
   readNodeRequiredFieldKeys,
+  type FieldAccessFillUnit,
   type UserTaskNode,
   type WorkflowDefinition,
 } from '@rytass/bpm-core-shared';
@@ -16,73 +18,261 @@ import {
   type FormFieldValue,
   type FormDataIssue,
   type FormDataIssueReason,
+  type FormTableCellValue,
+  type FormTableRowValue,
   type TableColumnDefinition,
 } from '@rytass/bpm-core-shared/form';
 import { readFormTableRows } from '@rytass/bpm-core-client/form';
 import type { WorkflowFormData } from '@rytass/bpm-core-client/workflow';
 
+const hasOwn = (target: object, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(target, key);
+
+/** A fill grant on one column: the open cell's fill. */
+type ColumnFill = FieldAccessFillUnit['fill'];
+
 /**
- * The form as the applicant sees it: without the fields some approver fills in.
- * The server drops those keys from a submission, so rendering one would swallow
- * what the applicant types, and a `minRows` or `required` on it would block a
- * launch nobody can complete. Returns an equal schema when nothing is
- * approver-filled; never mutates its input.
+ * Every top-level field the approver fills as a whole, across all user tasks.
+ * A field granted per column only is not here; see `readApproverOpenColumnKeys`.
+ */
+function readApproverWholeFilledKeys(
+  definition: WorkflowDefinition,
+): ReadonlySet<string> {
+  return new Set(
+    userTaskNodes(definition).flatMap((node) => [
+      ...readNodeFillableFieldKeys(node),
+    ]),
+  );
+}
+
+/**
+ * The columns each table opens to some approver, across all user tasks: a
+ * table's `fieldKey` to the `columnKey`s an approver fills. Only column units
+ * count; whole grants are `readApproverWholeFilledKeys`.
+ */
+function readApproverOpenColumnKeys(
+  definition: WorkflowDefinition,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  return userTaskNodes(definition)
+    .flatMap((node) => readNodeFillUnits(node))
+    .flatMap((unit): readonly (readonly [string, string])[] =>
+      unit.columnKey === null ? [] : [[unit.fieldKey, unit.columnKey]],
+    )
+    .reduce<ReadonlyMap<string, ReadonlySet<string>>>(
+      (grouped, [fieldKey, columnKey]) =>
+        new Map([
+          ...grouped,
+          [fieldKey, new Set([...(grouped.get(fieldKey) ?? []), columnKey])],
+        ]),
+      new Map(),
+    );
+}
+
+/**
+ * The form as the applicant sees it: without the fields some approver fills in
+ * as a whole, and without the columns some approver fills per column. A table
+ * keeps its other columns, and is dropped when none remain. The server drops
+ * those keys from a submission, so rendering one would swallow what the
+ * applicant types, and a `minRows` or `required` on it would block a launch
+ * nobody can complete. Never mutates its input.
  */
 export function readApplicantFormSchema(
   schema: FormDefinitionSchema,
   definition: WorkflowDefinition,
 ): FormDefinitionSchema {
-  const approverFilledKeys = readApproverFilledFieldKeys(definition);
+  const wholeKeys = readApproverWholeFilledKeys(definition);
+  const openColumns = readApproverOpenColumnKeys(definition);
 
   return {
     ...schema,
-    fields: schema.fields.filter(
-      (field) => !approverFilledKeys.has(field.fieldKey),
-    ),
+    fields: schema.fields.flatMap((field): readonly FormFieldDefinition[] => {
+      if (wholeKeys.has(field.fieldKey)) {
+        return [];
+      }
+
+      const open = openColumns.get(field.fieldKey);
+
+      if (open === undefined) {
+        return [field];
+      }
+
+      if (!isTableFieldDefinition(field)) {
+        return [];
+      }
+
+      const columns = field.columns.filter(
+        (column) => !open.has(column.fieldKey),
+      );
+
+      return columns.length === 0 ? [] : [{ ...field, columns }];
+    }),
   };
 }
 
-/** The payload the applicant may send: `values` without approver-filled keys. */
+/**
+ * The payload the applicant may send: `values` without the keys an approver
+ * fills as a whole, and without the open cells of the tables an approver fills
+ * per column. A table left with no applicant cell at all is omitted, so the
+ * server keeps the approver's cells as they are.
+ *
+ * Known limit: the schema is not passed in, so a table whose every column is
+ * approver-filled is recognised by its rows, not by its columns. A table that
+ * had no rows is omitted for the same reason.
+ */
 export function readApplicantSubmission(
   values: WorkflowFormData,
   definition: WorkflowDefinition,
 ): WorkflowFormData {
-  // Dropping keys cannot change a remaining value's type, which is all the
-  // shared helper's `unknown` return forgets.
-  return omitFormDataKeys(
-    values,
-    readApproverFilledFieldKeys(definition),
+  const wholeKeys = readApproverWholeFilledKeys(definition);
+  const openColumns = readApproverOpenColumnKeys(definition);
+
+  return Object.fromEntries(
+    Object.entries(omitFormDataKeys(values, wholeKeys)).flatMap(
+      ([fieldKey, value]): readonly (readonly [string, unknown])[] => {
+        const open = openColumns.get(fieldKey);
+
+        if (open === undefined) {
+          return [[fieldKey, value]];
+        }
+
+        // A non-table value reads as no rows, so an approver's non-table
+        // per-column field is dropped with the table case.
+        const rows = readFormTableRows(value as FormFieldValue).map((row) =>
+          omitFormDataKeys(row, open),
+        );
+
+        return rows.length === 0 ||
+          rows.every((row) => Object.keys(row).length === 0)
+          ? []
+          : [[fieldKey, rows]];
+      },
+    ),
   ) as WorkflowFormData;
 }
 
 /**
- * The form an approver's fill is validated against: only the fields `node`
- * lets them fill in, each required exactly when the node says `REQUIRED`. A
- * required table needs at least one row, the rule `validateFormRendererValues`
- * already applies, so the result agrees with the server's fill check. Never
- * mutates its input.
+ * Top-level fields this node lets its approver fill only per column (ADR 27
+ * §4(a)). A field the node also grants whole is not in this set.
+ */
+export function readFillColumnModeFieldKeys(
+  node: UserTaskNode,
+): ReadonlySet<string> {
+  const wholeKeys = readNodeFillableFieldKeys(node);
+
+  return new Set(
+    readNodeFillUnits(node)
+      .filter(
+        (unit) => unit.columnKey !== null && !wholeKeys.has(unit.fieldKey),
+      )
+      .map((unit) => unit.fieldKey),
+  );
+}
+
+/**
+ * The columns of `fieldKey` this node opens to its approver, each with its
+ * fill. Empty when the node opens none of them.
+ */
+export function readFillOpenColumns(
+  node: UserTaskNode,
+  fieldKey: string,
+): ReadonlyMap<string, ColumnFill> {
+  return new Map(
+    readNodeFillUnits(node).flatMap(
+      (unit): readonly (readonly [string, ColumnFill])[] =>
+        unit.fieldKey === fieldKey && unit.columnKey !== null
+          ? [[unit.columnKey, unit.fill]]
+          : [],
+    ),
+  );
+}
+
+/**
+ * The approver's view of a column-only table: its open columns, each required
+ * exactly when the node says `REQUIRED`. The row bounds go, since the applicant
+ * owns the row count; the closed columns go too, since the approver may not
+ * fill them. Other fields, and tables the node opens whole, come back as is.
+ */
+function readFillColumnOnlyTable(
+  field: FormFieldDefinition,
+  node: UserTaskNode,
+  keepClosedColumns: boolean,
+): FormFieldDefinition | null {
+  if (!isTableFieldDefinition(field)) {
+    return null;
+  }
+
+  const open = readFillOpenColumns(node, field.fieldKey);
+  const columns = field.columns
+    .filter((column) => keepClosedColumns || open.has(column.fieldKey))
+    .map((column): TableColumnDefinition => ({
+      ...column,
+      // The node alone decides; the form's rule for the column is ignored.
+      required: open.get(column.fieldKey) === 'REQUIRED',
+      requiredWhen: undefined,
+    }));
+
+  return columns.length === 0
+    ? null
+    : {
+        ...field,
+        columns,
+        maxRows: undefined,
+        minRows: undefined,
+        required: false,
+        requiredWhen: undefined,
+      };
+}
+
+/**
+ * The part of `field` the node's approver fills in, or `null` when they fill
+ * none of it: a whole fillable field as it is, a column-only table as its open
+ * columns. Never mutates its input.
+ */
+function readFillApproverField(
+  field: FormFieldDefinition,
+  node: UserTaskNode,
+): FormFieldDefinition | null {
+  if (readNodeFillableFieldKeys(node).has(field.fieldKey)) {
+    return field;
+  }
+
+  return readFillColumnModeFieldKeys(node).has(field.fieldKey)
+    ? readFillColumnOnlyTable(field, node, false)
+    : null;
+}
+
+/**
+ * The form an approver's fill is validated against: only what `node` lets them
+ * fill in, each whole field required exactly when the node says `REQUIRED`,
+ * and each column-only table reduced to its open columns. A required table
+ * needs at least one row, the rule `validateFormRendererValues` already
+ * applies, so the result agrees with the server's fill check. Never mutates its
+ * input.
  */
 export function readFillValidationSchema(
   schema: FormDefinitionSchema,
   node: UserTaskNode,
 ): FormDefinitionSchema {
-  const fillableKeys = readNodeFillableFieldKeys(node);
   const displaySchema = readFillDisplaySchema(schema, node);
 
   // Derived from the display schema so the check and the asterisk read the
   // same rule.
   return {
     ...displaySchema,
-    fields: displaySchema.fields.filter((field) =>
-      fillableKeys.has(field.fieldKey),
-    ),
+    fields: displaySchema.fields.flatMap((field) => {
+      const approverField = readFillApproverField(field, node);
+
+      return approverField === null ? [] : [approverField];
+    }),
   };
 }
 
 /**
  * The schema the fill node's approver sees: every field as the form defines
  * it, except that the node's fillable fields are required exactly when the
- * node says `REQUIRED`, so the asterisk matches what approving will check.
+ * node says `REQUIRED`, so the asterisk matches what approving will check. A
+ * column-only table keeps every column, so the closed ones still show; their
+ * requirement is cleared, and the open ones follow the node.
  */
 export function readFillDisplaySchema(
   schema: FormDefinitionSchema,
@@ -90,23 +280,30 @@ export function readFillDisplaySchema(
 ): FormDefinitionSchema {
   const fillableKeys = readNodeFillableFieldKeys(node);
   const requiredKeys = readNodeRequiredFieldKeys(node);
+  const columnModeKeys = readFillColumnModeFieldKeys(node);
 
   return {
     ...schema,
-    fields: schema.fields.map((field) =>
-      fillableKeys.has(field.fieldKey)
-        ? {
-            ...field,
-            required: requiredKeys.has(field.fieldKey),
-            // The node alone decides; the server ignores the form's rule.
-            requiredWhen: undefined,
-          }
-        : field,
-    ),
+    fields: schema.fields.map((field) => {
+      if (fillableKeys.has(field.fieldKey)) {
+        return {
+          ...field,
+          required: requiredKeys.has(field.fieldKey),
+          // The node alone decides; the server ignores the form's rule.
+          requiredWhen: undefined,
+        };
+      }
+
+      return columnModeKeys.has(field.fieldKey)
+        ? (readFillColumnOnlyTable(field, node, true) ?? field)
+        : field;
+    }),
   };
 }
 
-const userTaskNodes = (definition: WorkflowDefinition): readonly UserTaskNode[] =>
+const userTaskNodes = (
+  definition: WorkflowDefinition,
+): readonly UserTaskNode[] =>
   definition.nodes.filter(
     (node): node is UserTaskNode => node.type === 'userTask',
   );
@@ -124,12 +321,12 @@ export function readFillLabelMarkers(
   const viewerKeys =
     viewerFillNode === null
       ? new Set<string>()
-      : readNodeFillableFieldKeys(viewerFillNode);
+      : readNodeFillGrantFieldKeys(viewerFillNode);
 
   return userTaskNodes(definition).reduce<Readonly<Record<string, string>>>(
     (markers, node) => ({
       ...Object.fromEntries(
-        [...readNodeFillableFieldKeys(node)].map((fieldKey) => [
+        [...readNodeFillGrantFieldKeys(node)].map((fieldKey) => [
           fieldKey,
           viewerKeys.has(fieldKey)
             ? '本關補填'
@@ -145,31 +342,81 @@ export function readFillLabelMarkers(
 /**
  * What approving sends as `fill.formData`: the keys of `values` that `node`
  * lets its approver fill, and nothing else (the server refuses any other key).
- * `values` is what the approver changed, not the rendered form — a renderer
- * default the approver never touched (a table's empty rows, a boolean's
- * `false`) is not theirs to sign, and would otherwise show up as filled in.
+ * `values` is the fill changes from `readFillChanges`, not the rendered form:
+ * a renderer default the approver never touched (a table's empty rows, an
+ * OPTIONAL boolean's `false`) is not theirs to sign and stays out. A REQUIRED
+ * boolean is the exception; its shown value is sent, see `readFillChanges`.
  */
 export function readFillPayload(
   values: WorkflowFormData,
   node: UserTaskNode,
+  stored: WorkflowFormData = {},
 ): Readonly<Record<string, unknown>> {
-  return Object.fromEntries(
-    [...readNodeFillableFieldKeys(node)]
-      .filter((fieldKey) =>
-        Object.prototype.hasOwnProperty.call(values, fieldKey),
-      )
-      // A cleared field reads `undefined`, which JSON drops, and the server
-      // would keep the old value; `null` clears it.
-      .map((fieldKey) => [fieldKey, values[fieldKey] ?? null]),
-  );
+  const columnModeKeys = readFillColumnModeFieldKeys(node);
+  const wholeEntries = [...readNodeFillableFieldKeys(node)]
+    .filter((fieldKey) => hasOwn(values, fieldKey))
+    // A cleared field reads `undefined`, which JSON drops, and the server
+    // would keep the old value; `null` clears it.
+    .map((fieldKey): readonly [string, unknown] => [
+      fieldKey,
+      values[fieldKey] ?? null,
+    ]);
+  const columnEntries = [...columnModeKeys]
+    .filter((fieldKey) => hasOwn(values, fieldKey))
+    .map((fieldKey): readonly [string, unknown] => [
+      fieldKey,
+      readFillColumnModeRows(
+        readFormTableRows(stored[fieldKey]),
+        readFormTableRows(values[fieldKey]),
+        [...readFillOpenColumns(node, fieldKey).keys()],
+      ),
+    ]);
+
+  return Object.fromEntries([...wholeEntries, ...columnEntries]);
+}
+
+/**
+ * The rows a column-mode fill sends (ADR 27 §4(a)): one per stored row, in the
+ * stored order, each carrying the applicant's cells unchanged and the open
+ * cells as the approver left them. `null` when nothing is stored, since the
+ * server has no row to settle against. The row count and order never come
+ * from the draft.
+ */
+function readFillColumnModeRows(
+  storedRows: readonly FormTableRowValue[],
+  draftRows: readonly FormTableRowValue[],
+  openColumnKeys: readonly string[],
+): readonly FormTableRowValue[] | null {
+  if (storedRows.length === 0) {
+    return null;
+  }
+
+  return storedRows.map((storedRow, index) => {
+    const draftRow = draftRows[index] ?? {};
+
+    return {
+      ...storedRow,
+      ...Object.fromEntries(
+        openColumnKeys.map(
+          (columnKey): readonly [string, FormTableCellValue] => [
+            columnKey,
+            draftRow[columnKey] ?? null,
+          ],
+        ),
+      ),
+    };
+  });
 }
 
 /**
  * What the approver's fill amounts to: the fields they changed (`draft`), plus
  * each fill table the page seeds with `minRows` rows that the case does not
- * store yet. The page shows those rows and validates them, so they are sent
- * too — left out, the server would refuse the approval for missing rows the
- * approver can see on screen.
+ * store yet, and each REQUIRED boolean fill field at the value the page shows.
+ * The page shows those rows and values and validates them, so they are sent
+ * too. Left out, the server would refuse the approval for a missing row, and
+ * for a missing `false` that the approver can see on screen: a boolean that
+ * is never sent reads as empty, while `false` is a value. Changed values
+ * override the displayed ones.
  */
 export function readFillChanges({
   draft,
@@ -197,9 +444,17 @@ export function readFillChanges({
     );
   });
 
+  const requiredBooleanKeys = [...readNodeRequiredFieldKeys(node)].filter(
+    (fieldKey) =>
+      fillableKeys.has(fieldKey) && typeof values[fieldKey] === 'boolean',
+  );
+
   return {
     ...Object.fromEntries(
       seededTables.map((field) => [field.fieldKey, values[field.fieldKey]]),
+    ),
+    ...Object.fromEntries(
+      requiredBooleanKeys.map((fieldKey) => [fieldKey, values[fieldKey]]),
     ),
     ...draft,
   };
@@ -209,6 +464,14 @@ export function readFillChanges({
 export function isFillConflictMessage(message: string): boolean {
   return message.includes('form data changed; refresh and retry');
 }
+
+/**
+ * The stable code the server answers when an approver's fill adds, removes or
+ * reorders rows of a column-only table (ADR 27 §4(a)). Its message is English;
+ * callers show their own copy from this code.
+ */
+export const FILL_TABLE_ROWS_LOCKED_CODE =
+  'FORM_FIELD_ACCESS_TABLE_ROWS_LOCKED';
 
 // The server names a field by its label: `欄位「標籤」`, a table row as
 // `「表格」第 N 列` (1-based), and a cell as `「表格」第 N 列的「欄位」`.
@@ -463,9 +726,7 @@ export function readFillServerErrors(
   node: UserTaskNode,
   formDataIssues: readonly FormDataIssue[] = [],
 ): Readonly<Record<string, string>> | null {
-  const fillableFields = schema.fields.filter((field) =>
-    readNodeFillableFieldKeys(node).has(field.fieldKey),
-  );
+  const fillableFields = readFillValidationSchema(schema, node).fields;
 
   if (formDataIssues.length > 0) {
     return readFillErrorsFromIssues(formDataIssues, fillableFields);
@@ -565,7 +826,8 @@ function readFillValueText(
       `${rows.length} 列`,
       ...(rows.length > 0
         ? totals.map(
-            ({ label, total }) => `${label}合計 ${total.toLocaleString('zh-TW')}`,
+            ({ label, total }) =>
+              `${label}合計 ${total.toLocaleString('zh-TW')}`,
           )
         : []),
     ].join('，');
@@ -597,7 +859,9 @@ function readFillValueText(
 
   return items
     .map((item) =>
-      typeof item === 'string' ? (optionLabels.get(item) ?? item) : String(item),
+      typeof item === 'string'
+        ? (optionLabels.get(item) ?? item)
+        : String(item),
     )
     .join('、');
 }
@@ -615,22 +879,21 @@ export function readFillSummary(
   memberNames: ReadonlyMap<string, string> = new Map(),
   orgUnitNames: ReadonlyMap<string, string> = new Map(),
 ): readonly FillSummaryItem[] {
-  const fillableKeys = readNodeFillableFieldKeys(node);
-
-  return schema.fields
-    .filter(
-      (field) =>
-        fillableKeys.has(field.fieldKey) &&
-        Object.prototype.hasOwnProperty.call(values, field.fieldKey),
-    )
-    .map((field) => ({
-      fieldKey: field.fieldKey,
-      label: field.label || field.fieldKey,
-      text: readFillValueText(
-        field,
-        values[field.fieldKey],
-        memberNames,
-        orgUnitNames,
-      ),
-    }));
+  return readFillValidationSchema(schema, node).fields.flatMap(
+    (field): readonly FillSummaryItem[] =>
+      hasOwn(values, field.fieldKey)
+        ? [
+            {
+              fieldKey: field.fieldKey,
+              label: field.label || field.fieldKey,
+              text: readFillValueText(
+                field,
+                values[field.fieldKey],
+                memberNames,
+                orgUnitNames,
+              ),
+            },
+          ]
+        : [],
+  );
 }

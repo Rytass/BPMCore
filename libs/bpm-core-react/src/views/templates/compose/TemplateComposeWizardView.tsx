@@ -97,7 +97,9 @@ export function TemplateComposeWizardView({
               aiAssistantAvailable={aiAssistantAvailable}
               formSchema={wizard.formSchema}
               initiatorPolicyCel={wizard.initiatorPolicyCel}
+              launchMode={wizard.launchMode}
               onInitiatorPolicyChange={wizard.setInitiatorPolicyCel}
+              onLaunchModeChange={wizard.setLaunchMode}
               onWorkflowChange={wizard.setWorkflowDefinition}
               showAiAssistant={showAiAssistant}
               workflowDefinition={wizard.workflowDefinition}
@@ -109,6 +111,7 @@ export function TemplateComposeWizardView({
               formSchema={wizard.formSchema}
               formUiSchema={wizard.formUiSchema}
               initiatorPolicyCel={wizard.initiatorPolicyCel}
+              launchMode={wizard.launchMode}
               name={wizard.name}
               publishError={wizard.publishError}
               workflowDefinition={wizard.workflowDefinition}

@@ -4,11 +4,15 @@ import {
   MemberMetadata,
   omitFormDataKeys,
   overlayStoredFormDataKeys,
-  readApproverFilledFieldKeys,
+  readNodeFieldAccess,
   readNodeFillableFieldKeys,
+  readNodeFillGrantFieldKeys,
+  readNodeFillUnits,
   readNodeRequiredFieldKeys,
   readFilterableFieldPaths,
+  type FieldAccessFillUnit,
   readFilterableValueProblems,
+  readTopLevelFieldKey,
   type ApprovalInstanceFieldFilter,
   type ApprovalInstanceSort,
   type FilterableValueProblem,
@@ -91,6 +95,7 @@ import { FormDefinitionVersionStatusEnum } from '../form/form.enums';
 import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
   BPMFormDataSourceException,
+  BPMFormDataSourceValueNotResolvedException,
 } from '../form-data-source/form-data-source.errors';
 import { readSubmittedMemberValueErrors } from '../form/form-member-value.validator';
 import {
@@ -133,12 +138,28 @@ import {
 } from '../organization/organization-time-zone';
 import { ApprovalTemplateVersionEntity } from '../template/approval-template-version.entity';
 import { ApprovalTemplateEntity } from '../template/approval-template.entity';
+import {
+  applyOpenColumnCells,
+  assertDependentColumnsFrozen,
+  projectNodeOpenColumnsRequired,
+  projectOpenColumnsOptional,
+  readApproverFilledDeferral,
+  readNodeColumnFillMap,
+  readOpenCellSnapshots,
+  readOpenDataSourceCellSchema,
+  readSnapshotWithoutOpenCells,
+  settleColumnFillPayload,
+} from './approver-filled-table-columns';
 import { CancelApprovalInstanceInput } from './dto/cancel-approval-instance.input';
-import { ApprovalTemplateVersionStatusEnum } from '../template/template.enums';
+import {
+  ApprovalTemplateLaunchModeEnum,
+  ApprovalTemplateVersionStatusEnum,
+} from '../template/template.enums';
 import { DecideTaskInput } from './dto/decide-task.input';
 import { DryRunApprovalWorkflowInput } from './dto/dry-run-approval-workflow.input';
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
+import { fillMissingFormFields } from './missing-form-fields';
 import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
 import {
@@ -197,8 +218,24 @@ import {
 import {
   BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER,
   BPMInitiatorCustomFieldsInput,
+  BPMInitiatorCustomFieldsPurpose,
   BPMInitiatorCustomFieldsResolver,
 } from './initiator-custom-fields-resolver.token';
+import {
+  BPMInstanceEventSnapshot,
+  BPMInstanceEventType,
+  BPMInstanceEventTypePayloads,
+} from '../instance-event/instance-event.types';
+import { InstanceEventWriter } from '../instance-event/instance-event.writer';
+import {
+  BPM_INSTANCE_GUARD,
+  BPMInstanceGuard,
+  BPMInstanceGuardInput,
+} from './instance-guard.token';
+import {
+  BPM_INSTANCE_GUARD_DEFAULT_TIMEOUT_MS,
+  runInstanceGuard,
+} from './instance-guard.runner';
 import {
   BPM_WORKFLOW_SERVICE_TASK_DISPATCHER,
   BPMWorkflowServiceTaskDispatcher,
@@ -237,6 +274,15 @@ type SubmitApprovalInstanceCommand = SubmitApprovalInstanceInput & {
    * unset and may prefill them.
    */
   readonly endUserSubmission?: boolean;
+  /**
+   * Service layer only (ADR 27 §5): fields a host adds to the initiator's
+   * `customFields`. The engine still builds the default snapshot and calls the
+   * `customFields` resolver; these values are merged over what it returned, so
+   * a key given here wins. Cannot be combined with
+   * `initiatorMetadataSnapshotJson` (400). The GraphQL mutation always passes
+   * `null`.
+   */
+  readonly initiatorCustomFields?: Readonly<Record<string, unknown>> | null;
 };
 
 type ResubmitApprovalInstanceCommand = ResubmitApprovalInstanceInput & {
@@ -333,6 +379,12 @@ interface DeferredWebhookDispatch {
 }
 
 interface DryRunSimulationInput {
+  /**
+   * What expressions read as `form`: `formData`, or with
+   * `expressionMissingFormFieldsAsNull` on and a schema given, a copy with the
+   * unfilled top-level fields present (ADR 27 §3).
+   */
+  readonly expressionFormData: Readonly<Record<string, unknown>>;
   readonly formData: Readonly<Record<string, unknown>>;
   readonly initiatorMemberId: string;
   readonly initiatorMetadataSnapshot: Readonly<Record<string, unknown>>;
@@ -479,6 +531,14 @@ export interface ReassignTaskOptions {
   readonly toMemberId: string;
 }
 
+export interface ReassignMemberTasksOptions extends ReassignTaskOptions {
+  /**
+   * Only these tasks. Omitted or null means every open task the member holds;
+   * an empty list is refused, never read as "all".
+   */
+  readonly taskIds?: readonly string[] | null;
+}
+
 export interface MemberOpenTaskRecord {
   readonly candidateStatus: TaskCandidateStatusEnum | null;
   readonly createdAt: Date;
@@ -505,6 +565,37 @@ const INACTIVE_MEMBER_NAME_LOCALE = 'zh-Hant-TW';
  * every load of the member screen.
  */
 const INACTIVE_MEMBER_COUNT_CONCURRENCY = 5;
+
+/** Paging of a member's task list; both absent means unpaged. */
+export interface TaskListPageOptions {
+  /** 1-based; defaults to 1 once paging is asked for. */
+  readonly page?: number;
+  /** Defaults to 20, at most 100, once paging is asked for. */
+  readonly pageSize?: number;
+}
+
+/**
+ * Narrows a member's task list to the tasks of some templates. Absent fields
+ * do not filter. An empty `templateIds` matches nothing, as `IN ()` would.
+ * When both fields are given a task must satisfy both.
+ */
+export interface TaskTemplateFilter {
+  /** Only tasks whose instance was started from one of these templates. */
+  readonly templateIds?: readonly string[];
+  /** Only tasks whose instance's template carries this key (ADR 27 §6). */
+  readonly templateKey?: string;
+}
+
+/** Options of {@link WorkflowEngineService.listInboxTasks}. */
+export interface InboxTaskListOptions
+  extends TaskListPageOptions, TaskTemplateFilter {}
+
+/** Options of {@link WorkflowEngineService.listApprovalHistoryTasks}. */
+export interface ApprovalHistoryTaskListOptions
+  extends TaskListPageOptions, TaskTemplateFilter {
+  /** Only tasks of instances in this state. */
+  readonly instanceState?: ApprovalInstanceStateEnum;
+}
 
 /** A deactivated member who still holds open tasks, for the reassignment screen. */
 export interface InactiveMemberOpenTasksRecord {
@@ -541,6 +632,13 @@ export interface DecideTaskOptions {
    * transfer. Defaults to {@link MANUAL_TRANSFER_DELEGATION_REASON}.
    */
   readonly transferReason?: string;
+  /**
+   * The approver's own auth context, passed by the GraphQL mutation. Data
+   * source providers receive it when an approver-filled dynamic field is
+   * resolved. Absent for engine-made decisions (SLA auto-approve), which then
+   * act as the decider's member id only.
+   */
+  readonly approverAuthContext?: BPMAuthContext;
 }
 
 interface ReturnedInstanceContext {
@@ -686,6 +784,11 @@ export interface ListApprovalInstancesOptions {
   readonly sort?: readonly ApprovalInstanceSort[];
   readonly state?: readonly ApprovalInstanceStateEnum[];
   readonly templateId?: string;
+  /**
+   * ADR 27 §6: the template's `key`. Resolved to its id; with `templateId`
+   * as well, both must name the same template. An unknown key matches nothing.
+   */
+  readonly templateKey?: string;
   readonly view?: ApprovalInstanceListViewEnum;
 }
 
@@ -708,6 +811,34 @@ type FormConditionOperator =
   | 'lessThanOrEqual'
   | 'notEquals';
 
+/**
+ * ADR 27 §4.2: an approver-filled value the provider no longer offers answers
+ * 400 with `formDataErrors` naming the field or table cell, `code` kept. Other
+ * failures pass through unchanged.
+ */
+async function answerValueNotResolved<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error: unknown) {
+    if (error instanceof BPMFormDataSourceValueNotResolvedException) {
+      const issue: FormDataIssue = {
+        ...createFormDataIssue(
+          error.location,
+          'VALUE_NOT_RESOLVED',
+          '的選項已不在可選範圍內，請重新選擇',
+        ),
+        code: BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED,
+      };
+
+      throw createFormDataBadRequest(readFormDataIssueMessage([issue]), [
+        issue,
+      ]);
+    }
+
+    throw error;
+  }
+}
+
 const WORKFLOW_READ_ALL_PERMISSIONS = new Set([
   'bpm:*',
   'bpm.workflow.read_all',
@@ -718,6 +849,11 @@ const WORKFLOW_READ_ALL_PERMISSIONS = new Set([
 @Injectable()
 export class WorkflowEngineService {
   private readonly logger = new Logger(WorkflowEngineService.name);
+  /** In-flight inbox reads by member; see `readSharedOpenInboxTasks`. */
+  private readonly openInboxReadsInFlight = new Map<
+    string,
+    Promise<readonly TaskEntity[]>
+  >();
   private readonly approvalInstanceFieldFilterCompiler =
     new ApprovalInstanceFieldFilterCompiler();
   private readonly approvalInstanceFilterableFieldPolicy =
@@ -766,6 +902,11 @@ export class WorkflowEngineService {
     @Optional()
     @Inject(BPM_INITIATOR_CUSTOM_FIELDS_RESOLVER)
     injectedInitiatorCustomFieldsResolver?: BPMInitiatorCustomFieldsResolver,
+    @Optional()
+    @Inject(BPM_INSTANCE_GUARD)
+    injectedInstanceGuard?: BPMInstanceGuard,
+    @Optional()
+    private readonly instanceEventWriter?: InstanceEventWriter,
   ) {
     // A binding under the token wins: that is either the host's own provider
     // or `workflowServiceTaskDispatcherProvider`, both of them deliberate. The
@@ -787,21 +928,120 @@ export class WorkflowEngineService {
       injectedInitiatorCustomFieldsResolver ??
       rootOptions?.initiatorCustomFieldsResolver ??
       null;
+    // Same three-way order as the initiator resolver: a host binding under the
+    // token, then the runtime instance, then no guard at all.
+    this.instanceGuard =
+      injectedInstanceGuard ?? rootOptions?.instanceGuard ?? null;
+    this.instanceGuardTimeoutMs =
+      rootOptions?.instanceGuardTimeoutMs ??
+      BPM_INSTANCE_GUARD_DEFAULT_TIMEOUT_MS;
     this.organizationTimeZone = resolveBPMOrganizationTimeZone(
       rootOptions?.organizationTimeZone,
     );
+    this.expressionMissingFormFieldsAsNull =
+      rootOptions?.expressionMissingFormFieldsAsNull === true;
   }
+
+  /** ADR 27 §3; see `BPMRootRuntimeOptions.expressionMissingFormFieldsAsNull`. */
+  private readonly expressionMissingFormFieldsAsNull: boolean;
 
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
 
   private readonly initiatorCustomFieldsResolver: BPMInitiatorCustomFieldsResolver | null;
+
+  /** ADR 27 §2; `null` means no guard is bound and no guard code runs. */
+  private readonly instanceGuard: BPMInstanceGuard | null;
+
+  private readonly instanceGuardTimeoutMs: number;
+
+  /**
+   * Runs the bound guard for one engine path inside its transaction. A no-op
+   * when no guard is bound, so a host without one sees no behavior change.
+   */
+  private async guardInstanceChange(
+    input: BPMInstanceGuardInput,
+  ): Promise<void> {
+    if (this.instanceGuard === null) {
+      return;
+    }
+
+    await runInstanceGuard(
+      this.instanceGuard,
+      input,
+      this.instanceGuardTimeoutMs,
+    );
+  }
+
+  /**
+   * Writes one case-lifecycle event (ADR 27 §1) in the caller's transaction.
+   * Returns before any lookup when no observer is bound, so a host without
+   * one pays nothing. `instanceState` is the state the change commits, not the
+   * state the instance held before it.
+   */
+  private async recordInstanceEvent<K extends BPMInstanceEventType>(
+    manager: EntityManager,
+    instance: Readonly<
+      Pick<ApprovalInstanceEntity, 'id' | 'templateId' | 'templateVersionId'>
+    >,
+    instanceState: ApprovalInstanceStateEnum,
+    type: K,
+    fields: BPMInstanceEventTypePayloads[K],
+  ): Promise<void> {
+    if (this.instanceEventWriter?.enabled !== true) {
+      return;
+    }
+
+    const template = await manager
+      .getRepository(ApprovalTemplateEntity)
+      .findOne({
+        select: { id: true, key: true },
+        where: { id: instance.templateId },
+        withDeleted: true,
+      });
+    const snapshot: BPMInstanceEventSnapshot = {
+      instanceState,
+      templateId: instance.templateId,
+      templateKey: template?.key ?? null,
+      templateVersionId: instance.templateVersionId,
+    };
+
+    await this.instanceEventWriter.record(
+      manager,
+      instance.id,
+      snapshot,
+      type,
+      fields,
+    );
+  }
+
+  /**
+   * Reads the template version a case runs on, inside the engine transaction,
+   * so the guard sees the same snapshot as the decision. A missing row fails
+   * the change rather than handing the guard a partial input.
+   */
+  private async readBoundTemplateVersionOrThrow(
+    manager: EntityManager,
+    instance: Readonly<ApprovalInstanceEntity>,
+  ): Promise<ApprovalTemplateVersionEntity> {
+    const version = await manager
+      .getRepository(ApprovalTemplateVersionEntity)
+      .findOne({ where: { id: instance.templateVersionId } });
+
+    if (!version) {
+      throw new ConflictException({
+        code: 'TEMPLATE_VERSION_NOT_FOUND',
+        message: 'The template version of this instance no longer exists.',
+      });
+    }
+
+    return version;
+  }
 
   /** Webhooks each open engine transaction will send once it has committed. */
   private readonly deferredWebhookDispatches = new WeakMap<
     EntityManager,
     DeferredWebhookDispatch[]
   >();
-
 
   private readonly organizationTimeZone: string;
 
@@ -915,6 +1155,7 @@ export class WorkflowEngineService {
       );
     }
 
+    const hostCustomFields = readHostInitiatorCustomFields(input);
     const submittedFormData = parseJsonObject(
       input.formDataJson,
       'formDataJson',
@@ -937,6 +1178,11 @@ export class WorkflowEngineService {
     const templateVersion = await this.getPublishedTemplateVersionOrThrow(
       template.currentVersionId,
     );
+
+    if (input.endUserSubmission === true) {
+      assertEndUserMayLaunch(templateVersion);
+    }
+
     const formDefinitionVersion = await this.getPublishedFormVersionOrThrow(
       templateVersion.formDefinitionVersionId,
     );
@@ -947,42 +1193,50 @@ export class WorkflowEngineService {
     // checked here; required and row minimums wait for the node that fills
     // them. Read off the version the instance is bound to, not the template's
     // latest, so a publish in between cannot change what is stripped.
-    const deferredFieldKeys = readApproverFilledFieldKeys(
+    const deferral = readApproverFilledDeferral(
       templateVersion.workflowDefinition,
     );
     const formData =
       input.endUserSubmission === true
-        ? omitFormDataKeys(submittedFormData, deferredFieldKeys)
+        ? applyOpenColumnCells(
+            omitFormDataKeys(submittedFormData, deferral.wholeKeys),
+            null,
+            deferral,
+          )
         : submittedFormData;
-    validateSubmittedFormData(formDefinitionVersion.schema, formData, {
-      deferredFieldKeys,
-    });
+    validateSubmittedFormData(
+      projectOpenColumnsOptional(formDefinitionVersion.schema, deferral),
+      formData,
+      { deferredFieldKeys: deferral.wholeKeys },
+    );
     // Checked against the bound version's schema before any data source is
     // called, so a bad value is refused cheaply. The transaction below
     // confirms under the template lock that this version is still current
     // (ADR 25 §15), which is what makes this schema the one in force.
     assertFilterableFormDataValues(formDefinitionVersion.schema, formData);
-    const formDataOptionSnapshot =
-      await this.resolveFormDataOptionSnapshots({
-        authContext: submitAuthContext,
-        formData,
-        revalidateAll: true,
-        schema: formDefinitionVersion.schema,
-      });
+    const formDataOptionSnapshot = await this.resolveFormDataOptionSnapshots({
+      authContext: submitAuthContext,
+      formData,
+      revalidateAll: true,
+      schema: formDefinitionVersion.schema,
+    });
     const initiatorMetadataSnapshot = input.initiatorMetadataSnapshotJson
       ? parseJsonObject(
           input.initiatorMetadataSnapshotJson,
           'initiatorMetadataSnapshotJson',
         )
-      : await this.buildInitiatorMetadataSnapshot({
-          authContext: submitAuthContext,
-          memberId: input.initiatorMemberId,
-          submission: {
-            formData,
-            templateId: template.id,
-            templateVersionId: templateVersion.id,
-          },
-        });
+      : mergeHostInitiatorCustomFields(
+          await this.buildInitiatorMetadataSnapshot({
+            authContext: submitAuthContext,
+            memberId: input.initiatorMemberId,
+            submission: {
+              formData,
+              templateId: template.id,
+              templateVersionId: templateVersion.id,
+            },
+          }),
+          hostCustomFields,
+        );
 
     if (
       !this.conditionService.evaluateBoolean(
@@ -1056,29 +1310,44 @@ export class WorkflowEngineService {
         );
         const tokenRepository = manager.getRepository(WorkflowTokenEntity);
         const activityRepository = manager.getRepository(ActivityLogEntity);
-        const instance = await instanceRepository.save(
-          instanceRepository.create({
-            completedAt: null,
-            formData,
-            formDataOptionSnapshot,
-            formDefinitionSnapshot: {
-              formDefinitionVersionId: formDefinitionVersion.id,
-              schema: formDefinitionVersion.schema,
-              uiSchema: formDefinitionVersion.uiSchema,
-              version: formDefinitionVersion.version,
-            },
-            businessKey,
-            initiatorMemberId: input.initiatorMemberId,
-            initiatorMetadataSnapshot,
-            startedAt,
-            state: ApprovalInstanceStateEnum.RUNNING,
-            submittedByMemberId,
-            templateId: template.id,
-            templateVersionId: templateVersion.id,
-            title: input.title?.trim() || template.name,
-            workflowSnapshot: templateVersion.workflowDefinition,
-          }),
-        );
+        const instanceDraft = instanceRepository.create({
+          completedAt: null,
+          formData,
+          formDataOptionSnapshot,
+          formDefinitionSnapshot: {
+            formDefinitionVersionId: formDefinitionVersion.id,
+            schema: formDefinitionVersion.schema,
+            uiSchema: formDefinitionVersion.uiSchema,
+            version: formDefinitionVersion.version,
+          },
+          businessKey,
+          initiatorMemberId: input.initiatorMemberId,
+          initiatorMetadataSnapshot,
+          startedAt,
+          state: ApprovalInstanceStateEnum.RUNNING,
+          submittedByMemberId,
+          templateId: template.id,
+          templateVersionId: templateVersion.id,
+          title: input.title?.trim() || template.name,
+          workflowSnapshot: templateVersion.workflowDefinition,
+        });
+        // ADR 27 §2: the host guard sees the case as it is about to be saved,
+        // under the template lock. A refusal throws here, before any insert.
+        await this.guardInstanceChange({
+          action: null,
+          actorMemberId: submittedByMemberId,
+          authContext: authContext ?? null,
+          automatic: null,
+          changedFieldKeys: Object.keys(formData),
+          formData,
+          instance: instanceDraft,
+          kind: 'SUBMIT',
+          manager,
+          node: null,
+          task: null,
+          templateVersion,
+        });
+        const instance = await instanceRepository.save(instanceDraft);
         await this.attachmentService.bindFormDataAttachmentsToInstance(
           manager,
           {
@@ -1122,6 +1391,13 @@ export class WorkflowEngineService {
             taskId: null,
           }),
         ]);
+        await this.recordInstanceEvent(
+          manager,
+          instance,
+          instance.state,
+          'INSTANCE_SUBMITTED',
+          { actorMemberId: submittedByMemberId },
+        );
         await this.processRunningInstance(manager, instance);
 
         return instance;
@@ -1191,6 +1467,100 @@ export class WorkflowEngineService {
     });
   }
 
+  /**
+   * ADR 27 §4(b): asks the data-source providers again, under the decision
+   * lock and as the approver, for the options of the approver-fillable fields.
+   * A value that is no longer among the options is refused by the resolver
+   * (`VALUE_NOT_RESOLVED`). Returns snapshots for the scoped fields only; the
+   * caller swaps them in for the stored ones.
+   */
+  private async refreshApproverFilledOptionSnapshots({
+    approverAuthContext,
+    fieldKeys,
+    formData,
+    instance,
+  }: {
+    readonly approverAuthContext: BPMAuthContext;
+    readonly fieldKeys: ReadonlySet<string>;
+    readonly formData: Readonly<Record<string, unknown>>;
+    readonly instance: ApprovalInstanceEntity;
+  }): Promise<FormDataSourceValueSnapshots> {
+    const schema = readFormDefinitionSnapshotSchema(
+      instance.formDefinitionSnapshot,
+    );
+
+    return this.resolveFormDataOptionSnapshots({
+      authContext: approverAuthContext,
+      formData,
+      previousFormData: instance.formData,
+      previousSnapshots: readSnapshotWithoutFields(
+        instance.formDataOptionSnapshot,
+        fieldKeys,
+      ),
+      revalidateAll: true,
+      schema: {
+        ...schema,
+        fields: schema.fields.filter((field) => fieldKeys.has(field.fieldKey)),
+      },
+    });
+  }
+
+  /**
+   * ADR 27 §4(b): asks the data-source providers again, as the approver, for
+   * the open data-source cells of column-mode tables. `revalidateAll` false lets
+   * the resolver reuse the stored options of cells whose value and bindings did
+   * not move. Returns snapshots for the cells of `cellSchema` only.
+   */
+  private async refreshApproverFilledOpenCellSnapshots({
+    approverAuthContext,
+    cellSchema,
+    formData,
+    instance,
+    revalidateAll,
+  }: {
+    readonly approverAuthContext: BPMAuthContext;
+    readonly cellSchema: FormDefinitionSchema;
+    readonly formData: Readonly<Record<string, unknown>>;
+    readonly instance: ApprovalInstanceEntity;
+    readonly revalidateAll: boolean;
+  }): Promise<FormDataSourceValueSnapshots> {
+    return this.resolveFormDataOptionSnapshots({
+      authContext: approverAuthContext,
+      formData,
+      previousFormData: instance.formData,
+      previousSnapshots: instance.formDataOptionSnapshot ?? {},
+      revalidateAll,
+      schema: cellSchema,
+    });
+  }
+
+  /**
+   * Refuses an end user's resubmission of an instance bound to a `HOST_ONLY`
+   * version (ADR 27 §5). Checked before any data source is called and outside
+   * the lock: an instance never changes version and a published version never
+   * changes `launchMode`, so the answer cannot go stale. An instance that does
+   * not exist is left to the locked read, which reports it.
+   */
+  private async assertEndUserMayResubmit(instanceId: string): Promise<void> {
+    const instance = await this.approvalInstanceRepository.findOne({
+      select: { id: true, templateVersionId: true },
+      where: { id: instanceId },
+    });
+
+    if (!instance) {
+      return;
+    }
+
+    const version = await this.approvalTemplateVersionRepository.findOne({
+      select: { id: true, launchMode: true },
+      where: { id: instance.templateVersionId },
+    });
+
+    if (version) {
+      assertEndUserMayLaunch(version);
+    }
+  }
+
   private async prepareResubmitFormDataOptions(
     input: ResubmitApprovalInstanceCommand,
     submittedFormData: Readonly<Record<string, unknown>>,
@@ -1227,73 +1597,110 @@ export class WorkflowEngineService {
     const schema = readFormDefinitionSnapshotSchema(
       instance.formDefinitionSnapshot,
     );
-    const deferredFieldKeys = readApproverFilledFieldKeys(
-      instance.workflowSnapshot,
-    );
+    const deferral = readApproverFilledDeferral(instance.workflowSnapshot);
     // Same overlay as inside the lock, so the options resolved here are for
     // the form data that is actually saved.
     const formData =
       input.endUserSubmission === true
-        ? overlayStoredFormDataKeys(
-            submittedFormData,
+        ? applyOpenColumnCells(
+            overlayStoredFormDataKeys(
+              submittedFormData,
+              instance.formData,
+              deferral.wholeKeys,
+            ),
             instance.formData,
-            deferredFieldKeys,
+            deferral,
           )
         : submittedFormData;
-    validateSubmittedFormData(schema, formData, { deferredFieldKeys });
+    validateSubmittedFormData(
+      projectOpenColumnsOptional(schema, deferral),
+      formData,
+      { deferredFieldKeys: deferral.wholeKeys },
+    );
     await this.assertCurrentFilterableFormDataValues(
       instance.templateId,
       formData,
     );
-    const formDataOptionSnapshot =
-      await this.resolveFormDataOptionSnapshots({
-        authContext,
-        formData,
-        previousFormData: instance.formData,
-        previousSnapshots: instance.formDataOptionSnapshot ?? {},
-        schema,
-      });
+    const formDataOptionSnapshot = await this.resolveFormDataOptionSnapshots({
+      authContext,
+      formData,
+      previousFormData: instance.formData,
+      previousSnapshots: instance.formDataOptionSnapshot ?? {},
+      schema,
+    });
 
     return { formDataOptionSnapshot, instance };
   }
 
   async processInstance(instanceId: string): Promise<void> {
-    await this.runEngineTransaction(
-      async (manager): Promise<void> => {
-        await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-          instanceId,
-        ]);
+    await this.runEngineTransaction(async (manager): Promise<void> => {
+      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        instanceId,
+      ]);
 
-        const instance = await manager
-          .getRepository(ApprovalInstanceEntity)
-          .findOne({ where: { id: instanceId } });
+      const instance = await manager
+        .getRepository(ApprovalInstanceEntity)
+        .findOne({ where: { id: instanceId } });
 
-        if (!instance) {
-          throw new NotFoundException(
-            `Approval instance ${instanceId} was not found`,
-          );
-        }
-
-        await manager.getRepository(ActivityLogEntity).save(
-          manager.getRepository(ActivityLogEntity).create({
-            actorMemberId: null,
-            eventType: ActivityLogEventTypeEnum.ENGINE_PROCESS_REQUESTED,
-            instanceId,
-            nodeId: null,
-            payload: {
-              state: instance.state,
-            },
-            taskId: null,
-          }),
+      if (!instance) {
+        throw new NotFoundException(
+          `Approval instance ${instanceId} was not found`,
         );
+      }
 
-        if (instance.state !== ApprovalInstanceStateEnum.RUNNING) {
-          return;
-        }
+      await manager.getRepository(ActivityLogEntity).save(
+        manager.getRepository(ActivityLogEntity).create({
+          actorMemberId: null,
+          eventType: ActivityLogEventTypeEnum.ENGINE_PROCESS_REQUESTED,
+          instanceId,
+          nodeId: null,
+          payload: {
+            state: instance.state,
+          },
+          taskId: null,
+        }),
+      );
 
-        await this.processRunningInstance(manager, instance);
-      },
-    );
+      if (instance.state !== ApprovalInstanceStateEnum.RUNNING) {
+        return;
+      }
+
+      await this.processRunningInstance(manager, instance);
+    });
+  }
+
+  /**
+   * Records `TASK_AUTO_DECISION_FAILED` (ADR 27 §3) in its own transaction.
+   * Used after an automatic decision was refused by the instance guard: the
+   * decision's transaction has already rolled back, so the event cannot ride
+   * on it. Returns before any query when no observer is bound.
+   */
+  async recordTaskAutoDecisionFailed(input: {
+    readonly instanceId: string;
+    readonly taskId: string;
+    readonly reason: string;
+  }): Promise<void> {
+    if (this.instanceEventWriter?.enabled !== true) {
+      return;
+    }
+
+    await this.runEngineTransaction(async (manager): Promise<void> => {
+      const instance = await manager
+        .getRepository(ApprovalInstanceEntity)
+        .findOne({ where: { id: input.instanceId } });
+
+      if (!instance) {
+        return;
+      }
+
+      await this.recordInstanceEvent(
+        manager,
+        instance,
+        instance.state,
+        'TASK_AUTO_DECISION_FAILED',
+        { reason: input.reason, taskId: input.taskId },
+      );
+    });
   }
 
   async decideTask(
@@ -1343,7 +1750,11 @@ export class WorkflowEngineService {
         }
 
         const { actorCandidate, taskCandidates } =
-          await this.readTaskActorContext(manager, task, input.decidedByMemberId);
+          await this.readTaskActorContext(
+            manager,
+            task,
+            input.decidedByMemberId,
+          );
 
         if (
           input.action !== TaskDecisionActionEnum.APPROVED &&
@@ -1584,10 +1995,17 @@ export class WorkflowEngineService {
           );
         }
 
+        // ADR 27 §4(a): column-mode tables are accepted here and settled
+        // cell by cell below. Their open data-source columns are re-resolved per
+        // row as the approver (ADR 27 §4(b)).
+        const nodeColumnFillMap = readNodeColumnFillMap(taskNode);
+
         if (filledFormData !== null) {
           const fillableFieldKeys = readNodeFillableFieldKeys(taskNode);
           const refusedFieldKeys = Object.keys(filledFormData).filter(
-            (fieldKey) => !fillableFieldKeys.has(fieldKey),
+            (fieldKey) =>
+              !fillableFieldKeys.has(fieldKey) &&
+              !nodeColumnFillMap.has(fieldKey),
           );
 
           if (refusedFieldKeys.length > 0) {
@@ -1610,35 +2028,71 @@ export class WorkflowEngineService {
           );
         }
 
+        // ADR 27 §4(a): each column-mode table is merged per cell against the
+        // stored rows. A changed row count, row order or applicant cell is
+        // refused before anything below sees the payload.
+        const settledFormData =
+          filledFormData === null
+            ? null
+            : settleColumnFillPayload(
+                filledFormData,
+                instance.formData,
+                nodeColumnFillMap,
+              );
+
         // Only keys whose value really changes are written and reported. A key
         // the form data does not have yet counts as changed even when the new
         // value is null.
         const changedFieldKeys =
-          filledFormData === null
+          settledFormData === null
             ? []
-            : Object.keys(filledFormData)
+            : Object.keys(settledFormData)
                 .filter(
                   (fieldKey) =>
                     !Object.prototype.hasOwnProperty.call(
                       instance.formData,
                       fieldKey,
                     ) ||
-                    computeStableValueFingerprint(filledFormData[fieldKey]) !==
-                      computeStableValueFingerprint(instance.formData[fieldKey]),
+                    computeStableValueFingerprint(settledFormData[fieldKey]) !==
+                      computeStableValueFingerprint(
+                        instance.formData[fieldKey],
+                      ),
                 )
                 .sort();
 
-        const mergedFormData = { ...instance.formData, ...filledFormData };
+        const mergedFormData = { ...instance.formData, ...settledFormData };
+
+        // ADR 27 §4.3: an approver may change a column only if no column this
+        // approver may not fill reads it. Such a dependent keeps its stored value
+        // here, so a changed source would leave it stale. Fail closed.
+        if (nodeColumnFillMap.size > 0) {
+          assertDependentColumnsFrozen(
+            readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+            taskNode,
+            instance.formData,
+            mergedFormData,
+          );
+        }
 
         // Every approval at a node that lets its approver fill in fields is
         // held to those fields, whether or not this request sent any: the host
-        // may have pre-filled a table the approver then leaves as is.
+        // may have pre-filled a table the approver then leaves as is. A column
+        // this node grants REQUIRED is required in the check, not only in the
+        // template.
         if (input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc) {
-          const nodeFillableFieldKeys = readNodeFillableFieldKeys(taskNode);
+          const nodeFillableFieldKeys = new Set<string>([
+            ...readNodeFillableFieldKeys(taskNode),
+            ...nodeColumnFillMap.keys(),
+          ]);
 
           if (nodeFillableFieldKeys.size > 0) {
             validateFilledFormFields(
-              readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+              projectNodeOpenColumnsRequired(
+                readFormDefinitionSnapshotSchema(
+                  instance.formDefinitionSnapshot,
+                ),
+                nodeColumnFillMap,
+              ),
               mergedFormData,
               nodeFillableFieldKeys,
               readNodeRequiredFieldKeys(taskNode),
@@ -1646,20 +2100,145 @@ export class WorkflowEngineService {
           }
         }
 
-        if (filledFormData !== null && changedFieldKeys.length > 0) {
+        // ADR 27 §4(b): an approver-filled data-source field is judged as the
+        // approver's own pick. The provider is asked again under the lock with
+        // the approver's identity, so a value outside the current options is
+        // refused and the recorded label is refreshed before anything is
+        // written. Table data-source columns resolve per row (ROW_FIELD).
+        const fillableFieldKeys = readNodeFillableFieldKeys(taskNode);
+        const dataSourceRefreshKeys: ReadonlySet<string> =
+          input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc
+            ? fillableFieldKeys
+            : new Set(
+                changedFieldKeys.filter((fieldKey) =>
+                  fillableFieldKeys.has(fieldKey),
+                ),
+              );
+        const approverAuthContext =
+          options.approverAuthContext ??
+          createWorkflowAuthContext(input.decidedByMemberId);
+        const refreshedFormDataOptionSnapshots =
+          dataSourceRefreshKeys.size === 0
+            ? null
+            : await answerValueNotResolved(() =>
+                this.refreshApproverFilledOptionSnapshots({
+                  approverAuthContext,
+                  fieldKeys: dataSourceRefreshKeys,
+                  formData: mergedFormData,
+                  instance,
+                }),
+              );
+        const wholeFieldOptionSnapshot: FormDataSourceValueSnapshots =
+          refreshedFormDataOptionSnapshots === null
+            ? (instance.formDataOptionSnapshot ?? {})
+            : {
+                ...readSnapshotWithoutFields(
+                  instance.formDataOptionSnapshot,
+                  dataSourceRefreshKeys,
+                ),
+                ...refreshedFormDataOptionSnapshots,
+              };
+
+        // ADR 27 §4(b): the open data-source cells of column-mode tables. An
+        // APPROVED decision re-resolves all of them; any other decision only
+        // when a column-mode table's cells changed. The form schema is read
+        // only for a node that has column-mode fills, so other nodes never
+        // touch the snapshot's schema.
+        const openCellSchema: FormDefinitionSchema | null =
+          nodeColumnFillMap.size === 0
+            ? null
+            : readOpenDataSourceCellSchema(
+                readFormDefinitionSnapshotSchema(
+                  instance.formDefinitionSnapshot,
+                ),
+                nodeColumnFillMap,
+              );
+        const openCellTableKeys = new Set(
+          (openCellSchema?.fields ?? []).map((field) => field.fieldKey),
+        );
+        const revalidateAllOpenCells =
+          input.action === TaskDecisionActionEnum.APPROVED && !task.isAdhoc;
+        const hasChangedOpenCellTable = changedFieldKeys.some((fieldKey) =>
+          openCellTableKeys.has(fieldKey),
+        );
+        const refreshedOpenCellSnapshots =
+          openCellSchema === null ||
+          openCellSchema.fields.length === 0 ||
+          (!revalidateAllOpenCells && !hasChangedOpenCellTable)
+            ? null
+            : await answerValueNotResolved(() =>
+                this.refreshApproverFilledOpenCellSnapshots({
+                  approverAuthContext,
+                  cellSchema: openCellSchema,
+                  formData: mergedFormData,
+                  instance,
+                  revalidateAll: revalidateAllOpenCells,
+                }),
+              );
+        const nextFormDataOptionSnapshot: FormDataSourceValueSnapshots =
+          refreshedOpenCellSnapshots === null || openCellSchema === null
+            ? wholeFieldOptionSnapshot
+            : {
+                ...readSnapshotWithoutOpenCells(
+                  wholeFieldOptionSnapshot,
+                  openCellSchema,
+                ),
+                ...readOpenCellSnapshots(
+                  refreshedOpenCellSnapshots,
+                  openCellSchema,
+                ),
+              };
+
+        // ADR 27 §2: the host guard judges the decision as it will be
+        // committed, after the form checks and before anything is written.
+        // The version is read only when a guard is bound, so an engine
+        // without one issues exactly the queries it did before.
+        if (this.instanceGuard !== null) {
+          await this.guardInstanceChange({
+            action: input.action,
+            actorMemberId: input.decidedByMemberId,
+            // The approver's own context when the GraphQL mutation passed one;
+            // never the member-id stub the data-source path falls back to.
+            authContext: options.approverAuthContext ?? null,
+            automatic: options.automatic ?? null,
+            changedFieldKeys,
+            formData: mergedFormData,
+            instance,
+            kind: 'DECIDE',
+            manager,
+            node: taskNode,
+            task,
+            templateVersion: await this.readBoundTemplateVersionOrThrow(
+              manager,
+              instance,
+            ),
+          });
+        }
+
+        const formDataChanged =
+          settledFormData !== null && changedFieldKeys.length > 0;
+        const formDataOptionSnapshotChanged =
+          computeStableValueFingerprint(nextFormDataOptionSnapshot) !==
+          computeStableValueFingerprint(instance.formDataOptionSnapshot ?? {});
+
+        if (formDataChanged) {
           await this.assertCurrentFilterableFormDataValues(
             instance.templateId,
             mergedFormData,
             manager,
           );
+        }
 
+        if (formDataChanged || formDataOptionSnapshotChanged) {
           // Merged into the shared `instance` before it is signed and before
           // the token moves on: the signature must cover the filled values, a
           // gateway after this node must route on them, and an end node saves
-          // this same object, which would write the old values back.
+          // this same object, which would write the old values back. The
+          // refreshed option labels go in the same write.
           const savedInstance = await instanceRepository.save({
             ...instance,
             formData: mergedFormData,
+            formDataOptionSnapshot: nextFormDataOptionSnapshot,
           });
 
           Object.assign(instance, savedInstance);
@@ -1815,7 +2394,8 @@ export class WorkflowEngineService {
         // candidate's notification is superseded too; a non-completing approval
         // on a multi-approver task leaves the remaining approvers' open.
         const taskEnded =
-          input.action !== TaskDecisionActionEnum.APPROVED || shouldCompleteTask;
+          input.action !== TaskDecisionActionEnum.APPROVED ||
+          shouldCompleteTask;
 
         await this.notificationService.resolveTaskNotifications({
           actingMemberId: input.decidedByMemberId,
@@ -1910,6 +2490,7 @@ export class WorkflowEngineService {
             completedTask,
             returnToNodeId,
             decidedAt,
+            input.decidedByMemberId,
           );
 
           return decision;
@@ -1927,7 +2508,13 @@ export class WorkflowEngineService {
           return decision;
         }
 
-        await this.rejectInstance(manager, instance, completedTask, decidedAt);
+        await this.rejectInstance(
+          manager,
+          instance,
+          completedTask,
+          decidedAt,
+          input.decidedByMemberId,
+        );
 
         return decision;
       },
@@ -1989,6 +2576,13 @@ export class WorkflowEngineService {
             taskId: null,
           }),
         );
+        await this.recordInstanceEvent(
+          manager,
+          cancelledInstance,
+          ApprovalInstanceStateEnum.CANCELLED,
+          'INSTANCE_CANCELLED',
+          { actorMemberId: input.cancelledByMemberId },
+        );
 
         return cancelledInstance;
       },
@@ -2047,6 +2641,13 @@ export class WorkflowEngineService {
             taskId: input.taskId ?? null,
           }),
         );
+        await this.recordInstanceEvent(
+          manager,
+          expiredInstance,
+          ApprovalInstanceStateEnum.EXPIRED,
+          'INSTANCE_EXPIRED',
+          {},
+        );
 
         return expiredInstance;
       },
@@ -2061,8 +2662,7 @@ export class WorkflowEngineService {
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     finalState:
-      | ApprovalInstanceStateEnum.CANCELLED
-      | ApprovalInstanceStateEnum.EXPIRED,
+      ApprovalInstanceStateEnum.CANCELLED | ApprovalInstanceStateEnum.EXPIRED,
   ): Promise<ApprovalInstanceEntity> {
     const closedAt = new Date();
 
@@ -2106,6 +2706,11 @@ export class WorkflowEngineService {
       input.formDataJson,
       'formDataJson',
     );
+
+    if (input.endUserSubmission === true) {
+      await this.assertEndUserMayResubmit(input.instanceId);
+    }
+
     const preparation = this.formDataSourceValueResolver
       ? await this.prepareResubmitFormDataOptions(
           input,
@@ -2163,23 +2768,28 @@ export class WorkflowEngineService {
         const resubmitSchema = readFormDefinitionSnapshotSchema(
           instance.formDefinitionSnapshot,
         );
-        const deferredFieldKeys = readApproverFilledFieldKeys(
-          instance.workflowSnapshot,
-        );
+        const deferral = readApproverFilledDeferral(instance.workflowSnapshot);
         // An end user gets back the value an approver already filled in, and
         // loses a key the stored data never had: the renderer seeds `false`,
         // `[]` and empty rows for every field, none of which an approver wrote.
+        // An open cell of a table is settled per row the same way.
         const formData =
           input.endUserSubmission === true
-            ? overlayStoredFormDataKeys(
-                submittedFormData,
+            ? applyOpenColumnCells(
+                overlayStoredFormDataKeys(
+                  submittedFormData,
+                  instance.formData,
+                  deferral.wholeKeys,
+                ),
                 instance.formData,
-                deferredFieldKeys,
+                deferral,
               )
             : submittedFormData;
-        validateSubmittedFormData(resubmitSchema, formData, {
-          deferredFieldKeys,
-        });
+        validateSubmittedFormData(
+          projectOpenColumnsOptional(resubmitSchema, deferral),
+          formData,
+          { deferredFieldKeys: deferral.wholeKeys },
+        );
         await this.assertCurrentFilterableFormDataValues(
           instance.templateId,
           formData,
@@ -2188,6 +2798,31 @@ export class WorkflowEngineService {
 
         if (!preparation) {
           assertNoUnresolvableDynamicValues(resubmitSchema, formData);
+        }
+
+        // ADR 27 §2: the host guard judges the resubmission as it will be
+        // committed, after every form check and before the write.
+        if (this.instanceGuard !== null) {
+          await this.guardInstanceChange({
+            action: null,
+            actorMemberId: input.initiatorMemberId,
+            authContext: authContext ?? null,
+            automatic: null,
+            changedFieldKeys: listChangedFormDataKeys(
+              instance.formData,
+              formData,
+            ),
+            formData,
+            instance,
+            kind: 'RESUBMIT',
+            manager,
+            node: null,
+            task: null,
+            templateVersion: await this.readBoundTemplateVersionOrThrow(
+              manager,
+              instance,
+            ),
+          });
         }
 
         const resubmittedInstance = await instanceRepository.save({
@@ -2207,6 +2842,15 @@ export class WorkflowEngineService {
           state: ApprovalInstanceStateEnum.RUNNING,
           title: input.title?.trim() || instance.title,
         });
+        // Written before the resume below, so RESUBMITTED precedes any
+        // NODE_ACTIVATED that the resume produces in the same transaction.
+        await this.recordInstanceEvent(
+          manager,
+          resubmittedInstance,
+          ApprovalInstanceStateEnum.RUNNING,
+          'INSTANCE_RESUBMITTED',
+          { actorMemberId: input.initiatorMemberId },
+        );
         await this.attachmentService.bindFormDataAttachmentsToInstance(
           manager,
           {
@@ -2351,57 +2995,55 @@ export class WorkflowEngineService {
     readonly target: AdhocTargetInput;
     readonly taskId: string;
   }): Promise<TaskEntity> {
-    return this.runEngineTransaction(
-      async (manager): Promise<TaskEntity> => {
-        const { instance, node, task } = await this.loadAdhocOperationContext(
-          manager,
-          taskId,
-          requestedByMemberId,
-          { requireAllowAddSigner: true },
-        );
-        const targetValue = buildAdhocTargetValue(target);
+    return this.runEngineTransaction(async (manager): Promise<TaskEntity> => {
+      const { instance, node, task } = await this.loadAdhocOperationContext(
+        manager,
+        taskId,
+        requestedByMemberId,
+        { requireAllowAddSigner: true },
+      );
+      const targetValue = buildAdhocTargetValue(target);
 
-        // Rejects WEBHOOK targets — pre-approvers must be members.
-        buildAdhocApproverResolver(targetValue);
+      // Rejects WEBHOOK targets — pre-approvers must be members.
+      buildAdhocApproverResolver(targetValue);
 
-        const now = new Date();
-        const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
-        const directive = await directiveRepository.save(
-          directiveRepository.create({
-            channels: null,
-            comment: comment?.trim() || null,
-            consumedAt: now,
-            createdByMemberId: requestedByMemberId,
-            instanceId: instance.id,
-            onReject,
-            originNodeId: task.nodeId,
-            originTaskId: task.id,
-            status: AdhocDirectiveStatusEnum.CONSUMED,
-            targetKind: targetValue.kind,
-            targetValue: { ...targetValue },
-            type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
-          }),
-        );
-        const adhocTask = await this.createAdhocTaskForDirective(
-          manager,
-          instance,
-          task.tokenId,
-          node,
-          directive,
-          now,
-        );
+      const now = new Date();
+      const directiveRepository = manager.getRepository(AdhocDirectiveEntity);
+      const directive = await directiveRepository.save(
+        directiveRepository.create({
+          channels: null,
+          comment: comment?.trim() || null,
+          consumedAt: now,
+          createdByMemberId: requestedByMemberId,
+          instanceId: instance.id,
+          onReject,
+          originNodeId: task.nodeId,
+          originTaskId: task.id,
+          status: AdhocDirectiveStatusEnum.CONSUMED,
+          targetKind: targetValue.kind,
+          targetValue: { ...targetValue },
+          type: AdhocDirectiveTypeEnum.PRE_APPROVAL,
+        }),
+      );
+      const adhocTask = await this.createAdhocTaskForDirective(
+        manager,
+        instance,
+        task.tokenId,
+        node,
+        directive,
+        now,
+      );
 
-        await this.recordAdhocDirectiveActivity(
-          manager,
-          directive,
-          ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CREATED,
-          requestedByMemberId,
-          { adhocTaskId: adhocTask.id, nodeLabel: node.data.label, onReject },
-        );
+      await this.recordAdhocDirectiveActivity(
+        manager,
+        directive,
+        ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CREATED,
+        requestedByMemberId,
+        { adhocTaskId: adhocTask.id, nodeLabel: node.data.label, onReject },
+      );
 
-        return adhocTask;
-      },
-    );
+      return adhocTask;
+    });
   }
 
   async configureAdhocNotification({
@@ -2615,7 +3257,10 @@ export class WorkflowEngineService {
       );
     }
 
-    const node = readWorkflowNodeOrThrow(instance.workflowSnapshot, task.nodeId);
+    const node = readWorkflowNodeOrThrow(
+      instance.workflowSnapshot,
+      task.nodeId,
+    );
 
     if (node.type !== 'userTask') {
       throw new ConflictException(
@@ -2980,7 +3625,10 @@ export class WorkflowEngineService {
       originTask,
       originCandidates,
     );
-    const node = readWorkflowNodeOrThrow(instance.workflowSnapshot, task.nodeId);
+    const node = readWorkflowNodeOrThrow(
+      instance.workflowSnapshot,
+      task.nodeId,
+    );
 
     if (!originTaskIsOpen && originTask.assigneeMemberId) {
       // The origin approver already decided — reopen a fresh decision task so
@@ -3492,6 +4140,7 @@ export class WorkflowEngineService {
         input.workflowDefinitionJson,
         input.formDataJson,
         input.initiatorMetadataSnapshotJson ?? '',
+        input.formSchemaJson ?? '',
       ].some((json) => json.length > MAX_DRY_RUN_INPUT_LENGTH)
     ) {
       return createFailedDryRunResult(
@@ -3503,6 +4152,7 @@ export class WorkflowEngineService {
       input.workflowDefinitionJson,
     );
     const formData = parseJsonObject(input.formDataJson, 'formDataJson');
+    const formSchema = readDryRunFormSchema(input.formSchemaJson);
     // The snapshot here is the caller's own sample (the designer always sends
     // one) or a bare `{ customFields: {}, memberId }`. It is not the one a real
     // submission builds, and a dry run has no template version to hand the
@@ -3529,6 +4179,10 @@ export class WorkflowEngineService {
           runWithinTimeBudget(
             () =>
               this.simulateWorkflow({
+                expressionFormData:
+                  this.expressionMissingFormFieldsAsNull && formSchema
+                    ? fillMissingFormFields(formData, formSchema)
+                    : formData,
                 formData,
                 initiatorMemberId: input.initiatorMemberId,
                 initiatorMetadataSnapshot,
@@ -3994,6 +4648,77 @@ export class WorkflowEngineService {
   }
 
   /**
+   * ADR 27 §4.2 (gap 1): the fill units an approver may use to resolve runtime
+   * data-source options on a RUNNING instance. Only tasks the member can act on
+   * count: the member is the assignee or a PENDING/CLAIMED candidate of a
+   * PENDING or IN_PROGRESS, non-ad-hoc task. A task whose candidate row is
+   * WAITING or already decided grants nothing, even though its status is open.
+   * A field counts only when its node lists it as SHOW; a HIDE entry never
+   * grants, whatever its fill is. Returns `[]` when the instance is not RUNNING.
+   */
+  async listApproverFillUnits(
+    instanceId: string,
+    memberId: string,
+  ): Promise<readonly FieldAccessFillUnit[]> {
+    const instance = await this.approvalInstanceRepository.findOne({
+      where: { id: instanceId },
+    });
+
+    if (
+      !instance ||
+      instance.state !== ApprovalInstanceStateEnum.RUNNING
+    ) {
+      return [];
+    }
+
+    const tasks = await this.taskRepository.find({
+      where: {
+        instanceId,
+        isAdhoc: false,
+        status: In([TaskStatusEnum.PENDING, TaskStatusEnum.IN_PROGRESS]),
+      },
+    });
+    const unitsPerTask = await Promise.all(
+      tasks.map(async (task): Promise<readonly FieldAccessFillUnit[]> => {
+        const node = instance.workflowSnapshot.nodes.find(
+          (candidate): candidate is UserTaskNode =>
+            candidate.type === 'userTask' && candidate.id === task.nodeId,
+        );
+
+        if (!node) {
+          return [];
+        }
+
+        try {
+          await this.readTaskActorContext(
+            this.taskRepository.manager,
+            task,
+            memberId,
+          );
+        } catch (error: unknown) {
+          if (error instanceof ConflictException) {
+            return [];
+          }
+
+          throw error;
+        }
+
+        const shown = new Set(
+          readNodeFieldAccess(node)
+            .filter((entry) => entry.display === 'SHOW')
+            .map((entry) => entry.fieldKey),
+        );
+
+        return readNodeFillUnits(node).filter((unit) =>
+          shown.has(unit.fieldKey),
+        );
+      }),
+    );
+
+    return unitsPerTask.flat();
+  }
+
+  /**
    * ADR 25 §6: a value written to a filterable field must fit its type, on
    * every path that writes form data. The fields checked are the ones the
    * template's *current* version marks filterable, not the instance's own
@@ -4059,7 +4784,10 @@ export class WorkflowEngineService {
     scope?: WorkflowReadScope,
     options: ListApprovalInstancesOptions = {},
   ): Promise<readonly ApprovalInstanceEntity[]> {
-    const query = await this.createFilteredApprovalInstanceQuery(scope, options);
+    const query = await this.createFilteredApprovalInstanceQuery(
+      scope,
+      options,
+    );
 
     if (!query) {
       return [];
@@ -4086,9 +4814,15 @@ export class WorkflowEngineService {
 
   async countApprovalInstances(
     scope?: WorkflowReadScope,
-    options: Omit<ListApprovalInstancesOptions, 'page' | 'pageSize' | 'sort'> = {},
+    options: Omit<
+      ListApprovalInstancesOptions,
+      'page' | 'pageSize' | 'sort'
+    > = {},
   ): Promise<number> {
-    const query = await this.createFilteredApprovalInstanceQuery(scope, options);
+    const query = await this.createFilteredApprovalInstanceQuery(
+      scope,
+      options,
+    );
 
     return query ? query.queryBuilder.getCount() : 0;
   }
@@ -4121,8 +4855,14 @@ export class WorkflowEngineService {
 
   private async createFilteredApprovalInstanceQuery(
     scope?: WorkflowReadScope,
-    options: ListApprovalInstancesOptions = {},
+    requested: ListApprovalInstancesOptions = {},
   ): Promise<FilteredApprovalInstanceQuery | null> {
+    const options = await this.resolveApprovalInstanceTemplateKey(requested);
+
+    if (!options) {
+      return null;
+    }
+
     const queryBuilder =
       this.approvalInstanceRepository.createQueryBuilder('approvalInstance');
     const hasReadableInstances = this.applyReadableInstanceFilter(
@@ -4208,10 +4948,11 @@ export class WorkflowEngineService {
     return this.approvalInstanceFieldFilterCompiler.compile({
       alias: 'approvalInstance',
       fieldFilters,
-      paths: this.approvalInstanceFilterableFieldPolicy.readFilterableFieldPaths(
-        scope,
-        schema,
-      ),
+      paths:
+        this.approvalInstanceFilterableFieldPolicy.readFilterableFieldPaths(
+          scope,
+          schema,
+        ),
       sort,
       staticOptionsByPath,
     });
@@ -4461,59 +5202,146 @@ export class WorkflowEngineService {
       },
     );
 
-    return templates.filter((template) => {
-      const currentVersion = template.currentVersionId
+    return templates.filter((template): boolean => {
+      const version = template.currentVersionId
         ? (versionById.get(template.currentVersionId) ?? null)
         : null;
 
-      if (!currentVersion?.formDefinitionVersionId) {
-        return false;
-      }
-
-      // A policy in a dialect this version does not know cannot be evaluated,
-      // so the template is not launchable (fail closed), but only that one:
-      // publishing does not check the field yet (Phase 23 P2), and one such
-      // version must not break the list for every member.
-      if (
-        hasExpressionText(currentVersion.initiatorPolicyCel) &&
-        !isReadableExpressionDialect(currentVersion.workflowDefinition)
-      ) {
-        this.logger.warn(
-          `template=${template.id} version=${currentVersion.id} left out of launchable templates: unknown expression dialect`,
-        );
-
-        return false;
-      }
-
-      // Each template is its own operation, so one slow template cannot use
-      // up the allowance of the rest of the list. A policy that throws (for
-      // example a missing `initiator.customFields.*` key, because the resolver
-      // did not return it, or failed and the list fell back to `{}`) is also
-      // only that template's problem: it is left out, and the error code is
-      // logged, never the values.
-      try {
-        return runExpressionOperation(() =>
-          this.conditionService.evaluateBoolean(
-            currentVersion.initiatorPolicyCel,
-            buildInitiatorPolicyContext(initiatorMetadataSnapshot),
-            'initiatorPolicyCel',
-            readExpressionDialectOptions(
-              currentVersion.initiatorPolicyCel,
-              currentVersion.workflowDefinition,
-            ),
-          ),
-        );
-      } catch (error: unknown) {
-        const reason =
-          error instanceof ExpressionRuntimeError ? error.code : 'UNEXPECTED';
-
-        this.logger.warn(
-          `template=${template.id} version=${currentVersion.id} left out of launchable templates: initiatorPolicyCel failed (${reason})`,
-        );
-
-        return false;
-      }
+      // A HOST_ONLY template is started by the host's backend, never from the
+      // launch page (ADR 27 §5), so it is not offered there at all.
+      return (
+        version?.launchMode !== ApprovalTemplateLaunchModeEnum.HOST_ONLY &&
+        this.isInitiatorPolicyMet(
+          template,
+          version,
+          initiatorMetadataSnapshot,
+          'launchable templates',
+        )
+      );
     });
+  }
+
+  /**
+   * The published version whose form `memberId` may read data-source options
+   * for when starting `templateId`, or `null` when they may not.
+   *
+   * It applies the same checks as {@link listLaunchableApprovalTemplates} to
+   * that one template, but asks the host's initiator `customFields` resolver
+   * with `purpose: 'FORM_OPTIONS'` and the template and version ids. A host can
+   * therefore open a template's options to members who may not submit it
+   * themselves — a template only the host's backend submits — without the
+   * template appearing in their launchable list. The snapshot is used for this
+   * judgement only and is never stored. A resolver failure judges against
+   * `customFields: {}`, as the list does, so a policy that reads
+   * `initiator.customFields` then fails closed.
+   */
+  async readFormOptionsTemplateVersion(
+    templateId: string,
+    memberId: string,
+    authContext?: BPMAuthContext,
+  ): Promise<ApprovalTemplateVersionEntity | null> {
+    const template = await this.approvalTemplateRepository.findOne({
+      where: { id: templateId, isActive: true },
+    });
+
+    if (!template?.currentVersionId) {
+      return null;
+    }
+
+    const currentVersion = await this.approvalTemplateVersionRepository.findOne(
+      {
+        where: {
+          id: template.currentVersionId,
+          status: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+        },
+      },
+    );
+
+    if (!currentVersion?.formDefinitionVersionId) {
+      return null;
+    }
+
+    const initiatorMetadataSnapshot = await this.buildInitiatorMetadataSnapshot(
+      {
+        authContext: authContext ?? createWorkflowAuthContext(memberId),
+        formOptions: {
+          templateId: template.id,
+          templateVersionId: currentVersion.id,
+        },
+        memberId,
+        submission: null,
+      },
+    );
+
+    return this.isInitiatorPolicyMet(
+      template,
+      currentVersion,
+      initiatorMetadataSnapshot,
+      'form options',
+    )
+      ? currentVersion
+      : null;
+  }
+
+  /**
+   * Whether `template`'s current published version lets the member described
+   * by `initiatorMetadataSnapshot` start it: the launchable list and the form
+   * options check share this, so the two cannot drift apart. `scope` only
+   * names the caller in the log.
+   */
+  private isInitiatorPolicyMet(
+    template: ApprovalTemplateEntity,
+    currentVersion: ApprovalTemplateVersionEntity | null,
+    initiatorMetadataSnapshot: Readonly<Record<string, unknown>>,
+    scope: 'form options' | 'launchable templates',
+  ): boolean {
+    if (!currentVersion?.formDefinitionVersionId) {
+      return false;
+    }
+
+    // A policy in a dialect this version does not know cannot be evaluated,
+    // so the template is not launchable (fail closed), but only that one:
+    // publishing does not check the field yet (Phase 23 P2), and one such
+    // version must not break the list for every member.
+    if (
+      hasExpressionText(currentVersion.initiatorPolicyCel) &&
+      !isReadableExpressionDialect(currentVersion.workflowDefinition)
+    ) {
+      this.logger.warn(
+        `template=${template.id} version=${currentVersion.id} left out of ${scope}: unknown expression dialect`,
+      );
+
+      return false;
+    }
+
+    // Each template is its own operation, so one slow template cannot use
+    // up the allowance of the rest of the list. A policy that throws (for
+    // example a missing `initiator.customFields.*` key, because the resolver
+    // did not return it, or failed and the list fell back to `{}`) is also
+    // only that template's problem: it is left out, and the error code is
+    // logged, never the values.
+    try {
+      return runExpressionOperation(() =>
+        this.conditionService.evaluateBoolean(
+          currentVersion.initiatorPolicyCel,
+          buildInitiatorPolicyContext(initiatorMetadataSnapshot),
+          'initiatorPolicyCel',
+          readExpressionDialectOptions(
+            currentVersion.initiatorPolicyCel,
+            currentVersion.workflowDefinition,
+          ),
+        ),
+      );
+    } catch (error: unknown) {
+      const reason =
+        error instanceof ExpressionRuntimeError ? error.code : 'UNEXPECTED';
+
+      this.logger.warn(
+        `template=${template.id} version=${currentVersion.id} left out of ${scope}: initiatorPolicyCel failed (${reason})`,
+      );
+
+      return false;
+    }
   }
 
   async listWorkflowTokens(
@@ -4542,12 +5370,168 @@ export class WorkflowEngineService {
     );
   }
 
+  /**
+   * The member's open tasks, newest first. Without `page` / `pageSize` every
+   * one is returned, as before paging existed. The page is cut from the same
+   * {@link readOpenInboxTasks} result the dashboard counters read, so the list,
+   * {@link countInboxTasks} and the counters cannot disagree; only the page is
+   * given its candidate summaries.
+   */
   async listInboxTasks(
     assigneeMemberId: string,
+    options: InboxTaskListOptions = {},
   ): Promise<readonly TaskEntity[]> {
-    return this.attachTaskCandidateSummaries(
-      await this.readOpenInboxTasks(assigneeMemberId),
+    const openTasks = await this.filterTasksByTemplate(
+      await this.readSharedOpenInboxTasks(assigneeMemberId),
+      options,
     );
+
+    if (!isTaskListPaged(options)) {
+      return this.attachTaskCandidateSummaries(openTasks);
+    }
+
+    const offset = readPageOffset(options.page, options.pageSize);
+
+    return this.attachTaskCandidateSummaries(
+      openTasks.slice(offset, offset + normalizePageSize(options.pageSize)),
+    );
+  }
+
+  /** How many tasks {@link listInboxTasks} pages through. */
+  async countInboxTasks(
+    assigneeMemberId: string,
+    filter: TaskTemplateFilter = {},
+  ): Promise<number> {
+    return (
+      await this.filterTasksByTemplate(
+        await this.readSharedOpenInboxTasks(assigneeMemberId),
+        filter,
+      )
+    ).length;
+  }
+
+  /**
+   * The template ids a {@link TaskTemplateFilter} allows, or `null` when it
+   * does not filter. A `templateKey` that names no template allows nothing.
+   */
+  private async readTaskTemplateFilterIds(
+    filter: TaskTemplateFilter,
+  ): Promise<readonly string[] | null> {
+    // Trimmed, and a blank key does not filter, as on the instance list.
+    const key = normalizeText(filter.templateKey);
+    const byKey = key ? await this.readTemplateIdsByKey(key) : null;
+
+    if (filter.templateIds === undefined) {
+      return byKey;
+    }
+
+    if (byKey === null) {
+      return filter.templateIds;
+    }
+
+    return filter.templateIds.filter((id: string): boolean =>
+      byKey.includes(id),
+    );
+  }
+
+  /**
+   * Turns `templateKey` into `templateId` (ADR 27 §6), or `null` when the
+   * options can match nothing: an unknown key, or a key naming another
+   * template than `templateId` does.
+   */
+  private async resolveApprovalInstanceTemplateKey(
+    options: ListApprovalInstancesOptions,
+  ): Promise<ListApprovalInstancesOptions | null> {
+    const key = normalizeText(options.templateKey);
+
+    if (!key) {
+      return options;
+    }
+
+    const [templateId] = await this.readTemplateIdsByKey(key);
+    const requestedId = normalizeText(options.templateId);
+
+    if (!templateId || (requestedId && requestedId !== templateId)) {
+      return null;
+    }
+
+    return { ...options, templateId };
+  }
+
+  /**
+   * The id of the live template carrying `key`, as a list so a key that names
+   * nothing filters everything out. At most one live template holds a key.
+   */
+  private async readTemplateIdsByKey(key: string): Promise<readonly string[]> {
+    const template = await this.approvalTemplateRepository.findOne({
+      select: { id: true },
+      where: { key },
+    });
+
+    return template ? [template.id] : [];
+  }
+
+  /**
+   * Keeps the tasks whose instance belongs to the filter's templates. The open
+   * task read is shared with the dashboard counters, so the filter is applied
+   * to its result rather than pushed into it.
+   */
+  private async filterTasksByTemplate(
+    tasks: readonly TaskEntity[],
+    filter: TaskTemplateFilter,
+  ): Promise<readonly TaskEntity[]> {
+    const templateIds = await this.readTaskTemplateFilterIds(filter);
+
+    if (templateIds === null) {
+      return tasks;
+    }
+
+    if (!templateIds.length || !tasks.length) {
+      return [];
+    }
+
+    const instances = await this.approvalInstanceRepository.find({
+      select: { id: true },
+      where: {
+        id: In([
+          ...new Set(tasks.map((task: TaskEntity): string => task.instanceId)),
+        ]),
+        templateId: In([...templateIds]),
+      },
+    });
+    const instanceIds = new Set(
+      instances.map((instance: ApprovalInstanceEntity): string => instance.id),
+    );
+
+    return tasks.filter((task: TaskEntity): boolean =>
+      instanceIds.has(task.instanceId),
+    );
+  }
+
+  /**
+   * {@link readOpenInboxTasks} for the inbox list and its count, joining a
+   * read for the same member that is still in flight. The client asks for
+   * `inboxTasks` and `inboxTaskCount` in one request and GraphQL resolves the
+   * two side by side, so this turns two identical reads into one. An entry
+   * lives only until its read settles: nothing is cached across requests, and
+   * a read that started earlier is never served once it has finished.
+   */
+  private readSharedOpenInboxTasks(
+    assigneeMemberId: string,
+  ): Promise<readonly TaskEntity[]> {
+    const inFlight = this.openInboxReadsInFlight.get(assigneeMemberId);
+
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const read = this.readOpenInboxTasks(assigneeMemberId).finally((): void => {
+      this.openInboxReadsInFlight.delete(assigneeMemberId);
+    });
+
+    this.openInboxReadsInFlight.set(assigneeMemberId, read);
+
+    return read;
   }
 
   /**
@@ -4617,38 +5601,149 @@ export class WorkflowEngineService {
     return openTasks.filter((task) => !settledTaskIds.has(task.id));
   }
 
+  /**
+   * The tasks this member has acted on, most recently acted on first: tasks
+   * assigned to them that are COMPLETED, and tasks on which their own
+   * candidate row is COMPLETED. The latter needs no status on the task: a
+   * countersign still waiting on somebody else already carries their vote, and
+   * the inbox has stopped showing it to them.
+   *
+   * "Acted on" is their candidate row's `decided_at`, else the task's
+   * `completed_at`, else its `created_at`; ties fall back to the task id so no
+   * row moves between pages. Paged in SQL. Without `page` / `pageSize` the
+   * latest {@link DEFAULT_APPROVAL_HISTORY_TASK_LIMIT} are returned, as before
+   * paging existed. `instanceState` keeps only tasks of instances in that
+   * state (RUNNING for "acted on, not finished").
+   */
   async listApprovalHistoryTasks(
     assigneeMemberId: string,
+    options: ApprovalHistoryTaskListOptions = {},
   ): Promise<readonly TaskEntity[]> {
-    const directTasks = await this.taskRepository.find({
-      order: { completedAt: 'DESC', createdAt: 'DESC' },
-      take: DEFAULT_APPROVAL_HISTORY_TASK_LIMIT,
-      where: { assigneeMemberId, status: TaskStatusEnum.COMPLETED },
-    });
-    const candidateRows = await this.taskCandidateRepository.find({
-      where: {
-        memberId: assigneeMemberId,
-        status: TaskCandidateStatusEnum.COMPLETED,
-      },
-    });
-    // No status filter on this branch: the candidate row is already COMPLETED,
-    // which means this member has cast their decision. Requiring the task
-    // itself to be COMPLETED hid their own vote for as long as a multi-person
-    // countersign waited on somebody else — and the inbox has, correctly,
-    // stopped showing it to them by then, so it appeared nowhere at all.
-    const candidateTasks = candidateRows.length
-      ? await this.taskRepository.find({
-          order: { completedAt: 'DESC', createdAt: 'DESC' },
-          take: DEFAULT_APPROVAL_HISTORY_TASK_LIMIT,
-          where: {
-            id: In(candidateRows.map((candidate) => candidate.taskId)),
-          },
-        })
-      : [];
+    const paged = isTaskListPaged(options);
+    const templateIds = await this.readTaskTemplateFilterIds(options);
 
-    return this.attachTaskCandidateSummaries(
-      uniqueTasksById([...directTasks, ...candidateTasks]),
+    if (templateIds?.length === 0) {
+      return [];
+    }
+
+    const tasks = await this.createApprovalHistoryTaskQuery(
+      assigneeMemberId,
+      options.instanceState,
+      templateIds,
+    )
+      .orderBy(this.readApprovalHistoryActedAtExpression(), 'DESC')
+      .addOrderBy('"task"."id"', 'DESC')
+      .offset(paged ? readPageOffset(options.page, options.pageSize) : 0)
+      .limit(
+        paged
+          ? normalizePageSize(options.pageSize)
+          : DEFAULT_APPROVAL_HISTORY_TASK_LIMIT,
+      )
+      .getMany();
+
+    return this.attachTaskCandidateSummaries(tasks);
+  }
+
+  /** How many tasks {@link listApprovalHistoryTasks} pages through. */
+  async countApprovalHistoryTasks(
+    assigneeMemberId: string,
+    options: Omit<ApprovalHistoryTaskListOptions, 'page' | 'pageSize'> = {},
+  ): Promise<number> {
+    const templateIds = await this.readTaskTemplateFilterIds(options);
+
+    if (templateIds?.length === 0) {
+      return 0;
+    }
+
+    return this.createApprovalHistoryTaskQuery(
+      assigneeMemberId,
+      options.instanceState,
+      templateIds,
+    ).getCount();
+  }
+
+  /** The rows of {@link listApprovalHistoryTasks}, unordered and unpaged. */
+  private createApprovalHistoryTaskQuery(
+    assigneeMemberId: string,
+    instanceState: ApprovalInstanceStateEnum | undefined,
+    templateIds: readonly string[] | null = null,
+  ): SelectQueryBuilder<TaskEntity> {
+    const candidateTable = this.readQualifiedTableName(
+      this.taskCandidateRepository,
     );
+    const queryBuilder = this.taskRepository
+      .createQueryBuilder('task')
+      .andWhere(
+        `
+          (
+            (
+              "task"."assignee_member_id" = :historyMemberId
+              AND "task"."status" = :historyTaskStatus
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM ${candidateTable} "historyCandidate"
+              WHERE "historyCandidate"."task_id" = "task"."id"
+                AND "historyCandidate"."member_id" = :historyMemberId
+                AND "historyCandidate"."status" = :historyCandidateStatus
+            )
+          )
+        `,
+        {
+          historyCandidateStatus: TaskCandidateStatusEnum.COMPLETED,
+          historyMemberId: assigneeMemberId,
+          historyTaskStatus: TaskStatusEnum.COMPLETED,
+        },
+      );
+
+    if (instanceState) {
+      queryBuilder.andWhere(
+        `
+          EXISTS (
+            SELECT 1
+            FROM ${this.readQualifiedTableName(this.approvalInstanceRepository)} "historyInstance"
+            WHERE "historyInstance"."id" = "task"."instance_id"
+              AND "historyInstance"."state" = :historyInstanceState
+          )
+        `,
+        { historyInstanceState: instanceState },
+      );
+    }
+
+    if (templateIds) {
+      queryBuilder.andWhere(
+        `
+          EXISTS (
+            SELECT 1
+            FROM ${this.readQualifiedTableName(this.approvalInstanceRepository)} "historyTemplateInstance"
+            WHERE "historyTemplateInstance"."id" = "task"."instance_id"
+              AND "historyTemplateInstance"."template_id" IN (:...historyTemplateIds)
+          )
+        `,
+        { historyTemplateIds: [...templateIds] },
+      );
+    }
+
+    return queryBuilder;
+  }
+
+  /** When the member acted on a history task; see {@link listApprovalHistoryTasks}. */
+  private readApprovalHistoryActedAtExpression(): string {
+    const candidateTable = this.readQualifiedTableName(
+      this.taskCandidateRepository,
+    );
+
+    return `COALESCE(
+      (
+        SELECT MAX("actedCandidate"."decided_at")
+        FROM ${candidateTable} "actedCandidate"
+        WHERE "actedCandidate"."task_id" = "task"."id"
+          AND "actedCandidate"."member_id" = :historyMemberId
+          AND "actedCandidate"."status" = :historyCandidateStatus
+      ),
+      "task"."completed_at",
+      "task"."created_at"
+    )`;
   }
 
   async listTaskDecisions(
@@ -4753,7 +5848,7 @@ export class WorkflowEngineService {
    * snapshot without a `nodes` array, and a blank or non-string label all
    * leave the task without a label, as `readWorkflowNodeLabel` does. Only the
    * node's `fieldAccess` leaves the database for the fill flag, which
-   * `readNodeFillableFieldKeys` then reads as tolerantly as the engine does.
+   * `readNodeFillGrantFieldKeys` then reads as tolerantly as the engine does.
    */
   private async readTaskNodeSummaries(
     tasks: readonly TaskEntity[],
@@ -4809,7 +5904,7 @@ export class WorkflowEngineService {
         {
           hasFillableFields:
             row.nodeType === 'userTask' &&
-            readNodeFillableFieldKeys({
+            readNodeFillGrantFieldKeys({
               data: { fieldAccess: row.fieldAccess },
             } as UserTaskNode).size > 0,
           label:
@@ -4874,8 +5969,9 @@ export class WorkflowEngineService {
    *   case on data the host never gave. It runs before the engine
    *   transaction, so a failure leaves nothing behind and a slow lookup holds
    *   no lock.
-   * - The list carries on with `customFields: {}` and logs a warning: one
-   *   failing lookup must not take the whole list away. That fails closed: a
+   * - The list, and the form options check, carry on with `customFields: {}`
+   *   and log a warning: one failing lookup must not take the whole list
+   *   away. That fails closed: a
    *   policy that reads `initiator.customFields` then throws on the missing key
    *   and the list's per-template catch leaves that template out, while a
    *   template whose policy does not read it is listed as usual. Submitting is
@@ -4883,10 +5979,16 @@ export class WorkflowEngineService {
    */
   private async buildInitiatorMetadataSnapshot({
     authContext,
+    formOptions = null,
     memberId,
     submission,
   }: {
     readonly authContext: BPMAuthContext;
+    /** Set for the form options check; the list leaves both out. */
+    readonly formOptions?: {
+      readonly templateId: string;
+      readonly templateVersionId: string;
+    } | null;
     readonly memberId: string;
     readonly submission: {
       readonly formData: Readonly<Record<string, unknown>>;
@@ -4901,14 +6003,17 @@ export class WorkflowEngineService {
       return defaultSnapshot;
     }
 
+    // The template the resolver is asked about: the one being submitted, or
+    // the one whose options are read. The list asks about none.
+    const template = submission ?? formOptions;
     const input: BPMInitiatorCustomFieldsInput = {
       authContext,
       defaultSnapshot: cloneJsonObject(defaultSnapshot),
       formData: submission ? cloneJsonObject(submission.formData) : null,
       memberId,
-      purpose: submission ? 'SUBMISSION' : 'LAUNCHABLE_TEMPLATES',
-      templateId: submission?.templateId ?? null,
-      templateVersionId: submission?.templateVersionId ?? null,
+      purpose: readInitiatorCustomFieldsPurpose({ formOptions, submission }),
+      templateId: template?.templateId ?? null,
+      templateVersionId: template?.templateVersionId ?? null,
     };
 
     if (submission) {
@@ -4931,7 +6036,11 @@ export class WorkflowEngineService {
       };
     } catch (error: unknown) {
       this.logger.warn(
-        `Launchable templates judged with customFields {}: the initiator customFields resolver failed (${
+        `${
+          formOptions
+            ? `Form options for template=${formOptions.templateId}`
+            : 'Launchable templates'
+        } judged with customFields {}: the initiator customFields resolver failed (${
           error instanceof HttpException ? error.getStatus() : 'UNEXPECTED'
         })`,
       );
@@ -4961,9 +6070,9 @@ export class WorkflowEngineService {
     input: BPMInitiatorCustomFieldsInput,
   ): Promise<Readonly<Record<string, unknown>>> {
     const subject =
-      input.purpose === 'SUBMISSION'
-        ? `template=${input.templateId} version=${input.templateVersionId}`
-        : 'launchable templates';
+      input.purpose === 'LAUNCHABLE_TEMPLATES'
+        ? 'launchable templates'
+        : `${input.purpose === 'FORM_OPTIONS' ? 'form options ' : ''}template=${input.templateId} version=${input.templateVersionId}`;
     const outcome = await settleWithin(
       new Promise<unknown>((resolve: (value: unknown) => void): void => {
         resolve(resolver.resolveCustomFields(input));
@@ -5092,9 +6201,7 @@ export class WorkflowEngineService {
       where: { taskId: In(taskIds) },
     });
 
-    if (
-      decisions.some((decision) => decision.decidedByMemberId === memberId)
-    ) {
+    if (decisions.some((decision) => decision.decidedByMemberId === memberId)) {
       return true;
     }
 
@@ -5250,6 +6357,13 @@ export class WorkflowEngineService {
       ApprovalInstanceStateEnum.APPROVED,
     );
     await this.cancelPendingAdhocDirectives(manager, instance.id, null);
+    await this.recordInstanceEvent(
+      manager,
+      completedInstance,
+      ApprovalInstanceStateEnum.APPROVED,
+      'INSTANCE_APPROVED',
+      {},
+    );
   }
 
   private async isNodeEntryReady(
@@ -5390,7 +6504,7 @@ export class WorkflowEngineService {
 
     return this.conditionService.evaluateBoolean(
       entryCondition,
-      buildWorkflowExpressionContext(instance),
+      this.buildExpressionContext(instance),
       `workflow.nodes.${node.id}.data.entryCondition`,
       readExpressionDialectOptions(entryCondition, instance.workflowSnapshot),
     );
@@ -5491,11 +6605,10 @@ export class WorkflowEngineService {
 
     const matchingEdges = (
       await Promise.all(
-        conditionalEdges.map(
-          async (edge): Promise<WorkflowEdge | null> =>
-            (await this.evaluateWorkflowEdge(manager, instance, node, edge))
-              ? edge
-              : null,
+        conditionalEdges.map(async (edge): Promise<WorkflowEdge | null> =>
+          (await this.evaluateWorkflowEdge(manager, instance, node, edge))
+            ? edge
+            : null,
         ),
       )
     ).filter((edge): edge is WorkflowEdge => edge !== null);
@@ -5534,7 +6647,7 @@ export class WorkflowEngineService {
     }
 
     const context = {
-      ...buildWorkflowExpressionContext(instance),
+      ...this.buildExpressionContext(instance),
       lastDecision: await this.readLastDecisionContext(
         manager,
         instance.id,
@@ -5728,6 +6841,24 @@ export class WorkflowEngineService {
         Object.assign(instance, { completedAt, state: instanceState }),
       );
 
+      if (instanceState === ApprovalInstanceStateEnum.REJECTED) {
+        await this.recordInstanceEvent(
+          manager,
+          completedInstance,
+          instanceState,
+          'INSTANCE_REJECTED',
+          { actorMemberId: null },
+        );
+      } else {
+        await this.recordInstanceEvent(
+          manager,
+          completedInstance,
+          instanceState,
+          'INSTANCE_APPROVED',
+          {},
+        );
+      }
+
       if (instanceState === ApprovalInstanceStateEnum.APPROVED) {
         await this.notificationService.createInstanceCompletedNotification({
           instance: completedInstance,
@@ -5810,8 +6941,7 @@ export class WorkflowEngineService {
 
     const primaryCandidate = candidates[0];
     // Legacy snapshots may carry no policy at all; they behave as before.
-    const decisionPolicy: DecisionPolicy | undefined =
-      node.data.decisionPolicy;
+    const decisionPolicy: DecisionPolicy | undefined = node.data.decisionPolicy;
     const isSequential =
       decisionPolicy?.type === 'SEQUENTIAL' && candidates.length > 1;
     // A sequential task is held by exactly one candidate at a time, so it
@@ -5833,10 +6963,7 @@ export class WorkflowEngineService {
         completedAt: null,
         createdAt: now,
         decisionPolicySnapshot: hasSeatExclusion(node)
-          ? capDecisionPolicyToCandidateCount(
-              decisionPolicy,
-              candidates.length,
-            )
+          ? capDecisionPolicyToCandidateCount(decisionPolicy, candidates.length)
           : decisionPolicy,
         delegationChain: assignedCandidate?.delegationChain ?? [],
         instanceId: instance.id,
@@ -5880,7 +7007,7 @@ export class WorkflowEngineService {
     task.openCandidateMemberIds = openCandidates.map(
       (candidate) => candidate.memberId,
     );
-    task.hasFillableFields = readNodeFillableFieldKeys(node).size > 0;
+    task.hasFillableFields = readNodeFillGrantFieldKeys(node).size > 0;
 
     await tokenRepository.save({
       ...token,
@@ -5916,6 +7043,13 @@ export class WorkflowEngineService {
         taskId: task.id,
       }),
     );
+    await this.recordInstanceEvent(
+      manager,
+      instance,
+      instance.state,
+      'NODE_ACTIVATED',
+      { nodeId: node.id, taskIds: [task.id] },
+    );
     await openCandidates.reduce<Promise<void>>(
       async (previous, candidate): Promise<void> => {
         await previous;
@@ -5935,7 +7069,13 @@ export class WorkflowEngineService {
 
     // Pending ad-hoc countersign directives attach to the next user task
     // created after they were requested — spawn their parallel tasks now.
-    await this.spawnCountersignTasksForNode(manager, instance, token, node, now);
+    await this.spawnCountersignTasksForNode(
+      manager,
+      instance,
+      token,
+      node,
+      now,
+    );
   }
 
   /**
@@ -6303,11 +7443,10 @@ export class WorkflowEngineService {
 
     if (openPreApprovalsOnTransferredTask.length > 0) {
       await taskRepository.save(
-        openPreApprovalsOnTransferredTask.map(
-          (adhocTask): TaskEntity =>
-            Object.assign(new TaskEntity(), adhocTask, {
-              adhocOriginTaskId: nextTask.id,
-            }),
+        openPreApprovalsOnTransferredTask.map((adhocTask): TaskEntity =>
+          Object.assign(new TaskEntity(), adhocTask, {
+            adhocOriginTaskId: nextTask.id,
+          }),
         ),
       );
     }
@@ -6461,11 +7600,29 @@ export class WorkflowEngineService {
    * its own transaction, and reports one result per task. A failing task does
    * not stop the others: a refusal is a REJECTED result, and an unexpected
    * error is reported as REJECTED with UNEXPECTED_ERROR for that task alone.
+   *
+   * `taskIds` narrows the batch to those tasks. Omitted or null keeps every
+   * open task. An empty list throws a BadRequestException before anything is
+   * read: it must never be taken for "all", the write is not reversible. An id
+   * the member does not hold (already moved, instance finished, unknown) yields
+   * no result row and no error; the others still run.
    */
   async reassignMemberTasks(
-    options: ReassignTaskOptions,
+    options: ReassignMemberTasksOptions,
   ): Promise<readonly TaskReassignmentResult[]> {
-    const held = await this.readRunningMemberTasks(options.fromMemberId);
+    const { taskIds } = options;
+
+    if (taskIds && taskIds.length === 0) {
+      throw new BadRequestException(
+        'taskIds must not be empty: omit it to reassign every open task',
+      );
+    }
+
+    const wanted = taskIds ? new Set(taskIds) : null;
+    const allHeld = await this.readRunningMemberTasks(options.fromMemberId);
+    const held = wanted
+      ? allHeld.filter(({ task }) => wanted.has(task.id))
+      : allHeld;
 
     return held.reduce<Promise<readonly TaskReassignmentResult[]>>(
       async (
@@ -6703,9 +7860,7 @@ export class WorkflowEngineService {
    * The open tasks `memberId` holds on RUNNING instances, with the instance
    * each belongs to. The instance filter is applied here, not only in the query.
    */
-  private async readRunningMemberTasks(
-    memberId: string,
-  ): Promise<
+  private async readRunningMemberTasks(memberId: string): Promise<
     readonly {
       readonly instance: ApprovalInstanceEntity;
       readonly task: TaskEntity;
@@ -7824,12 +8979,37 @@ export class WorkflowEngineService {
     };
   }
 
+  /**
+   * The context workflow expressions on `instance` read. Its `form` is the
+   * stored data, or with `expressionMissingFormFieldsAsNull` on, a copy with
+   * every unfilled top-level field present (ADR 27 §3).
+   */
+  private buildExpressionContext(
+    instance: ApprovalInstanceEntity,
+  ): Readonly<Record<string, unknown>> {
+    return buildWorkflowExpressionContext(
+      instance,
+      this.readExpressionFormData(instance),
+    );
+  }
+
+  private readExpressionFormData(
+    instance: ApprovalInstanceEntity,
+  ): Readonly<Record<string, unknown>> {
+    return this.expressionMissingFormFieldsAsNull
+      ? fillMissingFormFields(
+          instance.formData,
+          readFormDefinitionSnapshotSchema(instance.formDefinitionSnapshot),
+        )
+      : instance.formData;
+  }
+
   private buildDelegationContext(
     instance: ApprovalInstanceEntity,
     nodeId: string,
   ): Parameters<DelegationService['resolveAssignee']>[1] {
     return {
-      formData: instance.formData,
+      formData: this.readExpressionFormData(instance),
       initiatorMemberId: instance.initiatorMemberId,
       initiatorMetadataSnapshot: instance.initiatorMetadataSnapshot,
       instanceId: instance.id,
@@ -8039,7 +9219,7 @@ export class WorkflowEngineService {
       return readMemberIdsFromValue(
         this.conditionService.evaluateValue(
           resolver.expression,
-          buildWorkflowExpressionContext(instance),
+          this.buildExpressionContext(instance),
           `${label}.expression`,
           { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
         ),
@@ -8364,7 +9544,11 @@ export class WorkflowEngineService {
     nodeIds: readonly string[],
   ): Promise<readonly TaskDecisionEntity[]> {
     const tasks = await manager.getRepository(TaskEntity).find({
-      where: { instanceId: instance.id, isAdhoc: false, nodeId: In([...nodeIds]) },
+      where: {
+        instanceId: instance.id,
+        isAdhoc: false,
+        nodeId: In([...nodeIds]),
+      },
     });
 
     if (tasks.length === 0) {
@@ -8394,7 +9578,10 @@ export class WorkflowEngineService {
 
     const [decisions, decidedLogs] = await Promise.all([
       manager.getRepository(TaskDecisionEntity).find({
-        where: { action: TaskDecisionActionEnum.APPROVED, taskId: In(batchTaskIds) },
+        where: {
+          action: TaskDecisionActionEnum.APPROVED,
+          taskId: In(batchTaskIds),
+        },
       }),
       manager.getRepository(ActivityLogEntity).find({
         where: {
@@ -9347,7 +10534,7 @@ export class WorkflowEngineService {
         typeof action.payload === 'string' && action.payload.trim()
           ? this.conditionService.evaluateValue(
               action.payload,
-              buildWorkflowExpressionContext(instance),
+              this.buildExpressionContext(instance),
               `workflow.nodes.${node.id}.data.action.payload`,
               {
                 dialect: readWorkflowExpressionDialect(
@@ -9356,7 +10543,7 @@ export class WorkflowEngineService {
               },
             )
           : {
-              instance: buildWorkflowExpressionContext(instance).instance,
+              instance: this.buildExpressionContext(instance).instance,
               triggeredAt: new Date().toISOString(),
             };
       await this.dispatchWebhookAfterCommit(manager, {
@@ -9393,7 +10580,7 @@ export class WorkflowEngineService {
     if (action.type === 'SET_FORM_FIELD') {
       const value = this.conditionService.evaluateValue(
         action.value,
-        buildWorkflowExpressionContext(instance),
+        this.buildExpressionContext(instance),
         `workflow.nodes.${node.id}.data.action.value`,
         { dialect: readWorkflowExpressionDialect(instance.workflowSnapshot) },
       );
@@ -9512,8 +10699,7 @@ export class WorkflowEngineService {
     // publish lint already refuses a template that references an endpoint
     // in that case.
     const webhookDeliveryIds =
-      this.webhookDeliveryService &&
-      readNotifyWebhookTargets(action).length > 0
+      this.webhookDeliveryService && readNotifyWebhookTargets(action).length > 0
         ? await this.webhookDeliveryService.enqueueNotifyWebhooks(
             manager,
             {
@@ -9556,6 +10742,7 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     task: TaskEntity,
     rejectedAt: Date,
+    decidedByMemberId: string,
   ): Promise<void> {
     const instanceRepository = manager.getRepository(ApprovalInstanceEntity);
 
@@ -9606,6 +10793,13 @@ export class WorkflowEngineService {
         taskId: task.id,
       }),
     );
+    await this.recordInstanceEvent(
+      manager,
+      rejectedInstance,
+      ApprovalInstanceStateEnum.REJECTED,
+      'INSTANCE_REJECTED',
+      { actorMemberId: decidedByMemberId },
+    );
   }
 
   private async returnInstanceToNode(
@@ -9614,6 +10808,7 @@ export class WorkflowEngineService {
     task: TaskEntity,
     returnToNodeId: string | null,
     returnedAt: Date,
+    decidedByMemberId: string,
   ): Promise<void> {
     if (!returnToNodeId) {
       throw new ConflictException('Return target node is required');
@@ -9692,6 +10887,13 @@ export class WorkflowEngineService {
         taskId: null,
       }),
     ]);
+    await this.recordInstanceEvent(
+      manager,
+      returnedInstance,
+      returnedInstance.state,
+      'INSTANCE_RETURNED',
+      { actorMemberId: decidedByMemberId, nodeId: task.nodeId },
+    );
 
     if (returnedInstance.state === ApprovalInstanceStateEnum.RUNNING) {
       await this.processRunningInstance(manager, returnedInstance);
@@ -9816,24 +11018,21 @@ export class WorkflowEngineService {
 
     if (openTokens.length > 0) {
       await tokenRepository.save(
-        openTokens.map(
-          (token): WorkflowTokenEntity => ({
-            ...token,
-            consumedAt,
-            status: WorkflowTokenStatusEnum.CONSUMED,
-          }),
-        ),
+        openTokens.map((token): WorkflowTokenEntity => ({
+          ...token,
+          consumedAt,
+          status: WorkflowTokenStatusEnum.CONSUMED,
+        })),
       );
     }
 
     if (openTasks.length > 0) {
       await taskRepository.save(
-        openTasks.map(
-          (openTask): TaskEntity =>
-            Object.assign(new TaskEntity(), openTask, {
-              completedAt: consumedAt,
-              status: taskStatus,
-            }),
+        openTasks.map((openTask): TaskEntity =>
+          Object.assign(new TaskEntity(), openTask, {
+            completedAt: consumedAt,
+            status: taskStatus,
+          }),
         ),
       );
       await this.closeTaskCandidates(
@@ -9855,13 +11054,11 @@ export class WorkflowEngineService {
     const consumedAt = new Date();
 
     await manager.getRepository(WorkflowTokenEntity).save(
-      tokens.map(
-        (token): WorkflowTokenEntity => ({
-          ...token,
-          consumedAt,
-          status: WorkflowTokenStatusEnum.CONSUMED,
-        }),
-      ),
+      tokens.map((token): WorkflowTokenEntity => ({
+        ...token,
+        consumedAt,
+        status: WorkflowTokenStatusEnum.CONSUMED,
+      })),
     );
   }
 
@@ -9908,23 +11105,20 @@ export class WorkflowEngineService {
     );
 
     await tokenRepository.save(
-      alternativeTokens.map(
-        (candidate): WorkflowTokenEntity => ({
-          ...candidate,
-          consumedAt,
-          status: WorkflowTokenStatusEnum.CONSUMED,
-        }),
-      ),
+      alternativeTokens.map((candidate): WorkflowTokenEntity => ({
+        ...candidate,
+        consumedAt,
+        status: WorkflowTokenStatusEnum.CONSUMED,
+      })),
     );
 
     if (cancellableTasks.length) {
       await taskRepository.save(
-        cancellableTasks.map(
-          (task): TaskEntity =>
-            Object.assign(new TaskEntity(), task, {
-              completedAt: consumedAt,
-              status: TaskStatusEnum.CANCELLED,
-            }),
+        cancellableTasks.map((task): TaskEntity =>
+          Object.assign(new TaskEntity(), task, {
+            completedAt: consumedAt,
+            status: TaskStatusEnum.CANCELLED,
+          }),
         ),
       );
       await this.closeTaskCandidates(
@@ -9959,9 +11153,8 @@ export class WorkflowEngineService {
     }
 
     await candidateRepository.save(
-      candidates.map(
-        (candidate): TaskCandidateEntity =>
-          Object.assign(new TaskCandidateEntity(), candidate, { status }),
+      candidates.map((candidate): TaskCandidateEntity =>
+        Object.assign(new TaskCandidateEntity(), candidate, { status }),
       ),
     );
   }
@@ -10065,10 +11258,112 @@ function readDefaultInitiatorMetadataSnapshot(
   };
 }
 
+/**
+ * The form schema a dry run was given to fill unfilled fields with (ADR 27
+ * §3), or `null` when it was given none. A schema that does not parse is a
+ * 400, like the other inputs.
+ */
+function readDryRunFormSchema(
+  json: string | null | undefined,
+): FormDefinitionSchema | null {
+  if (!json) {
+    return null;
+  }
+
+  const schema = parseJsonObject(json, 'formSchemaJson');
+
+  if (!isFormDefinitionSchema(schema)) {
+    throw new BadRequestException('formSchemaJson is not a form schema');
+  }
+
+  return schema;
+}
+
+/**
+ * Refuses a submission or resubmission through GraphQL on a `HOST_ONLY`
+ * version (ADR 27 §5). Only the host's backend, calling the service, may start
+ * or resubmit such a case.
+ */
+function assertEndUserMayLaunch(
+  version: Pick<ApprovalTemplateVersionEntity, 'launchMode'>,
+): void {
+  if (version.launchMode === ApprovalTemplateLaunchModeEnum.HOST_ONLY) {
+    throw new ForbiddenException(
+      'This approval template can only be submitted by the host system',
+    );
+  }
+}
+
+/**
+ * Reads the service-only `initiatorCustomFields` of a submission (ADR 27 §5):
+ * `null` when absent, otherwise a JSON copy. Refused with 400 when it is not a
+ * plain object or comes together with a whole `initiatorMetadataSnapshotJson`,
+ * which would leave it unclear which one decides.
+ */
+function readHostInitiatorCustomFields(
+  input: SubmitApprovalInstanceCommand,
+): Readonly<Record<string, unknown>> | null {
+  const fields = input.initiatorCustomFields;
+
+  if (fields === undefined || fields === null) {
+    return null;
+  }
+
+  if (input.initiatorMetadataSnapshotJson) {
+    throw new BadRequestException(
+      'initiatorCustomFields cannot be combined with initiatorMetadataSnapshotJson',
+    );
+  }
+
+  if (typeof fields !== 'object' || Array.isArray(fields)) {
+    throw new BadRequestException('initiatorCustomFields must be an object');
+  }
+
+  return cloneJsonObject(fields);
+}
+
+/**
+ * Lays the host's `initiatorCustomFields` over the `customFields` of a built
+ * snapshot; a key the host gave wins over the resolver's.
+ */
+function mergeHostInitiatorCustomFields(
+  snapshot: Readonly<Record<string, unknown>>,
+  hostCustomFields: Readonly<Record<string, unknown>> | null,
+): Readonly<Record<string, unknown>> {
+  if (hostCustomFields === null) {
+    return snapshot;
+  }
+
+  const current = snapshot['customFields'];
+
+  return {
+    ...snapshot,
+    customFields: {
+      ...(isRecord(current) ? current : {}),
+      ...hostCustomFields,
+    },
+  };
+}
+
 function cloneJsonObject(
   value: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+/** Which caller is building an initiator snapshot, as the resolver is told. */
+function readInitiatorCustomFieldsPurpose({
+  formOptions,
+  submission,
+}: Readonly<{
+  formOptions: object | null;
+  submission: object | null;
+}>): BPMInitiatorCustomFieldsPurpose {
+  if (submission) {
+    return 'SUBMISSION';
+  }
+
+  return formOptions ? 'FORM_OPTIONS' : 'LAUNCHABLE_TEMPLATES';
 }
 
 /**
@@ -10183,7 +11478,8 @@ function isSameApprovalInstanceRevision(
   right: ApprovalInstanceEntity,
 ): boolean {
   return (
-    readApprovalInstanceRevision(left) === readApprovalInstanceRevision(right) &&
+    readApprovalInstanceRevision(left) ===
+      readApprovalInstanceRevision(right) &&
     JSON.stringify(left.formData) === JSON.stringify(right.formData)
   );
 }
@@ -10225,7 +11521,9 @@ function readDataSourceFieldKeyAtPath(
     (candidate) => isRecord(candidate) && candidate.fieldKey === fieldKey,
   );
 
-  return field && isFormDataSourceFieldDefinition(field) ? field.fieldKey : null;
+  return field && isFormDataSourceFieldDefinition(field)
+    ? field.fieldKey
+    : null;
 }
 
 /**
@@ -10373,6 +11671,21 @@ function readSnapshotWithoutField(
 }
 
 /**
+ * Drops every snapshot that belongs to one of the fields, table cells included
+ * (`items[0].col` belongs to `items`).
+ */
+function readSnapshotWithoutFields(
+  snapshots: FormDataSourceValueSnapshots | null | undefined,
+  fieldKeys: ReadonlySet<string>,
+): FormDataSourceValueSnapshots {
+  return Object.fromEntries(
+    Object.entries(snapshots ?? {}).filter(
+      ([key]) => !fieldKeys.has(readTopLevelFieldKey(key)),
+    ),
+  );
+}
+
+/**
  * Keeps only the snapshots whose field still carries a value, so clearing a
  * dynamic option also removes the label recorded for it.
  */
@@ -10442,7 +11755,9 @@ function assertNoUnresolvableDynamicValues(
   }
 }
 
-function readApprovalInstanceRevision(instance: ApprovalInstanceEntity): string {
+function readApprovalInstanceRevision(
+  instance: ApprovalInstanceEntity,
+): string {
   return instance.updatedAt instanceof Date
     ? instance.updatedAt.toISOString()
     : String(instance.updatedAt ?? '');
@@ -10491,13 +11806,14 @@ function buildInitiatorPolicyContext(
 
 function buildWorkflowExpressionContext(
   instance: ApprovalInstanceEntity,
+  formData: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
   return {
     env: {
       now: new Date().toISOString(),
     },
-    form: instance.formData,
-    formData: instance.formData,
+    form: formData,
+    formData,
     initiator: {
       ...instance.initiatorMetadataSnapshot,
       memberId: instance.initiatorMemberId,
@@ -10552,8 +11868,8 @@ function buildDryRunExpressionContext(
     env: {
       now: new Date().toISOString(),
     },
-    form: input.formData,
-    formData: input.formData,
+    form: input.expressionFormData,
+    formData: input.expressionFormData,
     initiator: {
       ...input.initiatorMetadataSnapshot,
       memberId: input.initiatorMemberId,
@@ -10821,8 +12137,7 @@ function isReturnCommentRequired(
   const node = readWorkflowNodeOrThrow(workflow, nodeId);
 
   return (
-    node.type === 'userTask' &&
-    node.data.returnBehavior.requireComment === true
+    node.type === 'userTask' && node.data.returnBehavior.requireComment === true
   );
 }
 
@@ -11351,6 +12666,10 @@ function readPageOffset(
   return (normalizePage(page) - 1) * normalizedPageSize;
 }
 
+function isTaskListPaged(options: TaskListPageOptions): boolean {
+  return options.page !== undefined || options.pageSize !== undefined;
+}
+
 function shouldPaginateList(options: ListApprovalInstancesOptions): boolean {
   return (
     typeof options.page !== 'undefined' ||
@@ -11797,8 +13116,7 @@ function readAdhocTargetValue(
   if (kind === AdhocTargetKindEnum.POSITION) {
     return {
       kind,
-      positionId:
-        typeof value.positionId === 'string' ? value.positionId : '',
+      positionId: typeof value.positionId === 'string' ? value.positionId : '',
     };
   }
 
@@ -11818,9 +13136,7 @@ function readAdhocTargetValue(
         >(
           (accumulator, [key, headerValue]) => ({
             ...accumulator,
-            ...(typeof headerValue === 'string'
-              ? { [key]: headerValue }
-              : {}),
+            ...(typeof headerValue === 'string' ? { [key]: headerValue } : {}),
           }),
           {},
         )
@@ -11968,8 +13284,7 @@ function readTopPriorityResolutions(
     );
 
     return sameTier.filter(
-      (resolution) =>
-        (orgUnitDepths.get(resolution.scopeId) ?? 0) === maxDepth,
+      (resolution) => (orgUnitDepths.get(resolution.scopeId) ?? 0) === maxDepth,
     );
   }
 
@@ -12012,10 +13327,7 @@ function readOrgUnitDepthMap(
   orgUnits: readonly OrgUnitEntity[],
 ): ReadonlyMap<string, number> {
   return new Map(
-    orgUnits.map((orgUnit) => [
-      orgUnit.id,
-      orgUnit.path.split('.').length,
-    ]),
+    orgUnits.map((orgUnit) => [orgUnit.id, orgUnit.path.split('.').length]),
   );
 }
 
@@ -12316,7 +13628,11 @@ function throwFirstFormDataFieldError({
         .map((field) => field.label || field.fieldKey)
         .join(', ')}`,
       missingFields.map((field) =>
-        createFormDataIssue(readFieldIssueLocation(field), 'REQUIRED', '為必填'),
+        createFormDataIssue(
+          readFieldIssueLocation(field),
+          'REQUIRED',
+          '為必填',
+        ),
       ),
     );
   }
@@ -12535,7 +13851,8 @@ function readSubmittedTextValueErrors(
     return [];
   }
 
-  const readIssue = (): ReturnType<typeof readTextFieldValueIssue> | 'timeout' => {
+  const readIssue = ():
+    ReturnType<typeof readTextFieldValueIssue> | 'timeout' => {
     try {
       return readTextFieldValueIssue(field, value, {
         testPattern: shapeOnly ? (): boolean => true : testPattern,
@@ -12611,7 +13928,9 @@ function readRowCellValue(
  * Columns carry no `requiredWhen`: row-scoped conditions are out of scope for
  * V1 and the structural lint rejects them (ADR 16 §3.1).
  */
-function isSubmittedTableColumnRequired(column: TableColumnDefinition): boolean {
+function isSubmittedTableColumnRequired(
+  column: TableColumnDefinition,
+): boolean {
   return column.required === true;
 }
 
@@ -12620,7 +13939,9 @@ function readTableMinRows(field: TableFieldDefinition): number {
 }
 
 function readTableMaxRows(field: TableFieldDefinition): number {
-  return typeof field.maxRows === 'number' ? field.maxRows : FORM_TABLE_MAX_ROWS;
+  return typeof field.maxRows === 'number'
+    ? field.maxRows
+    : FORM_TABLE_MAX_ROWS;
 }
 
 function readTableRequiredRowCount(field: TableFieldDefinition): number {
@@ -13213,4 +14534,25 @@ function throwBusinessKeyConflictOrRethrow(
   }
 
   throw error;
+}
+
+/**
+ * The keys whose value differs between the stored form data and the data a
+ * resubmission replaces it with, sorted. A key present on only one side counts.
+ */
+function listChangedFormDataKeys(
+  previous: Readonly<Record<string, unknown>>,
+  next: Readonly<Record<string, unknown>>,
+): string[] {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+
+  return [...keys]
+    .filter(
+      (fieldKey) =>
+        Object.prototype.hasOwnProperty.call(previous, fieldKey) !==
+          Object.prototype.hasOwnProperty.call(next, fieldKey) ||
+        computeStableValueFingerprint(previous[fieldKey]) !==
+          computeStableValueFingerprint(next[fieldKey]),
+    )
+    .sort();
 }

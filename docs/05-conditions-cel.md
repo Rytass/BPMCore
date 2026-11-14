@@ -66,6 +66,8 @@
   後者的快照在送單那一刻定下，重送不重算；送單時評估的發起權限（`initiatorPolicyCel`）讀的是同一份。
   「可發起範本」列表每次請求也呼叫它一次（`purpose: 'LAUNCHABLE_TEMPLATES'`，沒有範本與表單，`templateId`、`templateVersionId`、`formData` 為 `null`），
   用同一份 `customFields` 評估每個範本的發起權限，所以 resolver 的結果只能依發起人決定，送單與列表要回一樣的值。
+  發起頁以 `templateId` 查表單選項時另呼叫一次（`purpose: 'FORM_OPTIONS'`，帶該範本的 `templateId`、`templateVersionId`，`formData` 為 `null`），只評估該範本的發起權限。
+  這是唯一可以回不同值的時機：只准宿主後端送審的範本（例如 `has(initiator.customFields.hostSubmitted)`）可以在這裡放行，讓成員查得到選項，但可發起列表與 GraphQL 送單照樣擋下；這份快照只用來判斷，不會存。
   列表呼叫失敗或逾時（10 秒）時不讓整份列表失敗，改用 `customFields: {}` 評估並記 warning：讀到 `initiator.customFields` 的範本會因缺鍵被排除，其他範本照常列出。
   送單則不降級：resolver 失敗、逾時或回傳格式不對，送單一律失敗、不建立案件（見 `docs/api-reference.md` 的 workflow-engine 段）。
   試跑不呼叫它。
@@ -260,6 +262,29 @@ trim(form.vendorName) + "／" + upper(form.paymentType)
   （`code=EDGE_STRUCTURED_FALLBACK edge=… field=… reason=EXPRESSION_TYPE_ERROR`，不含值），語意同上（只讀 `formData` 自身的 key）。CEL 能算出結果時一律採用，所以原本能走的路由不變（日期 `"" < "2026-01-01"`
   仍為 `true`）。這只對已發布的定義成立：模板重新存檔並發布後改用新編出的守衛條件，同一個 `""` 會變成 `false`；
   進行中的案件用的是發起當下的快照，不受影響。欄位已填卻仍缺 key 或型別錯誤，代表 CEL 本身有問題（例如手改過 CEL 但結構化欄位還留著，`form.amount > "abc"`），照常報錯；預算超限與函式失敗不會被吸收；沒有結構化欄位的手寫 CEL 照舊失敗。實際執行與試跑共用同一個判斷（`evaluateWithStructuredFallback`）。值是陣列時照舊直接用結構化欄位。
+
+### 5.1.2 未填欄位當 null（`expressionMissingFormFieldsAsNull`，未發佈）
+
+[ADR 27 §3](./27-host-integration-round-adr.md)。`BPMRootModule` 選項，預設關閉，整個 host 一起開。
+
+- 開啟後，運算前依案件的表單快照補齊**頂層**欄位：一般欄位補 `null`，table 補 `[]`；已存在的 key 不動，table 列內的欄不補。
+- 補的是運算用的副本，不寫回 `form_data`。
+- 套用範圍：案件上的所有流程運算式（進入條件、閘道、指派運算式、WEBHOOK payload、`SET_FORM_FIELD`）、代理規則
+  `scopeConditionCel`，以及帶了 `formSchemaJson` 的試跑。通知 webhook 與資料來源的 binding 不在範圍內，維持原本的
+  「該次投遞 FAILED」與「WAITING」。
+
+開啟後對未填欄位 `x` 的語意變化（兩種方言相同，`missing-form-fields.real-engine.spec.ts`）：
+
+| 運算式           | 關閉             | 開啟                 |
+| ---------------- | ---------------- | -------------------- |
+| `has(form.x)`    | `false`          | `true`               |
+| `form.x == null` | 缺 key 錯誤      | `true`               |
+| `form.x > 5`     | 缺 key 錯誤      | 型別錯誤（仍失敗）   |
+
+既有範本若以 `has(form.x)` 判斷「沒填」，開啟前要先改成 `form.x == null`。
+
+注意：選項關閉時，`form.x != null` **擋不住**缺 key（cel-legacy 丟 `Identifier "x" not found`、cel-v2 丟
+`EXPRESSION_MISSING_KEY`），只有 `has(form.x)` 擋得住。
 
 ### 5.2 宿主函式與內建函式（未發佈）
 

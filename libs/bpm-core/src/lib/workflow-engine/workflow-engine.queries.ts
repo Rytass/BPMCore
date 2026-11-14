@@ -64,6 +64,13 @@ export class WorkflowEngineQueries {
     state: readonly ApprovalInstanceStateEnum[] | null,
     @Args('templateId', { nullable: true, type: () => String })
     templateId: string | null,
+    @Args('templateKey', {
+      description:
+        'The template key (ADR 27 §6). With templateId as well, both must name the same template; an unknown key matches nothing.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
     @Args('page', { nullable: true, type: () => Int })
     page: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
@@ -87,6 +94,7 @@ export class WorkflowEngineQueries {
         sort: toApprovalInstanceSorts(sort),
         state: state ?? undefined,
         templateId: templateId ?? undefined,
+        templateKey: templateKey ?? undefined,
         view: view ?? undefined,
       },
     );
@@ -108,6 +116,13 @@ export class WorkflowEngineQueries {
     state: readonly ApprovalInstanceStateEnum[] | null,
     @Args('templateId', { nullable: true, type: () => String })
     templateId: string | null,
+    @Args('templateKey', {
+      description:
+        'The template key (ADR 27 §6). With templateId as well, both must name the same template; an unknown key matches nothing.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
     @Args('fieldFilters', {
       nullable: true,
       type: () => [ApprovalInstanceFieldFilterInput],
@@ -122,6 +137,7 @@ export class WorkflowEngineQueries {
         searchText: searchText ?? undefined,
         state: state ?? undefined,
         templateId: templateId ?? undefined,
+        templateKey: templateKey ?? undefined,
         view: view ?? undefined,
       },
     );
@@ -143,6 +159,13 @@ export class WorkflowEngineQueries {
     state: readonly ApprovalInstanceStateEnum[] | null,
     @Args('templateId', { nullable: true, type: () => String })
     templateId: string | null,
+    @Args('templateKey', {
+      description:
+        'The template key (ADR 27 §6). With templateId as well, both must name the same template; an unknown key matches nothing.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
     @Args('page', { nullable: true, type: () => Int })
     page: number | null,
     @Args('pageSize', { nullable: true, type: () => Int })
@@ -166,6 +189,7 @@ export class WorkflowEngineQueries {
         sort: toApprovalInstanceSorts(sort),
         state: state ?? undefined,
         templateId: templateId ?? undefined,
+        templateKey: templateKey ?? undefined,
         view: view ?? undefined,
       },
     );
@@ -220,16 +244,133 @@ export class WorkflowEngineQueries {
   async inboxTasks(
     @Args('assigneeMemberId', { type: () => String }) assigneeMemberId: string,
     @BPMCurrentMemberId() currentMemberId: string,
+    @Args('page', { nullable: true, type: () => Int })
+    page: number | null,
+    @Args('pageSize', { nullable: true, type: () => Int })
+    pageSize: number | null,
+    @Args('templateIds', {
+      description:
+        'Only tasks of instances started from these templates. An empty list matches nothing.',
+      nullable: true,
+      type: () => [String],
+    })
+    templateIds: readonly string[] | null,
+    @Args('templateKey', {
+      description:
+        'Only tasks of instances whose template carries this key. Combined with templateIds, both must match.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
   ): Promise<readonly TaskEntity[]> {
-    return this.workflowEngineService.listInboxTasks(currentMemberId);
+    return this.workflowEngineService.listInboxTasks(currentMemberId, {
+      page: page ?? undefined,
+      pageSize: pageSize ?? undefined,
+      templateIds: templateIds ?? undefined,
+      templateKey: templateKey ?? undefined,
+    });
+  }
+
+  @Query(() => Int, {
+    description: 'How many open tasks inboxTasks pages through.',
+  })
+  async inboxTaskCount(
+    @BPMCurrentMemberId() currentMemberId: string,
+    @Args('templateIds', {
+      description:
+        'Only tasks of instances started from these templates. An empty list matches nothing.',
+      nullable: true,
+      type: () => [String],
+    })
+    templateIds: readonly string[] | null,
+    @Args('templateKey', {
+      description:
+        'Only tasks of instances whose template carries this key. Combined with templateIds, both must match.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
+  ): Promise<number> {
+    return this.workflowEngineService.countInboxTasks(currentMemberId, {
+      templateIds: templateIds ?? undefined,
+      templateKey: templateKey ?? undefined,
+    });
   }
 
   @Query(() => [TaskEntity])
   async approvalHistoryTasks(
     @Args('assigneeMemberId', { type: () => String }) assigneeMemberId: string,
     @BPMCurrentMemberId() currentMemberId: string,
+    @Args('page', { nullable: true, type: () => Int })
+    page: number | null,
+    @Args('pageSize', { nullable: true, type: () => Int })
+    pageSize: number | null,
+    @Args('instanceState', {
+      nullable: true,
+      type: () => ApprovalInstanceStateEnum,
+    })
+    instanceState: ApprovalInstanceStateEnum | null,
+    @Args('templateIds', {
+      description:
+        'Only tasks of instances started from these templates. An empty list matches nothing.',
+      nullable: true,
+      type: () => [String],
+    })
+    templateIds: readonly string[] | null,
+    @Args('templateKey', {
+      description:
+        'Only tasks of instances whose template carries this key. Combined with templateIds, both must match.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
   ): Promise<readonly TaskEntity[]> {
-    return this.workflowEngineService.listApprovalHistoryTasks(currentMemberId);
+    return this.workflowEngineService.listApprovalHistoryTasks(
+      currentMemberId,
+      {
+        instanceState: instanceState ?? undefined,
+        page: page ?? undefined,
+        pageSize: pageSize ?? undefined,
+        templateIds: templateIds ?? undefined,
+        templateKey: templateKey ?? undefined,
+      },
+    );
+  }
+
+  @Query(() => Int, {
+    description:
+      'How many tasks approvalHistoryTasks pages through, for the same instanceState.',
+  })
+  async approvalHistoryTaskCount(
+    @BPMCurrentMemberId() currentMemberId: string,
+    @Args('instanceState', {
+      nullable: true,
+      type: () => ApprovalInstanceStateEnum,
+    })
+    instanceState: ApprovalInstanceStateEnum | null,
+    @Args('templateIds', {
+      description:
+        'Only tasks of instances started from these templates. An empty list matches nothing.',
+      nullable: true,
+      type: () => [String],
+    })
+    templateIds: readonly string[] | null,
+    @Args('templateKey', {
+      description:
+        'Only tasks of instances whose template carries this key. Combined with templateIds, both must match.',
+      nullable: true,
+      type: () => String,
+    })
+    templateKey: string | null,
+  ): Promise<number> {
+    return this.workflowEngineService.countApprovalHistoryTasks(
+      currentMemberId,
+      {
+        instanceState: instanceState ?? undefined,
+        templateIds: templateIds ?? undefined,
+        templateKey: templateKey ?? undefined,
+      },
+    );
   }
 
   @Query(() => [MemberOpenTaskObject], {

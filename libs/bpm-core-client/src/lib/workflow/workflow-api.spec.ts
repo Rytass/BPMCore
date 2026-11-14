@@ -5,10 +5,12 @@ import {
 import {
   decideTask,
   listApprovalHistoryTasks,
+  listApprovalHistoryTasksPage,
   listApprovalInstances,
   listApprovalInstancesPage,
   listFilterableFieldIssues,
   listInboxTasks,
+  listInboxTasksPage,
   listInactiveMembersWithOpenTasks,
   listMemberOpenTasks,
   reassignMemberTasks,
@@ -633,6 +635,135 @@ describe('@rytass/bpm-core-client/workflow', () => {
     });
   });
 
+  describe('paged member task lists', () => {
+    const TASK = {
+      assigneeMemberId: 'member-001',
+      assignmentType: 'DIRECT',
+      candidateMemberIds: [],
+      completedAt: null,
+      createdAt: '2026-05-26T00:00:00.000Z',
+      decisionPolicySnapshotJson: '{}',
+      delegationChainJson: '[]',
+      id: 'task-1',
+      instanceId: 'instance-1',
+      nodeId: 'node-1',
+      openedAt: '2026-05-26T00:00:00.000Z',
+      originalAssigneeMemberId: null,
+      slaDueAt: null,
+      status: 'OPEN',
+      tokenId: 'token-1',
+    };
+
+    it('asks for one inbox page and its total in one request', async (): Promise<void> => {
+      const harness = installFetchMock({
+        inboxTaskCount: 31,
+        inboxTasks: [TASK],
+      });
+      try {
+        const result = await listInboxTasksPage({
+          assigneeMemberId: 'member-001',
+          page: 2,
+          pageSize: 10,
+        });
+        const request = harness.capture();
+
+        expect(request.query.replace(/\s+/gu, ' ')).toContain(
+          'inboxTasks( assigneeMemberId: $assigneeMemberId page: $page pageSize: $pageSize templateIds: $templateIds templateKey: $templateKey )',
+        );
+        expect(request.query).toContain(
+          'inboxTaskCount(templateIds: $templateIds, templateKey: $templateKey)',
+        );
+        expect(request.query).toContain('openCandidateMemberIds');
+        expect(request.variables).toEqual({
+          assigneeMemberId: 'member-001',
+          page: 2,
+          pageSize: 10,
+          templateIds: null,
+          templateKey: null,
+        });
+        expect(result.totalCount).toBe(31);
+        expect(result.tasks.map((task) => task.id)).toEqual(['task-1']);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('asks for one history page narrowed to a state, counting with the same state', async (): Promise<void> => {
+      const harness = installFetchMock({
+        approvalHistoryTaskCount: 4,
+        approvalHistoryTasks: [TASK],
+      });
+      try {
+        const result = await listApprovalHistoryTasksPage({
+          assigneeMemberId: 'member-001',
+          instanceState: 'RUNNING',
+          page: 1,
+          pageSize: 20,
+        });
+        const request = harness.capture();
+
+        expect(request.query).toContain('instanceState: $instanceState');
+        expect(request.query.replace(/\s+/gu, ' ')).toContain(
+          'approvalHistoryTaskCount( instanceState: $instanceState templateIds: $templateIds templateKey: $templateKey )',
+        );
+        expect(request.variables).toEqual({
+          assigneeMemberId: 'member-001',
+          instanceState: 'RUNNING',
+          page: 1,
+          pageSize: 20,
+          templateIds: null,
+          templateKey: null,
+        });
+        expect(result.totalCount).toBe(4);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('passes the template filter to both the list and its count', async (): Promise<void> => {
+      const harness = installFetchMock({
+        inboxTaskCount: 1,
+        inboxTasks: [TASK],
+      });
+      try {
+        await listInboxTasksPage({
+          assigneeMemberId: 'member-001',
+          page: 1,
+          pageSize: 10,
+          templateIds: ['template-a'],
+          templateKey: 'expense',
+        });
+
+        expect(harness.capture().variables).toMatchObject({
+          templateIds: ['template-a'],
+          templateKey: 'expense',
+        });
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('sends no state when none is asked for', async (): Promise<void> => {
+      const harness = installFetchMock({
+        approvalHistoryTaskCount: 0,
+        approvalHistoryTasks: [],
+      });
+      try {
+        await listApprovalHistoryTasksPage({
+          assigneeMemberId: 'member-001',
+          page: 1,
+          pageSize: 20,
+        });
+
+        expect(harness.capture().variables).toMatchObject({
+          instanceState: null,
+        });
+      } finally {
+        harness.restore();
+      }
+    });
+  });
+
   describe('task node label', () => {
     const selectsNodeLabel = (query: string): boolean =>
       /\bnodeId\s+nodeLabel\b/.test(query);
@@ -809,6 +940,57 @@ describe('@rytass/bpm-core-client/workflow', () => {
           },
         });
         expect(returned).toEqual(results);
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('sends taskIds in the member-wide reassignment input when given', async (): Promise<void> => {
+      const harness = installFetchMock({ reassignMemberTasks: [] });
+      try {
+        await reassignMemberTasks({
+          fromMemberId: 'member-from',
+          reason: '請假',
+          taskIds: ['task-2', 'task-5'],
+          toMemberId: 'member-to',
+        });
+
+        expect(harness.capture().variables).toEqual({
+          input: {
+            dryRun: false,
+            fromMemberId: 'member-from',
+            reason: '請假',
+            taskIds: ['task-2', 'task-5'],
+            toMemberId: 'member-to',
+          },
+        });
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('leaves the taskIds key out of the input when none is given, so an older server is unaffected', async (): Promise<void> => {
+      const harness = installFetchMock({ reassignMemberTasks: [] });
+      try {
+        await reassignMemberTasks({
+          fromMemberId: 'member-from',
+          reason: '離職',
+          toMemberId: 'member-to',
+        });
+
+        const input = (
+          harness.capture().variables as {
+            readonly input: Readonly<Record<string, unknown>>;
+          }
+        ).input;
+
+        expect('taskIds' in input).toBe(false);
+        expect(input).toEqual({
+          dryRun: false,
+          fromMemberId: 'member-from',
+          reason: '離職',
+          toMemberId: 'member-to',
+        });
       } finally {
         harness.restore();
       }

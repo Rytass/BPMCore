@@ -765,6 +765,14 @@ condition or in its initiator policy.
   its answer. So the answer must depend on the initiator only, and be the same
   for both purposes: a template the list shows has to be one the member can
   then submit.
+- It runs once more when a member reads a template's form options by
+  `templateId` (`purpose: 'FORM_OPTIONS'`, with the template and its published
+  version, `null` form data), and only that template's initiator policy is
+  judged. This purpose may answer differently: return, say,
+  `{ hostSubmitted: true }` here for a template only your backend submits, and
+  members can fill its form while the launchable list and the GraphQL
+  submission still refuse them. Return the submission answer to keep options
+  open to exactly the members who may start the template.
 - It decides `customFields` only. `memberId`, `orgUnitIds`, `positionId`,
   `positionIds` and `primaryOrgUnitId` always come from BPM, whatever it returns.
 - It must return a plain, JSON-serializable object within 10 seconds. Anything
@@ -788,7 +796,7 @@ condition or in its initiator policy.
 - Register it as the `initiatorCustomFieldsResolver` runtime value, the
   `initiatorCustomFieldsResolverProvider` wiring option, or the token in a
   `@Global()` host module. Every one of them reaches the single engine the
-  submission, the launchable list and the form option DataSources share.
+  submission, the launchable list and the form option check share.
 
 ## Organization Data Ownership
 
@@ -1770,7 +1778,12 @@ administrator (`@BPMAdminOnly()`) can move it without that person's help:
   module, the list is always empty.
 - `reassignTask(input)` moves one task's seat from `fromMemberId` to
   `toMemberId`. `reassignMemberTasks(input)` does the same for every open task
-  the source member holds, one transaction and one result per task.
+  the source member holds, one transaction and one result per task. Its
+  optional `taskIds` limits the batch to those tasks: omitted or `null` keeps
+  every open task, an empty list is refused with a `BadRequestException` (the
+  service checks it itself, so it holds without a `ValidationPipe`), and an id
+  the member does not hold gets no result row and no error. Deploy the server
+  before a screen that sends `taskIds`.
 
 The rules that differ from the holder's own transfer:
 

@@ -14,7 +14,14 @@ import { runExpressionOperation } from '../condition/expression-budget';
 import {
   BPM_FORM_DATA_SOURCE_ERROR_CODES,
   BPMFormDataSourceException,
+  BPMFormDataSourceValueNotResolvedException,
 } from './form-data-source.errors';
+import {
+  FormDataIssueLocation,
+  readCellIssueLocation,
+  readFieldIssueLocation,
+  readRowIssueLocation,
+} from '../form/form-data-issue';
 import { createFormDataSourceExpressionEvaluator } from './form-data-source.expression';
 import {
   BPM_FORM_DATA_SOURCE_REGISTRY,
@@ -178,14 +185,18 @@ export class FormDataSourceValueResolverService
           ];
         }
 
-        const options = await this.resolveFieldOptionsAt(
-          {
-            authContext: input.authContext,
-            field,
-            formData: input.formData,
-            values,
-          },
-          position,
+        const options = await locateValueNotResolved(
+          target.location,
+          () =>
+            this.resolveFieldOptionsAt(
+              {
+                authContext: input.authContext,
+                field,
+                formData: input.formData,
+                values,
+              },
+              position,
+            ),
         );
         const snapshot: FormDataSourceValueSnapshot = {
           bindingHash,
@@ -294,6 +305,11 @@ export class FormDataSourceValueResolverService
  */
 interface DynamicResolutionTarget {
   readonly field: FormDataSourceOptionFieldDefinition;
+  /**
+   * Where the value sits in the form, for the decide path's `formDataErrors`
+   * (ADR 27 §4.2). Table cells use the original row index, not a filtered one.
+   */
+  readonly location: FormDataIssueLocation;
   /** From the schema walk: a table cell carries its row, a field none. */
   readonly position: FormDataSourceBindingPosition;
   readonly previousValue: unknown;
@@ -327,6 +343,7 @@ function readDynamicResolutionTargets(
         ? [
             {
               field,
+              location: readFieldIssueLocation(field),
               position: TOP_LEVEL_BINDING_POSITION,
               previousValue: input.previousFormData?.[field.fieldKey],
               snapshotKey: field.fieldKey,
@@ -361,6 +378,10 @@ function readTableResolutionTargets(
     row
       ? dynamicColumns.map((column): DynamicResolutionTarget => ({
           field: column,
+          location: readCellIssueLocation(
+            readRowIssueLocation(field, rowIndex),
+            column,
+          ),
           position: createTableColumnBindingPosition(row),
           previousValue: readOwnProperty(
             previousRows[rowIndex] ?? {},
@@ -371,6 +392,29 @@ function readTableResolutionTargets(
         }))
       : [],
   );
+}
+
+/**
+ * Tags a `VALUE_NOT_RESOLVED` refusal with the field or cell it came from, so
+ * the decide path can answer with `formDataErrors` instead of a bare code. Every
+ * other failure passes through unchanged.
+ */
+async function locateValueNotResolved(
+  location: FormDataIssueLocation,
+  resolve: () => Promise<readonly FormFieldOption[]>,
+): Promise<readonly FormFieldOption[]> {
+  try {
+    return await resolve();
+  } catch (error: unknown) {
+    if (
+      error instanceof BPMFormDataSourceException &&
+      error.code === BPM_FORM_DATA_SOURCE_ERROR_CODES.VALUE_NOT_RESOLVED
+    ) {
+      throw new BPMFormDataSourceValueNotResolvedException(location);
+    }
+
+    throw error;
+  }
 }
 
 /**

@@ -1071,6 +1071,74 @@ describe('useFormDataSourceField', () => {
     });
   });
 
+  it('resolves an untouched default in a new case and adopts its label', async (): Promise<void> => {
+    const field = createField('select', [], 'A');
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult('A'));
+    runtimeResolveMock.mockResolvedValue({
+      dataSourceKey: 'demo.options',
+      dataSourceVersion: 1,
+      options: [{ label: '現行標籤', value: 'A' }],
+      unresolvedValues: [],
+      waitingForFieldKeys: [],
+    });
+    const harness = mountHookHarness({
+      context: RUNTIME_CONTEXT,
+      field,
+      formData: { choice: 'A' },
+      optionSnapshots: undefined,
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    });
+
+    await waitForState(harness, (state) => state.status === 'VALID');
+    expect(runtimeResolveMock).toHaveBeenCalledTimes(1);
+    expect(runtimeResolveMock.mock.calls[0]?.[0].values).toEqual(['A']);
+    expect(harness.current().invalidValues).toEqual([]);
+    expect(harness.current().options).toContainEqual({
+      label: '現行標籤',
+      value: 'A',
+    });
+  });
+
+  it('marks an untouched default the source no longer offers as invalid', async (): Promise<void> => {
+    const field = createField('select', [], 'A');
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult());
+    runtimeResolveMock.mockResolvedValue(createResolveResult(['A']));
+    const harness = mountHookHarness({
+      context: RUNTIME_CONTEXT,
+      field,
+      formData: { choice: 'A' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    });
+
+    await waitForState(harness, (state) => state.status === 'INVALID');
+    expect(harness.current().invalidValues).toEqual(['A']);
+    expect(isFormDataSourceFieldSubmissionBlocked(harness.current())).toBe(true);
+    expect(readFormDataSourceFieldStatusMessage(harness.current())).toContain(
+      'A',
+    );
+  });
+
+  it('does not resolve a new case once the user has picked another value', async (): Promise<void> => {
+    const field = createField('select', [], 'A');
+    runtimeOptionsMock.mockResolvedValue(createOptionsResult('B'));
+    const harness = mountHookHarness({
+      context: RUNTIME_CONTEXT,
+      field,
+      formData: { choice: 'B' },
+      readonly: false,
+      schema: createSchema(field),
+      uiSchema: createUiSchema(),
+    });
+
+    await flushAsync();
+    expect(runtimeResolveMock).not.toHaveBeenCalled();
+    expect(harness.current().status).not.toBe('INVALID');
+  });
+
   it('does not query a read-only instance and hydrates its snapshot', async (): Promise<void> => {
     const field = createField('select');
     const harness = mountHookHarness({
@@ -1193,6 +1261,7 @@ async function waitForState(
 function createField(
   type: FormDataSourceOptionFieldDefinition['type'],
   bindings: FormDataSourceOptionFieldDefinition['dataSource']['bindings'] = [],
+  defaultValue?: FormDataSourceOptionFieldDefinition['defaultValue'],
 ): FormDataSourceOptionFieldDefinition {
   return {
     dataSource: {
@@ -1205,6 +1274,7 @@ function createField(
     mode: type === 'checkbox' ? undefined : 'single',
     required: false,
     type,
+    ...(defaultValue === undefined ? {} : { defaultValue }),
   } as FormDataSourceOptionFieldDefinition;
 }
 

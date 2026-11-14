@@ -1,7 +1,6 @@
 import { Args, Int, Query, Resolver } from '@nestjs/graphql';
-import { BPMAdminOnly, BPMAuthenticated } from '../bpm-auth';
+import { BPMAuthenticated } from '../bpm-auth';
 import { IdentityService } from './identity.service';
-import { MemberMetadataCacheEntity } from './member-metadata-cache.entity';
 import {
   MemberProfileObject,
   toMemberProfileObject,
@@ -28,12 +27,6 @@ export class IdentityQueries {
     const metadataList = await this.identityService.resolveMembers(memberIds);
 
     return metadataList.map(toMemberProfileObject);
-  }
-
-  @Query(() => [MemberMetadataCacheEntity])
-  @BPMAdminOnly()
-  async cachedMembers(): Promise<readonly MemberMetadataCacheEntity[]> {
-    return this.identityService.listCachedMembers();
   }
 
   @Query(() => [MemberProfileObject])

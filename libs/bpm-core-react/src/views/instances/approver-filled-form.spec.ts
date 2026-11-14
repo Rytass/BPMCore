@@ -1,9 +1,11 @@
 import type {
+  FieldAccessColumnEntry,
   UserTaskNode,
   WorkflowDefinition,
 } from '@rytass/bpm-core-shared';
 import type { FormDefinitionSchema } from '@rytass/bpm-core-shared/form';
 import { validateFormRendererValues } from '@rytass/bpm-core-client/form';
+import type { WorkflowFormData } from '@rytass/bpm-core-client/workflow';
 import {
   isFillConflictMessage,
   readApplicantFormSchema,
@@ -292,6 +294,80 @@ describe('approver-filled form helpers', () => {
       expect(readFillPayload({}, fillNode)).toEqual({});
       expect(readFillPayload({ note: undefined }, fillNode)).toEqual({
         note: null,
+      });
+    });
+
+    describe('a REQUIRED boolean fill field', () => {
+      const BOOLEAN_SCHEMA: FormDefinitionSchema = {
+        ...SCHEMA,
+        fields: [
+          ...SCHEMA.fields,
+          {
+            fieldKey: 'taxFree',
+            label: '免稅',
+            required: false,
+            type: 'boolean',
+          },
+        ],
+      };
+      const booleanNode = (fill: 'OPTIONAL' | 'REQUIRED'): UserTaskNode =>
+        ({
+          ...fillNode,
+          data: {
+            ...fillNode.data,
+            fieldAccess: [{ display: 'SHOW', fieldKey: 'taxFree', fill }],
+          },
+        }) as UserTaskNode;
+
+      it('sends the shown false when the approver never touched it', () => {
+        const changes = readFillChanges({
+          draft: {},
+          node: booleanNode('REQUIRED'),
+          schema: BOOLEAN_SCHEMA,
+          stored: {},
+          values: { taxFree: false },
+        });
+
+        expect(changes).toEqual({ taxFree: false });
+        expect(readFillPayload(changes, booleanNode('REQUIRED'))).toEqual({
+          taxFree: false,
+        });
+      });
+
+      it('sends the changed value over the shown one', () => {
+        expect(
+          readFillChanges({
+            draft: { taxFree: true },
+            node: booleanNode('REQUIRED'),
+            schema: BOOLEAN_SCHEMA,
+            stored: {},
+            values: { taxFree: true },
+          }),
+        ).toEqual({ taxFree: true });
+      });
+
+      it('sends a stored true again without treating it as a change', () => {
+        expect(
+          readFillChanges({
+            draft: {},
+            node: booleanNode('REQUIRED'),
+            schema: BOOLEAN_SCHEMA,
+            stored: { taxFree: true },
+            values: { taxFree: true },
+          }),
+        ).toEqual({ taxFree: true });
+      });
+
+      it('leaves an OPTIONAL boolean out when untouched', () => {
+        expect(
+          readFillChanges({
+            draft: {},
+            node: booleanNode('OPTIONAL'),
+            schema: BOOLEAN_SCHEMA,
+            stored: {},
+            values: { taxFree: false },
+          }),
+        ).toEqual({});
       });
     });
 
@@ -673,6 +749,259 @@ describe('approver-filled form helpers', () => {
       expect(readFillSummary(SCHEMA, fillNode, { note: 'n' })).toEqual([
         { fieldKey: 'note', label: '備註', text: 'n' },
       ]);
+    });
+  });
+
+  describe('column-mode fill (ADR 27 §4(a))', () => {
+    const COLUMN_SCHEMA: FormDefinitionSchema = {
+      fields: [
+        { fieldKey: 'title', label: '標題', required: true, type: 'text' },
+        {
+          columns: [
+            { fieldKey: 'name', label: '品項', required: true, type: 'text' },
+            {
+              fieldKey: 'amount',
+              label: '金額',
+              required: false,
+              type: 'money',
+            },
+          ],
+          fieldKey: 'financeItems',
+          label: '財務明細',
+          maxRows: 5,
+          minRows: 1,
+          required: true,
+          type: 'table',
+        },
+      ],
+      schemaVersion: 1,
+    };
+    const uiSchema = { layout: [], schemaVersion: 1 };
+    const baseNode = buildDefinition([]).nodes[0] as UserTaskNode;
+    const columnNode = (
+      columns: readonly FieldAccessColumnEntry[],
+    ): UserTaskNode => ({
+      ...baseNode,
+      data: {
+        ...baseNode.data,
+        fieldAccess: [
+          {
+            columns,
+            display: 'SHOW',
+            fieldKey: 'financeItems',
+            fill: 'NONE',
+          },
+        ],
+        label: '財務',
+      },
+    });
+    const amountNode = columnNode([{ columnKey: 'amount', fill: 'REQUIRED' }]);
+    const columnDefinition = (
+      columns: readonly FieldAccessColumnEntry[],
+    ): WorkflowDefinition => ({
+      ...buildDefinition([]),
+      nodes: [columnNode(columns)],
+    });
+
+    describe('readFillValidationSchema', () => {
+      it('keeps only the open columns and clears the row bounds', () => {
+        expect(
+          readFillValidationSchema(COLUMN_SCHEMA, amountNode).fields,
+        ).toMatchObject([
+          {
+            columns: [{ fieldKey: 'amount', required: true }],
+            fieldKey: 'financeItems',
+            maxRows: undefined,
+            minRows: undefined,
+            required: false,
+          },
+        ]);
+      });
+
+      it('lets the applicant own the row count and checks only open cells', () => {
+        const schema = readFillValidationSchema(COLUMN_SCHEMA, amountNode);
+
+        expect(
+          validateFormRendererValues({
+            schema,
+            uiSchema,
+            values: { financeItems: [] },
+          }).valid,
+        ).toBe(true);
+        expect(
+          validateFormRendererValues({
+            schema,
+            uiSchema,
+            values: { financeItems: [{ amount: 1, name: '' }] },
+          }).valid,
+        ).toBe(true);
+        expect(
+          validateFormRendererValues({
+            schema,
+            uiSchema,
+            values: { financeItems: [{ amount: null }] },
+          }).valid,
+        ).toBe(false);
+      });
+    });
+
+    describe('readFillDisplaySchema', () => {
+      it('keeps every column, requiring only the open ones per the node', () => {
+        expect(
+          readFillDisplaySchema(COLUMN_SCHEMA, amountNode).fields,
+        ).toMatchObject([
+          { fieldKey: 'title' },
+          {
+            columns: [
+              { fieldKey: 'name', required: false },
+              { fieldKey: 'amount', required: true },
+            ],
+            fieldKey: 'financeItems',
+            required: false,
+          },
+        ]);
+      });
+    });
+
+    describe('readFillPayload', () => {
+      it('sends each stored row in stored order with the open cells the approver left', () => {
+        const stored: WorkflowFormData = {
+          financeItems: [
+            { amount: 100, name: 'A' },
+            { amount: 200, name: 'B' },
+          ],
+        };
+        const values: WorkflowFormData = {
+          financeItems: [
+            { amount: 150, name: 'changed' },
+            { amount: 250, name: 'changed' },
+          ],
+        };
+
+        expect(readFillPayload(values, amountNode, stored)).toEqual({
+          financeItems: [
+            { amount: 150, name: 'A' },
+            { amount: 250, name: 'B' },
+          ],
+        });
+      });
+
+      it('takes neither the row count nor the order from the draft', () => {
+        const stored: WorkflowFormData = {
+          financeItems: [
+            { amount: 100, name: 'A' },
+            { amount: 200, name: 'B' },
+          ],
+        };
+        const values: WorkflowFormData = {
+          financeItems: [{ amount: 1 }, { amount: 2 }, { amount: 3 }],
+        };
+
+        expect(readFillPayload(values, amountNode, stored)).toEqual({
+          financeItems: [
+            { amount: 1, name: 'A' },
+            { amount: 2, name: 'B' },
+          ],
+        });
+      });
+
+      it('sends null for an open cell the draft left out', () => {
+        const stored: WorkflowFormData = {
+          financeItems: [{ amount: 100, name: 'A' }],
+        };
+
+        expect(
+          readFillPayload({ financeItems: [] }, amountNode, stored),
+        ).toEqual({ financeItems: [{ amount: null, name: 'A' }] });
+      });
+
+      it('sends null when nothing is stored, and nothing for other fields', () => {
+        expect(
+          readFillPayload({ financeItems: [{ amount: 9 }] }, amountNode, {}),
+        ).toEqual({ financeItems: null });
+        expect(readFillPayload({ title: 'T' }, amountNode, {})).toEqual({});
+      });
+    });
+
+    describe('readFillSummary', () => {
+      it('summarises only the open columns of a column-only table', () => {
+        expect(
+          readFillSummary(COLUMN_SCHEMA, amountNode, {
+            financeItems: [{ amount: 1200, name: 'a' }],
+          }),
+        ).toEqual([
+          {
+            fieldKey: 'financeItems',
+            label: '財務明細',
+            text: '1 列，金額合計 1,200',
+          },
+        ]);
+      });
+
+      it('leaves out a field the values do not carry', () => {
+        expect(
+          readFillSummary(COLUMN_SCHEMA, amountNode, { title: 'x' }),
+        ).toEqual([]);
+      });
+    });
+
+    describe('readApplicantFormSchema', () => {
+      it('keeps the table with its other columns when one column is approver-filled', () => {
+        expect(
+          readApplicantFormSchema(
+            COLUMN_SCHEMA,
+            columnDefinition([{ columnKey: 'amount', fill: 'REQUIRED' }]),
+          ).fields,
+        ).toMatchObject([
+          { fieldKey: 'title' },
+          { columns: [{ fieldKey: 'name' }], fieldKey: 'financeItems' },
+        ]);
+      });
+
+      it('drops a table whose every column is approver-filled', () => {
+        expect(
+          readApplicantFormSchema(
+            COLUMN_SCHEMA,
+            columnDefinition([
+              { columnKey: 'name', fill: 'OPTIONAL' },
+              { columnKey: 'amount', fill: 'REQUIRED' },
+            ]),
+          ).fields.map((field) => field.fieldKey),
+        ).toEqual(['title']);
+      });
+    });
+
+    describe('readApplicantSubmission', () => {
+      it('strips the open cells and keeps the applicant cells', () => {
+        const values: WorkflowFormData = {
+          financeItems: [{ amount: 5, name: 'x' }],
+          title: 'T',
+        };
+
+        expect(
+          readApplicantSubmission(
+            values,
+            columnDefinition([{ columnKey: 'amount', fill: 'REQUIRED' }]),
+          ),
+        ).toEqual({ financeItems: [{ name: 'x' }], title: 'T' });
+      });
+
+      it('omits a table left with no applicant cell', () => {
+        const values: WorkflowFormData = {
+          financeItems: [{ amount: 5, name: 'x' }],
+          title: 'T',
+        };
+
+        expect(
+          readApplicantSubmission(
+            values,
+            columnDefinition([
+              { columnKey: 'amount', fill: 'REQUIRED' },
+              { columnKey: 'name', fill: 'OPTIONAL' },
+            ]),
+          ),
+        ).toEqual({ title: 'T' });
+      });
     });
   });
 });
