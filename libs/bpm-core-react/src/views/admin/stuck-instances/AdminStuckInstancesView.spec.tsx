@@ -388,6 +388,20 @@ describe('AdminStuckInstancesView', () => {
     expect(cell('instance-2', 'instanceTitle')).toBe('出差申請');
   });
 
+  it('drops the rows of the page it left when the next page cannot be loaded', async (): Promise<void> => {
+    api.listStuckApprovalInstancesPage
+      .mockResolvedValueOnce(pageOf([STUCK], 21))
+      .mockRejectedValueOnce(new Error('Network down'));
+
+    await render();
+    await act(async (): Promise<void> => {
+      button('next-page').click();
+    });
+
+    expect(container.textContent).toContain('Network down');
+    expect(cell('instance-1', 'instanceTitle')).toBe('');
+  });
+
   it('steps back to the new last page when a cancellation empties the current one', async (): Promise<void> => {
     api.listStuckApprovalInstancesPage
       .mockResolvedValueOnce(pageOf([STUCK], 21))

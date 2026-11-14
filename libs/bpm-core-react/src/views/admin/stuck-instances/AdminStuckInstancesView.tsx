@@ -106,6 +106,10 @@ export function AdminStuckInstancesView(): ReactElement {
       setError(null);
     } catch (requestError: unknown) {
       if (latestRequestRef.current === request) {
+        // The table already shows the page asked for; rows of the page left
+        // behind must not stand under that number.
+        setInstances([]);
+        setProfilesById(new Map());
         setError(readErrorMessage(requestError));
       }
     } finally {
