@@ -27148,6 +27148,35 @@ describe('instance guard (ADR 27 §2)', (): void => {
     expect(fixture.savedDecision).toBeNull();
   });
 
+  it('hands the guard the approver auth context on a decide, and null without one', async (): Promise<void> => {
+    const { calls, guard } = guardAnswering([AMOUNT_ISSUE]);
+    const approverAuthContext: BPMAuthContext = {
+      memberId: 'member-finance',
+      metadata: { site: 'TPE' },
+      permissions: [],
+      roles: ['FINANCE'],
+    };
+
+    await captureRejection(
+      createDecideFixture({ instanceGuard: guard }).service.decideTask(
+        {
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-finance',
+          taskId: 'task-1',
+        },
+        { approverAuthContext },
+      ),
+    );
+    await captureRejection(
+      decideRequest(createDecideFixture({ instanceGuard: guard })),
+    );
+
+    expect(calls.map((call) => call.authContext)).toEqual([
+      approverAuthContext,
+      null,
+    ]);
+  });
+
   it('fails closed with 503 BPM_INSTANCE_GUARD_TIMEOUT when the guard never answers', async (): Promise<void> => {
     const guard: BPMInstanceGuard = {
       check: (): Promise<readonly BPMInstanceGuardIssue[]> =>

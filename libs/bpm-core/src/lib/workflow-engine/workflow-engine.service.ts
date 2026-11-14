@@ -2140,7 +2140,9 @@ export class WorkflowEngineService {
           await this.guardInstanceChange({
             action: input.action,
             actorMemberId: input.decidedByMemberId,
-            authContext: null,
+            // The approver's own context when the GraphQL mutation passed one;
+            // never the member-id stub the data-source path falls back to.
+            authContext: options.approverAuthContext ?? null,
             automatic: options.automatic ?? null,
             changedFieldKeys,
             formData: mergedFormData,
