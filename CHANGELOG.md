@@ -1,3 +1,47 @@
+## 0.24.0 (2026-11-14)
+
+### 🚀 Features
+
+- let reassignMemberTasks take an optional list of task ids ([4b3c22a1](https://github.com/Rytass/BPMCore/commit/4b3c22a1))
+- **bpm-core:** check a manager chain continuation at publish and translate its lint ([6662b051](https://github.com/Rytass/BPMCore/commit/6662b051))
+- **bpm-core:** record why an approval instance could not move on ([820c7fb7](https://github.com/Rytass/BPMCore/commit/820c7fb7))
+- **bpm-core:** list the approval instances that are stuck for administrators ([51118ce4](https://github.com/Rytass/BPMCore/commit/51118ce4))
+- **bpm-core:** let an administrator cancel an approval instance and tell its initiator ([03674ced](https://github.com/Rytass/BPMCore/commit/03674ced))
+- **bpm-core:** page the stuck approval instance list ([6cd50975](https://github.com/Rytass/BPMCore/commit/6cd50975))
+- **bpm-core-client:** list stuck approval instances a page at a time ([9cdd7d49](https://github.com/Rytass/BPMCore/commit/9cdd7d49))
+- **bpm-core-react:** let the designer continue a manager chain or skip it when its start already qualifies ([3ca960f1](https://github.com/Rytass/BPMCore/commit/3ca960f1))
+- **bpm-core-react:** let an administrator pick which tasks of a member to reassign ([a25132fa](https://github.com/Rytass/BPMCore/commit/a25132fa))
+- **bpm-core-react:** show administrators the stuck approval instances and let them cancel one ([0e76e1b6](https://github.com/Rytass/BPMCore/commit/0e76e1b6))
+- **bpm-core-react:** mount the stuck approval instances page like the other admin pages ([fc19c298](https://github.com/Rytass/BPMCore/commit/fc19c298))
+- **bpm-core-react:** page the stuck instances table ([d79a7d10](https://github.com/Rytass/BPMCore/commit/d79a7d10))
+- **shared:** let a manager chain continue an earlier chain or skip when its start already qualifies ([fbcd813c](https://github.com/Rytass/BPMCore/commit/fbcd813c))
+- **workflow-engine:** continue a manager chain where an earlier one stopped, or skip when its start already qualifies ([50397fbd](https://github.com/Rytass/BPMCore/commit/50397fbd))
+
+### 🩹 Fixes
+
+- **admin-stuck-instances:** send one cancellation for a double press ([8c0fddce](https://github.com/Rytass/BPMCore/commit/8c0fddce))
+- **admin-stuck-instances:** clear the rows when a page fails to load ([552754a6](https://github.com/Rytass/BPMCore/commit/552754a6))
+- **admin-users:** drop a reassignment answer once another member is shown ([acbc8a66](https://github.com/Rytass/BPMCore/commit/acbc8a66))
+- **bpm-core:** export the administrator cancel input like the other workflow inputs ([988981ae](https://github.com/Rytass/BPMCore/commit/988981ae))
+- **bpm-core:** retry a failed ADVANCE_FAILED write once and log the lost row as an error ([71ec27ac](https://github.com/Rytass/BPMCore/commit/71ec27ac))
+- **bpm-core:** tell the initiator of an administrator cancel only after it commits ([2fca97e7](https://github.com/Rytass/BPMCore/commit/2fca97e7))
+- **bpm-core-react:** keep the skip toggle usable when a continuation stores a non-boolean flag ([c6882875](https://github.com/Rytass/BPMCore/commit/c6882875))
+- **bpm-core-react:** name the not-a-continuation condition in the no continuable chain hint ([971579ff](https://github.com/Rytass/BPMCore/commit/971579ff))
+- **bpm-core-react:** type the stuck instances page against the member profile resolveMembers returns ([e613adad](https://github.com/Rytass/BPMCore/commit/e613adad))
+- **bpm-core-react:** keep the administrator's selection when the reassign list reloads ([0bb6f9cd](https://github.com/Rytass/BPMCore/commit/0bb6f9cd))
+
+### 🔥 Performance
+
+- **bpm-core:** read the unresolved failures of every stuck candidate in one batch ([c1a2e34d](https://github.com/Rytass/BPMCore/commit/c1a2e34d))
+- **workflow-engine:** read only in-flight instances for the stuck list ([a9867d18](https://github.com/Rytass/BPMCore/commit/a9867d18))
+- **workflow-engine:** page and count the stuck list in the database ([67d244c4](https://github.com/Rytass/BPMCore/commit/67d244c4))
+- **workflow-engine:** index the ADVANCE_FAILED rows the stuck list reads ([2cf16d8d](https://github.com/Rytass/BPMCore/commit/2cf16d8d))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.23.0 (2026-11-14)
 
 ### 🚀 Features

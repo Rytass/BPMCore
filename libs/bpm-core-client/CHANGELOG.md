@@ -1,3 +1,28 @@
+## 0.24.0 (2026-11-14)
+
+### 🚀 Features
+
+- **bpm-core-client:** list stuck approval instances a page at a time ([9cdd7d49](https://github.com/Rytass/BPMCore/commit/9cdd7d49))
+- **bpm-core:** page the stuck approval instance list ([6cd50975](https://github.com/Rytass/BPMCore/commit/6cd50975))
+- **bpm-core-react:** mount the stuck approval instances page like the other admin pages ([fc19c298](https://github.com/Rytass/BPMCore/commit/fc19c298))
+- **bpm-core:** let an administrator cancel an approval instance and tell its initiator ([03674ced](https://github.com/Rytass/BPMCore/commit/03674ced))
+- let reassignMemberTasks take an optional list of task ids ([4b3c22a1](https://github.com/Rytass/BPMCore/commit/4b3c22a1))
+- **bpm-core:** check a manager chain continuation at publish and translate its lint ([6662b051](https://github.com/Rytass/BPMCore/commit/6662b051))
+
+### 🩹 Fixes
+
+- **bpm-core:** tell the initiator of an administrator cancel only after it commits ([2fca97e7](https://github.com/Rytass/BPMCore/commit/2fca97e7))
+- **bpm-core:** export the administrator cancel input like the other workflow inputs ([988981ae](https://github.com/Rytass/BPMCore/commit/988981ae))
+
+### 🔥 Performance
+
+- **workflow-engine:** index the ADVANCE_FAILED rows the stuck list reads ([2cf16d8d](https://github.com/Rytass/BPMCore/commit/2cf16d8d))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.23.0 (2026-11-14)
 
 ### 🚀 Features
