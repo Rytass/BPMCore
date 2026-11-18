@@ -264,6 +264,60 @@ describe('approver-filled form helpers', () => {
       });
     });
 
+    // A fallback node listed first and a per-station node both fill `note`;
+    // the case took the station branch, so the marker names the station node.
+    describe('a field several branch nodes fill', () => {
+      const fallback = {
+        ...fillNode,
+        data: {
+          ...fillNode.data,
+          fieldAccess: [
+            { display: 'SHOW', fieldKey: 'note', fill: 'OPTIONAL' },
+          ],
+          label: '站別財務（後備：財務主管）',
+        },
+        id: 'station-finance-fallback',
+      } as UserTaskNode;
+      const station = {
+        ...fallback,
+        data: { ...fallback.data, label: '新竹站別財務' },
+        id: 'station-finance-hsinchu',
+      } as UserTaskNode;
+      const definition: WorkflowDefinition = {
+        ...buildDefinition([]),
+        nodes: [fallback, station],
+      };
+
+      it('names the node the case reached', () => {
+        expect(
+          readFillLabelMarkers(
+            definition,
+            null,
+            new Set(['start', 'station-finance-hsinchu', 'finance-manager']),
+          ),
+        ).toEqual({ note: '新竹站別財務補填' });
+      });
+
+      it('names the first filler when none of them was reached', () => {
+        expect(
+          readFillLabelMarkers(definition, null, new Set(['start'])),
+        ).toEqual({ note: '站別財務（後備：財務主管）補填' });
+        expect(readFillLabelMarkers(definition, null)).toEqual({
+          note: '站別財務（後備：財務主管）補填',
+        });
+      });
+
+      it('still reads 本關補填 for the viewer\'s own field', () => {
+        expect(
+          readFillLabelMarkers(
+            definition,
+            fallback,
+            new Set(['station-finance-hsinchu']),
+          ),
+        ).toEqual({ note: '本關補填' });
+      });
+    });
+
     it('adds a seeded fill table the case does not store yet', () => {
       const seeded = [{ name: '' }];
 

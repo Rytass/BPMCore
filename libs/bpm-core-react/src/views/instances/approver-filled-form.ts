@@ -311,31 +311,44 @@ const userTaskNodes = (
 /**
  * The marker shown after each approver-filled field's label: 「本關補填」 on
  * the fields `viewerFillNode` lets the viewer fill, 「<node>補填」 on every
- * other approver-filled field (the first node in the definition that fills
- * it names it).
+ * other approver-filled field.
+ *
+ * Several nodes may fill the same field when they sit on mutually exclusive
+ * branches (one per station, say, plus a fallback). The marker then names the
+ * first of them in the definition that this case has reached
+ * (`reachedNodeIds`, from `readRevealedNodeIds`), so it names the node that
+ * filled or will fill the field rather than a branch the case never took.
+ * When none of them has been reached, or no reached set is given, it names
+ * the first node in the definition that fills the field.
  */
 export function readFillLabelMarkers(
   definition: WorkflowDefinition,
   viewerFillNode: UserTaskNode | null,
+  reachedNodeIds: ReadonlySet<string> = new Set<string>(),
 ): Readonly<Record<string, string>> {
   const viewerKeys =
     viewerFillNode === null
       ? new Set<string>()
       : readNodeFillGrantFieldKeys(viewerFillNode);
+  const fillers = userTaskNodes(definition).flatMap((node) =>
+    [...readNodeFillGrantFieldKeys(node)].map(
+      (fieldKey) => [fieldKey, node] as const,
+    ),
+  );
+  const fieldKeys = [...new Set(fillers.map(([fieldKey]) => fieldKey))];
 
-  return userTaskNodes(definition).reduce<Readonly<Record<string, string>>>(
-    (markers, node) => ({
-      ...Object.fromEntries(
-        [...readNodeFillGrantFieldKeys(node)].map((fieldKey) => [
-          fieldKey,
-          viewerKeys.has(fieldKey)
-            ? '本關補填'
-            : `${node.data.label || node.id}補填`,
-        ]),
-      ),
-      ...markers,
+  return Object.fromEntries(
+    fieldKeys.map((fieldKey): readonly [string, string] => {
+      if (viewerKeys.has(fieldKey)) return [fieldKey, '本關補填'];
+
+      const nodes = fillers
+        .filter(([key]) => key === fieldKey)
+        .map(([, node]) => node);
+      const named =
+        nodes.find((node) => reachedNodeIds.has(node.id)) ?? nodes[0];
+
+      return [fieldKey, `${named.data.label || named.id}補填`];
     }),
-    {},
   );
 }
 
