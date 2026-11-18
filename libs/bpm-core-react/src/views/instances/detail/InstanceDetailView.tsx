@@ -136,7 +136,10 @@ import {
   readFillSummary,
   readFillValidationSchema,
 } from '../approver-filled-form';
-import { readViewerFieldAccess } from '../viewer-field-access';
+import {
+  readRevealedNodeIds,
+  readViewerFieldAccess,
+} from '../viewer-field-access';
 import {
   readFormDataSourceSubmissionBlockMessage,
   type FormDataSourceFieldState,
@@ -567,9 +570,13 @@ export function InstanceDetailView({
   const fillLabelMarkers = useMemo(
     (): Readonly<Record<string, string>> | undefined =>
       instance
-        ? readFillLabelMarkers(instance.workflowSnapshot, fillNode)
+        ? readFillLabelMarkers(
+            instance.workflowSnapshot,
+            fillNode,
+            readRevealedNodeIds(activityLogs, tasks),
+          )
         : undefined,
-    [fillNode, instance],
+    [activityLogs, fillNode, instance, tasks],
   );
   const memberProfilesById = useMemo(
     (): ReadonlyMap<string, MemberProfileRecord> =>
