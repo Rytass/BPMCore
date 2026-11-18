@@ -338,7 +338,7 @@ export function readFillLabelMarkers(
   const fieldKeys = [...new Set(fillers.map(([fieldKey]) => fieldKey))];
 
   return Object.fromEntries(
-    fieldKeys.map((fieldKey) => {
+    fieldKeys.map((fieldKey): readonly [string, string] => {
       if (viewerKeys.has(fieldKey)) return [fieldKey, '本關補填'];
 
       const nodes = fillers
