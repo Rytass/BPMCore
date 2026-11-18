@@ -1,3 +1,15 @@
+## 0.24.1 (2026-11-18)
+
+### 🩹 Fixes
+
+- **instance-detail:** name the fill marker after the branch node the case reached ([160afff1](https://github.com/Rytass/BPMCore/commit/160afff1))
+- **instance-detail:** type the fill marker entries so the return type is checked ([3e2e0181](https://github.com/Rytass/BPMCore/commit/3e2e0181))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.24.0 (2026-11-14)
 
 ### 🚀 Features
