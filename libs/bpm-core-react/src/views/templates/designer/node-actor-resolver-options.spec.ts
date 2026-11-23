@@ -668,7 +668,7 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
       { excludeNodeActors: { nodeIds: ['x'], whenEmpty: 'SKIP_NODE' } },
     ],
     ['an SLA auto-approval', { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } }],
-  ])('does not offer a stage with %s (it may run without a signer)', (_name, data) => {
+  ])('offers a stage with %s (when it is skipped it excludes nobody)', (_name, data) => {
     const definition = graph(
       [
         plainNode('start', 'startEvent'),
@@ -689,7 +689,7 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
       readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options.map(
         (option) => option.id,
       ),
-    ).toEqual(['ok']);
+    ).toEqual(['ok', 'risky']);
   });
 
   it('does not offer a stage that only one branch passes, and offers the stage both branches share', () => {
@@ -725,14 +725,27 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
   });
 
   it('keeps a stored stage that no longer qualifies, marked, and says why', () => {
+    // start -> split -> (cond | other) -> merge -> me: `cond` is not on every
+    // path to `me`, so it stopped qualifying (an entry condition does not).
     const definition = graph(
       [
         plainNode('start', 'startEvent'),
-        taskNode('cond', { entryCondition: 'form.x > 1' }),
+        plainNode('split', 'exclusiveGateway'),
+        taskNode('cond'),
+        taskNode('other'),
+        plainNode('merge', 'exclusiveGateway'),
         taskNode('me'),
         plainNode('end', 'endEvent'),
       ],
-      [link('start', 'cond'), link('cond', 'me'), link('me', 'end')],
+      [
+        link('start', 'split'),
+        link('split', 'cond'),
+        link('split', 'other'),
+        link('cond', 'merge'),
+        link('other', 'merge'),
+        link('merge', 'me'),
+        link('me', 'end'),
+      ],
     );
     const choice = readExcludeNodeActorStageChoice(
       definition,
@@ -744,7 +757,9 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
     expect(choice.selected.map((option) => option.name)).toEqual([
       '關卡 cond（無法使用）',
     ]);
-    expect(choice.problems).toEqual([expect.stringContaining('設有進入條件')]);
+    expect(choice.problems).toEqual([
+      expect.stringContaining('不會經過排除對象的前面關卡'),
+    ]);
   });
 
   it('shows the hint that nothing can be picked when no stage is upstream', () => {
@@ -1136,9 +1151,14 @@ describe('a manager chain with 起點本人已達簽到職等時略過 as a NODE
         (option) => option.id,
       ),
     ).not.toContain('a');
+  });
+
+  it('is still offered as an excludeNodeActors stage (when it is skipped it excludes nobody)', () => {
     expect(
-      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options,
-    ).toEqual([]);
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options.map(
+        (option) => option.id,
+      ),
+    ).toEqual(['a']);
   });
 
   it('is reported when it is already the source', () => {

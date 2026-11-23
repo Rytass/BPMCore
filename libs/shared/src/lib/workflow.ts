@@ -114,20 +114,29 @@ export type ExcludeInitiatorWhenEmpty =
  * node's approvers (a delegate acting for them counts as them, in either
  * direction). Absent keeps today's behaviour.
  *
- * "Who approved" is read the way `NODE_ACTOR` reads it: the most recent round
- * of each listed node, only real approvals (not an ad-hoc countersign and not
- * an SLA auto-approval), the delegate who actually approved rather than the
+ * "Who approved" is read the way `NODE_ACTOR` reads it: the newest batch of
+ * each listed node, only real approvals (not an ad-hoc countersign and not an
+ * SLA auto-approval), the delegate who actually approved rather than the
  * person the task was meant for, and the receiver of a transfer. Each listed
  * node is read on its own and the results are combined.
  *
- * Every listed node has to be a stage that always runs and always has a
- * person sign: the publish lint refuses a listed node with an entry condition,
- * a `SKIP_NODE` fallback or an SLA auto-approval, and one that some path to
- * this node does not pass (check each listed node on its own, not the list as
- * a whole). Without that, a return that restarts the instance could leave a
- * previous round's approver in the exclusion list. To exclude the approver of
- * a stage that only some cases run, put both stages on the same route with an
- * exclusive gateway.
+ * Every listed node has to be upstream of this node and on every path to it
+ * (the publish lint checks each listed node on its own, not the list as a
+ * whole). A listed node may be a stage that can be skipped or pass without a
+ * real signer: an entry condition, a `SKIP_NODE` fallback, a manager chain that
+ * skips when its start already qualifies, or an SLA auto-approval (the task is
+ * created, but the timeout's approval is not a real signature). The engine
+ * reads what a listed node did the last time the case reached it. If that was
+ * a skip, the node excludes nobody, even when an earlier round of it was
+ * signed. Otherwise its newest batch counts, and a batch nobody really signed
+ * (the SLA timeout approved it) is empty; an older batch is never read instead.
+ *
+ * "Last time" is not "this round": a return to a stage between a listed node
+ * and this one, or a resubmission `FROM_RETURN_POINT`, does not run the listed
+ * node again, so its last result stands: a signer of it is still excluded, and
+ * a skip still excludes nobody. A stage that is not on every path is refused;
+ * keep it on the main line with an entry condition, or put both stages on the
+ * same route with an exclusive gateway.
  */
 export interface ExcludeNodeActorsConfig {
   /** The earlier user task nodes whose approvers are kept out of this node. */

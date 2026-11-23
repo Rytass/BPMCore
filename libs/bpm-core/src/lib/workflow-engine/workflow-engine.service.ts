@@ -779,6 +779,29 @@ const SKIPPED_RUNTIME_TASK_PAYLOADS: Readonly<
   NODE_ACTORS: { skippedByNodeActorExclusion: true },
 };
 
+// Every way a node is skipped instead of getting a task: the three above, and
+// an entry condition that is false. Typing the table as a `Record` over this
+// union is what keeps a new way of skipping from being left out of
+// {@link ANY_STAGE_SKIP_PAYLOAD_KEYS}.
+type StageSkipReason = SkippedRuntimeTask['skippedBy'] | 'ENTRY_CONDITION';
+
+const STAGE_SKIP_PAYLOADS: Readonly<
+  Record<StageSkipReason, Readonly<Record<string, true>>>
+> = {
+  ...SKIPPED_RUNTIME_TASK_PAYLOADS,
+  ENTRY_CONDITION: { skippedByEntryCondition: true },
+};
+
+// The `TOKEN_ADVANCED` payload keys that say a node was skipped, all of them,
+// and the one a manager-chain stage's skip writes. Both are read out of
+// {@link STAGE_SKIP_PAYLOADS}, so no key is spelled a second time.
+const ANY_STAGE_SKIP_PAYLOAD_KEYS: readonly string[] = Object.values(
+  STAGE_SKIP_PAYLOADS,
+).flatMap((payload): readonly string[] => Object.keys(payload));
+const MANAGER_CHAIN_SKIP_PAYLOAD_KEYS: readonly string[] = Object.keys(
+  STAGE_SKIP_PAYLOADS.MANAGER_CHAIN_REACHED,
+);
+
 type OrgManagerChainResolver = Extract<
   ApproverResolver,
   { type: 'ORG_MANAGER_CHAIN' }
@@ -6944,9 +6967,7 @@ export class WorkflowEngineService {
     token: WorkflowTokenEntity,
     node: WorkflowNode,
   ): Promise<void> {
-    await this.skipNode(manager, instance, token, node, {
-      skippedByEntryCondition: true,
-    });
+    await this.skipNode(manager, instance, token, node, 'ENTRY_CONDITION');
   }
 
   private async skipNodeByInitiatorExclusion(
@@ -6956,13 +6977,7 @@ export class WorkflowEngineService {
     node: WorkflowNode,
     skippedBy: SkippedRuntimeTask['skippedBy'] = 'INITIATOR',
   ): Promise<void> {
-    await this.skipNode(
-      manager,
-      instance,
-      token,
-      node,
-      SKIPPED_RUNTIME_TASK_PAYLOADS[skippedBy],
-    );
+    await this.skipNode(manager, instance, token, node, skippedBy);
   }
 
   private async skipNode(
@@ -6970,7 +6985,7 @@ export class WorkflowEngineService {
     instance: ApprovalInstanceEntity,
     token: WorkflowTokenEntity,
     node: WorkflowNode,
-    reason: Readonly<Record<string, true>>,
+    reason: StageSkipReason,
   ): Promise<void> {
     // A NOTIFY node is an asynchronous branch that may not have an outgoing
     // edge, so a skipped one ends its branch exactly as an executed one does:
@@ -6986,7 +7001,7 @@ export class WorkflowEngineService {
         instanceId: instance.id,
         nodeId: node.id,
         payload: {
-          ...reason,
+          ...STAGE_SKIP_PAYLOADS[reason],
           ...(consumesToken ? { consumed: true } : {}),
           tokenId: token.id,
         },
@@ -9223,7 +9238,12 @@ export class WorkflowEngineService {
     stageNodeId: string,
   ): Promise<number | null> {
     if (
-      await this.wasChainStageSkippedLastRound(manager, instance, stageNodeId)
+      await this.wasStageSkippedLastRound(
+        manager,
+        instance,
+        stageNodeId,
+        MANAGER_CHAIN_SKIP_PAYLOAD_KEYS,
+      )
     ) {
       return null;
     }
@@ -9261,19 +9281,26 @@ export class WorkflowEngineService {
 
   /**
    * Whether the latest thing that happened to the stage `stageNodeId` was a
-   * skip for `skippedByManagerChainReached`, rather than a task being made for
-   * it: the newest such `TOKEN_ADVANCED` is newer than the newest
+   * skip, rather than a task being made for it: the newest `TOKEN_ADVANCED`
+   * that carries one of `skipPayloadKeys` is newer than the newest
    * `TASK_CREATED` of one of the stage's own (non-ad-hoc) tasks. Newer is
    * decided by the log's `seq` (the order the database wrote the rows in;
    * `created_at` is the transaction start and ties within one transaction).
    *
+   * Which skips count is the caller's: a manager-chain stage looks only for
+   * `skippedByManagerChainReached`, an `excludeNodeActors` stage for any
+   * ({@link ANY_STAGE_SKIP_PAYLOAD_KEYS}). The decision is read from the keys,
+   * never from the event type: a `TOKEN_ADVANCED` without one of them (a
+   * normal move on, a fan-out after the approval, a rejection) is not a skip.
+   *
    * The `TASK_CREATED` payload does not say whether its task is ad-hoc, so the
    * task is looked up by the id the log carries.
    */
-  private async wasChainStageSkippedLastRound(
+  private async wasStageSkippedLastRound(
     manager: EntityManager,
     instance: ApprovalInstanceEntity,
     stageNodeId: string,
+    skipPayloadKeys: readonly string[],
   ): Promise<boolean> {
     const [logs, stageTasks] = await Promise.all([
       manager.getRepository(ActivityLogEntity).find({
@@ -9301,7 +9328,7 @@ export class WorkflowEngineService {
       logs.filter(
         (log) =>
           log.eventType === ActivityLogEventTypeEnum.TOKEN_ADVANCED &&
-          log.payload['skippedByManagerChainReached'] === true,
+          skipPayloadKeys.some((key) => log.payload[key] === true),
       ),
     );
     const createdSeq = newestSeq(
@@ -9353,11 +9380,21 @@ export class WorkflowEngineService {
    * results combined. A source reads only the most recent of its listed nodes;
    * an exclusion must cover every listed node, so it asks one node at a time.
    *
-   * There is no round boundary here: a node's newest batch is what counts. The
-   * publish lint makes that the right batch, since every listed node runs and
-   * is signed by a person on every path to this node (a return to the start
-   * runs it again; a return to a stage below it leaves its earlier approval
-   * standing, and the exclusion with it).
+   * There is no round boundary here: what a listed node did the last time the
+   * case reached it is what counts, and that is one of two things.
+   *
+   * - It was skipped (an entry condition that was false, or any of the ways
+   *   the engine skips a node, {@link ANY_STAGE_SKIP_PAYLOAD_KEYS}): nobody
+   *   signed it, so it keeps out nobody, even if an earlier round of it was
+   *   signed ({@link wasStageSkippedLastRound}, as for a manager chain).
+   * - A task was made for it: its newest batch counts, by the `NODE_ACTOR`
+   *   rules. A batch that nobody really signed (the SLA timeout approved it)
+   *   is empty, and an older batch is not read instead.
+   *
+   * "Last time" is not "this round". A return to a stage between a listed node
+   * and this one, or a resubmission `FROM_RETURN_POINT`, does not run the
+   * listed node again, so its last result stands: a signer of it is still
+   * excluded, and a skip still excludes nobody.
    */
   private async readExcludedNodeActorMemberIds(
     manager: EntityManager,
@@ -9366,6 +9403,17 @@ export class WorkflowEngineService {
   ): Promise<readonly string[]> {
     const groups = await Promise.all(
       nodeIds.map(async (nodeId): Promise<readonly string[]> => {
+        if (
+          await this.wasStageSkippedLastRound(
+            manager,
+            instance,
+            nodeId,
+            ANY_STAGE_SKIP_PAYLOAD_KEYS,
+          )
+        ) {
+          return [];
+        }
+
         const approvals = await this.readNodeActorApprovals(manager, instance, [
           nodeId,
         ]);
