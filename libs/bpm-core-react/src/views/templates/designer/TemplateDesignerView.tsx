@@ -5105,19 +5105,21 @@ export function TemplateDesignerView({
 
     return (
       <div style={FORM_STACK_STYLE}>
-        <Typography color="text-neutral" variant="body">
-          畫布上的這條線目前會顯示「
-          <span
-            style={{
-              color: pathLabelIsIncomplete
-                ? INCOMPLETE_CONDITION_EDGE_COLOR
-                : undefined,
-            }}
-          >
-            {pathLabelPreview ?? '請設定條件'}
-          </span>
-          」。
-        </Typography>
+        {pathLabelPreview === undefined ? null : (
+          <Typography color="text-neutral" variant="body">
+            畫布上的這條線目前會顯示「
+            <span
+              style={{
+                color: pathLabelIsIncomplete
+                  ? INCOMPLETE_CONDITION_EDGE_COLOR
+                  : undefined,
+              }}
+            >
+              {pathLabelPreview}
+            </span>
+            」。
+          </Typography>
+        )}
         <Toggle
           checked={Boolean(edge.data.isDefault)}
           inputProps={{ 'aria-label': '其他情況走這條' }}

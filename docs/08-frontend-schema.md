@@ -580,6 +580,12 @@ interface NotifyWebhookTarget {
 `exclusiveGateway` 已可由 designer 建立，edge 條件以 CEL 儲存在
 `edge.data.condition`，default flow 以 `edge.data.isDefault` 表示。
 
+Designer 只建立 `direction: 'split'` 的 exclusiveGateway。`direction` 不是
+`'split'`（含缺值）、只有一條輸出連線，而且那條是 `isDefault` 或
+`condition`／`conditionFieldKey`／`conditionOperator`／`conditionValue`
+都沒有值時，引擎直接通過，designer 不標紅、不擋儲存與發布；其他形狀照舊需要條件
+（shared 的 `readWorkflowDefinitionIssue` 另要求預設）。
+
 `parallelGateway` 是 schema/runtime/唯讀檢視相容型別。Designer palette 目前不提供
 新增 Parallel Gateway；多分支與匯合主要使用多條 edge 搭配後續節點
 `triggerMode`。

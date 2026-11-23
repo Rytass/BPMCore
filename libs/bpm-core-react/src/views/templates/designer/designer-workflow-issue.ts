@@ -6,6 +6,7 @@ import {
   isExclusiveGatewaySourceEdge,
   isOrgManagerChainDecisionPolicyInvalid,
   isParallelGatewaySourceEdge,
+  isPassThroughExclusiveGateway,
   readApproverResolverIssue,
   readExcludeInitiatorIssue,
   readExcludeNodeActorsShapeIssue,
@@ -15,6 +16,8 @@ import {
 /**
  * `true` for an exclusive-gateway outgoing edge that has neither a condition
  * nor the default flag, so the designer shows it in red and blocks saving.
+ * The only edge of a gateway the engine moves straight through
+ * (`isPassThroughExclusiveGateway`) is not one.
  */
 export function isIncompleteConditionEdge(
   edge: WorkflowEdge,
@@ -23,13 +26,27 @@ export function isIncompleteConditionEdge(
   return (
     isExclusiveGatewaySourceEdge(edge, definition.nodes) &&
     !edge.data.isDefault &&
-    !edge.data.condition
+    !edge.data.condition &&
+    !isPassThroughSource(edge, definition)
+  );
+}
+
+function isPassThroughSource(
+  edge: WorkflowEdge,
+  definition: Pick<WorkflowDefinition, 'edges' | 'nodes'>,
+): boolean {
+  const source = definition.nodes.find((node) => node.id === edge.source);
+
+  return (
+    source !== undefined &&
+    isPassThroughExclusiveGateway(source, definition.edges)
   );
 }
 
 /**
  * The text drawn on an edge: its own label, else the path label of the
- * gateway it leaves.
+ * gateway it leaves. An exclusive gateway the engine moves straight through
+ * (`isPassThroughExclusiveGateway`) has no path to name, so its edge gets none.
  */
 export function readEdgeCanvasLabel(
   edge: WorkflowEdge,
@@ -40,7 +57,7 @@ export function readEdgeCanvasLabel(
   }
 
   if (isExclusiveGatewaySourceEdge(edge, definition.nodes)) {
-    return readExclusiveGatewayPathLabel(edge);
+    return readExclusiveGatewayPathLabel(edge, definition);
   }
 
   if (isParallelGatewaySourceEdge(edge, definition.nodes)) {
@@ -50,9 +67,16 @@ export function readEdgeCanvasLabel(
   return undefined;
 }
 
-function readExclusiveGatewayPathLabel(edge: WorkflowEdge): string {
+function readExclusiveGatewayPathLabel(
+  edge: WorkflowEdge,
+  definition: Pick<WorkflowDefinition, 'edges' | 'nodes'>,
+): string | undefined {
   if (edge.data.isDefault) {
     return '其他情況';
+  }
+
+  if (isPassThroughSource(edge, definition)) {
+    return undefined;
   }
 
   return '請設定條件';

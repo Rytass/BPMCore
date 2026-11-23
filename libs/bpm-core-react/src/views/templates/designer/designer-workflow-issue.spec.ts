@@ -125,6 +125,21 @@ describe('readDesignerWorkflowIssue — exclusive gateway outgoing edges', () =>
       [{}, {}],
       MISSING_CONDITION_ISSUE,
     ],
+    ['R6', 'join, one edge with no condition fields', 'join', [{}], null],
+    [
+      'R7a',
+      'missing direction, one edge with no condition fields',
+      undefined,
+      [{}],
+      null,
+    ],
+    [
+      'R7b',
+      "unknown direction 'merge', one edge with no condition fields",
+      'merge',
+      [{}],
+      null,
+    ],
   ])('%s — %s', (_id, _name, direction, outgoing, expected) => {
     expect(
       readDesignerWorkflowIssue(
@@ -209,6 +224,33 @@ describe('readEdgeCanvasLabel', () => {
       'e1',
       '請設定條件',
     ],
+    [
+      'R9a',
+      'join, one edge with no condition fields',
+      'exclusiveGateway',
+      'join',
+      [{}],
+      'e1',
+      undefined,
+    ],
+    [
+      'R9b',
+      'missing direction, one edge with no condition fields',
+      'exclusiveGateway',
+      undefined,
+      [{}],
+      'e1',
+      undefined,
+    ],
+    [
+      'R9c',
+      "unknown direction 'merge', one edge with no condition fields",
+      'exclusiveGateway',
+      'merge',
+      [{}],
+      'e1',
+      undefined,
+    ],
   ])('%s — %s', (_id, _name, type, direction, outgoing, edgeId, expected) => {
     const definition = gatewayDefinition(type, direction, outgoing);
 
@@ -225,20 +267,54 @@ describe('isIncompleteConditionEdge', () => {
       string,
       DirectionInput,
       readonly WorkflowEdgeData[],
+      string,
       boolean,
     ]
   >([
-    ['R5a', 'split, no condition', 'split', [{}], true],
-    ['R5b', 'split, the default', 'split', [{ isDefault: true }], false],
+    ['R5a', 'split, no condition', 'split', [{}], 'e1', true],
+    ['R5b', 'split, the default', 'split', [{ isDefault: true }], 'e1', false],
     [
       'R5c',
       'split, has a condition',
       'split',
       [{ condition: 'form.amount > 100' }],
+      'e1',
       false,
     ],
-    ['R5d', 'join, two edges with no condition', 'join', [{}, {}], true],
-  ])('%s — %s', (_id, _name, direction, outgoing, expected) => {
+    ['R5d', 'join, two edges with no condition', 'join', [{}, {}], 'e1', true],
+    [
+      'R5e',
+      'the edge into the gateway, not one leaving it',
+      'split',
+      [{}],
+      'e0',
+      false,
+    ],
+    [
+      'R10a',
+      'join, one edge with no condition fields',
+      'join',
+      [{}],
+      'e1',
+      false,
+    ],
+    [
+      'R10b',
+      'missing direction, one edge with no condition fields',
+      undefined,
+      [{}],
+      'e1',
+      false,
+    ],
+    [
+      'R10c',
+      "unknown direction 'merge', one edge with no condition fields",
+      'merge',
+      [{}],
+      'e1',
+      false,
+    ],
+  ])('%s — %s', (_id, _name, direction, outgoing, edgeId, expected) => {
     const definition = gatewayDefinition(
       'exclusiveGateway',
       direction,
@@ -246,7 +322,87 @@ describe('isIncompleteConditionEdge', () => {
     );
 
     expect(
-      isIncompleteConditionEdge(readEdge(definition, 'e1'), definition),
+      isIncompleteConditionEdge(readEdge(definition, edgeId), definition),
     ).toBe(expected);
+  });
+});
+
+describe('a split and join diamond', () => {
+  function userTaskNode(id: string): WorkflowNode {
+    return {
+      data: {
+        allowAddSigner: false,
+        allowReject: true,
+        allowTransfer: false,
+        approverResolver: { memberIds: ['m1'], type: 'DIRECT' },
+        decisionPolicy: { type: 'SINGLE' },
+        label: id,
+        returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },
+      },
+      id,
+      position: POSITION,
+      type: 'userTask',
+    };
+  }
+
+  function exclusiveGatewayNode(
+    id: string,
+    direction: 'join' | 'split',
+  ): WorkflowNode {
+    return {
+      data: { direction, label: id, triggerMode: 'AND' },
+      id,
+      position: POSITION,
+      type: 'exclusiveGateway',
+    } as unknown as WorkflowNode;
+  }
+
+  function link(
+    source: string,
+    target: string,
+    data: WorkflowEdgeData = {},
+  ): WorkflowEdge {
+    return { data, id: `${source}-${target}`, source, target };
+  }
+
+  /** start → split → (taskA | taskB) → join → end, the split keeping its condition and default. */
+  const diamond: WorkflowDefinition = {
+    edges: [
+      link('start', 'split'),
+      link('split', 'taskA', { condition: 'form.amount > 100000' }),
+      link('split', 'taskB', { isDefault: true }),
+      link('taskA', 'join'),
+      link('taskB', 'join'),
+      link('join', 'end'),
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: POSITION,
+        type: 'startEvent',
+      },
+      exclusiveGatewayNode('split', 'split'),
+      userTaskNode('taskA'),
+      userTaskNode('taskB'),
+      exclusiveGatewayNode('join', 'join'),
+      {
+        data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },
+        id: 'end',
+        position: POSITION,
+        type: 'endEvent',
+      },
+    ],
+  };
+
+  it('has no workflow issue', () => {
+    expect(readDesignerWorkflowIssue(diamond)).toBeNull();
+  });
+
+  it('does not flag the join outgoing edge as an incomplete condition', () => {
+    expect(
+      isIncompleteConditionEdge(readEdge(diamond, 'join-end'), diamond),
+    ).toBe(false);
   });
 });
