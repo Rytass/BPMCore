@@ -6,8 +6,10 @@ import {
   canUserTaskBeSkippedByManagerChain,
   canUserTaskHaveMultipleApprovers,
   createWorkflowNode,
+  hasConfiguredConditionEdges,
   isDecisionPolicyUnsatisfiable,
   isOrgManagerChainDecisionPolicyInvalid,
+  isPassThroughExclusiveGateway,
   isFormFieldCompatibleWithWebhookParameter,
   isNotifyRecipientsEmpty,
   isNotifyWebhookValueCompatibleWithParameter,
@@ -41,6 +43,7 @@ import {
   UserTaskNode,
   WorkflowDefinition,
   WorkflowEdge,
+  WorkflowEdgeData,
   WorkflowNode,
 } from './workflow';
 
@@ -3631,5 +3634,152 @@ describe('manager chain continuation and skipWhenStartReached', () => {
         ]);
       });
     });
+  });
+});
+
+/** `'absent'` leaves `direction` out, as a definition that skipped the type would. */
+type DirectionInput = 'absent' | 'join' | 'merge' | 'split';
+
+type PassThroughNodeType = 'exclusiveGateway' | 'parallelGateway' | 'userTask';
+
+function passThroughNode(
+  type: PassThroughNodeType,
+  direction: DirectionInput,
+): WorkflowNode {
+  return {
+    data: {
+      ...(direction === 'absent' ? {} : { direction }),
+      label: '節點',
+      triggerMode: 'AND',
+    },
+    id: 'gw',
+    position: { x: 0, y: 0 },
+    type,
+  } as unknown as WorkflowNode;
+}
+
+function passThroughEdges(
+  outgoing: readonly WorkflowEdgeData[],
+): readonly WorkflowEdge[] {
+  return outgoing.map((data, index): WorkflowEdge => ({
+    data,
+    id: `e${index + 1}`,
+    source: 'gw',
+    target: `end${index + 1}`,
+  }));
+}
+
+describe('isPassThroughExclusiveGateway', () => {
+  it.each<
+    readonly [
+      string,
+      string,
+      PassThroughNodeType,
+      DirectionInput,
+      readonly WorkflowEdgeData[],
+      boolean,
+    ]
+  >([
+    [
+      'S11a',
+      'join, one edge with no condition fields',
+      'exclusiveGateway',
+      'join',
+      [{}],
+      true,
+    ],
+    [
+      'S11b',
+      'missing direction, one edge with no condition fields',
+      'exclusiveGateway',
+      'absent',
+      [{}],
+      true,
+    ],
+    [
+      'S11c',
+      "unknown direction 'merge', one edge with no condition fields",
+      'exclusiveGateway',
+      'merge',
+      [{}],
+      true,
+    ],
+    [
+      'S11d',
+      'join, one default edge that still carries a conditionValue',
+      'exclusiveGateway',
+      'join',
+      [{ conditionValue: '100', isDefault: true }],
+      true,
+    ],
+    [
+      'S11e',
+      'join, one edge that carries only a conditionValue',
+      'exclusiveGateway',
+      'join',
+      [{ conditionValue: '100' }],
+      false,
+    ],
+    [
+      'S11f',
+      'split, one edge with no condition fields',
+      'exclusiveGateway',
+      'split',
+      [{}],
+      false,
+    ],
+    [
+      'S11g',
+      'join, two edges with no condition fields',
+      'exclusiveGateway',
+      'join',
+      [{}, {}],
+      false,
+    ],
+    ['S11h', 'join, no outgoing edge', 'exclusiveGateway', 'join', [], false],
+    [
+      'S11i',
+      'parallel gateway, join, one edge with no condition fields',
+      'parallelGateway',
+      'join',
+      [{}],
+      false,
+    ],
+    ['S11j', 'user task, one outgoing edge', 'userTask', 'absent', [{}], false],
+    [
+      'S11k',
+      'join, one edge that carries only a conditionFieldKey',
+      'exclusiveGateway',
+      'join',
+      [{ conditionFieldKey: 'amount' }],
+      false,
+    ],
+    [
+      'S11l',
+      'join, one edge that carries only a conditionOperator',
+      'exclusiveGateway',
+      'join',
+      [{ conditionOperator: 'EQUALS' }],
+      false,
+    ],
+  ])('%s — %s', (_id, _name, type, direction, outgoing, expected) => {
+    expect(
+      isPassThroughExclusiveGateway(
+        passThroughNode(type, direction),
+        passThroughEdges(outgoing),
+      ),
+    ).toBe(expected);
+  });
+});
+
+describe('hasConfiguredConditionEdges — join gateway', () => {
+  it('S12 — counts the condition on the only outgoing edge of a join gateway', () => {
+    const definition: WorkflowDefinition = {
+      edges: passThroughEdges([{ condition: 'form.amount > 100' }]),
+      meta: { schemaVersion: 1 },
+      nodes: [passThroughNode('exclusiveGateway', 'join')],
+    };
+
+    expect(hasConfiguredConditionEdges(definition)).toBe(true);
   });
 });

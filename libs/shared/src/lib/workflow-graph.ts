@@ -957,6 +957,43 @@ export function isParallelGatewaySourceEdge(
 }
 
 /**
+ * `true` for an exclusive gateway whose single outgoing edge the engine takes
+ * without evaluating a condition: `direction` is not `'split'` (absent or any
+ * other value included) and it has exactly one outgoing edge, which is the
+ * default or has none of `condition`, `conditionFieldKey`,
+ * `conditionOperator`, `conditionValue` set.
+ *
+ * Sufficient, not necessary, and more conservative than the engine: the engine
+ * also takes straight through an edge whose `condition` is blank and that lacks
+ * `conditionFieldKey` or `conditionOperator`, and entering the gateway may
+ * still wait on incoming tokens (`isNodeEntryReady`).
+ */
+export function isPassThroughExclusiveGateway(
+  node: WorkflowNode,
+  edges: readonly WorkflowEdge[],
+): boolean {
+  if (node.type !== 'exclusiveGateway' || node.data.direction === 'split') {
+    return false;
+  }
+
+  const outgoing = edges.filter((edge) => edge.source === node.id);
+
+  return (
+    outgoing.length === 1 &&
+    outgoing.every(
+      (edge) =>
+        Boolean(edge.data.isDefault) ||
+        !(
+          edge.data.condition ||
+          edge.data.conditionFieldKey ||
+          edge.data.conditionOperator ||
+          edge.data.conditionValue
+        ),
+    )
+  );
+}
+
+/**
  * The nodes an approver at `nodeId` may send a case back to when the node lets
  * them pick (`returnBehavior.allowedTargets: 'ANY'`): the start event, which
  * hands the case back to the applicant, and every other user task that comes
@@ -1072,16 +1109,26 @@ export function readWorkflowDefinitionIssue(
     definition.nodes
       .map((node) => readNotifyServiceTaskIssue(node))
       .find((issue): issue is string => issue !== null) ?? null;
+  const passThroughGatewayIds = new Set(
+    definition.nodes
+      .filter((node) => isPassThroughExclusiveGateway(node, definition.edges))
+      .map((node) => node.id),
+  );
   const incompleteConditionEdge = definition.edges.find(
     (edge) =>
       isExclusiveGatewaySourceEdge(edge, definition.nodes) &&
+      !passThroughGatewayIds.has(edge.source) &&
       !edge.data.isDefault &&
       !edge.data.condition,
   );
-  // An exclusive gateway must always keep one "其他情況" (default) outgoing edge,
-  // otherwise the flow has no path when none of the conditions match.
+  // An exclusive gateway must keep one "其他情況" (default) outgoing edge,
+  // otherwise the flow has no path when none of the conditions match — except
+  // one the engine moves straight through (`isPassThroughExclusiveGateway`).
   const gatewayMissingDefault = definition.nodes.find((node) => {
-    if (node.type !== 'exclusiveGateway') {
+    if (
+      node.type !== 'exclusiveGateway' ||
+      isPassThroughExclusiveGateway(node, definition.edges)
+    ) {
       return false;
     }
 
