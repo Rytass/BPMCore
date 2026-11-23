@@ -181,29 +181,74 @@ function readStageChoice(
 /**
  * The graph problems of every 依前面關卡的簽核者 node, naming the node: the
  * checks the backend publish lint runs (`readNodeActorSourceIssues`), for the
- * designer to show before publish. An empty stage list is left to
- * `readApproverResolverIssue`, which owns that message.
+ * designer to show before publish. An approval node and a notify node whose
+ * recipients read earlier signers are held to the same rules; the notify
+ * node's lines name 知會節點. An empty stage list is left to
+ * `readApproverResolverIssue` / `readNotifyRecipientsIssue`, which own that
+ * message.
  */
 export function readNodeActorGraphIssues(
   definition: WorkflowDefinition,
 ): readonly string[] {
-  return definition.nodes.filter(isUserTaskNode).flatMap((node) => {
-    const resolver = node.data.approverResolver;
-    const nodeIds = readGraphCheckedNodeIds(resolver);
+  return definition.nodes.flatMap((node) => {
+    const source = readNodeActorGraphSource(node);
 
-    if (nodeIds.length === 0) {
+    if (source === null || source.nodeIds.length === 0) {
       return [];
     }
 
     return [
-      ...readNodeActorSourceIssues(definition, node.id, nodeIds),
+      ...readNodeActorSourceIssues(definition, node.id, source.nodeIds),
       // A manager chain starting from a stage also needs that stage to end
       // with one person; `NODE_ACTOR`/`NODE_ACTOR_MANAGER` take everyone.
-      ...(resolver.type === 'ORG_MANAGER_CHAIN'
-        ? readSingleApproverSourceIssues(definition, nodeIds)
+      ...(source.singleApprover
+        ? readSingleApproverSourceIssues(definition, source.nodeIds)
         : []),
-    ].map((issue) => `簽核節點「${readNodeName(node)}」：${issue}`);
+    ].map((issue) => `${source.nodeLabel}「${readNodeName(node)}」：${issue}`);
   });
+}
+
+type NodeActorGraphSource = Readonly<{
+  nodeIds: readonly string[];
+  nodeLabel: '知會節點' | '簽核節點';
+  /** The source climbs from one person (a manager chain start). */
+  singleApprover: boolean;
+}>;
+
+// The stages a node reads its signers from: an approval node's resolver (a
+// manager chain only with a `NODE_ACTOR` start), or a notify node's
+// recipients when they are `NODE_ACTOR` / `NODE_ACTOR_MANAGER`. `null` for a
+// node that reads none.
+function readNodeActorGraphSource(
+  node: WorkflowNode,
+): NodeActorGraphSource | null {
+  if (isUserTaskNode(node)) {
+    const resolver = node.data.approverResolver;
+
+    return {
+      nodeIds: readGraphCheckedNodeIds(resolver),
+      nodeLabel: '簽核節點',
+      singleApprover: resolver.type === 'ORG_MANAGER_CHAIN',
+    };
+  }
+
+  // Raw JSON that was never linted may leave out the action or its
+  // recipients: such a node reads no stages.
+  const recipients =
+    node.type === 'serviceTask' && node.data.action?.type === 'NOTIFY'
+      ? node.data.action.recipients
+      : null;
+
+  // The backend lint holds only these two to the stage rules on a notify
+  // node; a manager chain's start is not graph-checked there.
+  return recipients?.type === 'NODE_ACTOR' ||
+    recipients?.type === 'NODE_ACTOR_MANAGER'
+    ? {
+        nodeIds: readGraphCheckedNodeIds(recipients),
+        nodeLabel: '知會節點',
+        singleApprover: false,
+      }
+    : null;
 }
 
 // The stages a resolver reads its signers from, when it is one of the three
@@ -215,7 +260,7 @@ function readGraphCheckedNodeIds(
     resolver.type === 'NODE_ACTOR' ||
     resolver.type === 'NODE_ACTOR_MANAGER'
   ) {
-    return resolver.nodeIds;
+    return Array.isArray(resolver.nodeIds) ? resolver.nodeIds : [];
   }
 
   if (

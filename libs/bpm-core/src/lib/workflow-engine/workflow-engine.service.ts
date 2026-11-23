@@ -11211,9 +11211,10 @@ export class WorkflowEngineService {
       return;
     }
 
-    // The sources that read the form or an earlier node's outcome are not
-    // offered to a notify node (the publish lint refuses them); a definition
-    // that reaches here with one anyway is refused by name. A type this
+    // The form and every stage before this node are settled by now, so the
+    // sources that read them are offered to a notify node (the publish lint
+    // holds them to the rules of an approval node). A source the shared
+    // package does not list for a notify node is refused by name. A type this
     // engine does not know is left to the resolver's own refusal below.
     if (
       readUnsupportedApproverResolverType(action.recipients) === null &&

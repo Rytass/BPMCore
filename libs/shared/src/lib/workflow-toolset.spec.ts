@@ -1723,15 +1723,51 @@ describe('set_service_action — NOTIFY recipients', () => {
   }
 
   it.each([
-    ['NODE_ACTOR', { nodeIds: ['a'], type: 'NODE_ACTOR' }],
+    [
+      'FORM_MEMBER_MANAGER',
+      {
+        formPath: 'form.owner',
+        levelsUp: 2,
+        preferClosestOrgUnit: true,
+        type: 'FORM_MEMBER_MANAGER',
+      },
+    ],
+    [
+      'FORM_ORG_UNIT_MANAGER',
+      {
+        formPath: 'form.dept',
+        preferClosestOrgUnit: false,
+        type: 'FORM_ORG_UNIT_MANAGER',
+      },
+    ],
+    ['NODE_ACTOR', { nodeIds: ['a', 'b'], type: 'NODE_ACTOR' }],
     [
       'NODE_ACTOR_MANAGER',
-      { levelsUp: 1, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' },
+      {
+        levelsUp: 1,
+        nodeIds: ['a'],
+        preferClosestOrgUnit: false,
+        type: 'NODE_ACTOR_MANAGER',
+      },
     ],
-    ['FORM_MEMBER_MANAGER', { formPath: 'form.owner', type: 'FORM_MEMBER_MANAGER' }],
-    ['FORM_ORG_UNIT_MANAGER', { formPath: 'form.dept', type: 'FORM_ORG_UNIT_MANAGER' }],
-  ])('turns a %s recipient into the manager default', async (_label, input) => {
-    expect(await recipientsAfter(input)).toEqual({
+  ])('keeps a %s recipient as written', async (_label, input) => {
+    expect(await recipientsAfter(input)).toEqual(input);
+  });
+
+  it.each([
+    ['FORM_MEMBER_MANAGER', { type: 'FORM_MEMBER_MANAGER' }],
+    ['FORM_ORG_UNIT_MANAGER', { type: 'FORM_ORG_UNIT_MANAGER' }],
+    ['NODE_ACTOR', { type: 'NODE_ACTOR' }],
+    ['NODE_ACTOR_MANAGER', { type: 'NODE_ACTOR_MANAGER' }],
+  ])(
+    'keeps an incomplete %s recipient incomplete instead of turning it into the manager default',
+    async (_label, input) => {
+      expect(await recipientsAfter(input)).toMatchObject({ type: input.type });
+    },
+  );
+
+  it('still turns a recipient of a type it does not know into the manager default', async () => {
+    expect(await recipientsAfter({ type: 'FUTURE_TYPE' })).toEqual({
       baseFromInitiator: true,
       levelsUp: 1,
       type: 'ORG_MANAGER',

@@ -254,10 +254,15 @@ import {
 import { readDryRunSampleFormData } from './dry-run-sample-data';
 import {
   readNotifyRecipients,
+  NOTIFY_NODE_ACTOR_STAGE_HINT,
   readNotifyRecipientSourceChoice,
   readNotifyRecipientSourcePick,
+  readNotifySubjectChoice,
+  readNotifySubjectPick,
   withNotifyFormPath,
   withNotifyIncludeDescendants,
+  withNotifyNodeIds,
+  withNotifyOrgSource,
   withNotifyOrgUnit,
   withNotifyPosition,
   withNotifyRecipients,
@@ -4680,9 +4685,34 @@ export function TemplateDesignerView({
       positions,
       scopedPositions: recipientOrgScopedPositions,
     });
+    // The panel edits the screen state, as the 簽核來源 panel does: 本人／主管
+    // and 固定組織／表單欄位 are one option each.
+    const recipientState = readApproverResolverEditorState(recipients);
+    const recipientSubjectChoice = readNotifySubjectChoice(recipients);
     const recipientFormChoice =
-      recipients.type === 'DYNAMIC_FORM'
-        ? readDynamicFormFieldChoice(webhookFormSchema, recipients.formPath)
+      recipientState.mode === 'DYNAMIC_FORM'
+        ? recipientState.levelsUp === null
+          ? readDynamicFormFieldChoice(
+              webhookFormSchema,
+              recipientState.formPath,
+            )
+          : readFormMemberManagerFieldChoice(
+              webhookFormSchema,
+              recipientState.formPath,
+            )
+        : null;
+    const recipientOrgFieldChoice =
+      recipientState.mode === 'ORG_UNIT_MANAGER' &&
+      recipientState.orgSource === 'FORM_FIELD'
+        ? readFormOrgUnitFieldChoice(webhookFormSchema, recipientState.formPath)
+        : null;
+    const recipientNodeActorChoice =
+      recipientState.mode === 'NODE_ACTOR'
+        ? readNodeActorStageChoice(
+            workflowDefinition,
+            node.id,
+            recipientState.nodeIds,
+          )
         : null;
 
     // Only the recipients change: channels, template and webhooks belong to
@@ -4773,6 +4803,52 @@ export function TemplateDesignerView({
       );
     }
 
+    function renderNotifySubjectField(): ReactElement | null {
+      if (!recipientSubjectChoice) {
+        return null;
+      }
+
+      return (
+        <BPMFormField
+          hintText={
+            recipientSubjectChoice.invalid
+              ? '原本儲存的主管層級無效（需為第 1 層以上），請重新選擇；發布前必須修正。'
+              : recipientState.mode === 'NODE_ACTOR'
+                ? `選「關卡的簽核者」就是簽核者本人；選主管則往上找他的主管，不會是簽核者自己。${
+                    recipientState.levelsUp === null
+                      ? ''
+                      : '簽核者沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
+                  }`
+                : `選「欄位裡的人」就是欄位選的人；選主管則往上找他的主管，不會是欄位裡的人自己。${
+                    recipientState.mode !== 'DYNAMIC_FORM' ||
+                    recipientState.levelsUp === null
+                      ? ''
+                      : '欄位裡的人沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
+                  }`
+          }
+          label="知會對象"
+          name="notifySubject"
+          required
+        >
+          <Select
+            clearable={false}
+            onChange={(option): void => {
+              const next = readNotifySubjectPick(
+                recipients,
+                option?.id ?? null,
+              );
+
+              if (next) {
+                updateNotifyRecipients(next);
+              }
+            }}
+            options={[...recipientSubjectChoice.options]}
+            value={recipientSubjectChoice.selected}
+          />
+        </BPMFormField>
+      );
+    }
+
     return (
       <>
         {actionTypePicker}
@@ -4845,38 +4921,144 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
-        {recipients.type === 'DYNAMIC_FORM' ? (
-          <BPMFormField
-            hintText={
-              recipientFormChoice?.problem ??
-              '知會對象取自申請人送出表單時在該欄位選的人員。'
-            }
-            label="表單欄位"
-            name="notifyFormPath"
-            required
-          >
-            <Select
-              clearable={false}
-              onChange={(option): void =>
-                updateNotifyRecipients(
-                  withNotifyFormPath(recipients, option?.id ?? ''),
-                )
+        {recipientState.mode === 'DYNAMIC_FORM' ? (
+          <>
+            <BPMFormField
+              hintText={
+                recipientFormChoice?.problem ??
+                (recipientState.levelsUp === null
+                  ? '知會對象取自申請人送出表單時在該欄位選的人員。'
+                  : '依申請人送出表單時在該欄位選的人員，往上找他的主管；該人員沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。')
               }
-              options={[...(recipientFormChoice?.options ?? [])]}
-              placeholder="選擇人員選擇欄位"
-              value={recipientFormChoice?.selected ?? undefined}
-            />
-          </BPMFormField>
+              label="表單欄位"
+              name="notifyFormPath"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void =>
+                  updateNotifyRecipients(
+                    withNotifyFormPath(recipients, option?.id ?? ''),
+                  )
+                }
+                options={[...(recipientFormChoice?.options ?? [])]}
+                placeholder="選擇人員選擇欄位"
+                value={recipientFormChoice?.selected ?? undefined}
+              />
+            </BPMFormField>
+            {renderNotifySubjectField()}
+          </>
+        ) : null}
+        {recipientState.mode === 'NODE_ACTOR' ? (
+          <>
+            <BPMFormField
+              hintText={
+                recipientNodeActorChoice &&
+                recipientNodeActorChoice.problems.length > 0
+                  ? recipientNodeActorChoice.problems.join('；')
+                  : NOTIFY_NODE_ACTOR_STAGE_HINT
+              }
+              label="關卡"
+              name="notifyNodeIds"
+              required
+            >
+              <Select
+                clearable
+                mode="multiple"
+                onChange={(options): void =>
+                  updateNotifyRecipients(
+                    withNotifyNodeIds(
+                      recipients,
+                      options.map((option) => option.id),
+                    ),
+                  )
+                }
+                options={[...(recipientNodeActorChoice?.options ?? [])]}
+                overflowStrategy="wrap"
+                placeholder="選擇前面的簽核關卡"
+                value={[...(recipientNodeActorChoice?.selected ?? [])]}
+              />
+            </BPMFormField>
+            {renderNotifySubjectField()}
+          </>
+        ) : null}
+        {recipientState.mode === 'ORG_UNIT_MANAGER' ? (
+          <>
+            <BPMFormField
+              hintText="固定組織：每張單都找同一個組織的主管；表單欄位：找申請人在表單上選的組織的主管。"
+              label="組織"
+              name="notifyOrgUnitSource"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void => {
+                  if (!option || option.id === recipientState.orgSource) {
+                    return;
+                  }
+
+                  updateNotifyRecipients(
+                    withNotifyOrgSource(
+                      recipients,
+                      option.id === 'FORM_FIELD' ? 'FORM_FIELD' : 'FIXED',
+                    ),
+                  );
+                }}
+                options={[...ORG_UNIT_SOURCE_OPTIONS]}
+                value={readSelectOption(
+                  ORG_UNIT_SOURCE_OPTIONS,
+                  recipientState.orgSource,
+                )}
+              />
+            </BPMFormField>
+            {recipientState.orgSource === 'FIXED' ? (
+              <BPMFormField
+                hintText="依指定組織或其上層的主管解析規則決定知會對象；組織沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。"
+                label="指定組織"
+                name="notifyOrgUnitId"
+                required
+              >
+                <OrgUnitPicker
+                  name="notifyOrgUnitId"
+                  onChange={(option): void =>
+                    updateNotifyRecipients(
+                      withNotifyOrgUnit(recipients, option?.id ?? ''),
+                    )
+                  }
+                  orgUnits={orgUnits}
+                  placeholder="選擇組織"
+                  value={selectedRecipientOrgUnit}
+                />
+              </BPMFormField>
+            ) : (
+              <BPMFormField
+                hintText={
+                  recipientOrgFieldChoice?.problem ??
+                  '依申請人送出表單時在該欄位選的組織，找該組織的主管；該組織沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
+                }
+                label="表單欄位"
+                name="notifyOrgFormPath"
+                required
+              >
+                <Select
+                  clearable={false}
+                  onChange={(option): void =>
+                    updateNotifyRecipients(
+                      withNotifyFormPath(recipients, option?.id ?? ''),
+                    )
+                  }
+                  options={[...(recipientOrgFieldChoice?.options ?? [])]}
+                  placeholder="選擇組織選擇欄位"
+                  value={recipientOrgFieldChoice?.selected ?? undefined}
+                />
+              </BPMFormField>
+            )}
+          </>
         ) : null}
         {recipients.type === 'ORG_UNIT_MEMBER' ||
-        recipients.type === 'ORG_UNIT_POSITION' ||
-        recipients.type === 'ORG_UNIT_MANAGER' ? (
+        recipients.type === 'ORG_UNIT_POSITION' ? (
           <BPMFormField
-            hintText={
-              recipients.type === 'ORG_UNIT_MANAGER'
-                ? '依指定組織或其上層的主管解析規則決定知會對象；組織沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
-                : '依指定組織目前有效會員歸屬決定知會對象。'
-            }
+            hintText="依指定組織目前有效會員歸屬決定知會對象。"
             label="組織"
             name="notifyOrgUnitId"
             required
@@ -5466,6 +5648,7 @@ function readFlowNode(
         orgUnits,
         positions,
         formSchema,
+        nodes,
       ),
       approverSummary: readNodeApproverSummary(
         node,
@@ -6526,6 +6709,7 @@ function readNodeApproverLines(
   orgUnits: readonly OrgUnitRecord[],
   positions: readonly PositionRecord[],
   formSchema: FormDefinitionSchema | null,
+  nodes: readonly NodeNameRecord[],
 ): readonly string[] | null {
   if (node.type !== 'serviceTask') {
     return null;
@@ -6541,6 +6725,7 @@ function readNodeApproverLines(
             orgUnits,
             positions,
             formSchema,
+            nodes,
           ),
         ]
       : readServiceTaskMemberIds(action).map(

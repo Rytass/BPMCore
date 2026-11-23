@@ -11,8 +11,12 @@ import {
   readNotifyRecipients,
   readNotifyRecipientSourceChoice,
   readNotifyRecipientSourcePick,
+  readNotifySubjectChoice,
+  readNotifySubjectPick,
   withNotifyFormPath,
   withNotifyIncludeDescendants,
+  withNotifyNodeIds,
+  withNotifyOrgSource,
   withNotifyOrgUnit,
   withNotifyPosition,
   withNotifyRecipients,
@@ -27,6 +31,7 @@ const WEBHOOK: NotifyWebhookTarget = {
 const OPEN_TYPES = [
   'DIRECT',
   'DYNAMIC_FORM',
+  'NODE_ACTOR',
   'ORG_UNIT_MANAGER',
   'ORG_UNIT_MEMBER',
   'ORG_UNIT_POSITION',
@@ -36,6 +41,7 @@ const OPEN_TYPES = [
 const DEFAULT_BY_TYPE: Readonly<Record<string, ApproverResolver>> = {
   DIRECT: { memberIds: [], type: 'DIRECT' },
   DYNAMIC_FORM: { formPath: '', type: 'DYNAMIC_FORM' },
+  NODE_ACTOR: { nodeIds: [], type: 'NODE_ACTOR' },
   ORG_UNIT_MANAGER: { orgUnitId: '', type: 'ORG_UNIT_MANAGER' },
   ORG_UNIT_MEMBER: {
     includeDescendants: false,
@@ -58,13 +64,17 @@ const CLOSED_BUT_VALID: readonly ApproverResolver[] = [
   { expression: 'form.owner', type: 'EXPRESSION' },
 ];
 
-// Sources a notify node may not use at all.
-const NOT_FOR_NOTIFY: readonly ApproverResolver[] = [
-  { formPath: 'owner', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
-  { formPath: 'dept', type: 'FORM_ORG_UNIT_MANAGER' },
-  { nodeIds: ['a'], type: 'NODE_ACTOR' },
-  { levelsUp: 1, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' },
-];
+// The second stored type of the three screen options that hold two: the
+// person's manager, the form-field organization, the earlier signer's manager.
+const SHARED_OPTION_SOURCES: readonly (readonly [ApproverResolver, string])[] =
+  [
+    [
+      { formPath: 'owner', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+      'DYNAMIC_FORM',
+    ],
+    [{ formPath: 'dept', type: 'FORM_ORG_UNIT_MANAGER' }, 'ORG_UNIT_MANAGER'],
+    [{ levelsUp: 1, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' }, 'NODE_ACTOR'],
+  ];
 
 function notifyAction(
   recipients: ApproverResolver,
@@ -92,10 +102,11 @@ function notifyNode(
 }
 
 describe('notify recipient source choice', () => {
-  it('offers exactly the six open sources, worded as the approver panel words them', () => {
+  it('offers exactly the seven open sources, worded as the approver panel words them', () => {
     expect(NOTIFY_RECIPIENT_MODE_OPTIONS.map((option) => option.id)).toEqual([
       'DIRECT',
       'DYNAMIC_FORM',
+      'NODE_ACTOR',
       'ORG_UNIT_MANAGER',
       'ORG_UNIT_MEMBER',
       'ORG_UNIT_POSITION',
@@ -104,6 +115,7 @@ describe('notify recipient source choice', () => {
     expect(NOTIFY_RECIPIENT_MODE_OPTIONS.map((option) => option.name)).toEqual([
       '指定會員',
       '依表單欄位指定',
+      '依前面關卡的簽核者',
       '指定組織主管',
       '組織任一人',
       '組織特定職位',
@@ -142,16 +154,23 @@ describe('notify recipient source choice', () => {
     ]);
   });
 
-  it.each(NOT_FOR_NOTIFY.map((recipients) => [recipients.type, recipients]))(
-    '%s (a source a notify node may not use) is read-only and named as unsupported',
-    (type, recipients) => {
+  it.each(
+    SHARED_OPTION_SOURCES.map(([recipients, optionId]) => [
+      recipients.type,
+      recipients,
+      optionId,
+    ]),
+  )(
+    '%s is shown under the option it shares, and is editable',
+    (_type, recipients, optionId) => {
       const choice = readNotifyRecipientSourceChoice(
         recipients as ApproverResolver,
       );
 
-      expect(choice.readOnly).toBe(true);
-      expect(choice.selected.name).toBe(`不支援的知會來源（${type}）`);
-      expect(choice.hint).toContain('不支援');
+      expect(choice.readOnly).toBe(false);
+      expect(choice.selected.id).toBe(optionId);
+      expect(choice.hint).toBeNull();
+      expect(choice.options).toEqual(NOTIFY_RECIPIENT_MODE_OPTIONS);
     },
   );
 
@@ -194,6 +213,34 @@ describe('notify recipient source pick', () => {
     },
   );
 
+  it.each(SHARED_OPTION_SOURCES)(
+    're-picking the option %#, stored as its second type, writes nothing',
+    (recipients, optionId) => {
+      expect(
+        readNotifyRecipientSourcePick(recipients, optionId, []),
+      ).toBeNull();
+    },
+  );
+
+  it.each(SHARED_OPTION_SOURCES)(
+    'picking another source over the second type %# replaces it',
+    (recipients) => {
+      expect(readNotifyRecipientSourcePick(recipients, 'POSITION', [])).toEqual(
+        { positionId: '', type: 'POSITION' },
+      );
+    },
+  );
+
+  it('switching 依表單欄位指定 to 依前面關卡的簽核者 writes a clean 前面關卡 default', () => {
+    expect(
+      readNotifyRecipientSourcePick(
+        { formPath: 'owner', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+        'NODE_ACTOR',
+        [],
+      ),
+    ).toEqual({ nodeIds: [], type: 'NODE_ACTOR' });
+  });
+
   it.each(CLOSED_BUT_VALID)(
     'the read-only entry of $type and its own type id write nothing',
     (recipients) => {
@@ -221,7 +268,8 @@ describe('notify recipient source pick', () => {
     'ORG_MANAGER_CHAIN',
     'EXPRESSION',
     'FORM_MEMBER_MANAGER',
-    'NODE_ACTOR',
+    'FORM_ORG_UNIT_MANAGER',
+    'NODE_ACTOR_MANAGER',
     'NOT_A_SOURCE',
   ])('%s is not an option that can be picked', (optionId) => {
     expect(
@@ -460,23 +508,265 @@ describe('notify recipient target edits', () => {
     ).toEqual({ formPath: 'owner', type: 'DYNAMIC_FORM' });
   });
 
-  it.each([...CLOSED_BUT_VALID, ...NOT_FOR_NOTIFY])(
+  it.each(CLOSED_BUT_VALID)(
     'leaves $type untouched whatever target is edited, so opening the panel never rewrites it',
     (recipients) => {
       expect(withNotifyOrgUnit(recipients, 'o2')).toBe(recipients);
       expect(withNotifyIncludeDescendants(recipients, true)).toBe(recipients);
       expect(withNotifyPosition(recipients, 'p2')).toBe(recipients);
       expect(withNotifyFormPath(recipients, 'owner')).toBe(recipients);
+      expect(withNotifyOrgSource(recipients, 'FORM_FIELD')).toBe(recipients);
+      expect(withNotifyNodeIds(recipients, ['a'])).toBe(recipients);
+      expect(readNotifySubjectChoice(recipients)).toBeNull();
+      expect(readNotifySubjectPick(recipients, '1')).toBeNull();
     },
   );
 
-  it('does not turn a 表單欄位 org manager into a fixed one', () => {
+  it('does not turn a 表單欄位 org manager into a fixed one by picking an organization', () => {
     const recipients: ApproverResolver = {
       formPath: 'dept',
       type: 'FORM_ORG_UNIT_MANAGER',
     };
 
     expect(withNotifyOrgUnit(recipients, 'o2')).toBe(recipients);
+  });
+
+  it.each([
+    { nodeIds: ['a'], type: 'NODE_ACTOR' },
+    { levelsUp: 1, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' },
+    { formPath: 'owner', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+  ] as const)(
+    'a $type source ignores the organization, position and 包含下層 edits',
+    (recipients) => {
+      expect(withNotifyOrgUnit(recipients, 'o2')).toBe(recipients);
+      expect(withNotifyIncludeDescendants(recipients, true)).toBe(recipients);
+      expect(withNotifyPosition(recipients, 'p2')).toBe(recipients);
+    },
+  );
+});
+
+describe('notify recipient 依表單欄位指定 with a manager level', () => {
+  const MANAGER: ApproverResolver = {
+    fallback: { memberId: 'm9', type: 'DIRECT' },
+    formPath: 'owner',
+    levelsUp: 2,
+    preferClosestOrgUnit: false,
+    type: 'FORM_MEMBER_MANAGER',
+  };
+
+  it('offers 欄位裡的人 and the three manager levels, worded as the approver panel words them', () => {
+    const choice = readNotifySubjectChoice(DEFAULT_BY_TYPE['DYNAMIC_FORM']);
+
+    expect(choice?.options.map((option) => option.name)).toEqual([
+      '欄位裡的人',
+      '直屬主管',
+      '第二層主管',
+      '第三層主管',
+    ]);
+    expect(choice?.selected.name).toBe('欄位裡的人');
+    expect(readNotifySubjectChoice(MANAGER)?.selected.name).toBe('第二層主管');
+  });
+
+  it('picking a manager level stores FORM_MEMBER_MANAGER and keeps the field', () => {
+    expect(
+      readNotifySubjectPick({ formPath: 'owner', type: 'DYNAMIC_FORM' }, '1'),
+    ).toEqual({ formPath: 'owner', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' });
+  });
+
+  it('picking 欄位裡的人 again stores DYNAMIC_FORM and drops the manager rule', () => {
+    expect(readNotifySubjectPick(MANAGER, '0')).toEqual({
+      formPath: 'owner',
+      type: 'DYNAMIC_FORM',
+    });
+  });
+
+  it('writes nothing when the shown choice is picked again or the id is no option', () => {
+    expect(readNotifySubjectPick(MANAGER, '2')).toBeNull();
+    expect(
+      readNotifySubjectPick(DEFAULT_BY_TYPE['DYNAMIC_FORM'], '0'),
+    ).toBeNull();
+    expect(readNotifySubjectPick(MANAGER, '9')).toBeNull();
+    expect(readNotifySubjectPick(MANAGER, null)).toBeNull();
+  });
+
+  it('shows a stored level below 1 as invalid and does not offer it again', () => {
+    const broken: ApproverResolver = { ...MANAGER, levelsUp: 0 };
+    const choice = readNotifySubjectChoice(broken);
+
+    expect(choice?.invalid).toBe(true);
+    expect(choice?.selected.name).toBe('第 0 層主管（無效）');
+    expect(readNotifySubjectPick(broken, 'invalid:0')).toBeNull();
+  });
+
+  it('changes the field of a manager source without touching its level or manager rule', () => {
+    expect(withNotifyFormPath(MANAGER, 'boss')).toEqual({
+      ...MANAGER,
+      formPath: 'boss',
+    });
+  });
+
+  it('survives a round trip through the screen: same field, same level, same rule', () => {
+    expect(withNotifyFormPath(MANAGER, 'owner')).toEqual(MANAGER);
+
+    const toThree = readNotifySubjectPick(MANAGER, '3') as ApproverResolver;
+
+    expect(toThree).toEqual({ ...MANAGER, levelsUp: 3 });
+    expect(readNotifySubjectPick(toThree, '2')).toEqual(MANAGER);
+  });
+});
+
+describe('notify recipient 指定組織主管 with a form-field organization', () => {
+  const FORM_ORG: ApproverResolver = {
+    fallback: { memberId: 'm9', type: 'DIRECT' },
+    formPath: 'dept',
+    preferClosestOrgUnit: false,
+    type: 'FORM_ORG_UNIT_MANAGER',
+  };
+
+  it('switching 固定組織 to 表單欄位 stores FORM_ORG_UNIT_MANAGER with 只取最近一層主管 on, and drops the fixed organization', () => {
+    expect(
+      withNotifyOrgSource(
+        { orgUnitId: 'o1', type: 'ORG_UNIT_MANAGER' },
+        'FORM_FIELD',
+      ),
+    ).toEqual({
+      formPath: '',
+      preferClosestOrgUnit: true,
+      type: 'FORM_ORG_UNIT_MANAGER',
+    });
+  });
+
+  it('keeps a manager rule the author already chose when the organization source switches', () => {
+    expect(
+      withNotifyOrgSource(
+        {
+          fallback: { memberId: 'm9', type: 'DIRECT' },
+          orgUnitId: 'o1',
+          preferClosestOrgUnit: false,
+          type: 'ORG_UNIT_MANAGER',
+        },
+        'FORM_FIELD',
+      ),
+    ).toEqual({
+      fallback: { memberId: 'm9', type: 'DIRECT' },
+      formPath: '',
+      preferClosestOrgUnit: false,
+      type: 'FORM_ORG_UNIT_MANAGER',
+    });
+  });
+
+  it('switching 表單欄位 back to 固定組織 stores ORG_UNIT_MANAGER, keeps the rule and drops the field', () => {
+    expect(withNotifyOrgSource(FORM_ORG, 'FIXED')).toEqual({
+      fallback: { memberId: 'm9', type: 'DIRECT' },
+      orgUnitId: '',
+      preferClosestOrgUnit: false,
+      type: 'ORG_UNIT_MANAGER',
+    });
+  });
+
+  it('writes nothing when the organization source is already the one picked', () => {
+    expect(withNotifyOrgSource(FORM_ORG, 'FORM_FIELD')).toBe(FORM_ORG);
+    expect(
+      withNotifyOrgSource(DEFAULT_BY_TYPE['ORG_UNIT_MANAGER'], 'FIXED'),
+    ).toBe(DEFAULT_BY_TYPE['ORG_UNIT_MANAGER']);
+    expect(withNotifyOrgSource(DEFAULT_BY_TYPE['POSITION'], 'FORM_FIELD')).toBe(
+      DEFAULT_BY_TYPE['POSITION'],
+    );
+  });
+
+  it('picks the 組織選擇 field and keeps the manager rule', () => {
+    expect(withNotifyFormPath(FORM_ORG, 'region')).toEqual({
+      ...FORM_ORG,
+      formPath: 'region',
+    });
+    expect(withNotifyFormPath(FORM_ORG, 'dept')).toEqual(FORM_ORG);
+  });
+
+  it('does not write a form field into a fixed organization', () => {
+    const fixed: ApproverResolver = {
+      orgUnitId: 'o1',
+      type: 'ORG_UNIT_MANAGER',
+    };
+
+    expect(withNotifyFormPath(fixed, 'dept')).toBe(fixed);
+  });
+
+  it('a fixed organization still takes the organization pick and keeps its rule', () => {
+    expect(
+      withNotifyOrgUnit(
+        {
+          fallback: { memberId: 'm9', type: 'DIRECT' },
+          orgUnitId: 'o1',
+          type: 'ORG_UNIT_MANAGER',
+        },
+        'o2',
+      ),
+    ).toEqual({
+      fallback: { memberId: 'm9', type: 'DIRECT' },
+      orgUnitId: 'o2',
+      type: 'ORG_UNIT_MANAGER',
+    });
+  });
+});
+
+describe('notify recipient 依前面關卡的簽核者', () => {
+  const MANAGER: ApproverResolver = {
+    fallback: { positionId: 'p1', type: 'POSITION' },
+    levelsUp: 1,
+    nodeIds: ['a', 'b'],
+    preferClosestOrgUnit: true,
+    type: 'NODE_ACTOR_MANAGER',
+  };
+
+  it('offers 關卡的簽核者 and the three manager levels', () => {
+    const choice = readNotifySubjectChoice(DEFAULT_BY_TYPE['NODE_ACTOR']);
+
+    expect(choice?.options.map((option) => option.name)).toEqual([
+      '關卡的簽核者',
+      '直屬主管',
+      '第二層主管',
+      '第三層主管',
+    ]);
+    expect(choice?.selected.name).toBe('關卡的簽核者');
+    expect(readNotifySubjectChoice(MANAGER)?.selected.name).toBe('直屬主管');
+  });
+
+  it('picking a manager level stores NODE_ACTOR_MANAGER and keeps the stages', () => {
+    expect(
+      readNotifySubjectPick({ nodeIds: ['a'], type: 'NODE_ACTOR' }, '2'),
+    ).toEqual({ levelsUp: 2, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' });
+  });
+
+  it('picking 關卡的簽核者 again stores NODE_ACTOR and drops the manager rule', () => {
+    expect(readNotifySubjectPick(MANAGER, '0')).toEqual({
+      nodeIds: ['a', 'b'],
+      type: 'NODE_ACTOR',
+    });
+  });
+
+  it('picks the stages and keeps the level and manager rule of a manager source', () => {
+    expect(withNotifyNodeIds(MANAGER, ['c'])).toEqual({
+      ...MANAGER,
+      nodeIds: ['c'],
+    });
+    expect(
+      withNotifyNodeIds(DEFAULT_BY_TYPE['NODE_ACTOR'], ['a', 'b']),
+    ).toEqual({ nodeIds: ['a', 'b'], type: 'NODE_ACTOR' });
+    expect(withNotifyNodeIds(MANAGER, ['a', 'b'])).toEqual(MANAGER);
+  });
+
+  it('does not write stages into a source that has none', () => {
+    expect(withNotifyNodeIds(DEFAULT_BY_TYPE['DYNAMIC_FORM'], ['a'])).toBe(
+      DEFAULT_BY_TYPE['DYNAMIC_FORM'],
+    );
+  });
+
+  it('has no 知會對象 choice for sources without a person to start from', () => {
+    expect(readNotifySubjectChoice(DEFAULT_BY_TYPE['POSITION'])).toBeNull();
+    expect(
+      readNotifySubjectChoice(DEFAULT_BY_TYPE['ORG_UNIT_MANAGER']),
+    ).toBeNull();
+    expect(readNotifySubjectPick(DEFAULT_BY_TYPE['POSITION'], '1')).toBeNull();
   });
 });
 
@@ -518,6 +808,71 @@ describe('notify recipient readiness', () => {
     } as unknown as ApproverResolver);
 
     expect(readNotifyServiceTaskIssue(node)).toBe('知會節點需要指定組織。');
+  });
+
+  it.each([
+    ['NODE_ACTOR', '知會節點需要指定前面的簽核關卡。'],
+    ['DYNAMIC_FORM', '知會節點需要指定知會對象的表單欄位。'],
+  ])(
+    'a freshly picked %s that then takes a manager level still blocks the draft: %s',
+    (type, message) => {
+      const picked = readNotifyRecipientSourcePick(
+        DEFAULT_BY_TYPE['DIRECT'],
+        type,
+        [],
+      ) as ApproverResolver;
+      const withManager = readNotifySubjectPick(
+        picked,
+        '1',
+      ) as ApproverResolver;
+
+      expect(readNotifyServiceTaskIssue(notifyNode(withManager))).toBe(message);
+    },
+  );
+
+  it('a freshly switched 表單欄位 organization with no field blocks the draft', () => {
+    const switched = withNotifyOrgSource(
+      DEFAULT_BY_TYPE['ORG_UNIT_MANAGER'],
+      'FORM_FIELD',
+    );
+
+    expect(switched.type).toBe('FORM_ORG_UNIT_MANAGER');
+    expect(readNotifyServiceTaskIssue(notifyNode(switched))).toBe(
+      '知會節點需要指定知會對象的表單欄位。',
+    );
+  });
+
+  it('lets each source the screen writes through once its target is chosen', () => {
+    const owner = withNotifyFormPath(
+      readNotifySubjectPick(
+        DEFAULT_BY_TYPE['DYNAMIC_FORM'],
+        '1',
+      ) as ApproverResolver,
+      'owner',
+    );
+    const dept = withNotifyFormPath(
+      withNotifyOrgSource(DEFAULT_BY_TYPE['ORG_UNIT_MANAGER'], 'FORM_FIELD'),
+      'dept',
+    );
+    const signer = withNotifyNodeIds(
+      readNotifySubjectPick(
+        DEFAULT_BY_TYPE['NODE_ACTOR'],
+        '1',
+      ) as ApproverResolver,
+      ['a'],
+    );
+
+    expect(owner.type).toBe('FORM_MEMBER_MANAGER');
+    expect(dept.type).toBe('FORM_ORG_UNIT_MANAGER');
+    expect(signer.type).toBe('NODE_ACTOR_MANAGER');
+    [
+      owner,
+      dept,
+      signer,
+      withNotifyNodeIds(DEFAULT_BY_TYPE['NODE_ACTOR'], ['a']),
+    ].forEach((recipients) => {
+      expect(readNotifyServiceTaskIssue(notifyNode(recipients))).toBeNull();
+    });
   });
 
   it('lets each source through once its target is chosen', () => {

@@ -1411,15 +1411,151 @@ describe('workflow definition validator: the form and earlier-signer approver so
         ],
       }).errors;
 
+    // `task_first` runs before the notify node, which is the shape the
+    // earlier-signer sources need.
+    const lintRecipientsAfterStage = (
+      recipients: ApproverResolver,
+    ): readonly string[] => {
+      const base = createTwoStepWorkflow({
+        memberIds: ['member-001'],
+        type: 'DIRECT',
+      });
+
+      return lintWorkflowDefinition({
+        ...base,
+        edges: [
+          ...base.edges,
+          {
+            data: {},
+            id: 'edge_first_notify',
+            source: 'task_first',
+            target: 'notify_peer',
+            type: 'smoothstep',
+          },
+        ],
+        nodes: [
+          ...base.nodes,
+          {
+            data: {
+              action: { channels: ['IN_APP'], recipients, type: 'NOTIFY' },
+              label: '通知',
+            },
+            id: 'notify_peer',
+            position: { x: 300, y: 300 },
+            type: 'serviceTask',
+          },
+        ],
+      }).errors;
+    };
+    const PATH = 'workflow.nodes.notify_peer.action.recipients';
+
     it.each([
       ['FORM_MEMBER_MANAGER', FORM_MEMBER()],
       ['FORM_ORG_UNIT_MANAGER', FORM_ORG()],
       ['NODE_ACTOR', NODE_ACTOR(['task_first'])],
       ['NODE_ACTOR_MANAGER', NODE_ACTOR_MANAGER(['task_first'])],
-    ])('refuses %s as a recipient source', (_type, recipients): void => {
-      expect(lintRecipients(recipients)).toEqual([
-        'workflow.nodes.notify_peer.action.recipients.type is not supported',
+    ])(
+      'accepts a well-formed %s recipient source',
+      (_type, recipients): void => {
+        expect(lintRecipientsAfterStage(recipients)).toEqual([]);
+      },
+    );
+
+    it.each([
+      ['FORM_MEMBER_MANAGER', FORM_MEMBER],
+      ['FORM_ORG_UNIT_MANAGER', FORM_ORG],
+    ])('requires a form field on %s', (_type, make): void => {
+      expect(lintRecipients(make({ formPath: ' ' }))).toEqual([
+        `${PATH}.formPath is required`,
       ]);
+      expect(lintRecipients(make({ formPath: undefined }))).toEqual([
+        `${PATH}.formPath is required`,
+      ]);
+    });
+
+    it.each([0, 1.5, Number.NaN, undefined])(
+      'requires a whole levelsUp of at least 1 on FORM_MEMBER_MANAGER and NODE_ACTOR_MANAGER (%s)',
+      (levelsUp): void => {
+        expect(lintRecipients(FORM_MEMBER({ levelsUp }))).toEqual([
+          `${PATH}.levelsUp is invalid`,
+        ]);
+        expect(
+          lintRecipientsAfterStage(
+            NODE_ACTOR_MANAGER(['task_first'], { levelsUp }),
+          ),
+        ).toEqual([`${PATH}.levelsUp is invalid`]);
+      },
+    );
+
+    it.each([
+      ['empty', [], 'nodeIds is required'],
+      [
+        'the node itself',
+        ['notify_peer'],
+        'nodeIds must not include the node itself',
+      ],
+      [
+        'a node that does not exist',
+        ['ghost'],
+        'nodeIds references a missing node: ghost',
+      ],
+      [
+        'a node that is not a user task',
+        ['start'],
+        'nodeIds must reference userTask nodes: start',
+      ],
+    ])(
+      'rejects NODE_ACTOR / NODE_ACTOR_MANAGER nodeIds that are %s',
+      (_kind, nodeIds, message): void => {
+        for (const make of [NODE_ACTOR, NODE_ACTOR_MANAGER]) {
+          expect(lintRecipientsAfterStage(make(nodeIds))).toEqual([
+            `${PATH}.${message}`,
+          ]);
+        }
+      },
+    );
+
+    it('rejects nodeIds that is not an array', (): void => {
+      expect(
+        lintRecipientsAfterStage(
+          NODE_ACTOR('task_first' as unknown as string[]),
+        ),
+      ).toEqual([`${PATH}.nodeIds is required`]);
+    });
+
+    it.each([
+      ['FORM_MEMBER_MANAGER', FORM_MEMBER],
+      ['FORM_ORG_UNIT_MANAGER', FORM_ORG],
+      [
+        'NODE_ACTOR_MANAGER',
+        (overrides: Record<string, unknown>): ApproverResolver =>
+          NODE_ACTOR_MANAGER(['task_first'], overrides),
+      ],
+    ])(
+      'rejects a blank DIRECT / POSITION fallback on a %s recipient',
+      (_type, make): void => {
+        expect(
+          lintRecipientsAfterStage(
+            make({ fallback: { memberId: ' ', type: 'DIRECT' } }),
+          ),
+        ).toEqual([`${PATH}.fallback.memberId is required`]);
+        expect(
+          lintRecipientsAfterStage(
+            make({ fallback: { positionId: ' ', type: 'POSITION' } }),
+          ),
+        ).toEqual([`${PATH}.fallback.positionId is required`]);
+        expect(
+          lintRecipientsAfterStage(
+            make({ fallback: { memberId: 'member-1', type: 'DIRECT' } }),
+          ),
+        ).toEqual([]);
+      },
+    );
+
+    it('refuses a recipient type this build does not know', (): void => {
+      expect(
+        lintRecipients({ type: 'FUTURE_TYPE' } as unknown as ApproverResolver),
+      ).toEqual([`${PATH}.type is not supported`]);
     });
 
     it('still accepts DYNAMIC_FORM recipients (反向控制)', (): void => {
