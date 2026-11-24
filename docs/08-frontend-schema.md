@@ -131,8 +131,10 @@ Client 端的 `ApprovalInstanceRecord.submittedByMemberId`（選填、可為 `nu
 
 `excludeNodeActors` 是關卡之間的權責分離設定（例：信管審核與會計審核不能是同一人）：存在時，
 實際簽核過 `nodeIds` 所列前面關卡的人（含代理關係的任何一端）不會是該節點的簽核人，也不能被轉簽
-或加簽到該節點。「誰算那一關的簽核者」與 `NODE_ACTOR` 來源同一套讀法，臨時加簽、會簽的同意者不會被排除（刻意設計）；來源關必須是每條路徑都會經過、
-而且一定有人實際簽核的關卡（發布時檢查，每個來源關各自都要通過）。省略時行為與過去完全相同；可與 `excludeInitiator` 同時開，兩組名單取聯集。
+或加簽到該節點。「誰算那一關的簽核者」與 `NODE_ACTOR` 來源同一套讀法，臨時加簽、會簽的同意者不會被排除（刻意設計）；來源關必須是每條路徑都會經過的關卡
+（發布時檢查，每個來源關各自都要通過），預設也必須一定有人簽。host 設 `excludeNodeActorsAllowSkippableStages` 時，
+也可以是有進入條件、可跳過、會逾時自動核准的關卡：那一關最近一次被跳過、或沒有人實際核准時，它不排除任何人
+（設計器以同名 prop 跟隨）。省略時行為與過去完全相同；可與 `excludeInitiator` 同時開，兩組名單取聯集。
 runtime 規則、`whenEmpty` 的決定方式與發布檢查見 [07-workflow-execution.md](./07-workflow-execution.md) §4.5。
 
 Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：
@@ -156,7 +158,7 @@ snapshot 若帶有其他策略，designer 會以該策略的實際完成條件�
 `excludeInitiator`（`setUserTaskExcludeInitiator` command；AI 工具
 `set_user_task_exclude_initiator`）、`excludeNodeActors`（面板的「不可與前面關卡同一人」，
 `setUserTaskExcludeNodeActors` command；AI 工具 `set_user_task_exclude_node_actors`；選項只列
-單獨通過發布檢查的關卡：在本節點之前、不可能被跳過、每條路徑都會經過）與 `fieldAccess`（見下方說明），以及
+單獨通過發布檢查的關卡：在本節點之前、每條路徑都會經過；有進入條件、可跳過的關卡也列）與 `fieldAccess`（見下方說明），以及
 `description`、`entryCondition`、`notification` 仍未提供
 UI。這些未提供 UI 的欄位仍保留在 shared schema 供後續實作與相容資料使用。
 
@@ -344,8 +346,8 @@ position / org id 是否真實存在。
   `orgManagerChain:<min>:<startLevel>:continue:<nodeId>`；開關開啟時 kind 改為 `orgManagerChainSkipReached`，其餘段落相同；
   兩者都沒設時與以前逐字相同，舊版解析器遇到 `continue` 段或新 kind 都回 `null`。
 - **可能被略過的關卡**（開關開啟，或起點是接續）不能有可由簽核人補填的欄位，也不能被選為 `NODE_ACTOR`／
-  `NODE_ACTOR_MANAGER`／`excludeNodeActors`／`startFrom: NODE_ACTOR` 的來源（新略過原因 `managerChainReached`，
-  設計器提示文字逐條列出）。
+  `NODE_ACTOR_MANAGER`／`startFrom: NODE_ACTOR` 的來源（新略過原因 `managerChainReached`，
+  設計器提示文字逐條列出）；`excludeNodeActors` 預設同樣不能列，host 開啟 `excludeNodeActorsAllowSkippableStages` 時才可以。
 - **AI 工具組**（`set_user_task_approver`）：沒帶的 `startFrom`／`startPositionLevel`／`skipWhenStartReached` 沿用節點原值；
   只有真的互斥時才不沿用——這次寫接續起點就不沿用略過旗標，這次寫 `skipWhenStartReached: true` 而節點原本是接續起點就不沿用
   起點（改回從發起人起算，摘要寫明）。`skipWhenStartReached` 傳 `false` 或 `null` 都等同清掉。

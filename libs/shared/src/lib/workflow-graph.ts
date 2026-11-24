@@ -1279,6 +1279,20 @@ export function readExcludeNodeActorsShapeIssue(
     : '簽核節點的「不可與前面關卡同一人」需要指定沒有其他簽核人時的處理方式。';
 }
 
+/** Options of {@link readExcludeNodeActorsIssues}. */
+export interface ExcludeNodeActorsIssueOptions {
+  /**
+   * `true` accepts a listed stage that can be skipped or pass without a
+   * signer: the engine (from the release that added this option) reads a stage
+   * skipped the last time the case reached it as "nobody signed", so it
+   * excludes nobody. Omitted or `false` refuses such a stage, the rule every
+   * earlier release applied. The default stays strict so an engine that
+   * predates the option, calling this with three arguments, never publishes a
+   * template it would mis-read.
+   */
+  readonly allowSkippableStages?: boolean;
+}
+
 /**
  * The designer-facing issues for a node's `excludeNodeActors` setting ("this
  * stage's approver cannot be the person who approved an earlier stage");
@@ -1288,23 +1302,29 @@ export function readExcludeNodeActorsShapeIssue(
  *
  * 1. shape ({@link readExcludeNodeActorsShapeIssue}) and never the node itself;
  * 2. every listed node exists and is a `userTask`;
- * 3. each listed node on its own passes the source rules that
+ * 3. each listed node on its own passes the position rules that
  *    {@link readNodeActorSourceIssues} applies to a `NODE_ACTOR` source (same
  *    judgement, wording about the exclusion):
- *    - it may not be skipped or pass without a signer
- *      ({@link readNodeActorSourceSkipReasons});
  *    - every path from the start to `nodeId` goes through it, checked for
  *      each listed node separately (never "one of them covers it");
  *    - it is upstream of `nodeId`;
  * 4. `whenEmpty: 'SKIP_NODE'` is refused on a node whose approver fills
  *    fields in, for the same reason `excludeInitiator` is.
  *
- * Why every listed node has to be on every path: the engine reads the newest
- * round of approvals of a node, and a return can send the instance back to the
- * start. A listed node that this round did not pass would leave its previous
- * round's approver in the exclusion list, and the node would refuse a person
- * who never signed an earlier stage in this round. Requiring a listed node to
- * be run, and signed by a person, every time rules that out.
+ * With `options.allowSkippableStages: true` a listed node may be a stage that
+ * can be skipped or pass without a signer ({@link readNodeActorSourceSkipReasons}
+ * is not applied, unlike for a `NODE_ACTOR` source, which has to name a
+ * signer). The engine reads what a listed node did the last time the case
+ * reached it, and a skip then excludes nobody, so a stage that did not run this
+ * round cannot leave an earlier round's approver in the exclusion list.
+ * Without it (the default) such a stage is refused, as in every earlier
+ * release: a host that wants "never the same person as an earlier stage" to
+ * hold even when that stage is skipped keeps the default.
+ *
+ * Why every listed node still has to be on every path: a path that bypasses
+ * the listed node never reaches it, so nothing records a skip for it, and
+ * after a return the engine would read the approver of an earlier round of
+ * that node, who never signed an earlier stage on this path.
  *
  * The `NODE_ACTOR` rule "two sources on different branches of one parallel
  * split" is not applied a second time. A listed node that sits on a parallel
@@ -1316,6 +1336,7 @@ export function readExcludeNodeActorsIssues(
   definition: WorkflowDefinition,
   nodeId: string,
   config: ExcludeNodeActorsConfig | undefined,
+  options: ExcludeNodeActorsIssueOptions = {},
 ): readonly string[] {
   if (config === undefined) {
     return [];
@@ -1359,13 +1380,22 @@ export function readExcludeNodeActorsIssues(
     ];
   }
 
-  const stageIssues = readSourceStageIssues(
-    definition,
-    nodeId,
-    sourceNodeIds,
-    sourceNodeIds.map((id) => [id]),
-    EXCLUDE_NODE_ACTORS_STAGE_TEXTS,
-  );
+  const stageIssues =
+    options.allowSkippableStages === true
+      ? readSourceStagePositionIssues(
+          definition,
+          nodeId,
+          sourceNodeIds,
+          sourceNodeIds.map((id) => [id]),
+          EXCLUDE_NODE_ACTORS_STAGE_TEXTS,
+        )
+      : readSourceStageIssues(
+          definition,
+          nodeId,
+          sourceNodeIds,
+          sourceNodeIds.map((id) => [id]),
+          EXCLUDE_NODE_ACTORS_SIGNED_STAGE_TEXTS,
+        );
 
   if (stageIssues.length > 0) {
     return stageIssues;
@@ -1609,8 +1639,10 @@ export function readApproverResolverIssue(
 
 /**
  * Why a user task may finish with nobody having approved it, which rules it
- * out as a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` source and as a stage listed in
- * `excludeNodeActors`:
+ * out as a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` source and, by default, as a
+ * stage listed in `excludeNodeActors` (with `allowSkippableStages` a listed
+ * stage may have any of these: the engine reads a skip there as "nobody
+ * signed", see {@link readExcludeNodeActorsIssues}):
  *
  * - `entryCondition`: the node can be skipped outright;
  * - `skipNode`: `excludeInitiator.whenEmpty: 'SKIP_NODE'` skips it when
@@ -1624,8 +1656,8 @@ export function readApproverResolverIssue(
  *   whole stage when the start person already reaches its level.
  *
  * `[]` means the node always has a real signer once it has run. The designer's
- * stage pickers, `readNodeActorSourceIssues` and
- * `readExcludeNodeActorsIssues` all read this list, so they cannot disagree on
+ * stage pickers, `readNodeActorSourceIssues` and `readExcludeNodeActorsIssues`
+ * (unless `allowSkippableStages`) read this list, so they cannot disagree on
  * which stages qualify.
  */
 export type NodeActorSourceSkipReason =
@@ -1689,9 +1721,10 @@ const NODE_ACTOR_SOURCE_SKIP_ISSUES: Readonly<
 };
 
 /**
- * The wording of {@link readSourceStageIssues}. The judgement is shared; each
- * caller only supplies its own sentences, so a `NODE_ACTOR` source and an
- * `excludeNodeActors` stage cannot drift apart on what counts as unsound.
+ * The wording of {@link readSourceStagePositionIssues}, the coverage and
+ * upstream judgement a `NODE_ACTOR` source and an `excludeNodeActors` stage
+ * share: each caller only supplies its own sentences, so the two cannot drift
+ * apart on what counts as an unsound position.
  */
 interface SourceStagePositionTexts {
   /** Several labels when the stages are checked together (`NODE_ACTOR`). */
@@ -1702,6 +1735,10 @@ interface SourceStagePositionTexts {
   readonly notUpstream: (stageLabel: string, nodeLabel: string) => string;
 }
 
+/**
+ * The wording of {@link readSourceStageIssues}: the position sentences plus one
+ * per reason a stage may be skipped, which only a `NODE_ACTOR` source applies.
+ */
 interface SourceStageTexts extends SourceStagePositionTexts {
   readonly skip: Readonly<
     Record<NodeActorSourceSkipReason, (stageLabel: string) => string>
@@ -1716,38 +1753,52 @@ const NODE_ACTOR_SOURCE_STAGE_TEXTS: SourceStageTexts = {
   skip: NODE_ACTOR_SOURCE_SKIP_ISSUES,
 };
 
-const EXCLUDE_NODE_ACTORS_STAGE_TEXTS: SourceStageTexts = {
+const EXCLUDE_NODE_ACTORS_STAGE_TEXTS: SourceStagePositionTexts = {
   coverage: (stageLabels, nodeLabel) =>
-    `有一條路徑不會經過排除對象的前面關卡 ${stageLabels.join('、')} 就走到 ${nodeLabel}，那一趟排除不到本輪的簽核者（退回重送後還會讀到上一輪的簽核者）。請改用分流，把兩關放在同一條路線上。`,
+    `有一條路徑不會經過排除對象的前面關卡 ${stageLabels.join('、')} 就走到 ${nodeLabel}，那一趟排除不到本輪的簽核者（退回重送後還會讀到上一輪的簽核者）。請改用分流，把兩關放在同一條路線上，或把那一關留在主線上、改設進入條件。`,
   notUpstream: (stageLabel, nodeLabel) =>
     `前面關卡 ${stageLabel} 不在 ${nodeLabel} 的上游，走不到這個節點，無法排除該關的簽核者。`,
+};
+
+/**
+ * The wording of {@link readExcludeNodeActorsIssues} when skippable stages are
+ * refused (`allowSkippableStages` not `true`): the position sentences, minus
+ * the "set an entry condition instead" advice, plus one per skip reason.
+ */
+const EXCLUDE_NODE_ACTORS_SIGNED_STAGE_TEXTS: SourceStageTexts = {
+  coverage: (stageLabels, nodeLabel) =>
+    `有一條路徑不會經過排除對象的前面關卡 ${stageLabels.join('、')} 就走到 ${nodeLabel}，那一趟排除不到本輪的簽核者（退回重送後還會讀到上一輪的簽核者）。請改用分流，把兩關放在同一條路線上。`,
+  notUpstream: EXCLUDE_NODE_ACTORS_STAGE_TEXTS.notUpstream,
   skip: {
     autoApprove: (stageLabel) =>
-      `排除對象的前面關卡 ${stageLabel} 設有逾時自動核准，可能沒有人實際簽核，這一關就排除不到任何人。請移除逾時自動核准，或改選其他關卡。`,
+      `排除對象的前面關卡 ${stageLabel} 設有逾時自動核准，可能沒有人實際簽核；目前的設定要求排除對象的前面關卡一定有人簽核。請移除逾時自動核准，或改選其他關卡。`,
     entryCondition: (stageLabel) =>
-      `排除對象的前面關卡 ${stageLabel} 設有進入條件，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改用分流，把兩關放在同一條路線上。`,
+      `排除對象的前面關卡 ${stageLabel} 設有進入條件，可能被跳過；目前的設定要求排除對象的前面關卡一定有人簽核。請改用分流，把兩關放在同一條路線上。`,
     managerChainReached: (stageLabel) =>
-      `排除對象的前面關卡 ${stageLabel} 的主管鏈在起點本人已達簽到職等時會整關略過，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改選其他關卡。`,
+      `排除對象的前面關卡 ${stageLabel} 的主管鏈在起點本人已達簽到職等時會整關略過；目前的設定要求排除對象的前面關卡一定有人簽核。請改選其他關卡。`,
     skipNode: (stageLabel) =>
-      `排除對象的前面關卡 ${stageLabel} 在排除發起人後沒人時會跳過此關，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改選其他處理方式。`,
+      `排除對象的前面關卡 ${stageLabel} 在排除發起人後沒人時會跳過此關；目前的設定要求排除對象的前面關卡一定有人簽核。請改選其他處理方式。`,
     skipNodeByNodeActors: (stageLabel) =>
-      `排除對象的前面關卡 ${stageLabel} 在排除前面關卡的簽核者後沒人時會跳過此關，可能被跳過；被跳過時會改讀到上一輪的簽核者。請改選其他處理方式。`,
+      `排除對象的前面關卡 ${stageLabel} 在排除前面關卡的簽核者後沒人時會跳過此關；目前的設定要求排除對象的前面關卡一定有人簽核。請改選其他處理方式。`,
   },
 };
 
 /**
- * The checks every "who signed an earlier stage" reader needs, shared by the
- * `NODE_ACTOR` source ({@link readNodeActorSourceIssues}) and
- * `excludeNodeActors` ({@link readExcludeNodeActorsIssues}). In this order,
- * all of them reported together:
+ * The checks a `NODE_ACTOR` source ({@link readNodeActorSourceIssues}) needs.
+ * In this order, all of them reported together:
  *
  * 1. a stage that may be skipped or pass without a signer
- *    ({@link readNodeActorSourceSkipReasons});
+ *    ({@link readNodeActorSourceSkipReasons}): a source has to name a signer.
+ *    `excludeNodeActors` applies it too unless `allowSkippableStages`;
  * 2. coverage: for each group in `coverageGroups`, walking from the start
  *    without entering any stage of the group must not reach `nodeId`. A
  *    `NODE_ACTOR` source passes its whole list as one group ("one of them
  *    covers every path"); an exclusion passes one group per stage;
  * 3. every stage is upstream of `nodeId`.
+ *
+ * Rules 2 and 3 are {@link readSourceStagePositionIssues}, which is also what
+ * `excludeNodeActors` ({@link readExcludeNodeActorsIssues}) calls on its own
+ * under `allowSkippableStages`.
  *
  * The caller has already checked that every id exists and is a `userTask`.
  */
@@ -1787,8 +1838,10 @@ function readSourceStageIssues(
 
 /**
  * The coverage and upstream halves of {@link readSourceStageIssues}, without
- * its skip-reason rule: for a reader (the manager-chain continuation) that
- * accepts some of the reasons a stage may be skipped for and brings its own.
+ * its skip-reason rule: for a reader that accepts some or all of the reasons a
+ * stage may be skipped for. The manager-chain continuation accepts some and
+ * brings its own rule; `excludeNodeActors` accepts all of them, because the
+ * engine reads a skipped stage as "nobody signed".
  */
 function readSourceStagePositionIssues(
   definition: WorkflowDefinition,
@@ -2053,10 +2106,11 @@ const CHAIN_CONTINUATION_POSITION_TEXTS: SourceStagePositionTexts = {
  *
  * 5. S may not be skipped by `entryCondition`, `skipNode` or
  *    `skipNodeByNodeActors`. This deliberately does **not** reuse
- *    {@link readNodeActorSourceSkipReasons} as a whole, which
- *    {@link readExcludeNodeActorsIssues} does: S skipped for
- *    `managerChainReached` is read by the engine as "nobody reached a level"
- *    and S with an SLA auto-approval is not counted, so both stay allowed;
+ *    {@link readNodeActorSourceSkipReasons} as a whole, which a `NODE_ACTOR`
+ *    source does: S skipped for `managerChainReached` is read by the engine
+ *    as "nobody reached a level" and S with an SLA auto-approval is not
+ *    counted, so both stay allowed. (`excludeNodeActors` accepts every one of
+ *    them: a skipped stage there just excludes nobody);
  * 6. every path from the start to T goes through S, and S is upstream of T
  *    (the coverage and upstream rules of {@link readExcludeNodeActorsIssues}).
  *

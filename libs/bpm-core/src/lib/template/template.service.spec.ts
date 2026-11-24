@@ -27,6 +27,7 @@ import {
   ApprovalTemplateListStatusEnum,
   ApprovalTemplateVersionStatusEnum,
 } from './template.enums';
+import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { TemplateService } from './template.service';
 import { EMPTY_WORKFLOW_DEFINITION } from './workflow-definition.validator';
 import {
@@ -1704,10 +1705,15 @@ describe('TemplateService', () => {
     };
     const publish = (
       workflowDefinition: WorkflowDefinition,
+      rootOptions?: BPMRootRuntimeOptions,
     ): Promise<unknown> =>
       createTableConditionPublishService({
+        rootOptions,
         workflowDefinition,
       }).publishApprovalTemplateVersion('template-version-1');
+    const ALLOW_SKIPPABLE: BPMRootRuntimeOptions = {
+      excludeNodeActorsAllowSkippableStages: true,
+    };
 
     it('publishes a node that excludes an earlier upstream node', async (): Promise<void> => {
       await expect(
@@ -1720,10 +1726,39 @@ describe('TemplateService', () => {
     });
 
     it.each([
+      ['an entry condition', { entryCondition: 'form.amount > 10' }],
+      [
+        'excludeInitiator SKIP_NODE',
+        { excludeInitiator: { whenEmpty: 'SKIP_NODE' } },
+      ],
+      [
+        'an SLA auto-approval',
+        { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } },
+      ],
+    ])(
+      'publishes an earlier node with %s under excludeNodeActorsAllowSkippableStages: when it is skipped on its last pass it excludes nobody',
+      async (_name, firstNodeData): Promise<void> => {
+        // The engine reads a listed node that was skipped on its last pass as
+        // "excludes nobody", so a host that opts in may list it. A NODE_ACTOR
+        // source is still refused for the same reasons (the shared spec holds
+        // that).
+        await expect(
+          publish(
+            withExclusion(
+              { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
+              firstNodeData,
+            ),
+            ALLOW_SKIPPABLE,
+          ),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      },
+    );
+
+    it.each([
       [
         'an entry condition',
         { entryCondition: 'form.amount > 10' },
-        '排除對象的前面關卡 「補填 1」 設有進入條件，可能被跳過；被跳過時會改讀到上一輪的簽核者',
+        '排除對象的前面關卡 「補填 1」 設有進入條件，可能被跳過；目前的設定要求排除對象的前面關卡一定有人簽核',
       ],
       [
         'excludeInitiator SKIP_NODE',
@@ -1736,21 +1771,54 @@ describe('TemplateService', () => {
         '排除對象的前面關卡 「補填 1」 設有逾時自動核准',
       ],
     ])(
-      "rejects an earlier node with %s: when it is skipped the node would read the previous round's approver",
+      'rejects an earlier node with %s by default and when the host option is false',
       async (_name, firstNodeData, wording): Promise<void> => {
-        // The same node is refused as a NODE_ACTOR source for the same reason.
-        await expect(
-          publish(
-            withExclusion(
-              { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
-              firstNodeData,
-            ),
-          ),
-        ).rejects.toThrow(
-          `workflow.nodes.task_2.excludeNodeActors: ${wording}`,
+        // Upgrading changes nothing: without the opt-in, the rule every
+        // earlier release applied still holds.
+        const definition = withExclusion(
+          { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
+          firstNodeData,
         );
+        const message = `workflow.nodes.task_2.excludeNodeActors: ${wording}`;
+
+        await expect(publish(definition)).rejects.toThrow(message);
+        await expect(
+          publish(definition, { excludeNodeActorsAllowSkippableStages: false }),
+        ).rejects.toThrow(message);
       },
     );
+
+    it('publishes the per-item shape: two stages with entry conditions, then a node that excludes both', async (): Promise<void> => {
+      // task_1 and task_2 each run only when their own item is ticked; task_3
+      // may not be signed by whoever signed either of them.
+      const base = createFieldAccessWorkflow([[], [], []]);
+      const definition = {
+        ...base,
+        nodes: base.nodes.map((node) => {
+          if (node.type !== 'userTask') {
+            return node;
+          }
+
+          const patch: Readonly<Record<string, unknown>> =
+            node.id === 'task_3'
+              ? {
+                  excludeNodeActors: {
+                    nodeIds: ['task_1', 'task_2'],
+                    whenEmpty: 'FAIL',
+                  },
+                }
+              : { entryCondition: `form.${node.id} == true` };
+
+          return { ...node, data: { ...node.data, ...patch } };
+        }),
+      } as WorkflowDefinition;
+
+      const published = publish(definition, ALLOW_SKIPPABLE);
+
+      await expect(published).resolves.toMatchObject({
+        id: 'template-version-1',
+      });
+    });
 
     it('publishes a workflow that omits the setting (control)', async (): Promise<void> => {
       await expect(publish(withExclusion({}))).resolves.toMatchObject({
@@ -4234,6 +4302,7 @@ function createTableConditionPublishService({
   conditionOperator,
   conditionValue,
   initiatorPolicyCel = null,
+  rootOptions,
   schema = TABLE_FORM_SCHEMA as FormDefinitionSchema,
   workflowDefinition,
 }: {
@@ -4242,6 +4311,7 @@ function createTableConditionPublishService({
   readonly conditionOperator?: string;
   readonly conditionValue?: string;
   readonly initiatorPolicyCel?: string | null;
+  readonly rootOptions?: BPMRootRuntimeOptions;
   readonly schema?: FormDefinitionSchema;
   readonly workflowDefinition?: WorkflowDefinition;
 }): TemplateService {
@@ -4377,6 +4447,8 @@ function createTableConditionPublishService({
     new ConditionService(),
     {} as unknown as FormService,
     createTemplateModuleRef(),
+    undefined,
+    rootOptions,
   );
 }
 

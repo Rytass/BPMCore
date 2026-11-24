@@ -20,9 +20,16 @@ export default async function TemplateDesignerPage({
   //
   // The dry-run button shows by default; set `BPM_TEMPLATE_DRY_RUN_ENABLED` to
   // `'false'` to hide it for a deployment.
+  //
+  // `BPM_EXCLUDE_NODE_ACTORS_ALLOW_SKIPPABLE_STAGES=true` mirrors the API
+  // host's `BPMRootModule` option of the same meaning, so the designer offers
+  // only the stages that host's publish check accepts.
   return (
     <TemplateDesignerView
       aiAssistantAvailable={Boolean(process.env.OPENAI_API_KEY)}
+      excludeNodeActorsAllowSkippableStages={
+        process.env.BPM_EXCLUDE_NODE_ACTORS_ALLOW_SKIPPABLE_STAGES === 'true'
+      }
       showAiAssistant={process.env.BPM_AI_ASSISTANT_ENABLED === 'true'}
       showDryRun={process.env.BPM_TEMPLATE_DRY_RUN_ENABLED !== 'false'}
       templateId={id}

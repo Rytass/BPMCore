@@ -104,6 +104,27 @@ export interface BPMRootRuntimeOptions
   readonly expressionFunctions?: readonly BPMExpressionFunction[];
 
   /**
+   * `true` lets publish accept a template whose `excludeNodeActors` lists a
+   * stage that can be skipped or pass without a signer (an entry condition, a
+   * "skip this stage" `whenEmpty`, timeout auto-approval, or a manager chain
+   * that skips itself when the start already reaches the level). When the
+   * case skipped such a stage the last time it reached it, it excludes
+   * nobody. That loosens separation of duties: someone who signed that stage
+   * in an earlier round can sign the excluding stage in a round where the
+   * stage was skipped.
+   *
+   * Defaults to `false`: publish refuses such a stage, the rule every release
+   * before this option applied, so upgrading changes nothing until a host
+   * opts in. A host that turns it on passes the same value to the template
+   * designer and the compose wizard (`excludeNodeActorsAllowSkippableStages`
+   * on `TemplateDesignerView` / `TemplateComposeWizardView`), so they offer
+   * the stages publish accepts.
+   *
+   * Only publish reads it; templates already published are not re-checked.
+   */
+  readonly excludeNodeActorsAllowSkippableStages?: boolean;
+
+  /**
    * Reads a form field the case has no value for as `null` (a table as `[]`)
    * instead of failing the expression with a missing key (ADR 27 §3). Only
    * top-level fields of the case's form schema are filled; table columns are

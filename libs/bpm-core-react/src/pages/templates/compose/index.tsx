@@ -21,6 +21,8 @@ export const metadata: Metadata = {
  * as the standalone designer page. `BPM_AI_ASSISTANT_ENABLED` shows the button;
  * `OPENAI_API_KEY` decides whether it's usable (else a disabled placeholder).
  * Both are server-only env on the Next.js host.
+ * `BPM_EXCLUDE_NODE_ACTORS_ALLOW_SKIPPABLE_STAGES=true` mirrors the API host's
+ * `BPMRootModule` option, as on the designer page.
  *
  * `await connection()` opts this route out of static prerendering so those env
  * vars are read at request time. They are NOT set during `next build` (only
@@ -35,6 +37,9 @@ export default async function TemplateComposePage(): Promise<ReactElement> {
   return (
     <TemplateComposeWizardView
       aiAssistantAvailable={Boolean(process.env.OPENAI_API_KEY)}
+      excludeNodeActorsAllowSkippableStages={
+        process.env.BPM_EXCLUDE_NODE_ACTORS_ALLOW_SKIPPABLE_STAGES === 'true'
+      }
       showAiAssistant={process.env.BPM_AI_ASSISTANT_ENABLED === 'true'}
     />
   );

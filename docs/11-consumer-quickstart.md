@@ -733,6 +733,7 @@ NEXT_PUBLIC_API_AUTH_URL=https://api.example.com   # /auth/* 的 base URL
 以下是 Next.js host 的 **server-only** 變數（不可加 `NEXT_PUBLIC_` 前綴），由 designer 頁的 page shim 讀取：
 
 - `BPM_TEMPLATE_DRY_RUN_ENABLED`：預設顯示設計器的「試跑流程」按鈕；設為 `'false'` 即隱藏。
+- `BPM_EXCLUDE_NODE_ACTORS_ALLOW_SKIPPABLE_STAGES`：API host 的 `BPMRootModule` 設了 `excludeNodeActorsAllowSkippableStages: true` 時才設為 `'true'`，讓設計器與建立模板精靈的「不可與前面關卡同一人」也列出可能被跳過的關卡（預設不列；設計頁與精靈頁都讀）。
 - `BPM_AI_ASSISTANT_ENABLED`、`OPENAI_API_KEY`、`BPM_LLM_MODEL`：流程設計器 AI 助理，見 [12 — 流程設計器 AI 助理](./12-ai-assistant.md)。
 
 ### 3. 登入流程（Server Action 或 client component）

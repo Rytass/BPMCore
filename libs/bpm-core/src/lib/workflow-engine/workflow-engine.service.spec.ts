@@ -10374,6 +10374,7 @@ describe('WorkflowEngineService', () => {
           delegationResolutionByMember,
           excludeInitiator,
           excludeNodeActors,
+          formData,
           org,
           resolver,
           snapshot,
@@ -10389,6 +10390,8 @@ describe('WorkflowEngineService', () => {
           >;
           readonly excludeInitiator?: ExcludeInitiatorConfig;
           readonly excludeNodeActors?: ExcludeNodeActorsConfig;
+          // What an entry condition on a node of `snapshot` reads.
+          readonly formData?: Readonly<Record<string, unknown>>;
           readonly org?: OrgData;
           readonly resolver: ApproverResolver;
           readonly snapshot?: (
@@ -10403,6 +10406,7 @@ describe('WorkflowEngineService', () => {
             formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
             ...org,
             processActivityLogs: activityLogs,
+            processFormData: formData,
             processTaskCandidates: candidates,
             processTaskDecisions: decisions,
             processWorkflowSnapshot: (snapshot ?? ((linear) => linear))(
@@ -10708,6 +10712,26 @@ describe('WorkflowEngineService', () => {
             ).resolves.toEqual(['member-a', 'member-b']);
           });
 
+          it('excludes nobody when a person signed the node in an earlier round and the SLA timeout approved the newest one', async (): Promise<void> => {
+            // Pinned, not new: the newest batch is all that is read, and it
+            // has no real signer, so the earlier round's member-a stays free.
+            await expect(
+              candidatesAfterProcessing({
+                activityLogs: [slaMark('d-new', 't-new')],
+                decisions: [
+                  approved('d-old', 't-old', 'member-a', 1),
+                  approved('d-new', 't-new', 'member-d', 31),
+                ],
+                excludeNodeActors: nodeActors(['ACT3']),
+                resolver: directOf('member-a', 'member-d', 'member-b'),
+                tasks: [
+                  finished('t-old', 'ACT3', 'tok-1', 0),
+                  finished('t-new', 'ACT3', 'tok-2', 30),
+                ],
+              }),
+            ).resolves.toEqual(['member-a', 'member-d', 'member-b']);
+          });
+
           it('excludes the person who signed the newest round after a return, not the earlier one', async (): Promise<void> => {
             await expect(
               candidatesAfterProcessing({
@@ -10799,6 +10823,208 @@ describe('WorkflowEngineService', () => {
                 resolver: directOf('member-a', 'member-b'),
               }),
             ).resolves.toEqual(['member-a', 'member-b']);
+          });
+        });
+
+        describe('a listed node that was skipped the last time the case reached it', (): void => {
+          // member-a signed ACT3 in the first round (its TASK_CREATED is seq 1
+          // and its decision is the seeded one). `seq` is explicit on every
+          // row: the skip is "newer" only by the number it was written with.
+          const taskCreatedOf = (
+            seq: number,
+            taskId: string,
+            nodeId = 'ACT3',
+          ): ActivityLogEntity =>
+            createSequencedActivityLog(seq, {
+              eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+              nodeId,
+              payload: { tokenId: 'tok-1' },
+              taskId,
+            });
+          const skippedBy = (
+            seq: number,
+            skipKey: string,
+            nodeId = 'ACT3',
+          ): ActivityLogEntity =>
+            createSequencedActivityLog(seq, {
+              eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+              nodeId,
+              payload: { [skipKey]: true, tokenId: 'tok-2' },
+            });
+          const everySkipKey = [
+            ['an entry condition', 'skippedByEntryCondition'],
+            ['excludeInitiator SKIP_NODE', 'skippedByInitiatorExclusion'],
+            ['excludeNodeActors SKIP_NODE', 'skippedByNodeActorExclusion'],
+            [
+              'a manager chain that already got there',
+              'skippedByManagerChainReached',
+            ],
+          ] as const;
+
+          it('excludes the signer of a node that was signed, but not one that was skipped, in the same round', async (): Promise<void> => {
+            // ACT3 signed by member-a (seq 1); ACT4 skipped (seq 2, newer than
+            // ACT3's task). The skip is ACT4's and must not clear ACT3.
+            await expect(
+              candidatesAfterProcessing({
+                activityLogs: [
+                  taskCreatedOf(1, 't1'),
+                  skippedBy(2, 'skippedByEntryCondition', 'ACT4'),
+                ],
+                excludeNodeActors: nodeActors(['ACT3', 'ACT4']),
+                resolver: directOf('member-a', 'member-b'),
+              }),
+            ).resolves.toEqual(['member-b']);
+          });
+
+          it.each(everySkipKey)(
+            'excludes nobody for a node whose newest pass was skipped by %s, though an earlier round of it was signed',
+            async (_name, skipKey): Promise<void> => {
+              // Round 1: member-a signed ACT3 (seq 1). The case was resent
+              // (RESTART); round 2 skipped ACT3 (seq 3).
+              await expect(
+                candidatesAfterProcessing({
+                  activityLogs: [taskCreatedOf(1, 't1'), skippedBy(3, skipKey)],
+                  excludeNodeActors: nodeActors(['ACT3']),
+                  resolver: directOf('member-a'),
+                }),
+              ).resolves.toEqual(['member-a']);
+            },
+          );
+
+          it('still excludes the signer when the skip is older than the newest task of the node', async (): Promise<void> => {
+            // Round 1 skipped ACT3 (seq 1); after a RESTART round 2 had it
+            // signed by member-a (TASK_CREATED seq 5).
+            await expect(
+              candidatesAfterProcessing({
+                activityLogs: [
+                  skippedBy(1, 'skippedByEntryCondition'),
+                  taskCreatedOf(5, 't1'),
+                ],
+                excludeNodeActors: nodeActors(['ACT3']),
+                resolver: directOf('member-a', 'member-b'),
+              }),
+            ).resolves.toEqual(['member-b']);
+          });
+
+          it("reads the logs' seq as a number: a skip at seq 10 is newer than a task at seq 9", async (): Promise<void> => {
+            await expect(
+              candidatesAfterProcessing({
+                activityLogs: [
+                  taskCreatedOf(9, 't1'),
+                  skippedBy(10, 'skippedByEntryCondition'),
+                ],
+                excludeNodeActors: nodeActors(['ACT3']),
+                resolver: directOf('member-a'),
+              }),
+            ).resolves.toEqual(['member-a']);
+          });
+
+          it('keeps a skipped node out of the exclusion when the case comes back to this node without running it (data seeded; the resubmission itself is not run)', async (): Promise<void> => {
+            // The state a FROM_RETURN_POINT resubmission leaves: ACT3 was
+            // signed by member-a in round 1, skipped in round 2 (seq 5), and
+            // ACT3 does not run again. The fixture's default token sits at
+            // `start` and runs straight through to this node in one pass; ACT3
+            // exists only in the seeded logs, never on the graph. Only the
+            // reading is under test, not the resubmission, which does not
+            // write anything for ACT3.
+            await expect(
+              candidatesAfterProcessing({
+                activityLogs: [
+                  taskCreatedOf(1, 't1'),
+                  skippedBy(5, 'skippedByEntryCondition'),
+                ],
+                excludeNodeActors: nodeActors(['ACT3']),
+                resolver: directOf('member-a'),
+              }),
+            ).resolves.toEqual(['member-a']);
+          });
+
+          it('writes the skip itself when the entry condition is false, and then excludes nobody for that node', async (): Promise<void> => {
+            // start -> ACT3 (entry condition false) -> this node. ACT3 was
+            // signed by member-a before (TASK_CREATED seq 1, seeded decision);
+            // the engine itself writes the skip record, with a seq after it.
+            const act3 = createUserTaskNode(
+              'ACT3',
+              '前面關卡',
+              'member-a',
+              190,
+              160,
+            );
+            const fixture = exclusionFixture({
+              activityLogs: [taskCreatedOf(1, 't1')],
+              excludeNodeActors: nodeActors(['ACT3']),
+              formData: { amount: 10 },
+              resolver: directOf('member-a'),
+              snapshot: (linear): WorkflowDefinition => ({
+                ...linear,
+                edges: [
+                  {
+                    data: {},
+                    id: 'edge_start_act3',
+                    source: 'start',
+                    target: 'ACT3',
+                    type: 'smoothstep',
+                  },
+                  {
+                    data: {},
+                    id: 'edge_act3_finance',
+                    source: 'ACT3',
+                    target: 'task_finance',
+                    type: 'smoothstep',
+                  },
+                  ...linear.edges.filter((edge) => edge.source !== 'start'),
+                ],
+                nodes: [
+                  ...linear.nodes.filter((node) => node.id === 'start'),
+                  {
+                    ...act3,
+                    data: {
+                      ...act3.data,
+                      entryCondition: 'form.amount > 1000',
+                    },
+                  } as WorkflowDefinition['nodes'][number],
+                  ...linear.nodes.filter((node) => node.id !== 'start'),
+                ],
+              }),
+            });
+
+            await fixture.service.processInstance('instance-1');
+
+            expect(
+              fixture.savedSingleActivityLogs.filter(
+                (log) =>
+                  log.eventType === ActivityLogEventTypeEnum.TOKEN_ADVANCED &&
+                  log.nodeId === 'ACT3' &&
+                  log.payload['skippedByEntryCondition'] === true,
+              ),
+            ).toHaveLength(1);
+            expect(readAssignees(fixture)).toEqual(['member-a']);
+          });
+
+          it('decides by the skip keys, not by the event type: a later TOKEN_ADVANCED of the node without one does not clear it', async (): Promise<void> => {
+            // The engine also writes TOKEN_ADVANCED rows on a node's id that
+            // are not skips: a normal move on records the target node, a
+            // fan-out after an approval records the approved node itself,
+            // after its TASK_CREATED.
+            await expect(
+              candidatesAfterProcessing({
+                activityLogs: [
+                  taskCreatedOf(1, 't1'),
+                  createSequencedActivityLog(2, {
+                    eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+                    nodeId: 'ACT3',
+                    payload: {
+                      edgeIds: ['edge-1', 'edge-2'],
+                      fromNodeId: 'ACT3',
+                      tokenId: 'tok-1',
+                      toNodeIds: ['task_finance', 'task_other'],
+                    },
+                  }),
+                ],
+                excludeNodeActors: nodeActors(['ACT3']),
+                resolver: directOf('member-a', 'member-b'),
+              }),
+            ).resolves.toEqual(['member-b']);
           });
         });
 
@@ -10924,6 +11150,7 @@ describe('WorkflowEngineService', () => {
             delegationResolutionByMember?: Readonly<
               Record<string, DelegationResolution>
             >,
+            activityLogs: readonly ActivityLogEntity[] = [],
           ): ReturnType<typeof createServiceFixture> =>
             createServiceFixture({
               additionalProcessTasks: aSignedAct3.tasks,
@@ -10940,6 +11167,7 @@ describe('WorkflowEngineService', () => {
                 status: WorkflowTokenStatusEnum.WAITING,
               }),
               formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+              processActivityLogs: activityLogs,
               processTaskDecisions: aSignedAct3.decisions,
               processWorkflowSnapshot: createLinearUserTaskWorkflow({
                 excludeNodeActors,
@@ -10998,6 +11226,32 @@ describe('WorkflowEngineService', () => {
             );
 
             await expect(attempt).rejects.toThrow(ConflictException);
+          });
+
+          it('lets the task go to the signer of a listed node that was skipped the last time', async (): Promise<void> => {
+            // member-a signed ACT3 in round 1 (seq 1); round 2 skipped it
+            // (seq 3), so it keeps nobody out and the transfer goes through.
+            const fixture = transferFixture(nodeActors(['ACT3']), undefined, [
+              createSequencedActivityLog(1, {
+                eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+                nodeId: 'ACT3',
+                payload: { tokenId: 'tok-1' },
+                taskId: 't1',
+              }),
+              createSequencedActivityLog(3, {
+                eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+                nodeId: 'ACT3',
+                payload: { skippedByEntryCondition: true, tokenId: 'tok-2' },
+              }),
+            ]);
+
+            await transferTo(fixture, 'member-a');
+
+            expect(
+              fixture.savedTasks.some(
+                (task) => task.assigneeMemberId === 'member-a',
+              ),
+            ).toBe(true);
           });
 
           it('still lets the task go to someone whose delegation avoids the earlier signers', async (): Promise<void> => {
@@ -13876,28 +14130,19 @@ describe('WorkflowEngineService', () => {
         id,
         taskId,
       });
-    // The database assigns `seq`; the fixture does not, so a log a test wants
-    // ordered carries one.
-    const logged = (
-      seq: number,
-      value: Partial<ActivityLogEntity>,
-    ): ActivityLogEntity =>
-      Object.assign(createActivityLog({ id: `log-${seq}`, ...value }), {
-        seq: String(seq),
-      });
     const taskCreated = (
       seq: number,
       taskId: string,
       nodeId: string = STAGE,
     ): ActivityLogEntity =>
-      logged(seq, {
+      createSequencedActivityLog(seq, {
         eventType: ActivityLogEventTypeEnum.TASK_CREATED,
         nodeId,
         payload: { tokenId: 'tok-1' },
         taskId,
       });
     const stageSkipped = (seq: number): ActivityLogEntity =>
-      logged(seq, {
+      createSequencedActivityLog(seq, {
         eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
         nodeId: STAGE,
         payload: { skippedByManagerChainReached: true, tokenId: 'tok-1' },
@@ -29055,6 +29300,17 @@ function createActivityLog(
     nodeId: value.nodeId ?? null,
     payload: value.payload ?? {},
     taskId: value.taskId ?? null,
+  });
+}
+
+// The database assigns `seq`; the fixture does not, so a log a test wants
+// ordered carries one.
+function createSequencedActivityLog(
+  seq: number,
+  value: Partial<ActivityLogEntity>,
+): ActivityLogEntity {
+  return Object.assign(createActivityLog({ id: `log-${seq}`, ...value }), {
+    seq: String(seq),
   });
 }
 

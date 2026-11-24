@@ -439,3 +439,8 @@ Next.js server env (the client host, not `apps/api`), in `apps/client/.env.local
 - `BPM_TEMPLATE_DRY_RUN_ENABLED` — set to `'false'` to hide the designer's
   "試跑流程" (dry-run) button (shown by default). `TemplateDesignerView` also
   accepts a `showDryRun` prop for direct control.
+- `BPM_EXCLUDE_NODE_ACTORS_ALLOW_SKIPPABLE_STAGES` — `'true'` only when the API
+  host sets `BPMRootModule` `excludeNodeActorsAllowSkippableStages`, so the
+  designer and the compose wizard also offer 不可與前面關卡同一人 stages that
+  can be skipped, as that host's publish accepts them (default off). `TemplateDesignerView` and
+  `TemplateComposeWizardView` take the same-named prop.

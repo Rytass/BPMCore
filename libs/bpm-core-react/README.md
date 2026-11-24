@@ -106,6 +106,11 @@ environment variables. Set them in the host's `.env.local` or deployment config.
   toggle shows as a disabled placeholder.
 - `BPM_TEMPLATE_DRY_RUN_ENABLED=false`: hides the 試跑流程 (dry-run) button. The
   button is shown by default; only the exact value `'false'` hides it.
+- `BPM_EXCLUDE_NODE_ACTORS_ALLOW_SKIPPABLE_STAGES=true`: set it only when the API
+  host sets `BPMRootModule` `excludeNodeActorsAllowSkippableStages: true`. The
+  不可與前面關卡同一人 picker then also offers stages that can be skipped,
+  matching that host's publish check. Off by default. The compose wizard page
+  reads it too.
 
 For direct control, `TemplateDesignerView` accepts `showAiAssistant`,
 `aiAssistantAvailable`, and `showDryRun` props.
