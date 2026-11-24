@@ -284,13 +284,14 @@ export const EXCLUDE_NODE_ACTORS_STAGE_HINT =
 /**
  * {@link EXCLUDE_NODE_ACTORS_STAGE_HINT} for a host that accepts stages that
  * can be skipped (`excludeNodeActorsAllowSkippableStages`). Kept short on
- * purpose; what it leaves out (several stages each exclude their own signer,
- * how to list a stage that is not on every path, which skips count, and a
- * return past the listed stage keeping its last result) is in
+ * purpose, but it still says that a skippable stage may be picked and what to
+ * do with a stage that is not on every path; what it leaves out (several
+ * stages each exclude their own signer, the exact list of skips, and a return
+ * past the listed stage keeping its last result) is in
  * docs/07-workflow-execution.md §4.5.
  */
 export const EXCLUDE_NODE_ACTORS_SKIPPABLE_STAGE_HINT =
-  '此關的簽核人不會是所選前面關卡實際簽核的人（含代理人），也不能被轉簽或加簽進來。所選關卡要在每條路徑上；某一關被跳過或沒人核准時，那一關不排除任何人。平行分支上的關卡不支援，請改成先後串接。';
+  '此關的簽核人不會是所選前面關卡實際簽核的人（含代理人），也不能被轉簽或加簽進來。有進入條件、可跳過的關卡也可以選，被跳過或沒人核准時不排除任何人；所選關卡要在每條路徑上，不在的請改用分流，或留在主線改設進入條件。平行分支上的關卡不支援，請改成先後串接。';
 
 /** Shown when no earlier stage can be picked. */
 export const NO_EXCLUDABLE_STAGE_HINT =
