@@ -1,3 +1,7 @@
+## 0.25.2 (2026-11-24)
+
+This was a version bump only for bpm-core-client to align it with other projects, there were no code changes.
+
 ## 0.25.1 (2026-11-24)
 
 This was a version bump only for bpm-core-client to align it with other projects, there were no code changes.

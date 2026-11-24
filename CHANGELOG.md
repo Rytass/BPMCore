@@ -1,3 +1,15 @@
+## 0.25.2 (2026-11-24)
+
+### 🩹 Fixes
+
+- **bpm-core-react:** shorten the same-signer stage hint when skippable stages are allowed ([3430f666](https://github.com/Rytass/BPMCore/commit/3430f666))
+- **bpm-core-react:** keep the skippable-stage permission and the fix in the short hint ([77a032eb](https://github.com/Rytass/BPMCore/commit/77a032eb))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.25.1 (2026-11-24)
 
 ### 🩹 Fixes
