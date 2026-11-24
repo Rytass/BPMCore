@@ -115,6 +115,8 @@ export interface FileUploadFieldControlProps {
 
 const UNKNOWN_ATTACHMENT_NAME = '無法讀取檔名的附件';
 const UPLOAD_UNAVAILABLE_HINT = '此處無法上傳附件';
+// Without a label, Mezzanine's `Upload` button reads "Upload".
+const UPLOADER_LABEL = { uploadLabel: '上傳附件' } as const;
 
 /**
  * The `file_upload` control.
@@ -358,6 +360,7 @@ export function FileUploadFieldControl({
         )
       }
       size="sub"
+      uploaderLabel={UPLOADER_LABEL}
     />
   );
 }
