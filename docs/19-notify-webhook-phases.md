@@ -910,7 +910,8 @@ false })` 允許 localhost 與 IP）、headers 經 `targetValueJson` 明文回�
 8. **設計器私有 `readWorkflowDefinitionIssue` 與 shared 版仍有規則漂移**（P0 驗證發現）：
    shared 版另有「會簽門檻人數無法達成」與「條件分流缺預設路徑」兩條，設計器版沒有。
    兩者後端發布時都會擋，但設計器目前允許儲存含這兩種問題的草稿。整份改用 shared 版會
-   讓設計器也擋住「儲存草稿」，屬於行為變更，需產品決定後處理。
+   讓設計器也擋住「儲存草稿」，屬於行為變更，需產品決定後處理。設計器的私有檢查現在是
+   `designer-workflow-issue.ts` 的 `readDesignerWorkflowIssue`。
 9. 形狀錯誤的知會對象 JSON 會讓 lint 丟 TypeError（既有問題，非 P0 回歸）：前端遇到
    `POSITION` 缺 `positionId`；後端遇到 DIRECT 缺 `memberIds` 或 `POSITION` 缺
    `positionId`。只能經由直接改 JSON 或 API 觸發。另有一處前端比後端嚴格：`memberIds` 為字串（非陣列）且

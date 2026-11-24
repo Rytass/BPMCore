@@ -1381,7 +1381,8 @@ function readNodeTypeCatalog(): unknown {
         type: 'serviceTask',
       },
       {
-        dataShape: 'label, direction(split|join), triggerMode；輸出連線需設定條件',
+        dataShape:
+          'label, direction(split|join), triggerMode；輸出連線需設定條件並保留一條預設；例外：direction 不是 split、而且只有一條出線，那條沒設條件或是預設時，引擎直接通過，不需條件與預設',
         label: WORKFLOW_NODE_TYPE_LABELS.exclusiveGateway,
         type: 'exclusiveGateway',
       },

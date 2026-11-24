@@ -131,14 +131,11 @@ import {
   composeSlaDuration,
   hasConfiguredConditionEdges,
   isDecisionPolicyUnsatisfiable,
+  isExclusiveGatewaySourceEdge,
   isOrgManagerChainDecisionPolicyInvalid,
-  readApproverResolverIssue,
   readConditionOperator,
   readConditionOperatorOptionsForField,
   readDesignTimeApproverCount,
-  readExcludeInitiatorIssue,
-  readExcludeNodeActorsShapeIssue,
-  readNotifyServiceTaskIssue,
   readNotifyWebhookTargets,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -164,6 +161,11 @@ import {
   readNodeActorStageChoice,
   readOrgManagerChainStageChoice,
 } from './node-actor-resolver-options';
+import {
+  isIncompleteConditionEdge,
+  readDesignerWorkflowIssue,
+  readEdgeCanvasLabel,
+} from './designer-workflow-issue';
 import { readMinPositionLevelOptions } from './position-level-options';
 import {
   isMembershipActiveOn,
@@ -1286,11 +1288,11 @@ export function TemplateDesignerView({
       workflowDefinition.edges.map((edge) =>
         readFlowEdge(
           edge,
-          workflowDefinition.nodes,
+          workflowDefinition,
           selectedEdgeIds.includes(edge.id),
         ),
       ),
-    [selectedEdgeIds, workflowDefinition.edges, workflowDefinition.nodes],
+    [selectedEdgeIds, workflowDefinition],
   );
 
   const selectedFormVersionOption = useMemo(
@@ -1325,7 +1327,7 @@ export function TemplateDesignerView({
     }
   }, [controller, effectiveFormSchema]);
   const workflowIssue = useMemo(
-    (): string | null => readWorkflowDefinitionIssue(workflowDefinition),
+    (): string | null => readDesignerWorkflowIssue(workflowDefinition),
     [workflowDefinition],
   );
 
@@ -1721,7 +1723,7 @@ export function TemplateDesignerView({
       appliedFormDraft?.uiSchema ?? FORM_EDIT_EMPTY_UI_SCHEMA;
 
     try {
-      const validationIssue = readWorkflowDefinitionIssue(workflowDefinition);
+      const validationIssue = readDesignerWorkflowIssue(workflowDefinition);
       const policyIssue = readInitiatorPolicyIssue(initiatorPolicyDraft);
       const blockingPublishIssue = publish ? publishIssue : null;
 
@@ -5055,7 +5057,7 @@ export function TemplateDesignerView({
       <Modal
         cancelText="取消"
         confirmButtonProps={{
-          disabled: !edge.data.isDefault && !edge.data.condition,
+          disabled: isIncompleteConditionEdge(edge, workflowDefinition),
         }}
         confirmText="完成"
         modalType="standard"
@@ -5075,10 +5077,7 @@ export function TemplateDesignerView({
   }
 
   function renderConditionEdgeSettingsForm(edge: WorkflowEdge): ReactElement {
-    const pathLabelPreview = readEdgeCanvasLabel(
-      edge,
-      workflowDefinition.nodes,
-    );
+    const pathLabelPreview = readEdgeCanvasLabel(edge, workflowDefinition);
     const conditionFieldOptions = readConditionFieldOptions(
       selectedFormVersionOption?.schema ?? null,
     );
@@ -5096,26 +5095,31 @@ export function TemplateDesignerView({
       conditionOperatorOptions,
       edge.data.conditionOperator ?? null,
     );
-    const pathLabelIsIncomplete = !edge.data.isDefault && !edge.data.condition;
+    const pathLabelIsIncomplete = isIncompleteConditionEdge(
+      edge,
+      workflowDefinition,
+    );
     const expressionCondition =
       !edge.data.isDefault &&
       (expressionEdgeId === edge.id || isWorkflowEdgeExpressionCondition(edge));
 
     return (
       <div style={FORM_STACK_STYLE}>
-        <Typography color="text-neutral" variant="body">
-          畫布上的這條線目前會顯示「
-          <span
-            style={{
-              color: pathLabelIsIncomplete
-                ? INCOMPLETE_CONDITION_EDGE_COLOR
-                : undefined,
-            }}
-          >
-            {pathLabelPreview ?? '請設定條件'}
-          </span>
-          」。
-        </Typography>
+        {pathLabelPreview === undefined ? null : (
+          <Typography color="text-neutral" variant="body">
+            畫布上的這條線目前會顯示「
+            <span
+              style={{
+                color: pathLabelIsIncomplete
+                  ? INCOMPLETE_CONDITION_EDGE_COLOR
+                  : undefined,
+              }}
+            >
+              {pathLabelPreview}
+            </span>
+            」。
+          </Typography>
+        )}
         <Toggle
           checked={Boolean(edge.data.isDefault)}
           inputProps={{ 'aria-label': '其他情況走這條' }}
@@ -5585,24 +5589,23 @@ function readSourceFlowNodeHandle({
 
 function readFlowEdge(
   edge: WorkflowEdge,
-  nodes: readonly WorkflowNode[],
+  definition: Pick<WorkflowDefinition, 'edges' | 'nodes'>,
   selected: boolean,
 ): FlowEdge {
-  const label = readEdgeCanvasLabel(edge, nodes);
-  const isConditionEdge = isExclusiveGatewaySourceEdge(edge, nodes);
-  const isIncompleteConditionEdge =
-    isConditionEdge && !edge.data.isDefault && !edge.data.condition;
-  const labelColor = isIncompleteConditionEdge
+  const label = readEdgeCanvasLabel(edge, definition);
+  const isConditionEdge = isExclusiveGatewaySourceEdge(edge, definition.nodes);
+  const incomplete = isIncompleteConditionEdge(edge, definition);
+  const labelColor = incomplete
     ? INCOMPLETE_CONDITION_EDGE_COLOR
     : isConditionEdge
       ? CONDITION_EDGE_COLOR
       : '#475569';
-  const labelBackgroundColor = isIncompleteConditionEdge
+  const labelBackgroundColor = incomplete
     ? '#fef2f2'
     : isConditionEdge
       ? '#eff6ff'
       : '#ffffff';
-  const labelBorderColor = isIncompleteConditionEdge
+  const labelBorderColor = incomplete
     ? INCOMPLETE_CONDITION_EDGE_COLOR
     : isConditionEdge
       ? CONDITION_EDGE_COLOR
@@ -6633,80 +6636,6 @@ function readWorkflowViewport(
   );
 }
 
-function readWorkflowDefinitionIssue(
-  definition: WorkflowDefinition,
-): string | null {
-  const incompleteUserTaskNode = definition.nodes.find(
-    (node) =>
-      node.type === 'userTask' &&
-      Boolean(readApproverResolverIssue(node.data.approverResolver)),
-  );
-  const excludeInitiatorNode = definition.nodes.find(
-    (node) =>
-      node.type === 'userTask' &&
-      Boolean(readExcludeInitiatorIssue(node.data.excludeInitiator)),
-  );
-  const excludeNodeActorsShapeIssue =
-    definition.nodes
-      .map((node) =>
-        node.type === 'userTask'
-          ? readExcludeNodeActorsShapeIssue(node.data.excludeNodeActors)
-          : null,
-      )
-      .find((issue): issue is string => issue !== null) ?? null;
-  // Shared with the backend lint and the AI toolset so a webhook-only or a
-  // runtime-resolved (position, org unit, manager) NOTIFY node is judged the
-  // same everywhere (ADR 18 P0).
-  const notifyNodeIssue =
-    definition.nodes
-      .map((node) => readNotifyServiceTaskIssue(node))
-      .find((issue): issue is string => issue !== null) ?? null;
-  const incompleteConditionEdge = definition.edges.find(
-    (edge) =>
-      isExclusiveGatewaySourceEdge(edge, definition.nodes) &&
-      !edge.data.isDefault &&
-      !edge.data.condition,
-  );
-  const chainPolicyNode = definition.nodes.find(
-    (node) =>
-      node.type === 'userTask' &&
-      isOrgManagerChainDecisionPolicyInvalid(
-        node.data.approverResolver,
-        node.data.decisionPolicy,
-      ),
-  );
-
-  if (incompleteUserTaskNode && incompleteUserTaskNode.type === 'userTask') {
-    return readApproverResolverIssue(
-      incompleteUserTaskNode.data.approverResolver,
-    );
-  }
-
-  if (chainPolicyNode && chainPolicyNode.type === 'userTask') {
-    return `簽核節點「${chainPolicyNode.data.label}」使用「沿主管鏈簽核」時，決策方式必須是「依序簽核或全部同意」，否則任一位主管簽完就會結案。`;
-  }
-
-  if (excludeInitiatorNode && excludeInitiatorNode.type === 'userTask') {
-    return readExcludeInitiatorIssue(
-      excludeInitiatorNode.data.excludeInitiator,
-    );
-  }
-
-  if (excludeNodeActorsShapeIssue) {
-    return excludeNodeActorsShapeIssue;
-  }
-
-  if (notifyNodeIssue) {
-    return notifyNodeIssue;
-  }
-
-  if (incompleteConditionEdge) {
-    return '條件分流的每條輸出連線都需要先設定條件。';
-  }
-
-  return null;
-}
-
 function readConditionFieldOptions(
   schema: FormDefinitionSchema | null,
 ): readonly ConditionFieldOption[] {
@@ -6756,51 +6685,6 @@ function shouldConditionOperatorUseValue(
   operator: WorkflowEdgeConditionOperator,
 ): boolean {
   return CONDITION_OPERATORS_REQUIRING_VALUE.includes(operator);
-}
-
-function readEdgeCanvasLabel(
-  edge: WorkflowEdge,
-  nodes: readonly WorkflowNode[],
-): string | undefined {
-  if (edge.data.label) {
-    return edge.data.label;
-  }
-
-  if (isExclusiveGatewaySourceEdge(edge, nodes)) {
-    return readExclusiveGatewayPathLabel(edge);
-  }
-
-  if (isParallelGatewaySourceEdge(edge, nodes)) {
-    return '同時進行';
-  }
-
-  return undefined;
-}
-
-function readExclusiveGatewayPathLabel(edge: WorkflowEdge): string {
-  if (edge.data.isDefault) {
-    return '其他情況';
-  }
-
-  return '請設定條件';
-}
-
-function isExclusiveGatewaySourceEdge(
-  edge: WorkflowEdge,
-  nodes: readonly WorkflowNode[],
-): boolean {
-  return nodes.some(
-    (node) => node.id === edge.source && node.type === 'exclusiveGateway',
-  );
-}
-
-function isParallelGatewaySourceEdge(
-  edge: WorkflowEdge,
-  nodes: readonly WorkflowNode[],
-): boolean {
-  return nodes.some(
-    (node) => node.id === edge.source && node.type === 'parallelGateway',
-  );
 }
 
 function readServiceTaskMemberIds(action: ServiceAction): readonly string[] {

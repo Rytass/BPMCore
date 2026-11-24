@@ -8,6 +8,8 @@ import {
   NotifyWebhookTarget,
   ServiceAction,
   WorkflowDefinition,
+  WorkflowEdge,
+  WorkflowEdgeData,
 } from './workflow';
 import {
   WorkflowCommandOptions,
@@ -269,8 +271,12 @@ describe('applyWorkflowMacroCommand', () => {
 });
 
 describe('readWorkflowDefinitionIssue — exclusive gateway default path', () => {
+  /** `'absent'` leaves `direction` out, as a definition that skipped the type would. */
+  type DirectionInput = 'absent' | 'join' | 'merge' | 'split';
+
   function gatewayDefinition(
     edges: WorkflowDefinition['edges'],
+    direction: DirectionInput = 'split',
   ): WorkflowDefinition {
     return {
       edges,
@@ -278,11 +284,15 @@ describe('readWorkflowDefinitionIssue — exclusive gateway default path', () =>
       nodes: [
         { data: { label: '開始' }, id: 'start', position: { x: 0, y: 0 }, type: 'startEvent' },
         {
-          data: { direction: 'split', label: '分流', triggerMode: 'AND' },
+          data: {
+            ...(direction === 'absent' ? {} : { direction }),
+            label: '分流',
+            triggerMode: 'AND',
+          },
           id: 'gw',
           position: { x: 0, y: 0 },
           type: 'exclusiveGateway',
-        },
+        } as unknown as WorkflowDefinition['nodes'][number],
         {
           data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },
           id: 'end',
@@ -329,6 +339,178 @@ describe('readWorkflowDefinitionIssue — exclusive gateway default path', () =>
     );
 
     expect(issue).toBeNull();
+  });
+
+  const MISSING_CONDITION_ISSUE = '條件分流的每條輸出連線都需要先設定條件。';
+  const MISSING_DEFAULT_ISSUE =
+    '條件分流需要保留一條「其他情況」預設路徑（用 set_edge_default 將其中一條輸出連線設為預設）。';
+
+  it.each<
+    readonly [
+      string,
+      string,
+      DirectionInput,
+      readonly WorkflowEdgeData[],
+      string | null,
+    ]
+  >([
+    ['S1', 'join, one edge with no condition', 'join', [{}], null],
+    [
+      'S2',
+      'missing direction, one edge with no condition',
+      'absent',
+      [{}],
+      null,
+    ],
+    [
+      'S3',
+      "unknown direction 'merge', one edge with no condition",
+      'merge',
+      [{}],
+      null,
+    ],
+    [
+      'S4',
+      'join, two edges with no condition',
+      'join',
+      [{}, {}],
+      MISSING_CONDITION_ISSUE,
+    ],
+    [
+      'S5',
+      'join, one edge with a condition and one with none',
+      'join',
+      [{ condition: 'form.amount > 100' }, {}],
+      MISSING_CONDITION_ISSUE,
+    ],
+    [
+      'S6',
+      'missing direction, two edges with no condition',
+      'absent',
+      [{}, {}],
+      MISSING_CONDITION_ISSUE,
+    ],
+    [
+      'S7',
+      "unknown direction 'merge', two edges with no condition",
+      'merge',
+      [{}, {}],
+      MISSING_CONDITION_ISSUE,
+    ],
+    [
+      'S8',
+      'split, one edge with no condition',
+      'split',
+      [{}],
+      MISSING_CONDITION_ISSUE,
+    ],
+    [
+      'S9',
+      'join, one edge with a condition and no default',
+      'join',
+      [{ condition: 'form.amount > 100' }],
+      MISSING_DEFAULT_ISSUE,
+    ],
+    [
+      'S10',
+      'join, one edge that is the default',
+      'join',
+      [{ isDefault: true }],
+      null,
+    ],
+    [
+      'S11',
+      'join, one edge that carries only a condition value',
+      'join',
+      [{ conditionValue: '100' }],
+      MISSING_CONDITION_ISSUE,
+    ],
+  ])('%s — %s', (_id, _name, direction, outgoing, expected) => {
+    expect(
+      readWorkflowDefinitionIssue(
+        gatewayDefinition(
+          [
+            { data: {}, id: 'e0', source: 'start', target: 'gw' },
+            ...outgoing.map((data, index): WorkflowEdge => ({
+              data,
+              id: `e${index + 1}`,
+              source: 'gw',
+              target: 'end',
+            })),
+          ],
+          direction,
+        ),
+      ),
+    ).toBe(expected);
+  });
+
+  it('passes a split and join diamond: the split keeps its condition and default, the join has one plain outgoing edge', () => {
+    const userTask = (id: string): WorkflowDefinition['nodes'][number] => ({
+      data: {
+        allowAddSigner: false,
+        allowReject: true,
+        allowTransfer: false,
+        approverResolver: { memberIds: ['m1'], type: 'DIRECT' },
+        decisionPolicy: { type: 'SINGLE' },
+        label: id,
+        returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },
+      },
+      id,
+      position: { x: 0, y: 0 },
+      type: 'userTask',
+    });
+    const gateway = (
+      id: string,
+      direction: 'join' | 'split',
+    ): WorkflowDefinition['nodes'][number] =>
+      ({
+        data: { direction, label: id, triggerMode: 'AND' },
+        id,
+        position: { x: 0, y: 0 },
+        type: 'exclusiveGateway',
+      }) as unknown as WorkflowDefinition['nodes'][number];
+    const link = (
+      source: string,
+      target: string,
+      data: WorkflowEdgeData = {},
+    ): WorkflowEdge => ({
+      data,
+      id: `${source}-${target}`,
+      source,
+      target,
+    });
+
+    const definition: WorkflowDefinition = {
+      edges: [
+        link('start', 'split'),
+        link('split', 'taskA', { condition: 'form.amount > 100000' }),
+        link('split', 'taskB', { isDefault: true }),
+        link('taskA', 'join'),
+        link('taskB', 'join'),
+        link('join', 'end'),
+      ],
+      meta: { schemaVersion: 1 },
+      nodes: [
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 0, y: 0 },
+          type: 'startEvent',
+        },
+        gateway('split', 'split'),
+        userTask('taskA'),
+        userTask('taskB'),
+        gateway('join', 'join'),
+        {
+          data: { endState: 'APPROVED', label: '完成', triggerMode: 'AND' },
+          id: 'end',
+          position: { x: 0, y: 0 },
+          type: 'endEvent',
+        },
+      ],
+    };
+
+    expect(readWorkflowDefinitionIssue(definition)).toBeNull();
   });
 });
 
