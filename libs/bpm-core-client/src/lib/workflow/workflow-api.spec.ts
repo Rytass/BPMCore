@@ -2,6 +2,8 @@ import {
   FormDefinitionSchema,
   FormFieldDefinition,
 } from '@rytass/bpm-core-shared/form';
+import { SIGNER_RECALL_ERROR_CODES } from '@rytass/bpm-core-shared/status';
+import { readRequestErrorCode } from '../graphql-client';
 import {
   adminCancelApprovalInstance,
   decideTask,
@@ -18,6 +20,8 @@ import {
   reassignMemberTasks,
   reassignTask,
   readApprovalInstance,
+  readRecallableTaskId,
+  recallTaskApproval,
   requestAdhocPreApproval,
   resubmitApprovalInstance,
   readFormDataCaseTitle,
@@ -1061,6 +1065,141 @@ describe('@rytass/bpm-core-client/workflow', () => {
         });
       } finally {
         harness.restore();
+      }
+    });
+  });
+
+  describe('signer recall', () => {
+    it('sends the task id and the trimmed reason as the mutation input', async (): Promise<void> => {
+      const harness = installFetchMock({
+        recallTaskApproval: { id: 'task-new' },
+      });
+      try {
+        await expect(
+          recallTaskApproval({ comment: '  寫錯金額  ', taskId: 'task-1' }),
+        ).resolves.toBeUndefined();
+        const request = harness.capture();
+
+        expect(request.query).toContain('mutation RecallTaskApproval');
+        expect(request.query).toContain('recallTaskApproval(input: $input)');
+        expect(request.variables).toEqual({
+          input: { comment: '寫錯金額', taskId: 'task-1' },
+        });
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('leaves the comment out when it is blank or missing', async (): Promise<void> => {
+      const harness = installFetchMock({
+        recallTaskApproval: { id: 'task-new' },
+      });
+      try {
+        await recallTaskApproval({ comment: '   ', taskId: 'task-1' });
+
+        expect(harness.capture().variables).toEqual({
+          input: { taskId: 'task-1' },
+        });
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('asks for the recallable task of one instance in its own query', async (): Promise<void> => {
+      const harness = installFetchMock({ recallableTaskId: 'task-1' });
+      try {
+        await expect(readRecallableTaskId('instance-1')).resolves.toBe(
+          'task-1',
+        );
+        const request = harness.capture();
+
+        expect(request.query).toContain('query RecallableTaskId');
+        expect(request.query).toContain(
+          'recallableTaskId(instanceId: $instanceId)',
+        );
+        expect(request.variables).toEqual({ instanceId: 'instance-1' });
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('answers null when nothing can be taken back', async (): Promise<void> => {
+      const harness = installFetchMock({ recallableTaskId: null });
+      try {
+        await expect(readRecallableTaskId('instance-1')).resolves.toBeNull();
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('keeps recallableTaskId out of the instance page query', async (): Promise<void> => {
+      const harness = installFetchMock({
+        approvalInstance: {
+          completedAt: null,
+          formDataJson: '{}',
+          formDefinitionSnapshotJson: '{}',
+          id: 'instance-1',
+          initiatorMemberId: 'member-001',
+          startedAt: '2026-05-26T00:00:00.000Z',
+          state: 'RUNNING',
+          submittedByMemberId: 'member-001',
+          templateId: 'template-1',
+          templateVersionId: 'tv-1',
+          title: 'Test instance',
+          workflowSnapshotJson: '{}',
+        },
+        activityLogs: [],
+        tasks: [],
+        workflowTokens: [],
+      });
+      try {
+        await readApprovalInstance('instance-1');
+
+        // A server that does not know the field would fail the whole page.
+        expect(harness.capture().query).not.toContain('recallableTaskId');
+      } finally {
+        harness.restore();
+      }
+    });
+
+    it('carries the refusal code of the full 409 body', async (): Promise<void> => {
+      const originalFetch = global.fetch;
+      (global as { fetch: typeof fetch }).fetch = jest.fn(
+        async (): Promise<Response> =>
+          new Response(
+            JSON.stringify({
+              data: null,
+              errors: [
+                {
+                  extensions: {
+                    originalError: {
+                      code: SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED,
+                      error: 'Conflict',
+                      message: 'Next stage already acted',
+                      statusCode: 409,
+                    },
+                  },
+                  message: 'Next stage already acted',
+                },
+              ],
+            }),
+            {
+              headers: { 'Content-Type': 'application/json' },
+              status: 200,
+            },
+          ),
+      ) as unknown as typeof fetch;
+      try {
+        const error: unknown = await recallTaskApproval({
+          taskId: 'task-1',
+        }).catch((caught: unknown): unknown => caught);
+
+        expect(error).toBeInstanceOf(Error);
+        expect(readRequestErrorCode(error)).toBe(
+          'SIGNER_RECALL_NEXT_STAGE_ACTED',
+        );
+      } finally {
+        (global as { fetch: typeof fetch }).fetch = originalFetch;
       }
     });
   });

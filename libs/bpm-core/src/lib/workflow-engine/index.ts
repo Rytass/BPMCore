@@ -11,6 +11,7 @@ export * from './dto/decide-task.input';
 export * from './dto/dry-run-approval-workflow.input';
 export * from './dto/reassign-member-tasks.input';
 export * from './dto/reassign-task.input';
+export * from './dto/recall-task-approval.input';
 export * from './dto/resubmit-approval-instance.input';
 export * from './dto/submit-approval-instance.input';
 export * from './initiator-custom-fields-resolver.token';

@@ -3816,6 +3816,15 @@ export class WorkflowEngineService {
     );
 
     if (!node) {
+      // The planner does not check this node's type. What keeps this branch
+      // unreachable is a data invariant: a non-ad-hoc task is only ever
+      // created on a userTask of the instance's snapshot (createUserTaskForToken
+      // runs for userTask nodes only; every other path that creates a task
+      // reuses an existing task's nodeId: a transfer, a recall, and the
+      // reopening of the original task after a temporary pre-approval was
+      // rejected).
+      // Kept as a type guard and a fail-closed refusal; unlike the planner's
+      // refusals, this 409 carries no signer recall code.
       throw new ConflictException(`Workflow node ${task.nodeId} was not found`);
     }
 
