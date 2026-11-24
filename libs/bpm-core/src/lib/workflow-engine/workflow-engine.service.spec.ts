@@ -27078,6 +27078,8 @@ describe('signer recall', (): void => {
       readonly beforeApproval?: (fixture: RecallFixture) => Promise<unknown>;
       readonly formData?: Readonly<Record<string, unknown>>;
       readonly rootOptions?: BPMRootRuntimeOptions | null;
+      /** The task the signer approves; `task-1` unless a transfer made a new one. */
+      readonly signerTaskId?: (fixture: RecallFixture) => string;
       readonly task?: Partial<TaskEntity>;
       readonly taskCandidates?: readonly TaskCandidateEntity[];
       readonly workflow?: WorkflowDefinition;
@@ -27114,7 +27116,7 @@ describe('signer recall', (): void => {
       {
         action: TaskDecisionActionEnum.APPROVED,
         decidedByMemberId: SIGNER,
-        taskId: 'task-1',
+        taskId: options.signerTaskId?.(fixture) ?? 'task-1',
       },
       options.approval,
     );
@@ -27410,9 +27412,15 @@ describe('signer recall', (): void => {
    */
   const startFromBeginning = async (
     workflow: WorkflowDefinition,
+    options: {
+      readonly delegationResolutionByMember?: Parameters<
+        typeof createServiceFixture
+      >[0]['delegationResolutionByMember'];
+    } = {},
   ): Promise<RecallFixture> => {
     const fixture = createServiceFixture({
       currentVersionId: 'template-version-1',
+      delegationResolutionByMember: options.delegationResolutionByMember,
       formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
       processWorkflowSnapshot: workflow,
       rootOptions: { signerRecallEnabled: true },
@@ -27787,6 +27795,186 @@ describe('signer recall', (): void => {
     });
   };
 
+  type ApprovedStateOptions = NonNullable<
+    Parameters<typeof buildApprovedState>[0]
+  >;
+
+  /** The task, seats and node of a stage M that asks `memberIds` in order. */
+  const sequentialStageOf = (
+    memberIds: readonly string[],
+  ): Pick<ApprovedStateOptions, 'task' | 'taskCandidates' | 'workflow'> => ({
+    task: {
+      assigneeMemberId: memberIds[0] ?? null,
+      assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+      candidateMemberIds: [...memberIds],
+      decisionPolicySnapshot: { type: 'SEQUENTIAL' },
+      originalAssigneeMemberId: memberIds[0] ?? null,
+    },
+    taskCandidates: memberIds.map((memberId, index): TaskCandidateEntity =>
+      createTaskCandidate({
+        id: `candidate-${memberId}`,
+        memberId,
+        sequence: index,
+        status:
+          index === 0
+            ? TaskCandidateStatusEnum.PENDING
+            : TaskCandidateStatusEnum.WAITING,
+        taskId: 'task-1',
+      }),
+    ),
+    workflow: withNodeData(
+      appendNextUserTask(createLinearUserTaskWorkflow()),
+      'task_finance',
+      {
+        approverResolver: { memberIds: [...memberIds], type: 'DIRECT' },
+        decisionPolicy: { type: 'SEQUENTIAL' },
+      },
+    ),
+  });
+
+  const decideOn = (
+    fixture: RecallFixture,
+    input: Parameters<WorkflowEngineService['decideTask']>[0],
+    options?: Parameters<WorkflowEngineService['decideTask']>[1],
+  ): Promise<unknown> => fixture.service.decideTask(input, options);
+
+  /** The newest task on M that was handed to the signer by a transfer. */
+  const readTransferredStageTaskId = (fixture: RecallFixture): string =>
+    readLatestRows(fixture.savedTasks)
+      .filter(
+        (task): boolean =>
+          task.nodeId === 'task_finance' && task.assigneeMemberId === SIGNER,
+      )
+      .at(-1)?.id ?? '';
+
+  /** M asks two people in order and the signer, first in line, approved: the stage is still open. */
+  const buildSequentialFirstSeatApprovedState = (): Promise<RecallFixture> =>
+    buildApprovedState(sequentialStageOf([SIGNER, 'member-second']));
+
+  /**
+   * M asks [A, B, C] in order; A and B approved and C handed the last seat to
+   * the signer (`transferOptions` says why), who approved on the new task.
+   */
+  const buildSequentialLastSeatTransferredState = (
+    transferOptions?: Parameters<WorkflowEngineService['decideTask']>[1],
+  ): Promise<RecallFixture> =>
+    buildApprovedState({
+      ...sequentialStageOf(['member-a', 'member-b', 'member-c']),
+      beforeApproval: async (fixture): Promise<void> => {
+        await decideOn(fixture, {
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-a',
+          taskId: 'task-1',
+        });
+        await decideOn(fixture, {
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-b',
+          taskId: 'task-1',
+        });
+        await decideOn(
+          fixture,
+          {
+            action: TaskDecisionActionEnum.TRANSFERRED,
+            decidedByMemberId: 'member-c',
+            taskId: 'task-1',
+            transferToMemberId: SIGNER,
+          },
+          transferOptions,
+        );
+      },
+      signerTaskId: (fixture): string => readTaskAssignedTo(fixture, SIGNER).id,
+    });
+
+  /** M asks the signer and a colleague, both must approve; the colleague went first. */
+  const buildEveryoneMustApproveState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: (fixture): Promise<unknown> =>
+        decideOn(fixture, {
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-colleague',
+          taskId: 'task-1',
+        }),
+      task: {
+        assigneeMemberId: null,
+        assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        candidateMemberIds: [SIGNER, 'member-colleague'],
+        decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+        originalAssigneeMemberId: null,
+      },
+      taskCandidates: [SIGNER, 'member-colleague'].map(
+        (memberId): TaskCandidateEntity =>
+          createTaskCandidate({
+            id: `candidate-${memberId}`,
+            memberId,
+            taskId: 'task-1',
+          }),
+      ),
+      workflow: withNodeData(
+        appendNextUserTask(createLinearUserTaskWorkflow()),
+        'task_finance',
+        {
+          approverResolver: {
+            memberIds: [SIGNER, 'member-colleague'],
+            type: 'DIRECT',
+          },
+          decisionPolicy: { type: 'PARALLEL_ALL' },
+        },
+      ),
+    });
+
+  /** M is a single-approver stage whose approver was `member-a`; the SLA timeout escalated it to the signer. */
+  const buildSlaEscalatedToSignerState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: (fixture): Promise<unknown> =>
+        decideOn(
+          fixture,
+          {
+            action: TaskDecisionActionEnum.TRANSFERRED,
+            decidedByMemberId: 'member-a',
+            taskId: 'task-1',
+            transferToMemberId: SIGNER,
+          },
+          { transferReason: SLA_ESCALATION_DELEGATION_REASON },
+        ),
+      signerTaskId: (fixture): string => readTaskAssignedTo(fixture, SIGNER).id,
+      task: {
+        assigneeMemberId: 'member-a',
+        originalAssigneeMemberId: 'member-a',
+      },
+    });
+
+  const DELEGATE = 'member-delegate';
+
+  /**
+   * A delegation rule of the signer sends M to `member-delegate`; the delegate
+   * approved, so the decision is theirs and the seat carries the rule step.
+   */
+  const buildApprovalGivenByDelegateState =
+    async (): Promise<RecallFixture> => {
+      const fixture = await startFromBeginning(
+        appendNextUserTask(createLinearUserTaskWorkflow()),
+        {
+          delegationResolutionByMember: {
+            [SIGNER]: {
+              delegationChain: [
+                {
+                  from: SIGNER,
+                  reason: 'ALL',
+                  ruleId: 'delegation-rule-1',
+                  to: DELEGATE,
+                },
+              ],
+              finalAssigneeMemberId: DELEGATE,
+            },
+          },
+        },
+      );
+
+      await approveAt(fixture, 'task_finance', DELEGATE);
+
+      return fixture;
+    };
+
   /** The planner against the fixture's own transaction manager. */
   const runPlanner = (
     fixture: RecallFixture,
@@ -27820,21 +28008,27 @@ describe('signer recall', (): void => {
       ),
     );
 
-  /** The event types recorded for one task, read the way the planner reads the record. */
+  /** Every activity record of the instance, read the way the planner reads the record. */
+  const readLogsOnRecord = (
+    fixture: RecallFixture,
+  ): Promise<readonly ActivityLogEntity[]> =>
+    runInTransaction(
+      fixture,
+      (manager): Promise<readonly ActivityLogEntity[]> =>
+        manager
+          .getRepository(ActivityLogEntity)
+          .find({ where: { instanceId: 'instance-1' } }),
+    );
+
+  /** The event types recorded for one task. */
   const readLoggedEventTypesOfTask = async (
     fixture: RecallFixture,
     taskId: string,
   ): Promise<ReadonlySet<ActivityLogEventTypeEnum>> =>
     new Set(
-      (
-        await runInTransaction(fixture, (manager) =>
-          manager
-            .getRepository(ActivityLogEntity)
-            .find({ where: { instanceId: 'instance-1' } }),
-        )
-      )
-        .filter((log) => log.taskId === taskId)
-        .map((log) => log.eventType),
+      (await readLogsOnRecord(fixture))
+        .filter((log): boolean => log.taskId === taskId)
+        .map((log): ActivityLogEventTypeEnum => log.eventType),
     );
 
   it('allows the baseline: the signer approved and nobody has touched the next stage', async (): Promise<void> => {
@@ -28314,17 +28508,11 @@ describe('signer recall', (): void => {
       const readNextStageLogs = async (
         fixture: RecallFixture,
       ): Promise<readonly ActivityLogEntity[]> =>
-        (
-          await runInTransaction(
-            fixture,
-            (manager): Promise<readonly ActivityLogEntity[]> =>
-              manager
-                .getRepository(ActivityLogEntity)
-                .find({ where: { instanceId: 'instance-1' } }),
-          )
-        ).filter((log) => log.taskId === readNextTaskId(fixture));
+        (await readLogsOnRecord(fixture)).filter(
+          (log): boolean => log.taskId === readNextTaskId(fixture),
+        );
 
-      it('N-SLA-AUTO starts from a real automatic approval: the decision record says so', async (): Promise<void> => {
+      it('the automatic-approval case starts from a real automatic approval: the decision record says so', async (): Promise<void> => {
         const fixture = await buildNextStageAutoApprovedState();
         const decided = (await readNextStageLogs(fixture)).filter(
           (log): boolean =>
@@ -28370,14 +28558,7 @@ describe('signer recall', (): void => {
   describe('records and notices that arrive after the approval', (): void => {
     const readLogs = (
       fixture: RecallFixture,
-    ): Promise<readonly ActivityLogEntity[]> =>
-      runInTransaction(
-        fixture,
-        (manager): Promise<readonly ActivityLogEntity[]> =>
-          manager
-            .getRepository(ActivityLogEntity)
-            .find({ where: { instanceId: 'instance-1' } }),
-      );
+    ): Promise<readonly ActivityLogEntity[]> => readLogsOnRecord(fixture);
 
     it('P3: allows a stage whose way to the next stage passes a node its entry condition skips', async (): Promise<void> => {
       const fixture = await buildSkippedStageBetweenState();
@@ -28530,6 +28711,213 @@ describe('signer recall', (): void => {
 
       await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
         refusalCode: SIGNER_RECALL_ERROR_CODES.STAGE_NOTIFY_SENT,
+      });
+    });
+  });
+
+  describe('on the stage the signer approved', (): void => {
+    const NOT_SETTLED =
+      SIGNER_RECALL_ERROR_CODES.STAGE_NOT_SETTLED_BY_THIS_APPROVAL;
+
+    const readDecisionsOfTask = (
+      fixture: RecallFixture,
+      taskId: string,
+    ): Promise<readonly TaskDecisionEntity[]> =>
+      runInTransaction(
+        fixture,
+        (manager): Promise<readonly TaskDecisionEntity[]> =>
+          manager.getRepository(TaskDecisionEntity).find({ where: { taskId } }),
+      );
+
+    const readSeatsOfTask = (
+      fixture: RecallFixture,
+      taskId: string,
+    ): Promise<readonly TaskCandidateEntity[]> =>
+      runInTransaction(
+        fixture,
+        (manager): Promise<readonly TaskCandidateEntity[]> =>
+          manager
+            .getRepository(TaskCandidateEntity)
+            .find({ where: { taskId } }),
+      );
+
+    /** The engine put the delegate on the seat, with the rule step as the tail. */
+    const expectDelegateHoldsTheSeat = (
+      seats: readonly TaskCandidateEntity[],
+    ): void => {
+      expect(seats).toHaveLength(1);
+      expect(seats[0]).toMatchObject({
+        memberId: DELEGATE,
+        status: TaskCandidateStatusEnum.COMPLETED,
+      });
+      expect(seats[0]?.delegationChain.at(-1)).toMatchObject({
+        ruleId: 'delegation-rule-1',
+        to: DELEGATE,
+      });
+    };
+
+    it('refuses the principal when their delegate gave the approval', async (): Promise<void> => {
+      const fixture = await buildApprovalGivenByDelegateState();
+      const taskId = readTaskIdAt(fixture, 'task_finance');
+      const seats = await readSeatsOfTask(fixture, taskId);
+
+      expectDelegateHoldsTheSeat(seats);
+
+      await expect(
+        runPlanner(fixture, { memberId: SIGNER, taskId }),
+      ).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.NOT_THE_SIGNER,
+      });
+    });
+
+    it('refuses the delegate too, in a real run, since the seat they hold came by a delegation rule', async (): Promise<void> => {
+      const fixture = await buildApprovalGivenByDelegateState();
+      const taskId = readTaskIdAt(fixture, 'task_finance');
+      const seats = await readSeatsOfTask(fixture, taskId);
+
+      expectDelegateHoldsTheSeat(seats);
+
+      // Without the principal check the rule step would still stop it.
+      await expect(
+        runPlanner(fixture, { memberId: DELEGATE, taskId }),
+      ).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.DELEGATED_SEAT,
+      });
+    });
+
+    it('refuses the second of two required approvals, which only settles the stage together with the first', async (): Promise<void> => {
+      const fixture = await buildEveryoneMustApproveState();
+      const decisions = await readDecisionsOfTask(fixture, 'task-1');
+
+      expect(
+        decisions
+          .map(
+            ({ action, decidedByMemberId }): string =>
+              `${decidedByMemberId}:${action}`,
+          )
+          .sort(),
+      ).toEqual([
+        `member-colleague:${TaskDecisionActionEnum.APPROVED}`,
+        `${SIGNER}:${TaskDecisionActionEnum.APPROVED}`,
+      ]);
+      expect(readLatestTask(fixture, 'task-1')?.status).toBe(
+        TaskStatusEnum.COMPLETED,
+      );
+
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: NOT_SETTLED,
+      });
+    });
+
+    it('refuses the first of two sequential approvers, whose approval only passed the task on', async (): Promise<void> => {
+      const fixture = await buildSequentialFirstSeatApprovedState();
+
+      // The task is still open and the next seat was activated on record.
+      expect(readLatestTask(fixture, 'task-1')?.status).toBe(
+        TaskStatusEnum.PENDING,
+      );
+      expect(await readLoggedEventTypesOfTask(fixture, 'task-1')).toContain(
+        ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
+      );
+
+      // The one-approval rule cannot be what refuses: the signer's approval is the only decision
+      // on the task. R11 cannot be either: the signer's own seat is COMPLETED.
+      expect(
+        (await readDecisionsOfTask(fixture, 'task-1')).map(
+          ({ action, decidedByMemberId }): string =>
+            `${decidedByMemberId}:${action}`,
+        ),
+      ).toEqual([`${SIGNER}:${TaskDecisionActionEnum.APPROVED}`]);
+      expect(
+        (await readSeatsOfTask(fixture, 'task-1')).find(
+          ({ memberId }): boolean => memberId === SIGNER,
+        ),
+      ).toMatchObject({ status: TaskCandidateStatusEnum.COMPLETED });
+
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: NOT_SETTLED,
+      });
+    });
+
+    const lastSeatTransfers: ReadonlyArray<
+      readonly [string, () => Promise<RecallFixture>, string]
+    > = [
+      [
+        'refuses the last of three sequential approvers when the seat came by a transfer, since the first two approvals sit on the task it left',
+        (): Promise<RecallFixture> => buildSequentialLastSeatTransferredState(),
+        MANUAL_TRANSFER_DELEGATION_REASON,
+      ],
+      [
+        'refuses the same stage when the SLA timeout escalated the last seat, and says so as a stage that is not settled, not as a delegated seat',
+        (): Promise<RecallFixture> =>
+          buildSequentialLastSeatTransferredState({
+            transferReason: SLA_ESCALATION_DELEGATION_REASON,
+          }),
+        SLA_ESCALATION_DELEGATION_REASON,
+      ],
+    ];
+
+    it.each(lastSeatTransfers)(
+      '%s',
+      async (_name, buildState, tailReason): Promise<void> => {
+        const fixture = await buildState();
+        const taskId = readTransferredStageTaskId(fixture);
+        const earlierDecisions = await readDecisionsOfTask(fixture, 'task-1');
+        const [seat] = await readSeatsOfTask(fixture, taskId);
+
+        // The first two approvals and the transfer stay on the original task.
+        expect(taskId).not.toBe('task-1');
+        expect(readLatestTask(fixture, 'task-1')?.status).toBe(
+          TaskStatusEnum.TRANSFERRED,
+        );
+        expect(
+          earlierDecisions.map(({ action }): TaskDecisionActionEnum => action),
+        ).toEqual([
+          TaskDecisionActionEnum.APPROVED,
+          TaskDecisionActionEnum.APPROVED,
+          TaskDecisionActionEnum.TRANSFERRED,
+        ]);
+        // The signer's own task holds only the signer approval and a finished seat
+        // whose chain ends in the transfer.
+        expect(
+          (await readDecisionsOfTask(fixture, taskId)).map(
+            ({ action }): TaskDecisionActionEnum => action,
+          ),
+        ).toEqual([TaskDecisionActionEnum.APPROVED]);
+        expect(readLatestTask(fixture, taskId)?.status).toBe(
+          TaskStatusEnum.COMPLETED,
+        );
+        expect(seat).toMatchObject({
+          memberId: SIGNER,
+          status: TaskCandidateStatusEnum.COMPLETED,
+        });
+        expect(seat?.delegationChain.at(-1)).toMatchObject({
+          reason: tailReason,
+          to: SIGNER,
+        });
+
+        await expect(
+          runPlanner(fixture, { memberId: SIGNER, taskId }),
+        ).resolves.toEqual({ refusalCode: NOT_SETTLED });
+      },
+    );
+
+    it('refuses a single-approver stage whose seat came to the signer by an SLA escalation', async (): Promise<void> => {
+      const fixture = await buildSlaEscalatedToSignerState();
+      const taskId = readTransferredStageTaskId(fixture);
+      const [seat] = await readSeatsOfTask(fixture, taskId);
+
+      expect(taskId).not.toBe('task-1');
+      expect(seat?.delegationChain.at(-1)).toMatchObject({
+        reason: SLA_ESCALATION_DELEGATION_REASON,
+        ruleId: null,
+        to: SIGNER,
+      });
+
+      await expect(
+        runPlanner(fixture, { memberId: SIGNER, taskId }),
+      ).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.DELEGATED_SEAT,
       });
     });
   });

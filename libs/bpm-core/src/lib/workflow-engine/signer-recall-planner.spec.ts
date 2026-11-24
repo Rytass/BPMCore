@@ -6,6 +6,8 @@ import {
   type SignerRecallErrorCode,
 } from '@rytass/bpm-core-shared/status';
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
+import { DelegationScopeTypeEnum } from '../delegation/delegation.enums';
+import { SLA_ESCALATION_DELEGATION_REASON } from '../notification/notification.enums';
 import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
 import {
@@ -597,7 +599,7 @@ describe('signer recall planner', (): void => {
           withLaterLog({
             eventType: ActivityLogEventTypeEnum.SLA_TRIGGERED,
             nodeId: NEXT_NODE,
-            payload: { action: 'REMIND' },
+            payload: { onTimeout: 'REMIND', trigger: 'WARNING' },
             taskId: NEXT_TASK_ID,
           }),
         null,
@@ -609,6 +611,22 @@ describe('signer recall planner', (): void => {
             eventType: ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
             nodeId: 'task_earlier',
             payload: { action: 'ADHOC_WEBHOOK' },
+          }),
+        null,
+      ],
+      [
+        // The engine writes an ADHOC_NOTIFY record solely when the notice
+        // fails (workflow-engine.service.ts:4863-4876).
+        'the late failure record of an ad-hoc in-app notice an earlier stage sent',
+        (): PlannerSeed =>
+          withLaterLog({
+            eventType: ActivityLogEventTypeEnum.SERVICE_TASK_FAILED,
+            nodeId: 'task_earlier',
+            payload: {
+              action: 'ADHOC_NOTIFY',
+              directiveId: 'directive-notice',
+              error: 'Ad-hoc notification dispatch failed',
+            },
           }),
         null,
       ],
@@ -890,6 +908,245 @@ describe('signer recall planner', (): void => {
           ).resolves.toEqual({ refusalCode });
         },
       );
+    });
+  });
+
+  describe('the stage the signer approved, and the seat they held on it', (): void => {
+    const NOT_SETTLED =
+      SIGNER_RECALL_ERROR_CODES.STAGE_NOT_SETTLED_BY_THIS_APPROVAL;
+    const PRINCIPAL = 'member-principal';
+    const COLLEAGUE = 'member-a';
+
+    type Chain = TaskCandidateEntity['delegationChain'];
+    type ChainStep = Readonly<Record<string, unknown>>;
+
+    /** What `transferTask` and `transferGroupSeat` write by default. */
+    const transferStep = (from: string, to: string): ChainStep => ({
+      from,
+      reason: MANUAL_TRANSFER_DELEGATION_REASON,
+      ruleId: null,
+      to,
+    });
+
+    /** What the delegation service writes when a rule hands the seat over. */
+    const ruleStep = (from: string, to: string, ruleId: string): ChainStep => ({
+      from,
+      reason: DelegationScopeTypeEnum.ALL,
+      ruleId,
+      to,
+    });
+
+    /** The baseline with the signer's seat carrying `chain`, whatever its shape. */
+    const withSeatChain = (chain: unknown): PlannerSeed => {
+      const baseline = seedBaselineApprovedState();
+
+      return {
+        ...baseline,
+        candidates: baseline.candidates.map((candidate): TaskCandidateEntity =>
+          Object.assign(new TaskCandidateEntity(), candidate, {
+            delegationChain: chain as Chain,
+          }),
+        ),
+      };
+    };
+
+    it('refuses a stage that holds another member rejection next to the signer approval', async (): Promise<void> => {
+      const baseline = seedBaselineApprovedState();
+      const withOtherDecision = (
+        action: TaskDecisionActionEnum,
+      ): PlannerSeed => ({
+        ...baseline,
+        decisions: [
+          Object.assign(new TaskDecisionEntity(), {
+            action,
+            comment: null,
+            decidedAt: new Date(DECIDED_AT.getTime() - 60_000),
+            decidedByMemberId: 'member-other',
+            id: 'decision-0',
+            returnToNodeId: null,
+            signatureId: null,
+            taskId: STAGE_TASK_ID,
+            transferToMemberId: null,
+          }),
+          ...baseline.decisions,
+        ],
+      });
+
+      // The same data with that decision a TRANSFERRED one, which the one-approval rule lets
+      // through, is allowed. So nothing but the kind of the other decision
+      // separates the two: X is COMPLETED, the signer's seat is COMPLETED,
+      // D's record carries its decisionId, nothing else sits on M.
+      await expect(
+        plan(withOtherDecision(TaskDecisionActionEnum.TRANSFERRED)),
+      ).resolves.toMatchObject({ plan: { nextNodeId: NEXT_NODE } });
+      await expect(
+        plan(withOtherDecision(TaskDecisionActionEnum.REJECTED)),
+      ).resolves.toEqual({ refusalCode: NOT_SETTLED });
+    });
+
+    const withoutASeat: ReadonlyArray<readonly [string, () => PlannerSeed]> = [
+      [
+        'the task has a decision and no candidate row at all',
+        (): PlannerSeed => ({ ...seedBaselineApprovedState(), candidates: [] }),
+      ],
+      [
+        'the signer row on the task only says TRANSFERRED',
+        (): PlannerSeed => {
+          const baseline = seedBaselineApprovedState();
+
+          return {
+            ...baseline,
+            candidates: baseline.candidates.map(
+              (candidate): TaskCandidateEntity =>
+                Object.assign(new TaskCandidateEntity(), candidate, {
+                  status: TaskCandidateStatusEnum.TRANSFERRED,
+                }),
+            ),
+          };
+        },
+      ],
+    ];
+
+    it.each(withoutASeat)('%s', async (_name, buildSeed): Promise<void> => {
+      await expect(plan(buildSeed())).resolves.toEqual({
+        refusalCode: NOT_SETTLED,
+      });
+    });
+
+    const refusedSeats: ReadonlyArray<readonly [string, unknown]> = [
+      [
+        'a delegation rule handed the seat to the signer',
+        [ruleStep(PRINCIPAL, SIGNER, 'r1')],
+      ],
+      [
+        'a rule handed the seat on after a manual transfer, so the tail is the rule step',
+        [transferStep(PRINCIPAL, COLLEAGUE), ruleStep(COLLEAGUE, SIGNER, 'r2')],
+      ],
+      [
+        'the host passed its own transfer reason',
+        [
+          {
+            from: PRINCIPAL,
+            reason: 'HOST_CUSTOM',
+            ruleId: null,
+            to: SIGNER,
+          },
+        ],
+      ],
+      [
+        'the tail step has no reason at all',
+        [
+          transferStep(PRINCIPAL, COLLEAGUE),
+          { from: COLLEAGUE, ruleId: null, to: SIGNER },
+        ],
+      ],
+      [
+        'the tail step reason is an empty string',
+        [{ from: PRINCIPAL, reason: '', ruleId: null, to: SIGNER }],
+      ],
+      [
+        'a manual-transfer reason on a step that still names a rule',
+        [
+          {
+            from: PRINCIPAL,
+            reason: MANUAL_TRANSFER_DELEGATION_REASON,
+            ruleId: 'r1',
+            to: SIGNER,
+          },
+        ],
+      ],
+      [
+        'the tail step hands the seat to somebody other than the signer',
+        [transferStep(PRINCIPAL, COLLEAGUE)],
+      ],
+    ];
+
+    it.each(refusedSeats)('%s', async (_name, chain): Promise<void> => {
+      await expect(plan(withSeatChain(chain))).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.DELEGATED_SEAT,
+      });
+    });
+
+    const malformedTails: ReadonlyArray<readonly [string, unknown]> = [
+      ['the chain holds a null step', [null]],
+      ['the chain column is JSON null, not an array', null],
+      [
+        'the reason has spaces around the manual-transfer word',
+        [
+          {
+            from: PRINCIPAL,
+            reason: ` ${MANUAL_TRANSFER_DELEGATION_REASON} `,
+            ruleId: null,
+            to: SIGNER,
+          },
+        ],
+      ],
+      [
+        'the rule id is an empty string, not null',
+        [
+          {
+            from: PRINCIPAL,
+            reason: MANUAL_TRANSFER_DELEGATION_REASON,
+            ruleId: '',
+            to: SIGNER,
+          },
+        ],
+      ],
+    ];
+
+    it.each(malformedTails)(
+      '%s: answers with a code and never throws',
+      async (_name, chain): Promise<void> => {
+        await expect(plan(withSeatChain(chain))).resolves.toEqual({
+          refusalCode: SIGNER_RECALL_ERROR_CODES.DELEGATED_SEAT,
+        });
+      },
+    );
+
+    const allowedSeats: ReadonlyArray<readonly [string, unknown]> = [
+      [
+        'a rule handed the seat to a colleague, who transferred it to the signer',
+        [ruleStep(PRINCIPAL, COLLEAGUE, 'r1'), transferStep(COLLEAGUE, SIGNER)],
+      ],
+      [
+        'a transfer step with no ruleId key at all counts as no rule',
+        [
+          {
+            from: PRINCIPAL,
+            reason: MANUAL_TRANSFER_DELEGATION_REASON,
+            to: SIGNER,
+          },
+        ],
+      ],
+      [
+        'an SLA escalation earlier in the chain, then a manual transfer to the signer',
+        [
+          {
+            from: PRINCIPAL,
+            reason: SLA_ESCALATION_DELEGATION_REASON,
+            ruleId: null,
+            to: COLLEAGUE,
+          },
+          transferStep(COLLEAGUE, SIGNER),
+        ],
+      ],
+      [
+        'an administrator reassigned the seat to the signer',
+        [
+          {
+            from: PRINCIPAL,
+            reason: ADMIN_REASSIGN_DELEGATION_REASON,
+            ruleId: null,
+            to: SIGNER,
+          },
+        ],
+      ],
+    ];
+
+    it.each(allowedSeats)('%s', async (_name, chain): Promise<void> => {
+      await expect(plan(withSeatChain(chain))).resolves.toMatchObject({
+        plan: { nextNodeId: NEXT_NODE },
+      });
     });
   });
 });
