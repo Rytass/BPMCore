@@ -1,3 +1,21 @@
+## 0.25.0 (2026-11-24)
+
+### 🚀 Features
+
+- **workflow:** make skippable excludeNodeActors stages opt-in per host ([9bc4e81e](https://github.com/Rytass/BPMCore/commit/9bc4e81e))
+- **designer:** follow the host's excludeNodeActors signed-stage rule ([53431b76](https://github.com/Rytass/BPMCore/commit/53431b76))
+- **workflow:** let a host keep excludeNodeActors stages signer-only ([5d5e3f47](https://github.com/Rytass/BPMCore/commit/5d5e3f47))
+
+### 🩹 Fixes
+
+- **designer:** stop flagging a pass-through exclusive gateway as an unfinished condition split ([95bf2b75](https://github.com/Rytass/BPMCore/commit/95bf2b75))
+- **shared:** let a pass-through exclusive gateway skip the condition and default checks ([c00b0ad2](https://github.com/Rytass/BPMCore/commit/c00b0ad2))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+- Kai-Chieh Yang
+
 ## 0.24.1 (2026-11-18)
 
 This was a version bump only for bpm-core-client to align it with other projects, there were no code changes.
