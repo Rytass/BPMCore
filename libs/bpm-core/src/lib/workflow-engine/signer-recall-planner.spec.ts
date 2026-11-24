@@ -148,7 +148,15 @@ const createPlannerManager = (seed: PlannerSeed): EntityManager => {
   } as unknown as EntityManager;
 };
 
-const createWorkflow = (): WorkflowDefinition => {
+const SERVICE_NODE = 'webhook_erp';
+
+/**
+ * start -> M -> N -> end; with `withServiceTask`, a serviceTask sits between
+ * M and N (start -> M -> service -> N -> end).
+ */
+const createWorkflow = (
+  options: { readonly withServiceTask?: boolean } = {},
+): WorkflowDefinition => {
   const node = (id: string, type: string): unknown => ({
     data: { label: id },
     id,
@@ -163,15 +171,23 @@ const createWorkflow = (): WorkflowDefinition => {
   });
 
   return {
-    edges: [
-      edge('e1', 'start', STAGE_NODE),
-      edge('e2', STAGE_NODE, NEXT_NODE),
-      edge('e3', NEXT_NODE, 'end'),
-    ],
+    edges: options.withServiceTask
+      ? [
+          edge('e1', 'start', STAGE_NODE),
+          edge('e2a', STAGE_NODE, SERVICE_NODE),
+          edge('e2b', SERVICE_NODE, NEXT_NODE),
+          edge('e3', NEXT_NODE, 'end'),
+        ]
+      : [
+          edge('e1', 'start', STAGE_NODE),
+          edge('e2', STAGE_NODE, NEXT_NODE),
+          edge('e3', NEXT_NODE, 'end'),
+        ],
     meta: { schemaVersion: 1 },
     nodes: [
       node('start', 'startEvent'),
       node(STAGE_NODE, 'userTask'),
+      ...(options.withServiceTask ? [node(SERVICE_NODE, 'serviceTask')] : []),
       node(NEXT_NODE, 'userTask'),
       node('end', 'endEvent'),
     ],
@@ -306,6 +322,59 @@ const seedBaselineApprovedState = (): PlannerSeed => ({
   tokens: [createToken({ id: TOKEN_ID })],
 });
 
+/**
+ * The baseline, but the token walked through a serviceTask between M and N.
+ * What the engine writes there is only movement: a WEBHOOK result is written
+ * after the commit, so at the moment of a recall there is no execution record
+ * (with `skipped`, the node was skipped and never had one).
+ */
+const seedServiceTaskOnPathState = (options: {
+  readonly skipped: boolean;
+}): PlannerSeed => {
+  const baseline = seedBaselineApprovedState();
+  const movement = (
+    seq: number,
+    fromNodeId: string,
+    toNodeId: string,
+  ): ActivityLogEntity =>
+    createLog(seq, {
+      eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+      nodeId: toNodeId,
+      payload: { fromNodeId, toNodeId, tokenId: TOKEN_ID },
+    });
+
+  return {
+    ...baseline,
+    activityLogs: [
+      ...baseline.activityLogs.filter(
+        (log): boolean =>
+          log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+      ),
+      movement(11, STAGE_NODE, SERVICE_NODE),
+      ...(options.skipped
+        ? [
+            createLog(12, {
+              eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+              nodeId: SERVICE_NODE,
+              payload: { skippedByEntryCondition: true, tokenId: TOKEN_ID },
+            }),
+          ]
+        : []),
+      movement(13, SERVICE_NODE, NEXT_NODE),
+      createLog(14, {
+        eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+        nodeId: NEXT_NODE,
+        taskId: NEXT_TASK_ID,
+      }),
+    ],
+    instance: Object.assign(new ApprovalInstanceEntity(), {
+      id: INSTANCE_ID,
+      state: ApprovalInstanceStateEnum.RUNNING,
+      workflowSnapshot: createWorkflow({ withServiceTask: true }),
+    }),
+  };
+};
+
 describe('signer recall planner', (): void => {
   const plan = (
     seed: PlannerSeed,
@@ -426,5 +495,32 @@ describe('signer recall planner', (): void => {
     await expect(
       plan(seedBaselineApprovedState(), { taskId: 'task-missing' }),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  describe('a service task on the path between the two stages', (): void => {
+    const cases: ReadonlyArray<readonly [string, boolean]> = [
+      [
+        'the token passed a WEBHOOK node whose result is not written yet',
+        false,
+      ],
+      ['the token skipped a service node that left no execution record', true],
+    ];
+
+    it.each(cases)('%s', async (_name, skipped): Promise<void> => {
+      const seed = seedServiceTaskOnPathState({ skipped });
+
+      // Nothing but movement is on record after D, so R6 lets it through and
+      // only the node the token walked through can be what refuses.
+      expect(
+        seed.activityLogs.some(
+          (log) =>
+            log.eventType === ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+        ),
+      ).toBe(false);
+
+      await expect(plan(seed)).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.PASSED_SERVICE_TASK,
+      });
+    });
   });
 });

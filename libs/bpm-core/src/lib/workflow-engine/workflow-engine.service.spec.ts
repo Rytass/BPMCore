@@ -27074,6 +27074,8 @@ describe('signer recall', (): void => {
   const buildApprovedState = async (
     options: {
       readonly approval?: Parameters<WorkflowEngineService['decideTask']>[1];
+      /** Runs after the fixture is built and before the signer approves. */
+      readonly beforeApproval?: (fixture: RecallFixture) => Promise<unknown>;
       readonly rootOptions?: BPMRootRuntimeOptions | null;
       readonly task?: Partial<TaskEntity>;
       readonly taskCandidates?: readonly TaskCandidateEntity[];
@@ -27103,6 +27105,8 @@ describe('signer recall', (): void => {
           : (options.rootOptions ?? { signerRecallEnabled: true }),
       templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
     });
+
+    await options.beforeApproval?.(fixture);
 
     await fixture.service.decideTask(
       {
@@ -27248,6 +27252,404 @@ describe('signer recall', (): void => {
     return fixture;
   };
 
+  type WorkflowNodeDefinition = WorkflowDefinition['nodes'][number];
+
+  const createEdge = (
+    id: string,
+    source: string,
+    target: string,
+  ): WorkflowDefinition['edges'][number] => ({
+    data: {},
+    id,
+    source,
+    target,
+    type: 'smoothstep',
+  });
+
+  const readNotifyNode = (): WorkflowNodeDefinition => {
+    const node = createNotifyServiceTaskWorkflow().nodes.find(
+      ({ id }): boolean => id === 'notify_finance',
+    );
+
+    if (!node) {
+      throw new Error('notify_finance fixture node was not found');
+    }
+
+    return node;
+  };
+
+  /**
+   * start -> task_finance (M) -> task_next -> end, with a second branch
+   * leaving M as well: after M's approval the token forks.
+   */
+  const createForkAfterStageWorkflow = (
+    branch: WorkflowNodeDefinition,
+  ): WorkflowDefinition => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+
+    return {
+      edges: [
+        ...twoStage.edges,
+        createEdge('edge_stage_branch', 'task_finance', branch.id),
+        // A NOTIFY node is a branch that ends where it stands.
+        ...(branch.type === 'serviceTask'
+          ? []
+          : [createEdge('edge_branch_end', branch.id, 'end')]),
+      ],
+      meta: twoStage.meta,
+      nodes: [...twoStage.nodes, branch],
+    };
+  };
+
+  /**
+   * start forks into M (task_finance) and a sibling (task_b); both branches
+   * meet at the AND join task_final. With `viaNext`, M leads to task_next
+   * first and the join comes after it; without, M leads straight to the join.
+   */
+  const createParallelBranchesWorkflow = (
+    viaNext: boolean,
+  ): WorkflowDefinition => ({
+    edges: [
+      createEdge('edge_start_stage', 'start', 'task_finance'),
+      createEdge('edge_start_sibling', 'start', 'task_b'),
+      ...(viaNext
+        ? [
+            createEdge('edge_stage_next', 'task_finance', 'task_next'),
+            createEdge('edge_next_final', 'task_next', 'task_final'),
+          ]
+        : [createEdge('edge_stage_final', 'task_finance', 'task_final')]),
+      createEdge('edge_sibling_final', 'task_b', 'task_final'),
+      createEdge('edge_final_end', 'task_final', 'end'),
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      createUserTaskNode('task_finance', '財務簽核', SIGNER, 300, 80),
+      createUserTaskNode('task_b', 'B 簽核', 'member-b', 300, 240),
+      ...(viaNext
+        ? [createUserTaskNode('task_next', '下一關', NEXT_APPROVER, 520, 80)]
+        : []),
+      createUserTaskNode('task_final', '彙整簽核', 'member-final', 740, 160),
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 960, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  });
+
+  /**
+   * start -> split -> { NOTIFY branch, task_finance (M) }, then
+   * task_finance -> task_next -> end: M sits on a child token and no join is
+   * anywhere on its way.
+   */
+  const createNotifySplitBeforeStageWorkflow = (): WorkflowDefinition => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+
+    return {
+      edges: [
+        createEdge('edge_start_split', 'start', 'split'),
+        createEdge('edge_split_notify', 'split', 'notify_finance'),
+        createEdge('edge_split_stage', 'split', 'task_finance'),
+        ...twoStage.edges.filter(({ id }): boolean => id !== 'edge_start_task'),
+      ],
+      meta: twoStage.meta,
+      nodes: [
+        ...twoStage.nodes.filter(({ id }): boolean => id !== 'start'),
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: { direction: 'split', label: '分流' },
+          id: 'split',
+          position: { x: 160, y: 160 },
+          type: 'parallelGateway',
+        },
+        readNotifyNode(),
+      ],
+    };
+  };
+
+  /** start -> task_finance (M) -> set_approval_level (SET_FORM_FIELD) -> task_next -> end. */
+  const createSetFieldBetweenStagesWorkflow = (): WorkflowDefinition => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+    const setField = createSetFormFieldServiceTaskWorkflow().nodes.find(
+      ({ id }): boolean => id === 'set_approval_level',
+    );
+
+    if (!setField) {
+      throw new Error('set_approval_level fixture node was not found');
+    }
+
+    return {
+      edges: [
+        ...twoStage.edges.filter(({ id }): boolean => id !== 'edge_task_next'),
+        createEdge('edge_stage_setfield', 'task_finance', setField.id),
+        createEdge('edge_setfield_next', setField.id, 'task_next'),
+      ],
+      meta: twoStage.meta,
+      nodes: [...twoStage.nodes, setField],
+    };
+  };
+
+  /**
+   * The whole case is run from its start event, so M ends up on a child
+   * token the way it does in a real parallel template. Tasks get the engine's
+   * own ids; read them with `readTaskIdAt`.
+   */
+  const startFromBeginning = async (
+    workflow: WorkflowDefinition,
+  ): Promise<RecallFixture> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: workflow,
+      rootOptions: { signerRecallEnabled: true },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    return fixture;
+  };
+
+  const readTaskIdAt = (fixture: RecallFixture, nodeId: string): string =>
+    readTaskByNodeId(fixture.savedTasks, nodeId).id;
+
+  const approveAt = async (
+    fixture: RecallFixture,
+    nodeId: string,
+    memberId: string,
+  ): Promise<void> => {
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      decidedByMemberId: memberId,
+      taskId: readTaskIdAt(fixture, nodeId),
+    });
+  };
+
+  /** The tokens and tasks of the instance, read the way the planner reads them. */
+  const readTokensOnRecord = (
+    fixture: RecallFixture,
+  ): Promise<readonly WorkflowTokenEntity[]> =>
+    runInTransaction(
+      fixture,
+      (manager): Promise<readonly WorkflowTokenEntity[]> =>
+        manager
+          .getRepository(WorkflowTokenEntity)
+          .find({ where: { instanceId: 'instance-1' } }),
+    );
+
+  const readTasksOnRecord = (
+    fixture: RecallFixture,
+  ): Promise<readonly TaskEntity[]> =>
+    runInTransaction(fixture, (manager): Promise<readonly TaskEntity[]> =>
+      manager
+        .getRepository(TaskEntity)
+        .find({ where: { instanceId: 'instance-1' } }),
+    );
+
+  const isOpenToken = (token: WorkflowTokenEntity): boolean =>
+    token.status === WorkflowTokenStatusEnum.ACTIVE ||
+    token.status === WorkflowTokenStatusEnum.WAITING;
+
+  const isOpenTask = (task: TaskEntity): boolean =>
+    task.status === TaskStatusEnum.PENDING ||
+    task.status === TaskStatusEnum.IN_PROGRESS;
+
+  /** M approved; the token forked into the next stage and a second branch. */
+  const buildForkAfterStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      workflow: createForkAfterStageWorkflow(
+        createUserTaskNode(
+          'task_branch',
+          '平行關卡',
+          'member-branch',
+          520,
+          320,
+        ),
+      ),
+    });
+
+  /** M approved; the token forked into a NOTIFY branch and the next stage. */
+  const buildNotifySplitAfterStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      workflow: createForkAfterStageWorkflow(readNotifyNode()),
+    });
+
+  /**
+   * M and the next stage lie on one branch; the sibling branch is already
+   * waiting at the AND join with nothing open on it. The sibling decided
+   * first, so nothing but the signer's own approval is on record after D.
+   */
+  const buildSiblingWaitingAtJoinState = async (): Promise<RecallFixture> => {
+    const fixture = await startFromBeginning(
+      createParallelBranchesWorkflow(true),
+    );
+
+    await approveAt(fixture, 'task_b', 'member-b');
+    await approveAt(fixture, 'task_finance', SIGNER);
+
+    return fixture;
+  };
+
+  /** The same two branches, but the sibling has not decided yet: its task is open. */
+  const buildSiblingStillOpenState = async (): Promise<RecallFixture> => {
+    const fixture = await startFromBeginning(
+      createParallelBranchesWorkflow(true),
+    );
+
+    await approveAt(fixture, 'task_finance', SIGNER);
+
+    return fixture;
+  };
+
+  /** M is the last branch to reach the AND join; the case goes on to the join's own task. */
+  const buildLastBranchToJoinState = async (): Promise<RecallFixture> => {
+    const fixture = await startFromBeginning(
+      createParallelBranchesWorkflow(false),
+    );
+
+    await approveAt(fixture, 'task_b', 'member-b');
+    await approveAt(fixture, 'task_finance', SIGNER);
+
+    return fixture;
+  };
+
+  /** M sits on a child token of a split whose other branch is a NOTIFY node. */
+  const buildStageAfterNotifySplitState = async (): Promise<RecallFixture> => {
+    const fixture = await startFromBeginning(
+      createNotifySplitBeforeStageWorkflow(),
+    );
+
+    await approveAt(fixture, 'task_finance', SIGNER);
+
+    return fixture;
+  };
+
+  const allowAddSignerWorkflow = (): WorkflowDefinition =>
+    appendNextUserTask(createLinearUserTaskWorkflow({ allowAddSigner: true }));
+
+  /** The signer asked for a countersign before approving: N is created with it attached. */
+  const buildCountersignedNextStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: (fixture): Promise<AdhocDirectiveEntity> =>
+        fixture.service.requestAdhocCountersign({
+          requestedByMemberId: SIGNER,
+          target: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-observer'],
+          },
+          taskId: 'task-1',
+        }),
+      workflow: allowAddSignerWorkflow(),
+    });
+
+  /** The signer asked a pre-approver first; the pre-approver approved, then the signer did. */
+  const buildPreApprovedStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: async (fixture): Promise<void> => {
+        const adhocTask = await fixture.service.requestAdhocPreApproval({
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          requestedByMemberId: SIGNER,
+          target: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-preapprover'],
+          },
+          taskId: 'task-1',
+        });
+
+        await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-preapprover',
+          taskId: adhocTask.id,
+        });
+      },
+      workflow: allowAddSignerWorkflow(),
+    });
+
+  /**
+   * The pre-approver rejected while M's task was still open, so the decision
+   * went back to the signer, who then approved M's task on their own.
+   */
+  const buildPreApprovalReturnedToStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: async (fixture): Promise<void> => {
+        const adhocTask = await fixture.service.requestAdhocPreApproval({
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          requestedByMemberId: SIGNER,
+          target: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-preapprover'],
+          },
+          taskId: 'task-1',
+        });
+
+        await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.REJECTED,
+          comment: '不同意前加簽',
+          decidedByMemberId: 'member-preapprover',
+          taskId: adhocTask.id,
+        });
+      },
+      workflow: allowAddSignerWorkflow(),
+    });
+
+  /**
+   * M asks two colleagues and any one of them settles it. One colleague hands
+   * their seat to the signer (a group-seat transfer, no `transferReason`), and
+   * the signer approves.
+   */
+  const buildGroupSeatTransferredToSignerState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: (fixture): Promise<TaskDecisionEntity> =>
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.TRANSFERRED,
+          decidedByMemberId: 'member-colleague',
+          taskId: 'task-1',
+          transferToMemberId: SIGNER,
+        }),
+      task: {
+        assigneeMemberId: null,
+        assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        candidateMemberIds: ['member-colleague', 'member-observer'],
+        decisionPolicySnapshot: { type: 'PARALLEL_ANY' },
+        originalAssigneeMemberId: null,
+      },
+      taskCandidates: ['member-colleague', 'member-observer'].map(
+        (memberId): TaskCandidateEntity =>
+          createTaskCandidate({
+            id: `candidate-${memberId}`,
+            memberId,
+            taskId: 'task-1',
+          }),
+      ),
+      workflow: withNodeData(
+        appendNextUserTask(createLinearUserTaskWorkflow()),
+        'task_finance',
+        {
+          approverResolver: {
+            memberIds: ['member-colleague', 'member-observer'],
+            type: 'DIRECT',
+          },
+          decisionPolicy: { type: 'PARALLEL_ANY' },
+        },
+      ),
+    });
+
+  /** M approved and the token ran through a SET_FORM_FIELD node on its way to N. */
+  const buildSetFieldOnPathState = (): Promise<RecallFixture> =>
+    buildApprovedState({ workflow: createSetFieldBetweenStagesWorkflow() });
+
   /** The planner against the fixture's own transaction manager. */
   const runPlanner = (
     fixture: RecallFixture,
@@ -27308,6 +27710,77 @@ describe('signer recall', (): void => {
         cancelledTaskIds: [readNextTaskId(fixture)],
         nextNodeId: 'task_next',
       },
+    });
+  });
+
+  it('allows a stage on a child token of a NOTIFY split, whose webhook result arrived after the approval', async (): Promise<void> => {
+    const fixture = await buildStageAfterNotifySplitState();
+    const stageTaskId = readTaskIdAt(fixture, 'task_finance');
+    const tokens = await readTokensOnRecord(fixture);
+    const stageToken = tokens.find(
+      ({ id }): boolean => id === readLatestTask(fixture, stageTaskId)?.tokenId,
+    );
+
+    // A child token with no join on its way, and nothing else open.
+    expect(stageToken?.parentTokenId).not.toBeNull();
+    expect(tokens.filter(isOpenToken).map(({ id }): string => id)).toEqual([
+      stageToken?.id,
+    ]);
+
+    await appendLog(fixture, {
+      eventType: ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+      nodeId: 'notify_finance',
+      payload: { action: 'NOTIFY_WEBHOOK' },
+    });
+
+    await expect(
+      runPlanner(fixture, { memberId: SIGNER, taskId: stageTaskId }),
+    ).resolves.toMatchObject({
+      plan: { nextNodeId: 'task_next' },
+    });
+  });
+
+  it('allows an approval given on a seat a colleague handed over with a group-seat transfer', async (): Promise<void> => {
+    const fixture = await buildGroupSeatTransferredToSignerState();
+    const decisions = await runInTransaction(
+      fixture,
+      (manager): Promise<readonly TaskDecisionEntity[]> =>
+        manager
+          .getRepository(TaskDecisionEntity)
+          .find({ where: { taskId: 'task-1' } }),
+    );
+    const seat = (
+      await runInTransaction(
+        fixture,
+        (manager): Promise<readonly TaskCandidateEntity[]> =>
+          manager
+            .getRepository(TaskCandidateEntity)
+            .find({ where: { taskId: 'task-1' } }),
+      )
+    ).find(({ memberId }): boolean => memberId === SIGNER);
+
+    // The task carries the colleague's TRANSFERRED beside the signer's
+    // APPROVED, and the signer's seat chain ends in the manual transfer.
+    expect(
+      decisions.map(({ action, decidedByMemberId }): readonly string[] => [
+        action,
+        decidedByMemberId,
+      ]),
+    ).toEqual([
+      [TaskDecisionActionEnum.TRANSFERRED, 'member-colleague'],
+      [TaskDecisionActionEnum.APPROVED, SIGNER],
+    ]);
+    expect(seat?.status).toBe(TaskCandidateStatusEnum.COMPLETED);
+    expect(seat?.delegationChain.at(-1)).toMatchObject({
+      reason: 'MANUAL_TRANSFER',
+      ruleId: null,
+      to: SIGNER,
+    });
+
+    await expect(
+      runPlanner(fixture, { memberId: SIGNER }),
+    ).resolves.toMatchObject({
+      plan: { seat: { id: seat?.id }, nextNodeId: 'task_next' },
     });
   });
 
@@ -27388,6 +27861,216 @@ describe('signer recall', (): void => {
 
       await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
         refusalCode: SIGNER_RECALL_ERROR_CODES.INSTANCE_NOT_RUNNING,
+      });
+    });
+
+    describe('when the case no longer stands on one single next stage', (): void => {
+      const refusesAsNotSingle = async (
+        fixture: RecallFixture,
+        taskId = 'task-1',
+        memberId = SIGNER,
+      ): Promise<void> => {
+        await expect(
+          runPlanner(fixture, { memberId, taskId }),
+        ).resolves.toEqual({
+          refusalCode: SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_NOT_SINGLE,
+        });
+      };
+
+      it('refuses when the approval forked the token into two branches', async (): Promise<void> => {
+        const fixture = await buildForkAfterStageState();
+        const tokens = await readTokensOnRecord(fixture);
+
+        // The signer's own token is gone and two new ones are open.
+        expect(tokens.find(({ id }): boolean => id === 'token-1')?.status).toBe(
+          WorkflowTokenStatusEnum.CONSUMED,
+        );
+        expect(tokens.filter(isOpenToken)).toHaveLength(2);
+        expect(
+          (await readTasksOnRecord(fixture)).filter(isOpenTask),
+        ).toHaveLength(2);
+
+        await refusesAsNotSingle(fixture);
+      });
+
+      it('refuses when the approval forked the token into a NOTIFY branch and the next stage', async (): Promise<void> => {
+        const fixture = await buildNotifySplitAfterStageState();
+        const openTokens = (await readTokensOnRecord(fixture)).filter(
+          isOpenToken,
+        );
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        // The NOTIFY branch ended on its own; one token and one task remain,
+        // but they are the fork's children, not the signer's token.
+        expect(openTokens).toHaveLength(1);
+        expect(openTokens[0]?.id).not.toBe('token-1');
+        expect(openTasks).toHaveLength(1);
+        expect(openTasks[0]?.nodeId).toBe('task_next');
+
+        await refusesAsNotSingle(fixture);
+      });
+
+      it('refuses when the sibling branch waits at the join with nothing open on it (R7 alone)', async (): Promise<void> => {
+        const fixture = await buildSiblingWaitingAtJoinState();
+        const openTokens = (await readTokensOnRecord(fixture)).filter(
+          isOpenToken,
+        );
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        // Two tokens are open, but exactly one task is: only R7 can tell.
+        expect(
+          openTokens.map(({ currentNodeId }): string => currentNodeId).sort(),
+        ).toEqual(['task_final', 'task_next']);
+        expect(openTasks.map(({ nodeId }): string => nodeId)).toEqual([
+          'task_next',
+        ]);
+
+        await refusesAsNotSingle(
+          fixture,
+          readTaskIdAt(fixture, 'task_finance'),
+        );
+      });
+
+      it('refuses when the sibling branch still has an open task', async (): Promise<void> => {
+        const fixture = await buildSiblingStillOpenState();
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        expect(openTasks.map(({ nodeId }): string => nodeId).sort()).toEqual([
+          'task_b',
+          'task_next',
+        ]);
+
+        await refusesAsNotSingle(
+          fixture,
+          readTaskIdAt(fixture, 'task_finance'),
+        );
+      });
+
+      it('refuses when the signer countersign request put an ad-hoc task beside the next stage (R8 alone)', async (): Promise<void> => {
+        const fixture = await buildCountersignedNextStageState();
+        const openTokens = (await readTokensOnRecord(fixture)).filter(
+          isOpenToken,
+        );
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        // One token, standing on N; two open tasks on it, one of them ad-hoc.
+        expect(openTokens.map(({ id }) => id)).toEqual(['token-1']);
+        expect(openTasks.map(({ nodeId }) => nodeId)).toEqual([
+          'task_next',
+          'task_next',
+        ]);
+        expect(openTasks.filter(({ isAdhoc }) => isAdhoc)).toHaveLength(1);
+
+        await refusesAsNotSingle(fixture);
+      });
+    });
+
+    describe('when the stage itself or the way to the next stage cannot be taken back', (): void => {
+      it('refuses when the signer branch was the last to reach the join', async (): Promise<void> => {
+        const fixture = await buildLastBranchToJoinState();
+        const stageTaskId = readTaskIdAt(fixture, 'task_finance');
+        const tokens = await readTokensOnRecord(fixture);
+        const stageTask = (await readTasksOnRecord(fixture)).find(
+          ({ id }): boolean => id === stageTaskId,
+        );
+        const stageToken = tokens.find(
+          ({ id }): boolean => id === stageTask?.tokenId,
+        );
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        // Only R10 is left to refuse: one open token, the signer's, on a child
+        // token; one open task, the join's own.
+        expect(stageToken?.parentTokenId).not.toBeNull();
+        expect(tokens.filter(isOpenToken).map(({ id }): string => id)).toEqual([
+          stageToken?.id,
+        ]);
+        expect(openTasks.map(({ nodeId }): string => nodeId)).toEqual([
+          'task_final',
+        ]);
+
+        await expect(
+          runPlanner(fixture, { memberId: SIGNER, taskId: stageTaskId }),
+        ).resolves.toEqual({
+          refusalCode: SIGNER_RECALL_ERROR_CODES.PASSED_JOIN,
+        });
+      });
+
+      const refusesAsNotSettled = [
+        [
+          'refuses when a pre-approval the signer asked for was approved on the stage',
+          buildPreApprovedStageState,
+          TaskDecisionActionEnum.APPROVED,
+        ],
+        [
+          'refuses when a pre-approval was rejected back to the open task and the signer then approved it',
+          buildPreApprovalReturnedToStageState,
+          TaskDecisionActionEnum.REJECTED,
+        ],
+      ] as const;
+
+      it.each(refusesAsNotSettled)(
+        '%s',
+        async (_name, buildState, preApproverAction): Promise<void> => {
+          const fixture = await buildState();
+          const tasks = await readTasksOnRecord(fixture);
+          const adhocTasks = tasks.filter(({ isAdhoc }): boolean => isAdhoc);
+          const decisions = await runInTransaction(
+            fixture,
+            (manager): Promise<readonly TaskDecisionEntity[]> =>
+              manager.getRepository(TaskDecisionEntity).find({}),
+          );
+
+          // The ad-hoc task is on the stage; the one-approval rule, R4a, R4b and R11 all hold:
+          // the only approval among the main tasks is the signer's (D).
+          expect(adhocTasks).toHaveLength(1);
+          expect(adhocTasks[0]).toMatchObject({
+            nodeId: 'task_finance',
+            tokenId: 'token-1',
+          });
+          expect(
+            decisions
+              .filter(({ taskId }): boolean => taskId === adhocTasks[0]?.id)
+              .map(({ action }): TaskDecisionActionEnum => action),
+          ).toEqual([preApproverAction]);
+          expect(
+            decisions
+              .filter(({ taskId }): boolean => taskId === 'task-1')
+              .map(({ action, decidedByMemberId }): readonly string[] => [
+                action,
+                decidedByMemberId,
+              ]),
+          ).toEqual([[TaskDecisionActionEnum.APPROVED, SIGNER]]);
+
+          await expect(
+            runPlanner(fixture, { memberId: SIGNER }),
+          ).resolves.toEqual({
+            refusalCode:
+              SIGNER_RECALL_ERROR_CODES.STAGE_NOT_SETTLED_BY_THIS_APPROVAL,
+          });
+        },
+      );
+    });
+
+    it('I-SETFIELD: refuses a path that ran a SET_FORM_FIELD node, which already changed the form', async (): Promise<void> => {
+      const fixture = await buildSetFieldOnPathState();
+      const logs = await runInTransaction(fixture, (manager) =>
+        manager
+          .getRepository(ActivityLogEntity)
+          .find({ where: { instanceId: 'instance-1' } }),
+      );
+
+      expect(
+        logs.filter(
+          (log): boolean =>
+            log.eventType === ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED &&
+            log.payload['action'] === 'SET_FORM_FIELD',
+        ),
+      ).toHaveLength(1);
+
+      // R6 meets the execution record first (it is not an allowed record), so
+      // it names the refusal before R9 looks at the node the token walked.
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED,
       });
     });
 
@@ -27754,6 +28437,7 @@ function createServiceFixture({
   let savedToken: WorkflowTokenEntity | null = null;
   let tokenSequence = 1;
   let taskSequence = 1;
+  let decisionSequence = 0;
   let processTokens: readonly WorkflowTokenEntity[] =
     processWorkflowSnapshot && seedProcessToken !== false
       ? [
@@ -28451,7 +29135,9 @@ function createServiceFixture({
             comment: entity.comment ?? null,
             decidedAt: entity.decidedAt ?? new Date('2026-05-04T09:00:00.000Z'),
             decidedByMemberId: entity.decidedByMemberId ?? 'member-finance',
-            id: entity.id ?? 'decision-1',
+            // One id per decision, as the database gives: a record that names
+            // its decision (`decisionId`) must not fit two of them.
+            id: entity.id ?? `decision-${(decisionSequence += 1)}`,
             returnToNodeId: entity.returnToNodeId ?? null,
             signatureId: entity.signatureId ?? null,
             taskId: entity.taskId ?? 'task-1',
