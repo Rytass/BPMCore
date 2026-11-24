@@ -3094,7 +3094,10 @@ export class WorkflowEngineService {
    * a cancellation does, but lands in `EXPIRED` and is recorded with no actor:
    * nobody chose to end it. An instance that is already closed — another
    * overdue task of it got here first, or someone decided it meanwhile — is
-   * returned unchanged.
+   * returned unchanged, and so is one whose overdue task (`taskId`) is no
+   * longer open: the SLA scan lists its tasks before it acts on them, so the
+   * task may have been decided, or cancelled by a signer's recall, in between,
+   * and the instance it was holding up has moved on.
    */
   async expireApprovalInstance(
     input: ExpireApprovalInstanceCommand,
@@ -3118,6 +3121,23 @@ export class WorkflowEngineService {
         if (
           instance.state !== ApprovalInstanceStateEnum.RUNNING &&
           instance.state !== ApprovalInstanceStateEnum.RETURNED
+        ) {
+          return instance;
+        }
+
+        // Read under the instance lock that deciding and recalling also take,
+        // so a task closed by either is seen here. A task that cannot be found
+        // keeps the earlier behaviour and expires the instance.
+        const overdueTask = input.taskId
+          ? await manager
+              .getRepository(TaskEntity)
+              .findOne({ where: { id: input.taskId } })
+          : null;
+
+        if (
+          overdueTask &&
+          overdueTask.status !== TaskStatusEnum.PENDING &&
+          overdueTask.status !== TaskStatusEnum.IN_PROGRESS
         ) {
           return instance;
         }

@@ -22430,6 +22430,54 @@ describe('WorkflowEngineService', () => {
       ).toBe(false);
     });
 
+    it('leaves a running instance alone when its overdue task has closed meanwhile', async (): Promise<void> => {
+      // The SLA scan listed the task, then a signer's recall cancelled it
+      // before the scan got here; the instance is running on a new task.
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          id: 'task-1',
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.CANCELLED,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      const result = await fixture.service.expireApprovalInstance({
+        comment: 'SLA timeout terminated this instance.',
+        instanceId: 'instance-1',
+        nodeId: 'task_finance',
+        taskId: 'task-1',
+      });
+
+      expect(result.state).toBe(ApprovalInstanceStateEnum.RUNNING);
+      expect(readLogs(fixture)).toEqual([]);
+    });
+
+    it('expires the instance while its overdue task is still open', async (): Promise<void> => {
+      const fixture = createServiceFixture({
+        currentVersionId: 'template-version-1',
+        decisionTask: createTask({
+          id: 'task-1',
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+        }),
+        formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+        processWorkflowSnapshot: createLinearUserTaskWorkflow(),
+        templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+      });
+
+      const result = await fixture.service.expireApprovalInstance({
+        instanceId: 'instance-1',
+        nodeId: 'task_finance',
+        taskId: 'task-1',
+      });
+
+      expect(result.state).toBe(ApprovalInstanceStateEnum.EXPIRED);
+    });
+
     it('leaves an instance that is already closed alone', async (): Promise<void> => {
       const fixture = createServiceFixture({
         currentVersionId: 'template-version-1',
