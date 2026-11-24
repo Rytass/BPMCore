@@ -153,6 +153,13 @@ describe('FileUploadFieldControl', () => {
     return { values };
   }
 
+  it('labels the upload button in Chinese', () => {
+    renderControl(undefined, async () => ({ id: UPLOADED_ID }));
+
+    expect(container.textContent).toContain('上傳附件');
+    expect(container.textContent).not.toContain('Upload');
+  });
+
   it('keeps the uploaded attachment id after the upload resolves', async () => {
     const uploaded: string[] = [];
     const { values } = renderControl(undefined, async (file) => {
