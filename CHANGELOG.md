@@ -1,3 +1,14 @@
+## 0.25.4 (2026-11-24)
+
+### 🩹 Fixes
+
+- **notification:** skip SLA timeout work on a task that closed after the scan listed it ([#175](https://github.com/Rytass/BPMCore/issues/175))
+- **notification:** hold the SLA task claim while the task is processed ([418fbdbf](https://github.com/Rytass/BPMCore/commit/418fbdbf))
+
+### ❤️ Thank You
+
+- Chia Yu Pai @fantasywind
+
 ## 0.25.3 (2026-11-24)
 
 ### 🚀 Features
