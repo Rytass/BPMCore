@@ -1087,6 +1087,206 @@ task id 不變、不寫決策與簽章，也不受節點 `allowTransfer` 限制�
   - 群組任務只要有人投過票（包括不讓任務完成的那一票），`assigneeMemberId` 就會被設成投票的人，之後 SLA 自動同意代選到的就是
     這個已投過票的人，在驗證階段被拒。這是既有行為，失敗發生在包裝點之前，所以不會被記錄，也不會出現在清單上。
 
+### 5.6 取回重辦（簽核者取回）
+
+模組選項 `signerRecallEnabled` 開著時，簽核人最近一次的**人工核准**，如果讓自己那一關結束、token 單線走到下一個人工關卡，
+而且之後沒有任何人做任何決定、也沒有發生下方白名單以外的事，簽核人就可以取回。取回後，下一關的任務取消，
+取回者那一關重新開一張**只給取回者本人**的任務。選項預設 `false`（見 `docs/11-consumer-quickstart.md` §2f）。
+
+入口：mutation `recallTaskApproval(input: RecallTaskApprovalInput!)`（取回者一律是登入者，不從 input 讀）、
+query `recallableTaskId(instanceId)`（回目前可取回的任務 id 或 `null`，前端用它決定要不要顯示按鈕）、
+service 方法 `WorkflowEngineService.recallTaskApproval`／`readRecallableTaskId`。
+下面的「准不准」判斷在 `signer-recall-planner.ts`，是引擎內部的函式，不是公開 API。
+
+本節的記號：
+
+- `M`：取回者核准的那一關。`X`：取回者在 M 的任務。`D`：X 上那一筆核准決策。
+- `T`：承載這次核准的 token。`N`：T 現在停的節點（下一關）。
+- `s0`：D 的 `TASK_DECIDED` 活動紀錄的 `seq`，用 `payload.decisionId === D.id` 找。
+
+#### 5.6.1 准不准：檢查順序
+
+planner 依下表順序檢查，第一條不過就回它的碼；全部通過才回一份取回計畫（X、D、s0、T、N、要取消的任務 id、要照抄的候選人列）。
+拒絕時的碼都以 `SIGNER_RECALL_` 開頭（例如 `STAGE_NOT_SETTLED_BY_THIS_APPROVAL` 的完整值是
+`SIGNER_RECALL_STAGE_NOT_SETTLED_BY_THIS_APPROVAL`），常數是 shared 套件 `status` subpath 的 `SIGNER_RECALL_ERROR_CODES`。
+
+| 順序 | 檢查 | 不過時回的碼 | 為什麼 |
+| --- | --- | --- | --- |
+| 1 | R0：呼叫端傳入的 `enabled` 為真（service 建構時以 `signerRecallEnabled === true` 算出） | `DISABLED` | 預設關。開關共三道，見 §5.6.5 |
+| 2 | 單一核准：X 上的決策**恰有一筆 APPROVED（即 D），其餘全部是 TRANSFERRED** | `STAGE_NOT_SETTLED_BY_THIS_APPROVAL` | 群組席位轉簽會把轉出者的 `TRANSFERRED` 決策留在同一張任務上，它不是票，所以放行。「其餘全是 TRANSFERRED」擋的是 REJECTED／RETURNED 與 APPROVED 並存的任務；引擎產生不出這種狀態（非同意的決定會立刻結束本關），所以它只是縱深。沒有 D 就無法往下判，所以這條不能整條拿掉 |
+| 3 | R1：`D.decidedByMemberId` 是發出取回的人 | `NOT_THE_SIGNER` | 只有簽的那個人能取回。代理人代簽時 D 是代理人，本人取回會被這條擋 |
+| 4 | R12：X 沒有被取回過，也就是沒有 `eventType = TASK_RECALLED` 且 `taskId = X` 的紀錄 | `ALREADY_RECALLED` | 連按兩次時給正確的說法。`taskId = X` 不能省：取回、重簽、再取回時，案件上已有前一輪 X 的 `TASK_RECALLED`，新一輪的 X 是另一張任務 |
+| 5 | R2：找得到 s0，而且那筆紀錄沒有 `payload.automatic` | `NOT_A_PERSONAL_APPROVAL` | SLA 自動核准用系統代選的真人 id 寫決策，只能靠 `automatic` 分辨。找不到 s0（例如舊資料沒帶 `decisionId`）就無法證明是人工核准，所以擋 |
+| 6 | R3：案件狀態是 `RUNNING` | `INSTANCE_NOT_RUNNING` | 結案、取消、逾期、退回申請人都不准 |
+| 7 | R4a：`X.status === COMPLETED` | `STAGE_NOT_SETTLED_BY_THIS_APPROVAL` | 依序簽或會簽時，取回者核准後本關可能還沒結束 |
+| 8 | R4b：(T, M) 上所有非臨時任務（含 X，以及因轉簽而變 `TRANSFERRED` 的前身任務）的決策，除了 D 以外沒有任何 `APPROVED` | `STAGE_NOT_SETTLED_BY_THIS_APPROVAL` | 依序簽的最後一席被轉簽或 SLA 升級時，前幾票留在已 `TRANSFERRED` 的原任務上，而排除名單（`excludeNodeActors`）讀的是 (節點, token) 這一整批。只看 X 的話，取回後新 token 的一批只剩取回者，前幾位就從排除名單消失 |
+| 9 | R5：X 不是臨時任務，而且 (T, M) 上沒有任何臨時任務（不論狀態） | `STAGE_NOT_SETTLED_BY_THIS_APPROVAL` | 臨時任務有自己的放行閘門，取回只重建主任務。終態的臨時任務其實不會讓任何票被遺忘，仍擋是保守的做法 |
+| 10 | R11：X 上有取回者本人的候選人列：`memberId === D.decidedByMemberId` 而且 `status === COMPLETED` | `STAGE_NOT_SETTLED_BY_THIS_APPROVAL` | 重建座位要照抄這一列。正常情況核准時一定有；鍵用 `D.decidedByMemberId`，不用傳進來的 memberId，代理代簽時候選人列存的是代理人 |
+| 11 | R13：取回者那一列的**原始** `delegationChain` 是空的，或鏈尾是已知的手動轉移 | `DELEGATED_SEAT` | 放行名單與理由見 §5.6.3 |
+| 12 | R14：M 上沒有「這次核准時送出的」階段通知：同案件、`originNodeId = M`、`type = STAGE_NOTIFY`、`status = CONSUMED`、`consumedAt >= D.decidedAt` 的臨時指令不存在 | `STAGE_NOTIFY_SENT` | 見 §5.6.7 |
+| 13 | R6：案件上 `seq > s0` 的活動紀錄，全部落在白名單內（§5.6.2） | `NEXT_STAGE_ACTED` | 白名單外一律擋（fail closed）：上游以後新增的事件類型，自動算成「有人動過」 |
+| 14 | R7：整張單開著（`ACTIVE`／`WAITING`）的 token 只有 T；T 是 `WAITING`；N 不是 M；N 在案件快照裡找得到而且是 userTask | `NEXT_STAGE_NOT_SINGLE` | 也擋：M 在平行分支上而兄弟還開著、T 停在 AND 匯流等人、T 已因分流被 consume、T 走到結束 |
+| 15 | R8：整張單開著（`PENDING`／`IN_PROGRESS`）的任務只有一張：非臨時、`tokenId = T`、`nodeId = N` | `NEXT_STAGE_NOT_SINGLE` | 擋 N 正在臨時加簽：會簽在 N 建任務時就生出臨時任務，它的 `TASK_CREATED` 在白名單內，所以靠這條擋 |
+| 16 | R9：T 經過的節點（含 N，扣掉 M）沒有 serviceTask；在快照裡找不到的節點也當不准 | `PASSED_SERVICE_TASK` | WEBHOOK 已送出、撤不回，而且它的結果紀錄在 commit 之後才寫，不能靠紀錄判斷；`SET_FORM_FIELD` 改過表單，取回不還原。知會節點（`NOTIFY`）不會出現在 T 的路徑上：它不能接出線，只能是從某一關岔出去的側支，所以 M 後面接知會時 T 已因分流被 consume，由 R7 先擋。被跳過的服務任務其實沒有副作用，仍擋是保守的做法 |
+| 17 | R10：`T.parentTokenId === null`，或 T 經過的節點（含 N）都沒有兩條以上的入邊 | `PASSED_JOIN` | 子 token 走過匯流點時，兄弟已被 consume、不留紀錄；OR 匯流還會取消別條分支的任務，取回救不回來。同分支內的互斥匯合也會被擋 |
+
+**T 經過的節點**：`seq > s0`、`payload.tokenId === T` 的 `TOKEN_ADVANCED` 紀錄裡出現的 `nodeId`、`payload.fromNodeId`、`payload.toNodeId`，扣掉 M。
+
+**為什麼只看 `seq > s0` 是安全的**：activity log 的 `seq` 由資料庫在 insert 時配號，晚 commit 的列可能拿到較小的號，
+所以「`seq > 游標`」一般會漏資料。這裡不會因此放行：
+
+- 會改動 N 的入口都先拿同一把案件鎖（見 §10）。D 的交易持有這把鎖直到 commit，所以這些入口一定在 D commit 之後才 insert，配到的 `seq` 一定大於 s0。
+- 不拿案件鎖的寫入點有：`SLA_TRIGGERED`、NOTIFY 背景投遞的結果、管理員重送、commit 之後才寫的 WEBHOOK 服務任務結果與臨時 webhook 通知結果。
+  它們可能拿到小於 s0 的號而被漏看；但這些紀錄要嘛在白名單內，要嘛是 T 路上的 WEBHOOK 結果、由 R9 涵蓋。漏看它們不會讓結論從「擋」變成「准」。
+- 比較 `seq` 一律轉成 BigInt。
+
+**讀取方式**：planner 的讀取只用等值條件與 `In`，時間與 `seq` 的比較都在程式裡做。每一支查詢都帶 `instanceId`，或帶一個只屬於這張單的 id
+（任務、token、決策）；`nodeId`／`originNodeId` 是範本節點 id，同範本的每張單都一樣，不能單獨當條件。
+
+#### 5.6.2 R6 白名單
+
+`seq > s0` 的紀錄只有下列幾種可以出現。每一項都是「它發生了，也不代表有人對下一關做了決定」：
+
+| 紀錄 | 條件 | 為什麼安全 |
+| --- | --- | --- |
+| `TOKEN_ADVANCED`、`TOKEN_CREATED`、`TASK_CREATED` | 無 | 純移動紀錄；結構另由 R7～R10 判 |
+| `SLA_TRIGGERED` | 無 | 只是提醒。逾時動作若是自動核准或升級，會另寫 `TASK_DECIDED`；終止案件由 R3 擋 |
+| `ENGINE_PROCESS_REQUESTED` | 無 | 管理員重跑，不是決定 |
+| `ADVANCE_FAILED` | 無 | 那次決定已經回滾，這筆紀錄是唯一的痕跡，任務仍開著，沒有人做過決定。副作用：取回會取消 N 的任務，而卡住清單只列「失敗紀錄的任務還開著」的案件，所以那張單取回後會從卡住清單消失 |
+| `SERVICE_TASK_EXECUTED`、`SERVICE_TASK_FAILED` | `payload.action` 是 `ADHOC_WEBHOOK` 或 `ADHOC_NOTIFY`，不限節點 | 這兩種紀錄只來自階段通知或結案通知的投遞。階段通知只在決定、駁回、退回時發，結案通知只在結案時發；對應的決定本身會寫 `TASK_DECIDED`，結案由 R3 擋。所以較早關卡的通知晚到，不代表有人動過下一關。M 自己這次的階段通知由 R14 處理 |
+| `SERVICE_TASK_EXECUTED`、`SERVICE_TASK_FAILED`、`WEBHOOK_DELIVERY_RETRIED` | `payload.action === 'NOTIFY_WEBHOOK'`，不限節點 | NOTIFY 節點的投遞結果，背景投遞在重試結束後才寫；管理員重送寫 `WEBHOOK_DELIVERY_RETRIED`，所以這一列不看 actor。T 路上若有 NOTIFY 節點，R9 另外擋 |
+| `SERVICE_TASK_EXECUTED`、`SERVICE_TASK_FAILED` | `payload.action === 'WEBHOOK'`，而且 `nodeId` 不是 null、也不在 T 經過的節點裡 | M 之前的 WEBHOOK 服務任務，結果在 commit 之後才寫，對方回應慢時會晚於 s0 落地；它是較早的副作用，不是決定。T 路上的由 R9 擋。`nodeId` 是 null 的一律擋（fail closed） |
+| `ADHOC_DIRECTIVE_CANCELLED` | `actorMemberId` 是 null | 寫這筆、actor 為 null 的只有一處：N 建任務時會簽對象解析失敗。建立者自己取消的那一處一定帶 actor，所以能安全辨認 |
+| `ADHOC_DIRECTIVE_CANCELLED` | `actorMemberId` 是取回者本人，而且 `payload.directiveType === 'COMPLETION_NOTIFY'` | 核准之後取回者手上還可能 `PENDING` 的指令只剩結案通知（自己的會簽在 N 建任務時已被消耗，自己的階段通知在核准時已消耗）。取消它不牽涉 N |
+
+白名單外的典型例子，全部會被擋：
+
+- `TASK_DECIDED`：任何決定，含轉簽、SLA 自動核准與升級。
+- `TASK_CANDIDATE_ACTIVATED`、`TASK_REASSIGNED`（管理員改派）。
+- `ADHOC_DIRECTIVE_CREATED`：任何人在 s0 之後下的臨時指令，包括 N 的持有人只下通知指令。
+- 其他人（含 N 的持有人）取消指令的 `ADHOC_DIRECTIVE_CANCELLED`；取回者取消非結案通知的指令。
+- `TASK_RECALLED`、`INSTANCE_*`。
+- `SET_FORM_FIELD` 的 `SERVICE_TASK_EXECUTED`；T 路上 WEBHOOK 的結果。
+
+#### 5.6.3 R13 的放行名單與 fail closed
+
+取回者那一列的候選人鏈，**放行只有兩種**：
+
+1. 鏈是陣列而且長度為 0。
+2. 鏈是陣列，最後一個元素 L 是非 null、非陣列的物件，而且同時滿足：
+   - `L.reason` 是字串，而且嚴格等於 `MANUAL_TRANSFER`（整張轉簽與座位轉簽在 host 沒傳 `transferReason` 時用它）
+     或 `ADMIN_REASSIGN`（管理員改派）。不 trim，大小寫須完全相同。
+   - `L.ruleId` 是 null 或缺這個鍵。`ruleId: ''` 不算 null，擋。
+   - `L.to` 嚴格等於 `D.decidedByMemberId`（R1 通過後就是取回者）。
+
+其餘一律回 `DELEGATED_SEAT`，包括：鏈不是陣列；L 是 null、陣列或原始值；L 缺 `reason`，或 `reason` 是空字串、前後有空白、不是字串；
+`ruleId` 非空的代理規則步驟（它的 `reason` 是規則的 `scopeType`，本來就不在名單內）；`reason` 是 `SLA_ESCALATION`；
+host 經 `DecideTaskOptions.transferReason` 傳的**任何自訂 reason，包括空字串**。不新增碼。
+
+理由：
+
+- **只看鏈尾**：對齊引擎自己判斷「誰是代理對象」的寫法，只取鏈尾連續的規則步驟。三種轉移（整張轉簽、座位轉簽、管理員改派）
+  都把新步驟接在原鏈後面，所以「代理人把單人關卡轉簽給取回者」時鏈是 `[規則步驟, 轉簽步驟]`，鏈尾是轉簽，放行。
+- **讀原始鏈、不正規化**：正規化會把缺欄位的步驟整步丟掉，鏈尾缺 `reason` 時鏈會退成前一步甚至變空，反而放行，與 fail closed 相反。
+  取回後照抄鏈用的也是原始鏈。
+- **要查 `to`**：R11 只比列的 `memberId` 與 `status`，「單一核准」那條只看決策，沒有任何一條會看鏈尾的 `to`。引擎寫的列兩者一定相同，
+  但那只是寫入時的不變式，非引擎寫入的列可以不同。
+- **名單而不是黑名單**：host 可以用公開的 `transferReason` 傳任何字串，空字串也不會被 `??` 補成預設值，原樣寫進鏈尾。只放行兩個已知值才是 fail closed。
+  名單外的 reason 擋是保守預設，要不要放寬是產品決定。
+
+鏈中段的規則步驟與 SLA 升級步驟會被照抄到新任務（原樣抄原始鏈）。這裡有一個已知的延期風險：SLA 掃描看的是**任務層**的鏈有沒有升級步驟。
+
+- 單人任務或整張轉簽：X 的任務鏈等於候選人鏈，X 本來就不會再升級，照抄後新任務相同；但 `slaDueAt` 從取回當下重算，逾時動作因此往後延。
+- 群組座位：SLA 升級與座位轉簽一定接在候選人列上，但只有轉出者剛好是**任務層的持有人**（`assigneeMemberId`）時，才會同時接到任務鏈上；
+  群組任務開著時任務層沒有持有人，一旦有人投過票，持有人就會被設成投票的人。所以任務層沒有持有人時，X 的任務鏈仍是空的、X 還會升級；
+  照抄到新的單人任務後，新任務的鏈帶著 SLA 步驟，永遠不會再升級，比 X 更不會升級。轉出者就是任務層持有人時，X 的任務鏈本來就有這一步，與上一種情況相同。
+
+#### 5.6.4 取回後的狀態（鎖內、同一個交易）
+
+1. **開關關著**時，mutation 在查任務、拿鎖**之前**就丟 409 `SIGNER_RECALL_DISABLED`，所以開關關著時任務不存在也是 409，不是 404。
+   開關開著而找不到任務，回 404（`NotFoundException`）。
+2. 先讀任務取得 `instanceId`，拿 `pg_advisory_xact_lock(hashtext(instanceId))`，鎖後 planner 會把任務與案件重讀一次再判，所以判的是鎖後的狀態。不過就丟 `ConflictException`，body 是
+   `{ code, error: 'Conflict', message, statusCode: 409 }`；`message` 是英文，給 log 用，畫面文案請 client 依 `code` 自己對照。
+3. 把整張單開著的 token 設成 `CONSUMED`，開著的任務（只會有 N 的那一張）設成 `CANCELLED`，候選人跟著 `CANCELLED`。
+   planner 已保證整張單沒有別的開著狀態。
+4. 把這張單上尚未處理的待簽通知作廢：`resolution` 設成 `SUPERSEDED`、狀態設成 `READ`，不分管道，也不只限 N 的；
+   所以還卡在勿擾時段或每日彙整的待簽 email 不會再寄（寄送掃描只撿 `PENDING` 的列）。
+   可作廢的類型只有 `TASK_ASSIGNED`、`TASK_TRANSFERRED`；**N 的 SLA 預警與逾時通知不在其中**，卡在勿擾時段或彙整佇列的仍會寄出。
+5. 寫 `TASK_RECALLED`：`actorMemberId` 是取回者，`nodeId` 是 M，`taskId` 是 X，payload 是
+   `{ decisionId, recalledTaskId, cancelledNodeId, cancelledTaskIds, comment }`；`comment` 去頭尾空白後為空就存 `null`。只放 id 與意見，不放表單值。
+6. **開一個新 token**：`currentNodeId = M`、`status = WAITING`、`parentTokenId` 沿用 T 的。寫 `TOKEN_CREATED`，payload 帶 `tokenId`（新 token）、`recalledFromNodeId`（N）與 `recalledTaskId`。
+   原因是排除名單以 (節點, token) 分批。沿用舊 token 時，取回者重簽後的核准會跟 X 上的 D 落在同一批，D 在重簽之前就被算進 M 的核准；
+   例如取回後把新任務轉簽給同事、同事核准，N 若排除 M，取回者也會一起被排除。開新 token 之後，M 的最新一批只有新任務上的核准。
+7. **直接替取回者建任務**（不重跑解析）：`assigneeMemberId` 是取回者、`assignmentType = DIRECT_MEMBER`、`decisionPolicySnapshot = { type: 'SINGLE' }`、`isAdhoc = false`；
+   `originalAssigneeMemberId` 與 `delegationChain` 抄 X 上取回者那一列；`slaDueAt` 照節點的 SLA 設定從現在重算；`createdAt` 是本次的時間（「最新一批」以最大的 `createdAt` 判，
+   所以不能比 X 早）。候選人一列：`memberId`、`originalMemberId`、`delegationChain`、`sourceType` 抄取回者那一列，狀態 `PENDING`。
+   - 寫 `TASK_CREATED`（payload 多一個 `recalledTaskId`，`actorMemberId` 是取回者）。**必須寫**：主管鏈與其他「上一輪是建任務還是跳過」的判斷，都拿 `TASK_CREATED` 的 `seq` 比。
+   - 寫案件事件 `NODE_ACTIVATED { nodeId: M, taskIds: [新任務] }`，並對取回者發 `TASK_ASSIGNED` 通知。
+8. **不做**：`processRunningInstance`（M 不重新進關）、`spawnCountersignTasksForNode`、`dispatchAdhocStageNotifications`、`cancelPendingAdhocDirectives`（只剩結案通知指令，保留）、
+   host 的決策前檢查（instance guard）、簽章。也不包 `ADVANCE_FAILED` 的記錄：取回不解析簽核人，沒有「往下走失敗」可記。
+
+M 的節點在案件快照裡找不到 userTask 時，寫入側會丟 409（訊息是 `Workflow node … was not found`），**這個 409 不帶 `SIGNER_RECALL_` 碼**。
+planner 不檢查 M 的型別；這條走不到靠的是資料不變式：非臨時任務只建在 userTask 上（建任務的函式只在 userTask 分支呼叫；其餘建任務的路徑都沿用既有任務的 `nodeId`：轉簽、取回，以及臨時前加簽被駁回後重開原任務）。
+保留它只是型別守衛與 fail closed。
+
+X 維持 `COMPLETED`，D 與它的簽章原樣保留。歷程呈現「核准、取回、新任務」；簽核歷史列表仍會把 X 顯示成已核准。
+
+#### 5.6.5 刻意重疊的縱深
+
+下列檢查彼此重疊：**拿掉其中一道，准或擋的結論不變**（碼相同，或另一道會接手擋），這是刻意的縱深。差別只在回的碼或例外，下面逐條寫明。唯一的例外是最後的 R13 形狀檢查，它不是重疊：拿掉會讓不合形狀的資料丟例外。
+
+- **開關有三道**：query 一開頭就回 `null`、mutation 在查任務與拿鎖之前先擋、planner 的 R0。拿掉 planner 的 R0 時，只有直接呼叫 planner 的人會發現；
+  拿掉 query 的短路時，對存在且可讀的案件，planner 的 R0 仍回 `DISABLED`，query 照樣回 `null`；
+  但未知或不可讀的 `instanceId` 會從回 `null` 變成丟 404，因為 `readRecallableTaskId` 之後會先讀案件（`getApprovalInstance`）。
+  mutation 那一道另有可觀察的效果：開關關著時，不存在的任務 id 是 409 而不是 404。
+- **「單一核准」與 R4b**：「同一關有別人的核准」由兩處各自擋下，碼相同。「單一核准」擋 X 自己有兩筆 `APPROVED`；R4b 擋同一關其他任務上的核准。
+  把「單一核准」放寬成「改取取回者自己的那一筆」時，結論不變，因為 R4b 接手擋；只有這一個缺陷時，碼也相同（若同時有別的缺陷，中間的 R12、R2、R3 可能先回自己的碼）。
+- **R7 與 R8**：平行分流、兄弟分支還開著這類情形，兩條都會擋，碼相同；只有「兄弟已停在匯流點、沒有開著的任務」只有 R7 擋得到，
+  「N 正在臨時會簽」只有 R8 擋得到。
+- **R9 與 R6 的 WEBHOOK 條件**：T 路上的 WEBHOOK 結果，結果紀錄已經寫進來時由 R6 先擋（回 `NEXT_STAGE_ACTED`，R6 的順序在 R9 前面）；
+  結果還沒寫進來時（WEBHOOK 在 commit 之後才寫結果）只有 R9 擋（回 `PASSED_SERVICE_TASK`）。所以 R6 白名單裡「不在 T 經過的節點」這個條件拿掉時，
+  仍然是擋，只是碼不同。
+- **R13 的 `typeof L.reason === 'string'`**：與後面的嚴格相等重疊。之後本來就是跟兩個字串比，非字串不會相等，所以拿掉它行為完全相同。
+- **R1、R4b 與 R13**：代理人代簽、本人要取回時，R1 回 `NOT_THE_SIGNER`；拿掉 R1 仍是擋，因為座位的鏈尾是規則步驟，R13 接手，碼變成 `DELEGATED_SEAT`。
+  依序簽的最後一席被 SLA 升級給取回者時，R4b 回 `STAGE_NOT_SETTLED_BY_THIS_APPROVAL`；R4b 若改成只看 X，R13 接手（鏈尾是 SLA 步驟），碼同樣變成 `DELEGATED_SEAT`。
+- **R13 的形狀檢查**（鏈是陣列、鏈尾是非 null 的物件）不是重疊，它的作用是讓**不合形狀的資料回碼，而不是丟 `TypeError`**（上線會變成 500）；
+  拿掉它，這類資料不再回 `DELEGATED_SEAT`，而是丟例外。
+- **R4b、R5 的查詢**：兩條共用同一支關卡任務查詢，條件是 `instanceId`、`nodeId`、`tokenId` 三個等值。`tokenId` 本身就只屬於這張單，
+  所以另外加的 `instanceId` 是縱深，拿掉後行為不變；有意義的漏法是只用 `nodeId` 查，同範本別張單停在 M 的任務會被算進來。
+
+#### 5.6.6 為什麼直接建任務、不重跑解析
+
+| | A. 開新 token 後重跑 `processRunningInstance` | B. 直接替取回者建任務（採用） |
+| --- | --- | --- |
+| 誰拿到任務 | 重新解析：可能換人、可能整群候選人都回來 | 只有取回者 |
+| 進入條件 | 重算。取回者當初補填的欄位可能讓 M 這次被跳過，token 直接往下衝 | 不重算 |
+| 排除規則、主管鏈 | 重算，可能因此被跳過 | 不重算。M 之前的關卡沒變，算出來也會一樣 |
+| 失敗模式 | 解析失敗會丟錯，要包 `ADVANCE_FAILED` | 沒有解析，不會失敗 |
+| 後果 | 任一人簽即可的關卡，同事也拿得到 | 任一人簽即可的三人關卡，另外兩人的座位不會回來（他們本來就沒動作） |
+
+這是設計取捨，不是規則的字面要求：取回的語意是「讓我自己重辦」，所以只給取回者。
+
+#### 5.6.7 收不回的東西與階段通知（R14）
+
+- **表單欄位不還原**：引擎只記錄改了哪些欄位，不記舊值，案件的表單資料是直接覆寫。取回者重簽時會再過一次補填驗證，可以改值。選項快照同理。
+- **已寄出的 email、webhook 收不回**；host 的通知觀察者也不會被告知「作廢」，跟撤回案件相同。取回不另外通知 N 的人與申請人。
+- **host 要重讀任務**：取回只發 `NODE_ACTIVATED`（回到取回者那一關），不發 `INSTANCE_RETURNED`；N 被取消的任務沒有對應事件，
+  host 收到 `NODE_ACTIVATED` 時要重讀該案件的 tasks（見 `docs/10-bpm-embedding-auth.md`）。
+- **M 的階段通知已送出時不准取回（R14）**：核准的當下已對外送出「階段已通過」的通知，收不回，所以擋。站內通知成功時不寫歷程，
+  只能看臨時指令表裡 `STAGE_NOTIFY` 那一列的 `consumedAt`。時間條件不能省：退回後重簽時，前一輪消耗掉的階段通知仍是 `CONSUMED`，不能因此永遠擋。
+  查詢帶 `instanceId`：`originNodeId` 是範本節點 id，不帶的話同範本另一張單較晚送出的階段通知會誤擋本單。
+- **取回意見**：`comment` 選填，存在 `TASK_RECALLED` 的 payload。GraphQL 輸入最多 2000 字；直接呼叫 service 時沒有這個限制。
+
+#### 5.6.8 與「上一輪」判斷的互動
+
+- **M**：取回後最新一批是新任務，重簽前它沒有核准，「讀 M 的核准人」得到空集合。期間 token 停在 M，沒有後面的關卡會去讀。
+- **N**：被取消的任務，其 `TASK_CREATED` 留在紀錄裡。重簽後 N 再進關，會有更新的 `TASK_CREATED` 或跳過紀錄蓋過它。
+  若 N 沒再進關，讀排除名單的後段關卡也走不到：發布檢查要求被列的關卡在每條路徑上都在它前面。
+- **`excludeNodeActors`**：直接建任務不重查排除。M 之前的關卡、申請人、代送人都沒變。
+- **取回後新任務被轉簽**：轉簽給同事、同事核准後，M 的最新一批只有同事的核准；X 的 D 在舊 token 那一批，不會被算進去，N 若排除 M 就只排除同事。
+- **取回之後再退回或駁回**：新任務是一般任務；退回目標由流程定義靜態決定，不依賴新 token 的走過紀錄，所以可以照常退回上一關或駁回。
+- **次數不限**：取回、重新核准、再取回都可以；每一輪都會重新通知 N 的人。
+
 ---
 
 ## 6. SLA 與 Boundary Timer Event
@@ -1339,6 +1539,23 @@ async function checkInstanceCompletion(instanceId) {
 - 一個 instance 的處理用 **transaction 層級的 PostgreSQL advisory lock**：`SELECT pg_advisory_xact_lock(hashtext(instance_id))`，
   在進行變更的交易開頭取得，交易結束（commit 或 rollback）時自動釋放，不需要手動 release。
 - 同 instance 的多個事件序列化處理，避免 token 狀態混亂；決策、取消、逾期終止、ad-hoc 指令等變更入口都在交易內取得同一把鎖（`workflow-engine.service.ts` 中的 `pg_advisory_xact_lock` 呼叫）。
+- 取回重辦（§5.6）也在交易開頭取同一把鎖，鎖後重讀任務與案件再判。兩種先後：
+  - 取回先拿到鎖：下一關持有人之後的 `decideTask` 鎖後重讀，看到任務已 `CANCELLED`，回任務不是待處理。
+  - 下一關持有人先決定：取回在鎖後跑 planner，依那個決定的結果分兩種。決定讓案件離開 `RUNNING`（駁回、退回申請人、最後一關核准），
+    R3 先擋，回 `INSTANCE_NOT_RUNNING`；案件仍是 `RUNNING`（例如核准後往再下一關走），由 R6 擋下，回 `NEXT_STAGE_ACTED`。
+  - 同一人連按兩次：第二次鎖後看到 `TASK_RECALLED`，回 `ALREADY_RECALLED`（R12）。
+  - query `recallableTaskId` 不拿鎖，可能讀到舊狀態；按下去時 mutation 會在鎖內重判。
+- **SLA 掃描與取回的空窗**（既有的競態，取回沒有修它）：掃描用另一把鎖（`bpm-sla:<taskId>`），而且一開始就把所有候選任務撈成快照，
+  之後逐筆處理；迴圈只重讀案件，不重查任務狀態。取回若落在「撈出」與「處理」之間，那張已被取消的下一關任務仍會被處理：
+  - 逾時動作是 `AUTO_APPROVE`：`decideTask` 鎖後發現任務不是待處理而丟錯。這個錯不是 instance guard 的錯，掃描不接，`runSlaScan` 被拒，本輪後面的任務都不處理。
+  - 逾時動作是 `ESCALATE`：同樣丟任務不是待處理，外面沒有 try/catch，結果同上。
+  - 逾時動作是 `TERMINATE_INSTANCE`：先對已取消的任務發逾時通知、寫 `SLA_TRIGGERED`，再呼叫 `expireApprovalInstance`。它鎖內只檢查案件狀態，
+    不檢查那張任務還開不開著，所以**整張單變 `EXPIRED`，取回者剛拿到的新任務一起被終止**。
+  - 跟撤回案件的類比只對前兩種成立：撤回後案件是 `CANCELLED`，`expireApprovalInstance` 一看狀態就直接回傳；取回後案件仍是 `RUNNING`，
+    所以第三種是取回特有的放大。同樣的空窗對「下一關核准後單子往下走」本來就存在，屬於既有問題。
+- 取回與臨時指令入口也有既有的舊資料判斷：臨時指令入口拿到鎖之後，判斷任務狀態用的是鎖前讀到的資料。取回先拿到鎖時，
+  下一關持有人同時送出的臨時指令靠之後重讀的候選人列才擋下，錯誤訊息是已決定；舊式沒有候選人列的任務會直接漏過
+  （案件仍是 `RUNNING`，案件狀態那道擋不住）。撤回後案件是 `CANCELLED`，同樣的請求會被案件狀態擋下，所以取回讓這個空窗更容易被打到。
 - 跨 instance 可平行（多 worker）。
 - 本系統未使用 SERIALIZABLE 隔離等級。
 

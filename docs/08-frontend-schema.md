@@ -201,6 +201,11 @@ Task 相關欄位（`TaskRecord`／activity payload）：
   candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`；
   前四個欄位與 `TASK_CREATED` 的收件人欄位同義，這個事件是 SEQUENTIAL task「現在輪到這位」
   的訊號（細節見 `07-workflow-execution.md` §4.3）。
+- activity `TASK_RECALLED`（簽核者取回自己的核准，見 `07-workflow-execution.md` §5.6）：`actorMemberId` 是取回者、
+  `nodeId` 是取回者那一關、`taskId` 是被取回的那張任務；payload
+  `{ decisionId, recalledTaskId, cancelledNodeId, cancelledTaskIds, comment }`，`comment` 沒填時是 `null`，
+  不放表單值。取回者的新 token 與新任務在接著寫的 `TOKEN_CREATED`（payload 帶 `tokenId`、`recalledFromNodeId`、`recalledTaskId`）與
+  `TASK_CREATED`（payload 帶 `recalledTaskId`）上。事件型別在 client 端是字串，`ActivityLogRecord.eventType` 不是封閉聯集。
 
 `sla` 的期限以「數量 + 單位（日／小時）」輸入而非直接寫 ISO duration，因此
 designer 不會產生 `P1DT4H` 這種日與時混用的值——`BUSINESS_DAY` 只對「日」的部分
