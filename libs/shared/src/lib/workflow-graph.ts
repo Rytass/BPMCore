@@ -1592,9 +1592,10 @@ export function readApproverResolverIssue(
 
 /**
  * Why a user task may finish with nobody having approved it, which rules it
- * out as a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` source (a stage listed in
- * `excludeNodeActors` may have any of these: the engine reads a skip there as
- * "nobody signed", see {@link readExcludeNodeActorsIssues}):
+ * out as a `NODE_ACTOR` / `NODE_ACTOR_MANAGER` source and, by default, as a
+ * stage listed in `excludeNodeActors` (with `allowSkippableStages` a listed
+ * stage may have any of these: the engine reads a skip there as "nobody
+ * signed", see {@link readExcludeNodeActorsIssues}):
  *
  * - `entryCondition`: the node can be skipped outright;
  * - `skipNode`: `excludeInitiator.whenEmpty: 'SKIP_NODE'` skips it when
@@ -1608,9 +1609,9 @@ export function readApproverResolverIssue(
  *   whole stage when the start person already reaches its level.
  *
  * `[]` means the node always has a real signer once it has run. The designer's
- * `NODE_ACTOR` stage picker and `readNodeActorSourceIssues` read this list, so
- * they cannot disagree on which stages qualify. `excludeNodeActors` does not
- * read it.
+ * stage pickers, `readNodeActorSourceIssues` and `readExcludeNodeActorsIssues`
+ * (unless `allowSkippableStages`) read this list, so they cannot disagree on
+ * which stages qualify.
  */
 export type NodeActorSourceSkipReason =
   | 'autoApprove'
@@ -1741,7 +1742,7 @@ const EXCLUDE_NODE_ACTORS_SIGNED_STAGE_TEXTS: SourceStageTexts = {
  *
  * 1. a stage that may be skipped or pass without a signer
  *    ({@link readNodeActorSourceSkipReasons}): a source has to name a signer.
- *    `excludeNodeActors` does not apply this rule;
+ *    `excludeNodeActors` applies it too unless `allowSkippableStages`;
  * 2. coverage: for each group in `coverageGroups`, walking from the start
  *    without entering any stage of the group must not reach `nodeId`. A
  *    `NODE_ACTOR` source passes its whole list as one group ("one of them
@@ -1749,7 +1750,8 @@ const EXCLUDE_NODE_ACTORS_SIGNED_STAGE_TEXTS: SourceStageTexts = {
  * 3. every stage is upstream of `nodeId`.
  *
  * Rules 2 and 3 are {@link readSourceStagePositionIssues}, which is also what
- * `excludeNodeActors` ({@link readExcludeNodeActorsIssues}) calls on its own.
+ * `excludeNodeActors` ({@link readExcludeNodeActorsIssues}) calls on its own
+ * under `allowSkippableStages`.
  *
  * The caller has already checked that every id exists and is a `userTask`.
  */

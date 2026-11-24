@@ -347,7 +347,7 @@ position / org id 是否真實存在。
   兩者都沒設時與以前逐字相同，舊版解析器遇到 `continue` 段或新 kind 都回 `null`。
 - **可能被略過的關卡**（開關開啟，或起點是接續）不能有可由簽核人補填的欄位，也不能被選為 `NODE_ACTOR`／
   `NODE_ACTOR_MANAGER`／`startFrom: NODE_ACTOR` 的來源（新略過原因 `managerChainReached`，
-  設計器提示文字逐條列出）；`excludeNodeActors` 不受此限，可以列這種關卡。
+  設計器提示文字逐條列出）；`excludeNodeActors` 預設同樣不能列，host 開啟 `excludeNodeActorsAllowSkippableStages` 時才可以。
 - **AI 工具組**（`set_user_task_approver`）：沒帶的 `startFrom`／`startPositionLevel`／`skipWhenStartReached` 沿用節點原值；
   只有真的互斥時才不沿用——這次寫接續起點就不沿用略過旗標，這次寫 `skipWhenStartReached: true` 而節點原本是接續起點就不沿用
   起點（改回從發起人起算，摘要寫明）。`skipWhenStartReached` 傳 `false` 或 `null` 都等同清掉。

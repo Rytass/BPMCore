@@ -512,7 +512,7 @@ async function resolveApprovers(
   （這些情況下 S 這一輪沒跑，讀到的是上一輪的紀錄），但**放行** SLA 自動同意（不算進 T）與 `skipWhenStartReached`
   （讀略過紀錄）。可能被略過的關卡（設了 `skipWhenStartReached` 或起點是接續型）不能有可由簽核人補填的欄位，也不能當
   `NODE_ACTOR`／`NODE_ACTOR_MANAGER`／`startFrom: NODE_ACTOR` 的來源（略過原因
-  `managerChainReached`）；`excludeNodeActors` 不受此限，可以列這種關卡（§4.5：最近一次被略過就不排除任何人）。覆蓋與上游只在發布時檢查；引擎執行時只重做形狀、S 的型別與來源、S 不是接續型、S 的起點
+  `managerChainReached`）；`excludeNodeActors` 預設同樣不能列，host 開啟 `excludeNodeActorsAllowSkippableStages` 時才可以（§4.5：最近一次被略過就不排除任何人）。覆蓋與上游只在發布時檢查；引擎執行時只重做形狀、S 的型別與來源、S 不是接續型、S 的起點
   不是 `FORM_MEMBER`、本關職等高於 S，與不在知會節點，不合就 `ConflictException` 指名。
 - **代理人與轉簽對象的職等**：主管鏈解析完之後，代理與轉簽都不會再檢查職等，所以主管鏈節點多一條規則——
   **接手的人職等必須 `>=` 被他取代的那位成員**（不是固定門檻：鏈上本來就會有低於 `minPositionLevel`
