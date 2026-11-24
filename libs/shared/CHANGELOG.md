@@ -1,3 +1,16 @@
+## 0.25.3 (2026-11-24)
+
+### 🚀 Features
+
+- **bpm-core-react:** offer the signer a way to recall their approval ([c262e231](https://github.com/Rytass/BPMCore/commit/c262e231))
+- **workflow-engine:** expose signer recall over GraphQL and the client ([80646b19](https://github.com/Rytass/BPMCore/commit/80646b19))
+- **workflow-engine:** let a signer recall an approval the next stage has not acted on ([9503da37](https://github.com/Rytass/BPMCore/commit/9503da37))
+- **workflow-engine:** decide whether a signer may still recall an approval ([068a5b6f](https://github.com/Rytass/BPMCore/commit/068a5b6f))
+
+### ❤️ Thank You
+
+- Kai-Chieh Yang
+
 ## 0.25.2 (2026-11-24)
 
 This was a version bump only for shared to align it with other projects, there were no code changes.
