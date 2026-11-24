@@ -2365,7 +2365,8 @@ function readNotifyNewSourceIssue(recipients: ApproverResolver): string | null {
       recipients.type === 'FORM_ORG_UNIT_MANAGER' ||
       recipients.type === 'NODE_ACTOR_MANAGER') &&
     recipients.fallback?.type === 'DIRECT' &&
-    !recipients.fallback.memberId?.trim()
+    (typeof recipients.fallback.memberId !== 'string' ||
+      !recipients.fallback.memberId.trim())
   ) {
     return '知會節點需要指定改派固定人。';
   }
@@ -2375,7 +2376,8 @@ function readNotifyNewSourceIssue(recipients: ApproverResolver): string | null {
       recipients.type === 'FORM_ORG_UNIT_MANAGER' ||
       recipients.type === 'NODE_ACTOR_MANAGER') &&
     recipients.fallback?.type === 'POSITION' &&
-    !recipients.fallback.positionId?.trim()
+    (typeof recipients.fallback.positionId !== 'string' ||
+      !recipients.fallback.positionId.trim())
   ) {
     return '知會節點需要指定改派職位。';
   }

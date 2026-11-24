@@ -1596,6 +1596,31 @@ describe('readNotifyRecipientsIssue — sources shared with an approval node', (
       },
       '知會節點需要指定改派職位。',
     ],
+    [
+      'a FORM_MEMBER_MANAGER whose form field is not text',
+      { formPath: 123, levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+      '知會節點需要指定知會對象的表單欄位。',
+    ],
+    [
+      'a FORM_MEMBER_MANAGER whose fixed-person fallback is not text',
+      {
+        fallback: { memberId: 42, type: 'DIRECT' },
+        formPath: 'owner',
+        levelsUp: 1,
+        type: 'FORM_MEMBER_MANAGER',
+      },
+      '知會節點需要指定改派固定人。',
+    ],
+    [
+      'a NODE_ACTOR_MANAGER whose position fallback is not text',
+      {
+        fallback: { positionId: 7, type: 'POSITION' },
+        levelsUp: 1,
+        nodeIds: ['a'],
+        type: 'NODE_ACTOR_MANAGER',
+      },
+      '知會節點需要指定改派職位。',
+    ],
   ])('refuses %s', (_name, recipients, issue) => {
     expect(
       readNotifyRecipientsIssue(recipients as unknown as ApproverResolver),

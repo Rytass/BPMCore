@@ -1473,6 +1473,28 @@ describe('workflow definition validator: the form and earlier-signer approver so
       ]);
     });
 
+    // Parsed JSON or a direct API call can carry any value here; the lint
+    // has to answer with a message, not throw inside publish.
+    it.each([
+      ['FORM_MEMBER_MANAGER', FORM_MEMBER],
+      ['FORM_ORG_UNIT_MANAGER', FORM_ORG],
+    ])(
+      'reports a non-text form field or fallback on %s instead of throwing',
+      (_type, make): void => {
+        expect(lintRecipients(make({ formPath: 123 }))).toEqual([
+          `${PATH}.formPath is required`,
+        ]);
+        expect(
+          lintRecipients(make({ fallback: { memberId: 42, type: 'DIRECT' } })),
+        ).toEqual([`${PATH}.fallback.memberId is required`]);
+        expect(
+          lintRecipients(
+            make({ fallback: { positionId: { id: 'p' }, type: 'POSITION' } }),
+          ),
+        ).toEqual([`${PATH}.fallback.positionId is required`]);
+      },
+    );
+
     it.each([0, 1.5, Number.NaN, undefined])(
       'requires a whole levelsUp of at least 1 on FORM_MEMBER_MANAGER and NODE_ACTOR_MANAGER (%s)',
       (levelsUp): void => {

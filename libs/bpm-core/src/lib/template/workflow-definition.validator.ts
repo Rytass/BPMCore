@@ -849,6 +849,15 @@ function lintNotifyRecipients(
   return [];
 }
 
+/**
+ * `true` unless `value` is text with something other than whitespace. Reads
+ * parsed JSON, where a field typed as a string can hold any value, so a
+ * number or an object is reported as missing instead of throwing.
+ */
+function isBlankText(value: unknown): boolean {
+  return typeof value !== 'string' || value.trim() === '';
+}
+
 function lintNotifySharedSource(
   recipients: ApproverResolver,
   nodeId: string,
@@ -859,7 +868,7 @@ function lintNotifySharedSource(
   if (
     (recipients.type === 'FORM_MEMBER_MANAGER' ||
       recipients.type === 'FORM_ORG_UNIT_MANAGER') &&
-    !recipients.formPath?.trim()
+    isBlankText(recipients.formPath)
   ) {
     return [`${path}.formPath is required`];
   }
@@ -893,7 +902,7 @@ function lintNotifySharedSource(
       recipients.type === 'FORM_ORG_UNIT_MANAGER' ||
       recipients.type === 'NODE_ACTOR_MANAGER') &&
     recipients.fallback?.type === 'DIRECT' &&
-    !recipients.fallback.memberId?.trim()
+    isBlankText(recipients.fallback.memberId)
   ) {
     return [`${path}.fallback.memberId is required`];
   }
@@ -903,7 +912,7 @@ function lintNotifySharedSource(
       recipients.type === 'FORM_ORG_UNIT_MANAGER' ||
       recipients.type === 'NODE_ACTOR_MANAGER') &&
     recipients.fallback?.type === 'POSITION' &&
-    !recipients.fallback.positionId?.trim()
+    isBlankText(recipients.fallback.positionId)
   ) {
     return [`${path}.fallback.positionId is required`];
   }
