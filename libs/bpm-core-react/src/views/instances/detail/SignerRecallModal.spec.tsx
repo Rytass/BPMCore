@@ -18,6 +18,8 @@ jest.mock('@mezzanine-ui/react', () => {
   ): ReactElement => <div>{props.children as ReactNode}</div>;
   const Input = (props: Readonly<Record<string, unknown>>): ReactElement => (
     <input
+      // The real Input spreads `inputProps` onto its native <input> too.
+      {...(props.inputProps as Readonly<Record<string, unknown>> | undefined)}
       disabled={Boolean(props.disabled)}
       name={props.name as string}
       onChange={props.onChange as () => void}
@@ -168,6 +170,12 @@ describe('SignerRecallModal', () => {
     expect(container.textContent).toContain(
       '取回後，下一關的待簽任務會取消，這張單會回到你這一關重新簽核。已寄出的通知無法收回。',
     );
+  });
+
+  it('caps the reason at the length the server accepts', async (): Promise<void> => {
+    await render();
+
+    expect(commentInput().maxLength).toBe(2000);
   });
 
   it('sends the task id and the reason, then reports the recall', async (): Promise<void> => {

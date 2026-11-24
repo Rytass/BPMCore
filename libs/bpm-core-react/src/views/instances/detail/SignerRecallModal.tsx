@@ -195,6 +195,7 @@ export function SignerRecallModal({
             <Input
               {...(busy ? { disabled: true as const } : {})}
               fullWidth
+              inputProps={{ maxLength: SIGNER_RECALL_COMMENT_MAX_LENGTH }}
               name="signerRecallComment"
               onChange={(event: ChangeEvent<HTMLInputElement>): void => {
                 setComment(event.target.value);
@@ -208,6 +209,11 @@ export function SignerRecallModal({
     </Modal>
   );
 }
+
+// Mirrors `@MaxLength(2000)` on `RecallTaskApprovalInput.comment`; past it the
+// server answers a code-less 400 that this window can only show as a generic
+// failure.
+const SIGNER_RECALL_COMMENT_MAX_LENGTH = 2000;
 
 const BODY_STYLE = {
   display: 'grid',
