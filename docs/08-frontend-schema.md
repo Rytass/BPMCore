@@ -133,7 +133,8 @@ Client 端的 `ApprovalInstanceRecord.submittedByMemberId`（選填、可為 `nu
 實際簽核過 `nodeIds` 所列前面關卡的人（含代理關係的任何一端）不會是該節點的簽核人，也不能被轉簽
 或加簽到該節點。「誰算那一關的簽核者」與 `NODE_ACTOR` 來源同一套讀法，臨時加簽、會簽的同意者不會被排除（刻意設計）；來源關必須是每條路徑都會經過的關卡
 （發布時檢查，每個來源關各自都要通過），但可以是有進入條件、可跳過、會逾時自動核准的關卡：那一關最近一次被跳過、
-或沒有人實際核准時，它不排除任何人。省略時行為與過去完全相同；可與 `excludeInitiator` 同時開，兩組名單取聯集。
+或沒有人實際核准時，它不排除任何人（host 設 `excludeNodeActorsRequireSignedStages` 時改回只能選一定有人簽的關卡，
+設計器以同名 prop 跟隨）。省略時行為與過去完全相同；可與 `excludeInitiator` 同時開，兩組名單取聯集。
 runtime 規則、`whenEmpty` 的決定方式與發布檢查見 [07-workflow-execution.md](./07-workflow-execution.md) §4.5。
 
 Shared schema 保留完整欄位；目前 designer UI 實際可編輯的是：

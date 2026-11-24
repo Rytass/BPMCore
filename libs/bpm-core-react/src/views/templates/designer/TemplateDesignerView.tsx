@@ -153,6 +153,7 @@ import {
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import {
+  EXCLUDE_NODE_ACTORS_SIGNED_STAGE_HINT,
   EXCLUDE_NODE_ACTORS_STAGE_HINT,
   NODE_ACTOR_STAGE_HINT,
   ORG_MANAGER_CHAIN_STAGE_HINT,
@@ -848,6 +849,13 @@ export interface TemplateDesignerViewProps {
    * as not configured — a placeholder rather than a broken feature.
    */
   readonly aiAssistantAvailable?: boolean;
+  /**
+   * Pass the API host's `BPMRootModule` `excludeNodeActorsRequireSignedStages`
+   * value. Default `false`. `true` stops the 不可與前面關卡同一人 picker from
+   * offering a stage that can be skipped, and reports one already chosen,
+   * matching the publish check of a host that refuses such stages.
+   */
+  readonly excludeNodeActorsRequireSignedStages?: boolean;
 }
 
 /** Resolve a React SetStateAction against the current value (no `any`). */
@@ -860,6 +868,7 @@ function resolveSetStateAction<T>(action: SetStateAction<T>, current: T): T {
 export function TemplateDesignerView({
   aiAssistantAvailable = true,
   embedded = false,
+  excludeNodeActorsRequireSignedStages = false,
   formSchemaOverride,
   initialInitiatorPolicyCel,
   initialLaunchMode,
@@ -1407,11 +1416,15 @@ export function TemplateDesignerView({
     [workflowDefinition],
   );
   // Publish-only as well: every stage of 不可與前面關卡同一人 must sit upstream
-  // and be on every path to the node (it may be one that can be skipped).
+  // and be on every path to the node (it may be one that can be skipped,
+  // unless the host requires signed stages).
   const excludeNodeActorsPublishIssue = useMemo(
     (): string | null =>
-      readExcludeNodeActorsGraphIssues(workflowDefinition)[0] ?? null,
-    [workflowDefinition],
+      readExcludeNodeActorsGraphIssues(
+        workflowDefinition,
+        excludeNodeActorsRequireSignedStages,
+      )[0] ?? null,
+    [excludeNodeActorsRequireSignedStages, workflowDefinition],
   );
   // Publish-only too: a manager chain that continues an earlier one needs that
   // stage to be sound, and a higher 簽到職等 than it.
@@ -3280,6 +3293,7 @@ export function TemplateDesignerView({
           node.id,
           excludeNodeActors.nodeIds,
           excludeNodeActors.whenEmpty,
+          excludeNodeActorsRequireSignedStages,
         )
       : null;
     // A hand-authored or AI-authored template may carry a mixed duration such
@@ -4542,7 +4556,9 @@ export function TemplateDesignerView({
               hintText={
                 excludeNodeActorChoice.problems.length > 0
                   ? excludeNodeActorChoice.problems.join('；')
-                  : EXCLUDE_NODE_ACTORS_STAGE_HINT
+                  : excludeNodeActorsRequireSignedStages
+                    ? EXCLUDE_NODE_ACTORS_SIGNED_STAGE_HINT
+                    : EXCLUDE_NODE_ACTORS_STAGE_HINT
               }
               label="不能與以下關卡同一人"
               name="excludeNodeActorsNodeIds"
