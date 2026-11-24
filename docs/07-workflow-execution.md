@@ -1386,7 +1386,7 @@ async function handleOverdueTask(task) {
 
 **TERMINATE_INSTANCE 的結果**（未發佈，v0.16.2 之後）：`expireApprovalInstance` 收尾與取消相同（token、task、候選人、通知 supersede、
 ad-hoc 結案通知，標籤為「逾期終止」），案件終態為 `EXPIRED`，活動紀錄為 `INSTANCE_EXPIRED`（actor 為 null，帶逾期任務的 nodeId／taskId）。
-若案件已經結束（另一個逾期任務先到、或已被人決策），原樣返回，不再動作。
+若案件已經結束（另一個逾期任務先到、或已被人決策），或帶入的逾期任務已關閉（掃描撈出後被核准或取回，見 §10），原樣返回，不再動作。
 
 ### 6.3 SLA 預警（非逾時）
 
@@ -1545,14 +1545,14 @@ async function checkInstanceCompletion(instanceId) {
     R3 先擋，回 `INSTANCE_NOT_RUNNING`；案件仍是 `RUNNING`（例如核准後往再下一關走），由 R6 擋下，回 `NEXT_STAGE_ACTED`。
   - 同一人連按兩次：第二次鎖後看到 `TASK_RECALLED`，回 `ALREADY_RECALLED`（R12）。
   - query `recallableTaskId` 不拿鎖，可能讀到舊狀態；按下去時 mutation 會在鎖內重判。
-- **SLA 掃描與取回的空窗**（既有的競態，取回沒有修它）：掃描用另一把鎖（`bpm-sla:<taskId>`），而且一開始就把所有候選任務撈成快照，
-  之後逐筆處理；迴圈只重讀案件，不重查任務狀態。取回若落在「撈出」與「處理」之間，那張已被取消的下一關任務仍會被處理：
-  - 逾時動作是 `AUTO_APPROVE`：`decideTask` 鎖後發現任務不是待處理而丟錯。這個錯不是 instance guard 的錯，掃描不接，`runSlaScan` 被拒，本輪後面的任務都不處理。
-  - 逾時動作是 `ESCALATE`：同樣丟任務不是待處理，外面沒有 try/catch，結果同上。
-  - 逾時動作是 `TERMINATE_INSTANCE`：先對已取消的任務發逾時通知、寫 `SLA_TRIGGERED`，再呼叫 `expireApprovalInstance`。它鎖內只檢查案件狀態，
-    不檢查那張任務還開不開著，所以**整張單變 `EXPIRED`，取回者剛拿到的新任務一起被終止**。
-  - 跟撤回案件的類比只對前兩種成立：撤回後案件是 `CANCELLED`，`expireApprovalInstance` 一看狀態就直接回傳；取回後案件仍是 `RUNNING`，
-    所以第三種是取回特有的放大。同樣的空窗對「下一關核准後單子往下走」本來就存在，屬於既有問題。
+- **SLA 掃描與任務關閉的空窗**：掃描用另一把鎖（`bpm-sla:<taskId>`），一開始把候選任務一次撈出再逐筆處理，
+  撈出的任務可能在處理前已被核准、或被取回取消。處理方式：
+  - 發逾時／預警通知、寫 `SLA_TRIGGERED` 之前，先重讀任務；已不是 `PENDING`／`IN_PROGRESS` 就跳過，不發通知也不執行逾時動作。
+  - 重讀之後、引擎拿到案件鎖之前任務才關閉：`AUTO_APPROVE`／`ESCALATE` 會被引擎以「任務不是待處理」拒絕，
+    掃描再重讀一次，確認任務已關閉就記 warn 並繼續處理下一筆；任務仍開著的失敗照舊往外丟。
+  - `TERMINATE_INSTANCE`：`expireApprovalInstance` 在案件鎖內重讀帶入的 `taskId`，任務已關閉就原樣返回，案件不會變 `EXPIRED`。
+  - 仍存在的殘留：重讀與寫入之間任務才關閉時，可能多一筆逾時通知或 `SLA_TRIGGERED`，但不會執行逾時動作。
+  - 任務仍開著卻失敗（例如引擎找不到下一關的簽核人），仍會讓本輪掃描中斷、後面的任務留到下一輪；逐筆隔離失敗不在這次修正範圍。
 - 取回與臨時指令入口也有既有的舊資料判斷：臨時指令入口拿到鎖之後，判斷任務狀態用的是鎖前讀到的資料。取回先拿到鎖時，
   下一關持有人同時送出的臨時指令靠之後重讀的候選人列才擋下，錯誤訊息是已決定；舊式沒有候選人列的任務會直接漏過
   （案件仍是 `RUNNING`，案件狀態那道擋不住）。撤回後案件是 `CANCELLED`，同樣的請求會被案件狀態擋下，所以取回讓這個空窗更容易被打到。

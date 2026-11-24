@@ -948,10 +948,16 @@ export class NotificationService {
         }
 
         if (task.slaDueAt.getTime() <= now.getTime()) {
+          const openTask = await this.readOpenSlaTask(task.id);
+
+          if (!openTask) {
+            return currentResult;
+          }
+
           const created = await this.createSlaNotificationOnce({
             instance,
             node,
-            task,
+            task: openTask,
             type: NotificationTypeEnum.SLA_OVERDUE,
           });
 
@@ -959,10 +965,14 @@ export class NotificationService {
             await this.recordSlaActivity({
               instance,
               node,
-              task,
+              task: openTask,
               trigger: 'OVERDUE',
             });
-            await this.runSlaTimeoutHook({ instance, node, task });
+            await this.runSlaTimeoutHookUnlessTaskClosed({
+              instance,
+              node,
+              task: openTask,
+            });
           }
 
           return {
@@ -985,10 +995,16 @@ export class NotificationService {
           return currentResult;
         }
 
+        const openTask = await this.readOpenSlaTask(task.id);
+
+        if (!openTask) {
+          return currentResult;
+        }
+
         const created = await this.createSlaNotificationOnce({
           instance,
           node,
-          task,
+          task: openTask,
           type: NotificationTypeEnum.SLA_WARNING,
         });
 
@@ -996,7 +1012,7 @@ export class NotificationService {
           await this.recordSlaActivity({
             instance,
             node,
-            task,
+            task: openTask,
             trigger: 'WARNING',
           });
         }
@@ -1010,6 +1026,47 @@ export class NotificationService {
     );
 
     return results;
+  }
+
+  /**
+   * The task as it is now, or null once it is no longer waiting for a
+   * decision. `runSlaScan` lists its candidates once and then works through
+   * them one at a time, so by the time it reaches a task that task may have
+   * been decided, or cancelled by a signer's recall; it must then get no
+   * overdue or warning notice and no timeout action.
+   */
+  private async readOpenSlaTask(taskId: string): Promise<TaskEntity | null> {
+    const task = await this.taskRepository.findOne({ where: { id: taskId } });
+
+    return task &&
+      (task.status === TaskStatusEnum.PENDING ||
+        task.status === TaskStatusEnum.IN_PROGRESS)
+      ? task
+      : null;
+  }
+
+  /**
+   * Runs the timeout action, absorbing a failure only when the task closed
+   * after {@link readOpenSlaTask} last saw it open — the engine then refuses
+   * to approve or escalate a task that is no longer pending. A failure on a
+   * task that is still open propagates as before.
+   */
+  private async runSlaTimeoutHookUnlessTaskClosed(input: {
+    readonly instance: ApprovalInstanceEntity;
+    readonly node: UserTaskNode;
+    readonly task: TaskEntity;
+  }): Promise<void> {
+    try {
+      await this.runSlaTimeoutHook(input);
+    } catch (error: unknown) {
+      if (await this.readOpenSlaTask(input.task.id)) {
+        throw error;
+      }
+
+      this.logger.warn(
+        `SLA timeout action skipped for task ${input.task.id}: the task closed while the scan was running`,
+      );
+    }
   }
 
   private async tryClaimSlaTask(taskId: string): Promise<boolean> {

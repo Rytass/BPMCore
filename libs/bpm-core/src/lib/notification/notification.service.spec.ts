@@ -1544,6 +1544,8 @@ describe('NotificationService', () => {
       } as unknown as Repository<NotificationPreferenceEntity>,
       {
         find: (): Promise<readonly TaskEntity[]> => Promise.resolve([task]),
+        findOne: (options: FindOneById): Promise<TaskEntity | null> =>
+          Promise.resolve(findTaskById([task], options)),
       } as unknown as Repository<TaskEntity>,
       {
         find: (): Promise<readonly TaskCandidateEntity[]> =>
@@ -1843,6 +1845,84 @@ describe('NotificationService', () => {
       taskId: 'f4fae7b0-eab0-40de-8dfa-7dfbff746980',
     });
   });
+  describe('a task that closed after the scan listed it', (): void => {
+    const overdueAt = new Date('2026-05-10T09:01:00.000Z');
+    const instanceId = 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2';
+    const firstTaskId = 'f4fae7b0-eab0-40de-8dfa-7dfbff746980';
+    const secondTaskId = '0b7d2c1e-6a4f-4e3b-9c8d-2f1a3b4c5d6e';
+
+    const buildTask = (id: string, status: TaskStatusEnum): TaskEntity =>
+      Object.assign(new TaskEntity(), {
+        assigneeMemberId: 'member-a',
+        createdAt: new Date('2026-05-10T08:00:00.000Z'),
+        delegationChain: [],
+        id,
+        instanceId,
+        nodeId: 'task_review',
+        slaDueAt: new Date('2026-05-10T09:00:00.000Z'),
+        status,
+      });
+
+    // Decided, or cancelled by a signer's recall, between the scan listing its
+    // candidates and reaching this one.
+    it.each(['AUTO_APPROVE', 'ESCALATE', 'TERMINATE_INSTANCE'] as const)(
+      'sends no overdue notice and runs no %s',
+      async (onTimeout): Promise<void> => {
+        const fixture = createEscalationFixture({
+          delegationChain: [],
+          onTimeout,
+          readTask: (id): TaskEntity => buildTask(id, TaskStatusEnum.CANCELLED),
+          tasks: [buildTask(firstTaskId, TaskStatusEnum.PENDING)],
+        });
+
+        await expect(fixture.service.runSlaScan(overdueAt)).resolves.toEqual({
+          overdueCount: 0,
+          warningCount: 0,
+        });
+        expect(fixture.decideTask).not.toHaveBeenCalled();
+        expect(fixture.expireApprovalInstance).not.toHaveBeenCalled();
+      },
+    );
+
+    it('goes on to the next task when the engine refuses one that closed after the re-read', async (): Promise<void> => {
+      // The first task is still open when the scan reads it back, then closes
+      // before the engine's lock: the engine refuses it as no longer pending.
+      let firstTaskClosed = false;
+      const fixture = createEscalationFixture({
+        decideTaskImpl: jest
+          .fn((): Promise<Record<string, unknown>> => Promise.resolve({}))
+          .mockImplementationOnce((): Promise<Record<string, unknown>> => {
+            firstTaskClosed = true;
+
+            return Promise.reject(new ConflictException('Task is not pending'));
+          }),
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+        readTask: (id): TaskEntity =>
+          buildTask(
+            id,
+            id === firstTaskId && firstTaskClosed
+              ? TaskStatusEnum.COMPLETED
+              : TaskStatusEnum.PENDING,
+          ),
+        tasks: [
+          buildTask(firstTaskId, TaskStatusEnum.PENDING),
+          buildTask(secondTaskId, TaskStatusEnum.PENDING),
+        ],
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).resolves.toEqual({
+        overdueCount: 2,
+        warningCount: 0,
+      });
+      expect(fixture.decideTask).toHaveBeenCalledTimes(2);
+      expect(fixture.decideTask).toHaveBeenLastCalledWith(
+        expect.objectContaining({ taskId: secondTaskId }),
+        { automatic: 'SLA_AUTO_APPROVE' },
+      );
+    });
+  });
+
   describe('SLA auto-approve refused by the instance guard', (): void => {
     const overdueAt = new Date('2026-05-10T09:01:00.000Z');
     const instanceId = 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2';
@@ -2031,6 +2111,8 @@ function createSlaScanService(task: TaskEntity): NotificationService {
     } as unknown as Repository<NotificationPreferenceEntity>,
     {
       find: (): Promise<readonly TaskEntity[]> => Promise.resolve([task]),
+      findOne: (options: FindOneById): Promise<TaskEntity | null> =>
+        Promise.resolve(findTaskById([task], options)),
     } as unknown as Repository<TaskEntity>,
     createRepository<TaskCandidateEntity>(),
     {
@@ -2052,11 +2134,17 @@ function createEscalationFixture({
   decideTaskImpl = (): Promise<Record<string, unknown>> => Promise.resolve({}),
   delegationChain,
   onTimeout = 'ESCALATE',
+  readTask,
   tasks,
 }: {
   readonly decideTaskImpl?: () => Promise<Record<string, unknown>>;
   readonly delegationChain: readonly Readonly<Record<string, unknown>>[];
   readonly onTimeout?: SlaConfig['onTimeout'];
+  /**
+   * What reading one task back answers, when it differs from the list the
+   * scan started with (a task closed while the scan was running).
+   */
+  readonly readTask?: (taskId: string) => TaskEntity | null;
   readonly tasks?: readonly TaskEntity[];
 }): {
   readonly cancelApprovalInstance: jest.Mock;
@@ -2100,6 +2188,12 @@ function createEscalationFixture({
     {
       find: (): Promise<readonly TaskEntity[]> =>
         Promise.resolve(tasks ?? [task]),
+      findOne: (options: FindOneById): Promise<TaskEntity | null> =>
+        Promise.resolve(
+          readTask
+            ? readTask(options.where.id)
+            : findTaskById(tasks ?? [task], options),
+        ),
     } as unknown as Repository<TaskEntity>,
     createRepository<TaskCandidateEntity>(),
     {
@@ -2223,6 +2317,8 @@ function createReassignmentFixture({
     } as unknown as Repository<NotificationPreferenceEntity>,
     {
       find: (): Promise<readonly TaskEntity[]> => Promise.resolve([task]),
+      findOne: (options: FindOneById): Promise<TaskEntity | null> =>
+        Promise.resolve(findTaskById([task], options)),
     } as unknown as Repository<TaskEntity>,
     {
       find: (): Promise<readonly TaskCandidateEntity[]> =>
@@ -2269,6 +2365,18 @@ function createReassignmentFixture({
     },
     service,
   };
+}
+
+interface FindOneById {
+  readonly where: { readonly id: string };
+}
+
+/** What `findOne({ where: { id } })` answers over the fixture's task rows. */
+function findTaskById(
+  tasks: readonly TaskEntity[],
+  options: FindOneById,
+): TaskEntity | null {
+  return tasks.find((task): boolean => task.id === options.where.id) ?? null;
 }
 
 function sortByCreatedAt(
