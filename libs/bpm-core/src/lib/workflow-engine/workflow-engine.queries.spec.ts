@@ -1,6 +1,7 @@
 import { ModuleRef } from '@nestjs/core';
 import { UnknownElementException } from '@nestjs/core/errors/exceptions/unknown-element.exception.js';
 import { MemberMetadata } from '@rytass/bpm-core-shared';
+import { BPMAuthContext } from '../bpm-auth';
 import { IdentityService } from '../identity/identity.service';
 import { WorkflowEngineQueries } from './workflow-engine.queries';
 import { StuckApprovalInstanceKindEnum } from './workflow-engine.enums';
@@ -152,5 +153,46 @@ describe('WorkflowEngineQueries.stuckApprovalInstances', () => {
     );
 
     await expect(queries.stuckApprovalInstanceCount()).resolves.toBe(7);
+  });
+});
+
+describe('WorkflowEngineQueries.recallableTaskId', () => {
+  // G2: the answer is about the signed-in member, and the same read scope
+  // the other instance queries use.
+  it('asks the engine about the signed-in member', async (): Promise<void> => {
+    const readRecallableTaskId = jest.fn(
+      (): Promise<string | null> => Promise.resolve('task-1'),
+    );
+    const queries = new WorkflowEngineQueries(
+      { readRecallableTaskId } as unknown as WorkflowEngineService,
+      {} as unknown as ModuleRef,
+    );
+    const authContext = { memberId: 'member-current' } as BPMAuthContext;
+
+    await expect(
+      queries.recallableTaskId('instance-1', 'member-current', authContext),
+    ).resolves.toBe('task-1');
+    expect(readRecallableTaskId).toHaveBeenCalledWith(
+      'instance-1',
+      'member-current',
+      authContext,
+    );
+  });
+
+  it('answers null when the engine finds nothing to take back', async (): Promise<void> => {
+    const queries = new WorkflowEngineQueries(
+      {
+        readRecallableTaskId: jest.fn(
+          (): Promise<string | null> => Promise.resolve(null),
+        ),
+      } as unknown as WorkflowEngineService,
+      {} as unknown as ModuleRef,
+    );
+
+    await expect(
+      queries.recallableTaskId('instance-1', 'member-current', {
+        memberId: 'member-current',
+      } as BPMAuthContext),
+    ).resolves.toBeNull();
   });
 });

@@ -83,6 +83,7 @@ jest.mock('@rytass/bpm-core-client/workflow', () => ({
   listWorkflowWebhookDeliveries: jest.fn(),
   readApprovalInstance: jest.fn(),
   readInstanceSignatures: jest.fn(),
+  readRecallableTaskId: jest.fn(),
   resubmitApprovalInstance: jest.fn(),
 }));
 
@@ -126,6 +127,7 @@ describe('InstanceDetailView resubmission comment', () => {
     api.listAdhocDirectives.mockResolvedValue([]);
     api.listAttachments.mockResolvedValue([]);
     api.listWorkflowWebhookDeliveries.mockResolvedValue([]);
+    api.readRecallableTaskId.mockResolvedValue(null);
     api.readInstanceSignatures.mockResolvedValue({
       signatures: [],
       verification: null,

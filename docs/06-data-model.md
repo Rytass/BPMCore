@@ -446,7 +446,7 @@ ad-hoc 指令（`task_adhoc_directives`）的結構見 `docs/13` §8.1。
 ```
 id                          uuid PK
 instance_id                 uuid FK → approval_instances.id
-event_type                  text          -- 例：INSTANCE_STARTED / TOKEN_ADVANCED / TASK_CREATED / TASK_DECIDED / TASK_CANDIDATE_ACTIVATED / SLA_TRIGGERED / INSTANCE_EXPIRED（未發佈，v0.16.2 之後）/ ...
+event_type                  text          -- 例：INSTANCE_STARTED / TOKEN_ADVANCED / TASK_CREATED / TASK_DECIDED / TASK_CANDIDATE_ACTIVATED / TASK_RECALLED / SLA_TRIGGERED / INSTANCE_EXPIRED（未發佈，v0.16.2 之後）/ ...
 actor_member_id             text (nullable)  -- null = 系統事件（如 SLA 逾時、逾期終止）
 node_id                     text (nullable)
 task_id                     uuid (nullable)

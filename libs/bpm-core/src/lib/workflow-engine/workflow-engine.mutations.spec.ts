@@ -3,6 +3,7 @@ import { BPMAuthContext, listBPMResolverHandlers } from '../bpm-auth';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import { AdminCancelApprovalInstanceInput } from './dto/admin-cancel-approval-instance.input';
 import { DecideTaskInput } from './dto/decide-task.input';
+import { RecallTaskApprovalInput } from './dto/recall-task-approval.input';
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
 import { TaskDecisionActionEnum } from './workflow-engine.enums';
@@ -389,5 +390,55 @@ describe('WorkflowEngineMutations task reassignment', () => {
     expect(access('WorkflowEngineQueries', 'stuckApprovalInstances')).toBe(
       'admin',
     );
+  });
+});
+
+describe('WorkflowEngineMutations recallTaskApproval', () => {
+  const TASK_ID = '6f1c2a3e-4b5d-4e6f-8a9b-0c1d2e3f4a5b';
+
+  // G1: the one taking an approval back is whoever is signed in.
+  it('recalls as the signed-in member whatever the input carries', async (): Promise<void> => {
+    const recallTaskApproval = jest.fn((): Promise<object> =>
+      Promise.resolve({}),
+    );
+    const mutations = new WorkflowEngineMutations({
+      recallTaskApproval,
+    } as unknown as WorkflowEngineService);
+
+    await mutations.recallTaskApproval(
+      {
+        comment: '寫錯金額',
+        // Not on the input type: a loosely configured pipe can still pass it.
+        recalledByMemberId: 'member-forged',
+        taskId: TASK_ID,
+      } as RecallTaskApprovalInput,
+      'member-current',
+    );
+
+    expect(recallTaskApproval).toHaveBeenCalledTimes(1);
+    expect(recallTaskApproval).toHaveBeenCalledWith({
+      comment: '寫錯金額',
+      recalledByMemberId: 'member-current',
+      taskId: TASK_ID,
+    });
+  });
+
+  it('sends no comment when the input has none', async (): Promise<void> => {
+    const recallTaskApproval = jest.fn((): Promise<object> =>
+      Promise.resolve({}),
+    );
+    const mutations = new WorkflowEngineMutations({
+      recallTaskApproval,
+    } as unknown as WorkflowEngineService);
+
+    await mutations.recallTaskApproval(
+      { comment: null, taskId: TASK_ID },
+      'member-current',
+    );
+
+    expect(recallTaskApproval).toHaveBeenCalledWith({
+      recalledByMemberId: 'member-current',
+      taskId: TASK_ID,
+    });
   });
 });

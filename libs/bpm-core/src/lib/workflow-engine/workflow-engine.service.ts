@@ -10,6 +10,8 @@ import {
   readNodeFillUnits,
   readNodeRequiredFieldKeys,
   readFilterableFieldPaths,
+  SIGNER_RECALL_ERROR_CODES,
+  type SignerRecallErrorCode,
   type FieldAccessFillUnit,
   readFilterableValueProblems,
   readTopLevelFieldKey,
@@ -191,6 +193,10 @@ import {
 } from './instance-advance-failure';
 import { readDistinctSubmitterMemberId } from './instance-submitter';
 import { TaskDecisionEntity } from './task-decision.entity';
+import {
+  planSignerRecall,
+  type SignerRecallPlan,
+} from './signer-recall-planner';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskEntity } from './task.entity';
 import {
@@ -441,6 +447,54 @@ export const MANUAL_TRANSFER_DELEGATION_REASON = 'MANUAL_TRANSFER';
  */
 export const ADMIN_REASSIGN_DELEGATION_REASON = 'ADMIN_REASSIGN';
 
+/**
+ * What a refused signer recall says, for logs and for a host that reads the
+ * 409's `message`. English on purpose: a client chooses its own wording from
+ * the `code`. The type makes the compiler demand a line for every code.
+ */
+const SIGNER_RECALL_MESSAGES: Readonly<Record<SignerRecallErrorCode, string>> =
+  {
+    [SIGNER_RECALL_ERROR_CODES.DISABLED]:
+      'Taking back an approval is not enabled',
+    [SIGNER_RECALL_ERROR_CODES.NOT_THE_SIGNER]:
+      'Only the member who gave the approval can take it back',
+    [SIGNER_RECALL_ERROR_CODES.ALREADY_RECALLED]:
+      'This approval has already been taken back',
+    [SIGNER_RECALL_ERROR_CODES.NOT_A_PERSONAL_APPROVAL]:
+      'This approval was not given by the member in person',
+    [SIGNER_RECALL_ERROR_CODES.INSTANCE_NOT_RUNNING]:
+      'The approval instance is no longer running',
+    [SIGNER_RECALL_ERROR_CODES.STAGE_NOT_SETTLED_BY_THIS_APPROVAL]:
+      'This approval did not settle its stage on its own',
+    [SIGNER_RECALL_ERROR_CODES.DELEGATED_SEAT]:
+      'The approval was given on a seat that a delegation rule or another hand-over moved',
+    [SIGNER_RECALL_ERROR_CODES.STAGE_NOTIFY_SENT]:
+      'The stage notice was already sent when the approval was given',
+    [SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED]:
+      'The next stage has already been acted on',
+    [SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_NOT_SINGLE]:
+      'The approval did not lead to exactly one open next stage',
+    [SIGNER_RECALL_ERROR_CODES.PASSED_SERVICE_TASK]:
+      'The approval passed a service task, which cannot be undone',
+    [SIGNER_RECALL_ERROR_CODES.PASSED_JOIN]:
+      'The approval passed a join the case cannot be rewound across',
+  };
+
+/**
+ * The one body every refused recall carries, so a client reads `code` and
+ * `statusCode` the same way whichever check said no. Nest sends an object body
+ * as it is, so `error` and `statusCode` are written out here.
+ */
+const createSignerRecallRefusal = (
+  code: SignerRecallErrorCode,
+): ConflictException =>
+  new ConflictException({
+    code,
+    error: 'Conflict',
+    message: SIGNER_RECALL_MESSAGES[code],
+    statusCode: 409,
+  });
+
 const TASK_REASSIGNMENT_MESSAGES: Readonly<
   Record<TaskReassignmentErrorCodeEnum, string>
 > = {
@@ -656,6 +710,16 @@ export interface AdminCancelApprovalInstanceCommand {
   readonly instanceId: string;
   /** Why the administrator ends it; stored and sent to the initiator. */
   readonly reason: string;
+}
+
+/** Input of {@link WorkflowEngineService.recallTaskApproval}. */
+export interface RecallTaskApprovalCommand {
+  /** Why the signer takes it back; kept on the record, optional. */
+  readonly comment?: string;
+  /** The member taking their own approval back. */
+  readonly recalledByMemberId: string;
+  /** The task the member approved. */
+  readonly taskId: string;
 }
 
 /**
@@ -1029,10 +1093,14 @@ export class WorkflowEngineService {
     );
     this.expressionMissingFormFieldsAsNull =
       rootOptions?.expressionMissingFormFieldsAsNull === true;
+    this.signerRecallEnabled = rootOptions?.signerRecallEnabled === true;
   }
 
   /** ADR 27 §3; see `BPMRootRuntimeOptions.expressionMissingFormFieldsAsNull`. */
   private readonly expressionMissingFormFieldsAsNull: boolean;
+
+  /** See `BPMRootRuntimeOptions.signerRecallEnabled`; off unless the host set it. */
+  private readonly signerRecallEnabled: boolean;
 
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
 
@@ -3621,6 +3689,285 @@ export class WorkflowEngineService {
       order: { createdAt: 'ASC' },
       where: { instanceId },
     });
+  }
+
+  /**
+   * The task whose approval `memberId` could take back right now, or `null`.
+   * Only the instance's latest decision can qualify, and only when it is
+   * `memberId`'s own approval and the recall rules allow it. Reads without the
+   * instance lock, so the answer can be stale by the time a recall is asked
+   * for; the recall itself judges again under the lock. Always `null` while
+   * `BPMRootRuntimeOptions.signerRecallEnabled` is off.
+   */
+  async readRecallableTaskId(
+    instanceId: string,
+    memberId: string,
+    scope?: WorkflowReadScope,
+  ): Promise<string | null> {
+    if (!this.signerRecallEnabled) {
+      return null;
+    }
+
+    await this.getApprovalInstance(instanceId, scope);
+
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<string | null> => {
+        const logs = await manager
+          .getRepository(ActivityLogEntity)
+          .find({ where: { instanceId } });
+        const latestDecision = logs
+          .filter(
+            (log) => log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+          )
+          .reduce<ActivityLogEntity | null>(
+            (latest, log) =>
+              latest === null || BigInt(log.seq) > BigInt(latest.seq)
+                ? log
+                : latest,
+            null,
+          );
+
+        if (
+          latestDecision === null ||
+          latestDecision.taskId === null ||
+          latestDecision.actorMemberId !== memberId ||
+          latestDecision.payload['action'] !== TaskDecisionActionEnum.APPROVED
+        ) {
+          return null;
+        }
+
+        const result = await planSignerRecall(manager, {
+          adminReassignReason: ADMIN_REASSIGN_DELEGATION_REASON,
+          enabled: this.signerRecallEnabled,
+          manualTransferReason: MANUAL_TRANSFER_DELEGATION_REASON,
+          memberId,
+          taskId: latestDecision.taskId,
+        });
+
+        return 'plan' in result ? latestDecision.taskId : null;
+      },
+    );
+  }
+
+  /**
+   * Takes back the approval `recalledByMemberId` gave on `taskId`: the next
+   * stage's open task is cancelled and the member gets a fresh task of their
+   * own on the stage they approved. The decision, its signature and the form
+   * are left as they were; the record shows approval, recall, new task. Mails
+   * and webhooks already sent cannot be called back.
+   *
+   * Refused with a `ConflictException` whose body carries one of
+   * `SIGNER_RECALL_ERROR_CODES` and `statusCode: 409`. Off, it refuses before
+   * it looks at the task or takes the lock.
+   */
+  async recallTaskApproval(
+    command: RecallTaskApprovalCommand,
+  ): Promise<TaskEntity> {
+    if (!this.signerRecallEnabled) {
+      throw createSignerRecallRefusal(SIGNER_RECALL_ERROR_CODES.DISABLED);
+    }
+
+    return this.runEngineTransaction(async (manager): Promise<TaskEntity> => {
+      const taskBeforeLock = await manager
+        .getRepository(TaskEntity)
+        .findOne({ where: { id: command.taskId } });
+
+      if (!taskBeforeLock) {
+        throw new NotFoundException(`Task ${command.taskId} was not found`);
+      }
+
+      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        taskBeforeLock.instanceId,
+      ]);
+
+      // The planner reads the task and the instance again now that the lock
+      // is ours, so it judges them as they are and not as they were above.
+      const result = await planSignerRecall(manager, {
+        adminReassignReason: ADMIN_REASSIGN_DELEGATION_REASON,
+        enabled: this.signerRecallEnabled,
+        manualTransferReason: MANUAL_TRANSFER_DELEGATION_REASON,
+        memberId: command.recalledByMemberId,
+        taskId: command.taskId,
+      });
+
+      if ('refusalCode' in result) {
+        throw createSignerRecallRefusal(result.refusalCode);
+      }
+
+      return this.applySignerRecall(manager, result.plan, command);
+    });
+  }
+
+  /**
+   * The writes of an allowed recall, in the transaction that holds the
+   * instance lock. A new token and a task for the signer alone are built
+   * directly: nothing is resolved again, so the stage cannot come back with
+   * other people on it, be skipped by its entry condition, or fail halfway.
+   */
+  private async applySignerRecall(
+    manager: EntityManager,
+    plan: SignerRecallPlan,
+    command: RecallTaskApprovalCommand,
+  ): Promise<TaskEntity> {
+    const { decision, instance, nextNodeId, seat, task, token } = plan;
+    const node = instance.workflowSnapshot.nodes.find(
+      (candidate): candidate is UserTaskNode =>
+        candidate.type === 'userTask' && candidate.id === task.nodeId,
+    );
+
+    if (!node) {
+      // The planner does not check this node's type. What keeps this branch
+      // unreachable is a data invariant: a non-ad-hoc task is only ever
+      // created on a userTask of the instance's snapshot (createUserTaskForToken
+      // runs for userTask nodes only; every other path that creates a task
+      // reuses an existing task's nodeId: a transfer, a recall, and the
+      // reopening of the original task after a temporary pre-approval was
+      // rejected).
+      // Kept as a type guard and a fail-closed refusal; unlike the planner's
+      // refusals, this 409 carries no signer recall code.
+      throw new ConflictException(`Workflow node ${task.nodeId} was not found`);
+    }
+
+    const activityRepository = manager.getRepository(ActivityLogEntity);
+    const tokenRepository = manager.getRepository(WorkflowTokenEntity);
+    const taskRepository = manager.getRepository(TaskEntity);
+    const taskCandidateRepository = manager.getRepository(TaskCandidateEntity);
+    const now = new Date();
+
+    // The next stage's token and its open task, and nothing else: the planner
+    // saw to it that nothing else is open on the instance.
+    await this.consumeOpenRuntimeState(
+      manager,
+      instance,
+      now,
+      TaskStatusEnum.CANCELLED,
+    );
+    await this.notificationService.supersedeInstanceTaskNotifications({
+      instanceId: instance.id,
+      manager,
+    });
+    await activityRepository.save(
+      activityRepository.create({
+        actorMemberId: command.recalledByMemberId,
+        eventType: ActivityLogEventTypeEnum.TASK_RECALLED,
+        instanceId: instance.id,
+        nodeId: task.nodeId,
+        payload: {
+          cancelledNodeId: nextNodeId,
+          cancelledTaskIds: plan.cancelledTaskIds,
+          comment: command.comment?.trim() || null,
+          decisionId: decision.id,
+          recalledTaskId: task.id,
+        },
+        taskId: task.id,
+      }),
+    );
+
+    // A new token, not the old one moved back: on the old one the approval
+    // being taken back would count as part of the stage's next round.
+    const recalledToken = await tokenRepository.save(
+      tokenRepository.create({
+        consumedAt: null,
+        currentNodeId: task.nodeId,
+        instanceId: instance.id,
+        parentTokenId: token.parentTokenId,
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+    );
+
+    await activityRepository.save(
+      activityRepository.create({
+        actorMemberId: null,
+        eventType: ActivityLogEventTypeEnum.TOKEN_CREATED,
+        instanceId: instance.id,
+        nodeId: task.nodeId,
+        payload: {
+          recalledFromNodeId: nextNodeId,
+          recalledTaskId: task.id,
+          tokenId: recalledToken.id,
+        },
+        taskId: null,
+      }),
+    );
+
+    const recalledTask = await taskRepository.save(
+      taskRepository.create({
+        assigneeMemberId: command.recalledByMemberId,
+        assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+        completedAt: null,
+        createdAt: now,
+        decisionPolicySnapshot: { type: 'SINGLE' },
+        delegationChain: seat.delegationChain,
+        instanceId: instance.id,
+        isAdhoc: false,
+        nodeId: task.nodeId,
+        openedAt: null,
+        originalAssigneeMemberId: seat.originalMemberId,
+        slaDueAt: await this.slaScheduleService.resolveTaskSlaDueAt({
+          node,
+          now,
+        }),
+        status: TaskStatusEnum.PENDING,
+        tokenId: recalledToken.id,
+      }),
+    );
+    const [recalledSeat] = await taskCandidateRepository.save([
+      taskCandidateRepository.create({
+        claimedAt: null,
+        createdAt: now,
+        decidedAt: null,
+        delegationChain: seat.delegationChain,
+        memberId: seat.memberId,
+        originalMemberId: seat.originalMemberId,
+        sequence: null,
+        sourceType: seat.sourceType,
+        status: TaskCandidateStatusEnum.PENDING,
+        taskId: recalledTask.id,
+      }),
+    ]);
+
+    recalledTask.candidateMemberIds = [recalledSeat.memberId];
+    recalledTask.openCandidateMemberIds = [recalledSeat.memberId];
+    recalledTask.hasFillableFields = readNodeFillGrantFieldKeys(node).size > 0;
+    recalledTask.nodeLabel = readWorkflowNodeLabel(
+      instance.workflowSnapshot,
+      node.id,
+    );
+
+    // The next stage reads "was this node created or skipped last" off the
+    // newest TASK_CREATED, so the new task has to be on record.
+    await activityRepository.save(
+      activityRepository.create({
+        actorMemberId: command.recalledByMemberId,
+        eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+        instanceId: instance.id,
+        nodeId: task.nodeId,
+        payload: {
+          assigneeMemberId: recalledTask.assigneeMemberId,
+          assignmentType: recalledTask.assignmentType,
+          candidateMemberIds: [recalledSeat.memberId],
+          originalAssigneeMemberId: recalledTask.originalAssigneeMemberId,
+          recalledTaskId: task.id,
+          tokenId: recalledToken.id,
+        },
+        taskId: recalledTask.id,
+      }),
+    );
+    await this.recordInstanceEvent(
+      manager,
+      instance,
+      instance.state,
+      'NODE_ACTIVATED',
+      { nodeId: task.nodeId, taskIds: [recalledTask.id] },
+    );
+    await this.notificationService.createTaskAssignedNotification({
+      instance,
+      manager,
+      node,
+      task: recalledTask,
+    });
+
+    return recalledTask;
   }
 
   private async readTaskActorContext(

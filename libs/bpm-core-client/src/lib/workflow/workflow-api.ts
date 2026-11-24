@@ -716,6 +716,14 @@ interface CancelApprovalInstanceMutationData {
   readonly cancelApprovalInstance: Pick<ApprovalInstanceRecord, 'id' | 'state'>;
 }
 
+interface RecallTaskApprovalMutationData {
+  readonly recallTaskApproval: Pick<TaskRecord, 'id'>;
+}
+
+interface RecallableTaskIdQueryData {
+  readonly recallableTaskId: string | null;
+}
+
 interface AdminCancelApprovalInstanceMutationData {
   readonly adminCancelApprovalInstance: Pick<
     ApprovalInstanceRecord,
@@ -2530,6 +2538,57 @@ export async function cancelApprovalInstance({
       },
     },
   );
+}
+
+/**
+ * Takes back the approval the signed-in member gave on `taskId`: the next
+ * stage's open task is cancelled and the member gets a new task on the stage
+ * they approved. Resolves with nothing; reload the instance to see the new
+ * task. A refusal rejects with an error whose code
+ * (`readRequestErrorCode`) is one of `SIGNER_RECALL_ERROR_CODES`.
+ */
+export async function recallTaskApproval({
+  comment,
+  taskId,
+}: {
+  readonly comment?: string | null;
+  readonly taskId: string;
+}): Promise<void> {
+  const trimmedComment = comment?.trim();
+
+  await requestGraphQl<RecallTaskApprovalMutationData>(
+    `mutation RecallTaskApproval($input: RecallTaskApprovalInput!) {
+      recallTaskApproval(input: $input) {
+        id
+      }
+    }`,
+    {
+      input: {
+        // Left out when blank, so a server that takes no comment is not sent one.
+        ...(trimmedComment ? { comment: trimmedComment } : {}),
+        taskId,
+      },
+    },
+  );
+}
+
+/**
+ * The id of the task whose approval the signed-in member could take back
+ * right now, or `null` (also while the host has signer recall off). A
+ * separate query rather than a field of {@link readApprovalInstance}: a server
+ * that does not know it would fail the whole instance page.
+ */
+export async function readRecallableTaskId(
+  instanceId: string,
+): Promise<string | null> {
+  const data = await requestGraphQl<RecallableTaskIdQueryData>(
+    `query RecallableTaskId($instanceId: String!) {
+      recallableTaskId(instanceId: $instanceId)
+    }`,
+    { instanceId },
+  );
+
+  return data.recallableTaskId ?? null;
 }
 
 /**

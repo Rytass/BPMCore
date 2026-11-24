@@ -51,6 +51,11 @@ import {
   ObjectLiteral,
   Repository,
 } from 'typeorm';
+import { SIGNER_RECALL_ERROR_CODES } from '@rytass/bpm-core-shared/status';
+import {
+  planSignerRecall,
+  type SignerRecallPlanResult,
+} from './signer-recall-planner';
 import { BPMAuthContext } from '../bpm-auth';
 import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { AttachmentService } from '../attachment/attachment.service';
@@ -134,6 +139,7 @@ import {
 } from './workflow-engine.enums';
 import {
   ADMIN_REASSIGN_DELEGATION_REASON,
+  MANUAL_TRANSFER_DELEGATION_REASON,
   StuckApprovalInstanceRecord,
   TaskReassignmentResult,
   WorkflowEngineService,
@@ -27012,6 +27018,3467 @@ describe('WorkflowEngineService task node labels', () => {
   });
 });
 
+describe('signer recall', (): void => {
+  type RecallFixture = ReturnType<typeof createServiceFixture>;
+
+  const SIGNER = 'member-finance';
+  const NEXT_APPROVER = 'member-next';
+
+  /**
+   * start -> task_finance -> task_next -> task_third -> end: the third stage
+   * gives the next stage's own decision somewhere to lead.
+   */
+  const createThreeStageWorkflow = (): WorkflowDefinition => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+
+    return {
+      edges: [
+        ...twoStage.edges.filter(
+          (edge): boolean => edge.id !== 'edge_next_end',
+        ),
+        {
+          data: {},
+          id: 'edge_next_third',
+          source: 'task_next',
+          target: 'task_third',
+          type: 'smoothstep',
+        },
+        {
+          data: {},
+          id: 'edge_third_end',
+          source: 'task_third',
+          target: 'end',
+          type: 'smoothstep',
+        },
+      ],
+      meta: twoStage.meta,
+      nodes: [
+        ...twoStage.nodes.filter((node): boolean => node.id !== 'end'),
+        createUserTaskNode('task_third', '第三關', 'member-third', 740, 160),
+        {
+          data: { endState: 'APPROVED', label: '完成' },
+          id: 'end',
+          position: { x: 960, y: 160 },
+          type: 'endEvent',
+        },
+      ],
+    };
+  };
+
+  /**
+   * The signer approves task_finance through the real `decideTask`: the
+   * instance is left with the token waiting on task_next and its task open.
+   * `rootOptions` is `{ signerRecallEnabled: true }` unless given; `null`
+   * passes none at all, which is how a host that never set the option looks.
+   */
+  const buildApprovedState = async (
+    options: {
+      readonly approval?: Parameters<WorkflowEngineService['decideTask']>[1];
+      /** Runs after the fixture is built and before the signer approves. */
+      readonly beforeApproval?: (fixture: RecallFixture) => Promise<unknown>;
+      /** Delegation rules the engine applies when it assigns a member from now on. */
+      readonly delegationResolutionByMember?: Parameters<
+        typeof createServiceFixture
+      >[0]['delegationResolutionByMember'];
+      /** Rows of an earlier round that are already on the books when the signer approves. */
+      readonly earlierRecords?: Pick<
+        Parameters<typeof createServiceFixture>[0],
+        | 'additionalProcessTasks'
+        | 'processActivityLogs'
+        | 'processTaskDecisions'
+      >;
+      readonly formData?: Readonly<Record<string, unknown>>;
+      /** Turns the instance event writer on; the events land in `savedInstanceEvents`. */
+      readonly instanceEventObserver?: BPMInstanceEventObserver;
+      readonly rootOptions?: BPMRootRuntimeOptions | null;
+      /** The task the signer approves; `task-1` unless a transfer made a new one. */
+      readonly signerTaskId?: (fixture: RecallFixture) => string;
+      readonly task?: Partial<TaskEntity>;
+      readonly taskCandidates?: readonly TaskCandidateEntity[];
+      readonly workflow?: WorkflowDefinition;
+    } = {},
+  ): Promise<RecallFixture> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        id: 'task-1',
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.PENDING,
+        tokenId: 'token-1',
+        ...options.task,
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_finance',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      delegationResolutionByMember: options.delegationResolutionByMember,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      instanceEventObserver: options.instanceEventObserver,
+      ...options.earlierRecords,
+      processFormData: options.formData,
+      processTaskCandidates: options.taskCandidates,
+      processWorkflowSnapshot:
+        options.workflow ?? appendNextUserTask(createLinearUserTaskWorkflow()),
+      rootOptions:
+        options.rootOptions === null
+          ? undefined
+          : (options.rootOptions ?? { signerRecallEnabled: true }),
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await options.beforeApproval?.(fixture);
+
+    await fixture.service.decideTask(
+      {
+        action: TaskDecisionActionEnum.APPROVED,
+        decidedByMemberId: SIGNER,
+        taskId: options.signerTaskId?.(fixture) ?? 'task-1',
+      },
+      options.approval,
+    );
+
+    return fixture;
+  };
+
+  /** Runs `callback` inside the fixture's own transaction, with its manager. */
+  const runInTransaction = <Result>(
+    fixture: RecallFixture,
+    callback: (manager: EntityManager) => Promise<Result>,
+  ): Promise<Result> =>
+    (
+      fixture.transaction as unknown as (
+        run: (manager: EntityManager) => Promise<Result>,
+      ) => Promise<Result>
+    )(callback);
+
+  const readNextTaskId = (fixture: RecallFixture): string =>
+    fixture.savedTasks.find((task): boolean => task.nodeId === 'task_next')
+      ?.id ?? '';
+
+  /** M is approved and nothing else has happened. */
+  const buildBaselineApprovedState = (): Promise<RecallFixture> =>
+    buildApprovedState();
+
+  /**
+   * M asks three people and any one of them settles it; the signer was the
+   * one who approved, and the other two are still on the task's candidate list.
+   */
+  const buildAnyOneOfThreeApprovedState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      task: {
+        // A group task is created with nobody in this field.
+        assigneeMemberId: null,
+        assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        candidateMemberIds: [SIGNER, 'member-colleague', 'member-observer'],
+        decisionPolicySnapshot: { type: 'PARALLEL_ANY' },
+      },
+      taskCandidates: [SIGNER, 'member-colleague', 'member-observer'].map(
+        (memberId): TaskCandidateEntity =>
+          createTaskCandidate({
+            id: `candidate-${memberId}`,
+            memberId,
+            taskId: 'task-1',
+          }),
+      ),
+      workflow: withNodeData(
+        appendNextUserTask(createLinearUserTaskWorkflow()),
+        'task_finance',
+        {
+          approverResolver: {
+            memberIds: [SIGNER, 'member-colleague', 'member-observer'],
+            type: 'DIRECT',
+          },
+          decisionPolicy: { type: 'PARALLEL_ANY' },
+        },
+      ),
+    });
+
+  /** The approval was the SLA timeout's, not the signer's own. */
+  const buildAutoApprovedState = (): Promise<RecallFixture> =>
+    buildApprovedState({ approval: { automatic: 'SLA_AUTO_APPROVE' } });
+
+  /** The approval led to the end of the case: the token has nowhere to wait. */
+  const buildEndedState = (): Promise<RecallFixture> =>
+    buildApprovedState({ workflow: createLinearUserTaskWorkflow() });
+
+  /** M approved, then the next stage (N) approved too; the third stage is open. */
+  const buildNextStageDecidedState = async (): Promise<RecallFixture> => {
+    const fixture = await buildApprovedState({
+      workflow: createThreeStageWorkflow(),
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      decidedByMemberId: NEXT_APPROVER,
+      taskId: readNextTaskId(fixture),
+    });
+
+    return fixture;
+  };
+
+  /** M approved, then the next stage (N) handed its task over to someone else. */
+  const buildNextStageTransferredState = async (): Promise<RecallFixture> => {
+    const fixture = await buildApprovedState({
+      workflow: createThreeStageWorkflow(),
+    });
+
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.TRANSFERRED,
+      decidedByMemberId: NEXT_APPROVER,
+      taskId: readNextTaskId(fixture),
+      transferToMemberId: 'member-delegate',
+    });
+
+    return fixture;
+  };
+
+  /** N asks two people one after the other; the first has approved and N moved on to the second. */
+  const buildSequentialNextStagePassedOnState =
+    async (): Promise<RecallFixture> => {
+      const fixture = await buildApprovedState({
+        workflow: withNodeData(createThreeStageWorkflow(), 'task_next', {
+          approverResolver: {
+            memberIds: [NEXT_APPROVER, 'member-next-second'],
+            type: 'DIRECT',
+          },
+          decisionPolicy: { type: 'SEQUENTIAL' },
+        }),
+      });
+
+      await fixture.service.decideTask({
+        action: TaskDecisionActionEnum.APPROVED,
+        decidedByMemberId: NEXT_APPROVER,
+        taskId: readNextTaskId(fixture),
+      });
+
+      return fixture;
+    };
+
+  /** N's holder gave a stage notice instruction, through the real service call. */
+  const buildNextStageDirectiveState = async (): Promise<RecallFixture> => {
+    const fixture = await buildApprovedState({
+      workflow: createThreeStageWorkflow(),
+    });
+
+    await fixture.service.configureAdhocNotification({
+      requestedByMemberId: NEXT_APPROVER,
+      target: {
+        kind: AdhocTargetKindEnum.MEMBER,
+        memberIds: ['member-observer'],
+      },
+      taskId: readNextTaskId(fixture),
+      type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+    });
+
+    return fixture;
+  };
+
+  type WorkflowNodeDefinition = WorkflowDefinition['nodes'][number];
+
+  const createEdge = (
+    id: string,
+    source: string,
+    target: string,
+  ): WorkflowDefinition['edges'][number] => ({
+    data: {},
+    id,
+    source,
+    target,
+    type: 'smoothstep',
+  });
+
+  const readNotifyNode = (): WorkflowNodeDefinition => {
+    const node = createNotifyServiceTaskWorkflow().nodes.find(
+      ({ id }): boolean => id === 'notify_finance',
+    );
+
+    if (!node) {
+      throw new Error('notify_finance fixture node was not found');
+    }
+
+    return node;
+  };
+
+  /**
+   * start -> task_finance (M) -> task_next -> end, with a second branch
+   * leaving M as well: after M's approval the token forks.
+   */
+  const createForkAfterStageWorkflow = (
+    branch: WorkflowNodeDefinition,
+  ): WorkflowDefinition => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+
+    return {
+      edges: [
+        ...twoStage.edges,
+        createEdge('edge_stage_branch', 'task_finance', branch.id),
+        // A NOTIFY node is a branch that ends where it stands.
+        ...(branch.type === 'serviceTask'
+          ? []
+          : [createEdge('edge_branch_end', branch.id, 'end')]),
+      ],
+      meta: twoStage.meta,
+      nodes: [...twoStage.nodes, branch],
+    };
+  };
+
+  /**
+   * start forks into M (task_finance) and a sibling (task_b); both branches
+   * meet at the AND join task_final. With `viaNext`, M leads to task_next
+   * first and the join comes after it; without, M leads straight to the join.
+   */
+  const createParallelBranchesWorkflow = (
+    viaNext: boolean,
+  ): WorkflowDefinition => ({
+    edges: [
+      createEdge('edge_start_stage', 'start', 'task_finance'),
+      createEdge('edge_start_sibling', 'start', 'task_b'),
+      ...(viaNext
+        ? [
+            createEdge('edge_stage_next', 'task_finance', 'task_next'),
+            createEdge('edge_next_final', 'task_next', 'task_final'),
+          ]
+        : [createEdge('edge_stage_final', 'task_finance', 'task_final')]),
+      createEdge('edge_sibling_final', 'task_b', 'task_final'),
+      createEdge('edge_final_end', 'task_final', 'end'),
+    ],
+    meta: { schemaVersion: 1 },
+    nodes: [
+      {
+        data: { label: '開始' },
+        id: 'start',
+        position: { x: 80, y: 160 },
+        type: 'startEvent',
+      },
+      createUserTaskNode('task_finance', '財務簽核', SIGNER, 300, 80),
+      createUserTaskNode('task_b', 'B 簽核', 'member-b', 300, 240),
+      ...(viaNext
+        ? [createUserTaskNode('task_next', '下一關', NEXT_APPROVER, 520, 80)]
+        : []),
+      createUserTaskNode('task_final', '彙整簽核', 'member-final', 740, 160),
+      {
+        data: { endState: 'APPROVED', label: '完成' },
+        id: 'end',
+        position: { x: 960, y: 160 },
+        type: 'endEvent',
+      },
+    ],
+  });
+
+  /**
+   * start -> split -> { NOTIFY branch, task_finance (M) }, then
+   * task_finance -> task_next -> end: M sits on a child token and no join is
+   * anywhere on its way.
+   */
+  const createNotifySplitBeforeStageWorkflow = (): WorkflowDefinition => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+
+    return {
+      edges: [
+        createEdge('edge_start_split', 'start', 'split'),
+        createEdge('edge_split_notify', 'split', 'notify_finance'),
+        createEdge('edge_split_stage', 'split', 'task_finance'),
+        ...twoStage.edges.filter(({ id }): boolean => id !== 'edge_start_task'),
+      ],
+      meta: twoStage.meta,
+      nodes: [
+        ...twoStage.nodes.filter(({ id }): boolean => id !== 'start'),
+        {
+          data: { label: '開始' },
+          id: 'start',
+          position: { x: 80, y: 160 },
+          type: 'startEvent',
+        },
+        {
+          data: { direction: 'split', label: '分流' },
+          id: 'split',
+          position: { x: 160, y: 160 },
+          type: 'parallelGateway',
+        },
+        readNotifyNode(),
+      ],
+    };
+  };
+
+  /** start -> task_finance (M) -> set_approval_level (SET_FORM_FIELD) -> task_next -> end. */
+  const createSetFieldBetweenStagesWorkflow = (): WorkflowDefinition => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+    const setField = createSetFormFieldServiceTaskWorkflow().nodes.find(
+      ({ id }): boolean => id === 'set_approval_level',
+    );
+
+    if (!setField) {
+      throw new Error('set_approval_level fixture node was not found');
+    }
+
+    return {
+      edges: [
+        ...twoStage.edges.filter(({ id }): boolean => id !== 'edge_task_next'),
+        createEdge('edge_stage_setfield', 'task_finance', setField.id),
+        createEdge('edge_setfield_next', setField.id, 'task_next'),
+      ],
+      meta: twoStage.meta,
+      nodes: [...twoStage.nodes, setField],
+    };
+  };
+
+  /**
+   * The whole case is run from its start event, so M ends up on a child
+   * token the way it does in a real parallel template. Tasks get the engine's
+   * own ids; read them with `readTaskIdAt`.
+   */
+  const startFromBeginning = async (
+    workflow: WorkflowDefinition,
+    options: {
+      readonly delegationResolutionByMember?: Parameters<
+        typeof createServiceFixture
+      >[0]['delegationResolutionByMember'];
+    } = {},
+  ): Promise<RecallFixture> => {
+    const fixture = createServiceFixture({
+      currentVersionId: 'template-version-1',
+      delegationResolutionByMember: options.delegationResolutionByMember,
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processWorkflowSnapshot: workflow,
+      rootOptions: { signerRecallEnabled: true },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+
+    await fixture.service.processInstance('instance-1');
+
+    return fixture;
+  };
+
+  const readTaskIdAt = (fixture: RecallFixture, nodeId: string): string =>
+    readTaskByNodeId(fixture.savedTasks, nodeId).id;
+
+  const approveAt = async (
+    fixture: RecallFixture,
+    nodeId: string,
+    memberId: string,
+  ): Promise<void> => {
+    await fixture.service.decideTask({
+      action: TaskDecisionActionEnum.APPROVED,
+      decidedByMemberId: memberId,
+      taskId: readTaskIdAt(fixture, nodeId),
+    });
+  };
+
+  /** The tokens and tasks of the instance, read the way the planner reads them. */
+  const readTokensOnRecord = (
+    fixture: RecallFixture,
+  ): Promise<readonly WorkflowTokenEntity[]> =>
+    runInTransaction(
+      fixture,
+      (manager): Promise<readonly WorkflowTokenEntity[]> =>
+        manager
+          .getRepository(WorkflowTokenEntity)
+          .find({ where: { instanceId: 'instance-1' } }),
+    );
+
+  const readTasksOnRecord = (
+    fixture: RecallFixture,
+  ): Promise<readonly TaskEntity[]> =>
+    runInTransaction(fixture, (manager): Promise<readonly TaskEntity[]> =>
+      manager
+        .getRepository(TaskEntity)
+        .find({ where: { instanceId: 'instance-1' } }),
+    );
+
+  const isOpenToken = (token: WorkflowTokenEntity): boolean =>
+    token.status === WorkflowTokenStatusEnum.ACTIVE ||
+    token.status === WorkflowTokenStatusEnum.WAITING;
+
+  const isOpenTask = (task: TaskEntity): boolean =>
+    task.status === TaskStatusEnum.PENDING ||
+    task.status === TaskStatusEnum.IN_PROGRESS;
+
+  /** M approved; the token forked into the next stage and a second branch. */
+  const buildForkAfterStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      workflow: createForkAfterStageWorkflow(
+        createUserTaskNode(
+          'task_branch',
+          '平行關卡',
+          'member-branch',
+          520,
+          320,
+        ),
+      ),
+    });
+
+  /** M approved; the token forked into a NOTIFY branch and the next stage. */
+  const buildNotifySplitAfterStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      workflow: createForkAfterStageWorkflow(readNotifyNode()),
+    });
+
+  /**
+   * M and the next stage lie on one branch; the sibling branch is already
+   * waiting at the AND join with nothing open on it. The sibling decided
+   * first, so nothing but the signer's own approval is on record after D.
+   */
+  const buildSiblingWaitingAtJoinState = async (): Promise<RecallFixture> => {
+    const fixture = await startFromBeginning(
+      createParallelBranchesWorkflow(true),
+    );
+
+    await approveAt(fixture, 'task_b', 'member-b');
+    await approveAt(fixture, 'task_finance', SIGNER);
+
+    return fixture;
+  };
+
+  /** The same two branches, but the sibling has not decided yet: its task is open. */
+  const buildSiblingStillOpenState = async (): Promise<RecallFixture> => {
+    const fixture = await startFromBeginning(
+      createParallelBranchesWorkflow(true),
+    );
+
+    await approveAt(fixture, 'task_finance', SIGNER);
+
+    return fixture;
+  };
+
+  /** M is the last branch to reach the AND join; the case goes on to the join's own task. */
+  const buildLastBranchToJoinState = async (): Promise<RecallFixture> => {
+    const fixture = await startFromBeginning(
+      createParallelBranchesWorkflow(false),
+    );
+
+    await approveAt(fixture, 'task_b', 'member-b');
+    await approveAt(fixture, 'task_finance', SIGNER);
+
+    return fixture;
+  };
+
+  /** M sits on a child token of a split whose other branch is a NOTIFY node. */
+  const buildStageAfterNotifySplitState = async (): Promise<RecallFixture> => {
+    const fixture = await startFromBeginning(
+      createNotifySplitBeforeStageWorkflow(),
+    );
+
+    await approveAt(fixture, 'task_finance', SIGNER);
+
+    return fixture;
+  };
+
+  const allowAddSignerWorkflow = (): WorkflowDefinition =>
+    appendNextUserTask(createLinearUserTaskWorkflow({ allowAddSigner: true }));
+
+  /** The signer asked for a countersign before approving: N is created with it attached. */
+  const buildCountersignedNextStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: (fixture): Promise<AdhocDirectiveEntity> =>
+        fixture.service.requestAdhocCountersign({
+          requestedByMemberId: SIGNER,
+          target: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-observer'],
+          },
+          taskId: 'task-1',
+        }),
+      workflow: allowAddSignerWorkflow(),
+    });
+
+  /** The signer asked a pre-approver first; the pre-approver approved, then the signer did. */
+  const buildPreApprovedStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: async (fixture): Promise<void> => {
+        const adhocTask = await fixture.service.requestAdhocPreApproval({
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          requestedByMemberId: SIGNER,
+          target: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-preapprover'],
+          },
+          taskId: 'task-1',
+        });
+
+        await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-preapprover',
+          taskId: adhocTask.id,
+        });
+      },
+      workflow: allowAddSignerWorkflow(),
+    });
+
+  /**
+   * The pre-approver rejected while M's task was still open, so the decision
+   * went back to the signer, who then approved M's task on their own.
+   */
+  const buildPreApprovalReturnedToStageState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: async (fixture): Promise<void> => {
+        const adhocTask = await fixture.service.requestAdhocPreApproval({
+          onReject: AdhocPreApprovalRejectBehaviorEnum.RETURN_TO_ORIGIN,
+          requestedByMemberId: SIGNER,
+          target: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-preapprover'],
+          },
+          taskId: 'task-1',
+        });
+
+        await fixture.service.decideTask({
+          action: TaskDecisionActionEnum.REJECTED,
+          comment: '不同意前加簽',
+          decidedByMemberId: 'member-preapprover',
+          taskId: adhocTask.id,
+        });
+      },
+      workflow: allowAddSignerWorkflow(),
+    });
+
+  /**
+   * M asks two colleagues and any one of them settles it. One colleague hands
+   * their seat to the signer (a group-seat transfer, no `transferReason`), and
+   * the signer approves.
+   */
+  const buildGroupSeatTransferredToSignerState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: (fixture): Promise<TaskDecisionEntity> =>
+        fixture.service.decideTask({
+          action: TaskDecisionActionEnum.TRANSFERRED,
+          decidedByMemberId: 'member-colleague',
+          taskId: 'task-1',
+          transferToMemberId: SIGNER,
+        }),
+      task: {
+        assigneeMemberId: null,
+        assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        candidateMemberIds: ['member-colleague', 'member-observer'],
+        decisionPolicySnapshot: { type: 'PARALLEL_ANY' },
+        originalAssigneeMemberId: null,
+      },
+      taskCandidates: ['member-colleague', 'member-observer'].map(
+        (memberId): TaskCandidateEntity =>
+          createTaskCandidate({
+            id: `candidate-${memberId}`,
+            memberId,
+            taskId: 'task-1',
+          }),
+      ),
+      workflow: withNodeData(
+        appendNextUserTask(createLinearUserTaskWorkflow()),
+        'task_finance',
+        {
+          approverResolver: {
+            memberIds: ['member-colleague', 'member-observer'],
+            type: 'DIRECT',
+          },
+          decisionPolicy: { type: 'PARALLEL_ANY' },
+        },
+      ),
+    });
+
+  /** M approved and the token ran through a SET_FORM_FIELD node on its way to N. */
+  const buildSetFieldOnPathState = (): Promise<RecallFixture> =>
+    buildApprovedState({ workflow: createSetFieldBetweenStagesWorkflow() });
+
+  /** M approved, then the next stage's timeout approved N on its holder's behalf. */
+  const buildNextStageAutoApprovedState = async (): Promise<RecallFixture> => {
+    const fixture = await buildApprovedState({
+      workflow: createThreeStageWorkflow(),
+    });
+
+    await fixture.service.decideTask(
+      {
+        action: TaskDecisionActionEnum.APPROVED,
+        decidedByMemberId: NEXT_APPROVER,
+        taskId: readNextTaskId(fixture),
+      },
+      { automatic: 'SLA_AUTO_APPROVE' },
+    );
+
+    return fixture;
+  };
+
+  /** M approved, then the next stage's timeout escalated N's task to someone else. */
+  const buildNextStageEscalatedState = async (): Promise<RecallFixture> => {
+    const fixture = await buildApprovedState({
+      workflow: createThreeStageWorkflow(),
+    });
+
+    await fixture.service.decideTask(
+      {
+        action: TaskDecisionActionEnum.TRANSFERRED,
+        decidedByMemberId: NEXT_APPROVER,
+        taskId: readNextTaskId(fixture),
+        transferToMemberId: 'member-delegate',
+      },
+      { transferReason: SLA_ESCALATION_DELEGATION_REASON },
+    );
+
+    return fixture;
+  };
+
+  /** M approved, then an administrator reassigned N's task to someone else. */
+  const buildNextStageReassignedState = async (): Promise<RecallFixture> => {
+    const fixture = await buildApprovedState({
+      workflow: createThreeStageWorkflow(),
+    });
+
+    await fixture.service.reassignTask(readNextTaskId(fixture), {
+      actorMemberId: 'admin-001',
+      fromMemberId: NEXT_APPROVER,
+      reason: '原簽核人離職',
+      toMemberId: 'member-delegate',
+    });
+
+    return fixture;
+  };
+
+  /**
+   * M approved; between M and N sits a stage that its entry condition skips
+   * (the form's amount is too small), so the token only passes through it.
+   */
+  const buildSkippedStageBetweenState = (): Promise<RecallFixture> => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+
+    return buildApprovedState({
+      formData: { amount: 10 },
+      workflow: withNodeData(
+        {
+          edges: [
+            ...twoStage.edges.filter(
+              ({ id }): boolean => id !== 'edge_task_next',
+            ),
+            createEdge('edge_stage_optional', 'task_finance', 'task_optional'),
+            createEdge('edge_optional_next', 'task_optional', 'task_next'),
+          ],
+          meta: twoStage.meta,
+          nodes: [
+            ...twoStage.nodes,
+            createUserTaskNode(
+              'task_optional',
+              '大額加簽',
+              'member-optional',
+              400,
+              160,
+            ),
+          ],
+        },
+        'task_optional',
+        { entryCondition: 'form.amount > 1000' },
+      ),
+    });
+  };
+
+  /**
+   * M approved; between M and N sits an exclusive gateway with a high-amount
+   * branch and a default branch, and the small amount takes the default one.
+   */
+  const buildExclusiveGatewayBetweenState = (): Promise<RecallFixture> => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+
+    return buildApprovedState({
+      formData: { amount: 10 },
+      workflow: {
+        edges: [
+          ...twoStage.edges.filter(
+            ({ id }): boolean => id !== 'edge_task_next',
+          ),
+          createEdge('edge_stage_gateway', 'task_finance', 'gateway_route'),
+          {
+            ...createEdge('edge_gateway_high', 'gateway_route', 'task_high'),
+            data: {
+              condition: 'form.amount > 1000',
+              conditionFieldKey: 'amount',
+              conditionOperator: 'GREATER_THAN',
+              conditionValue: '1000',
+              label: '金額大於 1000',
+            },
+          },
+          {
+            ...createEdge('edge_gateway_next', 'gateway_route', 'task_next'),
+            data: { isDefault: true, label: '其他情況' },
+          },
+          createEdge('edge_high_end', 'task_high', 'end'),
+        ],
+        meta: twoStage.meta,
+        nodes: [
+          ...twoStage.nodes,
+          {
+            data: { direction: 'split', label: '金額分流', triggerMode: 'AND' },
+            id: 'gateway_route',
+            position: { x: 400, y: 160 },
+            type: 'exclusiveGateway',
+          },
+          createUserTaskNode('task_high', '高額簽核', 'member-high', 520, 40),
+        ],
+      },
+    });
+  };
+
+  type ApprovedStateOptions = NonNullable<
+    Parameters<typeof buildApprovedState>[0]
+  >;
+
+  /** The task, seats and node of a stage M that asks `memberIds` in order. */
+  const sequentialStageOf = (
+    memberIds: readonly string[],
+  ): Pick<ApprovedStateOptions, 'task' | 'taskCandidates' | 'workflow'> => ({
+    task: {
+      assigneeMemberId: memberIds[0] ?? null,
+      assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+      candidateMemberIds: [...memberIds],
+      decisionPolicySnapshot: { type: 'SEQUENTIAL' },
+      originalAssigneeMemberId: memberIds[0] ?? null,
+    },
+    taskCandidates: memberIds.map((memberId, index): TaskCandidateEntity =>
+      createTaskCandidate({
+        id: `candidate-${memberId}`,
+        memberId,
+        sequence: index,
+        status:
+          index === 0
+            ? TaskCandidateStatusEnum.PENDING
+            : TaskCandidateStatusEnum.WAITING,
+        taskId: 'task-1',
+      }),
+    ),
+    workflow: withNodeData(
+      appendNextUserTask(createLinearUserTaskWorkflow()),
+      'task_finance',
+      {
+        approverResolver: { memberIds: [...memberIds], type: 'DIRECT' },
+        decisionPolicy: { type: 'SEQUENTIAL' },
+      },
+    ),
+  });
+
+  const decideOn = (
+    fixture: RecallFixture,
+    input: Parameters<WorkflowEngineService['decideTask']>[0],
+    options?: Parameters<WorkflowEngineService['decideTask']>[1],
+  ): Promise<unknown> => fixture.service.decideTask(input, options);
+
+  /** The newest task on M that was handed to the signer by a transfer. */
+  const readTransferredStageTaskId = (fixture: RecallFixture): string =>
+    readLatestRows(fixture.savedTasks)
+      .filter(
+        (task): boolean =>
+          task.nodeId === 'task_finance' && task.assigneeMemberId === SIGNER,
+      )
+      .at(-1)?.id ?? '';
+
+  /** M asks two people in order and the signer, first in line, approved: the stage is still open. */
+  const buildSequentialFirstSeatApprovedState = (): Promise<RecallFixture> =>
+    buildApprovedState(sequentialStageOf([SIGNER, 'member-second']));
+
+  /**
+   * M asks [A, B, C] in order; A and B approved and C handed the last seat to
+   * the signer (`transferOptions` says why), who approved on the new task.
+   */
+  const buildSequentialLastSeatTransferredState = (
+    transferOptions?: Parameters<WorkflowEngineService['decideTask']>[1],
+  ): Promise<RecallFixture> =>
+    buildApprovedState({
+      ...sequentialStageOf(['member-a', 'member-b', 'member-c']),
+      beforeApproval: async (fixture): Promise<void> => {
+        await decideOn(fixture, {
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-a',
+          taskId: 'task-1',
+        });
+        await decideOn(fixture, {
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-b',
+          taskId: 'task-1',
+        });
+        await decideOn(
+          fixture,
+          {
+            action: TaskDecisionActionEnum.TRANSFERRED,
+            decidedByMemberId: 'member-c',
+            taskId: 'task-1',
+            transferToMemberId: SIGNER,
+          },
+          transferOptions,
+        );
+      },
+      signerTaskId: (fixture): string => readTaskAssignedTo(fixture, SIGNER).id,
+    });
+
+  /** M asks the signer and a colleague, both must approve; the colleague went first. */
+  const buildEveryoneMustApproveState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: (fixture): Promise<unknown> =>
+        decideOn(fixture, {
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: 'member-colleague',
+          taskId: 'task-1',
+        }),
+      task: {
+        assigneeMemberId: null,
+        assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+        candidateMemberIds: [SIGNER, 'member-colleague'],
+        decisionPolicySnapshot: { type: 'PARALLEL_ALL' },
+        originalAssigneeMemberId: null,
+      },
+      taskCandidates: [SIGNER, 'member-colleague'].map(
+        (memberId): TaskCandidateEntity =>
+          createTaskCandidate({
+            id: `candidate-${memberId}`,
+            memberId,
+            taskId: 'task-1',
+          }),
+      ),
+      workflow: withNodeData(
+        appendNextUserTask(createLinearUserTaskWorkflow()),
+        'task_finance',
+        {
+          approverResolver: {
+            memberIds: [SIGNER, 'member-colleague'],
+            type: 'DIRECT',
+          },
+          decisionPolicy: { type: 'PARALLEL_ALL' },
+        },
+      ),
+    });
+
+  /** M is a single-approver stage whose approver was `member-a`; the SLA timeout escalated it to the signer. */
+  const buildSlaEscalatedToSignerState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: (fixture): Promise<unknown> =>
+        decideOn(
+          fixture,
+          {
+            action: TaskDecisionActionEnum.TRANSFERRED,
+            decidedByMemberId: 'member-a',
+            taskId: 'task-1',
+            transferToMemberId: SIGNER,
+          },
+          { transferReason: SLA_ESCALATION_DELEGATION_REASON },
+        ),
+      signerTaskId: (fixture): string => readTaskAssignedTo(fixture, SIGNER).id,
+      task: {
+        assigneeMemberId: 'member-a',
+        originalAssigneeMemberId: 'member-a',
+      },
+    });
+
+  /** M carries a stage notice the signer asked for; approving it sent the notice. */
+  const buildStageNotifySentState = (): Promise<RecallFixture> =>
+    buildApprovedState({
+      beforeApproval: (built): Promise<unknown> =>
+        built.service.configureAdhocNotification({
+          requestedByMemberId: SIGNER,
+          target: {
+            kind: AdhocTargetKindEnum.MEMBER,
+            memberIds: ['member-observer'],
+          },
+          taskId: 'task-1',
+          type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+        }),
+    });
+
+  const DELEGATE = 'member-delegate';
+
+  /**
+   * A delegation rule of the signer sends M to `member-delegate`; the delegate
+   * approved, so the decision is theirs and the seat carries the rule step.
+   */
+  const buildApprovalGivenByDelegateState =
+    async (): Promise<RecallFixture> => {
+      const fixture = await startFromBeginning(
+        appendNextUserTask(createLinearUserTaskWorkflow()),
+        {
+          delegationResolutionByMember: {
+            [SIGNER]: {
+              delegationChain: [
+                {
+                  from: SIGNER,
+                  reason: 'ALL',
+                  ruleId: 'delegation-rule-1',
+                  to: DELEGATE,
+                },
+              ],
+              finalAssigneeMemberId: DELEGATE,
+            },
+          },
+        },
+      );
+
+      await approveAt(fixture, 'task_finance', DELEGATE);
+
+      return fixture;
+    };
+
+  /**
+   * M approved and N is open, every row seeded instead of produced by the
+   * engine, for the states only a seed reaches. The fixture numbers a log only
+   * when it has no `seq`, so the seeded ones carry their own. `movement` is
+   * what the engine wrote after the approval.
+   */
+  const buildSeededApprovedState = (options: {
+    readonly movement: readonly Partial<ActivityLogEntity>[];
+    readonly seatChain: readonly Readonly<Record<string, unknown>>[];
+    readonly workflow: WorkflowDefinition;
+  }): RecallFixture => {
+    const seeded = (
+      seq: number,
+      fields: Partial<ActivityLogEntity>,
+    ): ActivityLogEntity =>
+      Object.assign(createActivityLog({ id: `seeded-log-${seq}`, ...fields }), {
+        seq: String(seq),
+      });
+
+    return createServiceFixture({
+      additionalProcessTasks: [
+        createTask({
+          assigneeMemberId: NEXT_APPROVER,
+          id: 'task-next-1',
+          nodeId: 'task_next',
+          originalAssigneeMemberId: NEXT_APPROVER,
+          status: TaskStatusEnum.PENDING,
+          tokenId: 'token-1',
+        }),
+      ],
+      currentVersionId: 'template-version-1',
+      decisionTask: createTask({
+        id: 'task-1',
+        nodeId: 'task_finance',
+        status: TaskStatusEnum.COMPLETED,
+        tokenId: 'token-1',
+      }),
+      decisionToken: createWorkflowToken({
+        currentNodeId: 'task_next',
+        status: WorkflowTokenStatusEnum.WAITING,
+      }),
+      formVersionStatus: FormDefinitionVersionStatusEnum.PUBLISHED,
+      processActivityLogs: [
+        seeded(10, {
+          actorMemberId: SIGNER,
+          eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+          nodeId: 'task_finance',
+          payload: { action: 'APPROVED', decisionId: 'decision-seed-1' },
+          taskId: 'task-1',
+        }),
+        ...options.movement.map((fields, index): ActivityLogEntity =>
+          seeded(11 + index, fields),
+        ),
+      ],
+      processTaskCandidates: [
+        createTaskCandidate({
+          delegationChain: options.seatChain,
+          id: 'candidate-signer',
+          memberId: SIGNER,
+          status: TaskCandidateStatusEnum.COMPLETED,
+          taskId: 'task-1',
+        }),
+        createTaskCandidate({
+          id: 'candidate-next',
+          memberId: NEXT_APPROVER,
+          taskId: 'task-next-1',
+        }),
+      ],
+      processTaskDecisions: [
+        createTaskDecision({
+          decidedByMemberId: SIGNER,
+          id: 'decision-seed-1',
+          taskId: 'task-1',
+        }),
+      ],
+      processWorkflowSnapshot: options.workflow,
+      rootOptions: { signerRecallEnabled: true },
+      templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+    });
+  };
+
+  const seededMovement = (
+    ...nodeIds: readonly string[]
+  ): readonly Partial<ActivityLogEntity>[] => [
+    ...nodeIds.slice(1).map((toNodeId, index): Partial<ActivityLogEntity> => ({
+      eventType: ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+      nodeId: toNodeId,
+      payload: {
+        fromNodeId: nodeIds[index],
+        toNodeId,
+        tokenId: 'token-1',
+      },
+    })),
+    {
+      eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+      nodeId: 'task_next',
+      taskId: 'task-next-1',
+    },
+  ];
+
+  /** A delegation rule handed M's seat to the signer: the seat chain ends in the rule step. */
+  const buildDelegatedSeatState = (): RecallFixture =>
+    buildSeededApprovedState({
+      movement: seededMovement('task_finance', 'task_next'),
+      seatChain: [
+        {
+          from: 'member-principal',
+          reason: 'ALL',
+          ruleId: 'delegation-rule-1',
+          to: SIGNER,
+        },
+      ],
+      workflow: appendNextUserTask(createLinearUserTaskWorkflow()),
+    });
+
+  /**
+   * The token went through a WEBHOOK node between M and N. Its result is
+   * written after the commit, so nothing but movement is on record yet.
+   */
+  const buildWebhookOnPathState = (): RecallFixture => {
+    const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+    const webhook = createWebhookServiceTaskWorkflow().nodes.find(
+      ({ id }): boolean => id === 'webhook_erp',
+    );
+
+    if (!webhook) {
+      throw new Error('webhook_erp fixture node was not found');
+    }
+
+    return buildSeededApprovedState({
+      movement: seededMovement('task_finance', 'webhook_erp', 'task_next'),
+      seatChain: [],
+      workflow: {
+        edges: [
+          ...twoStage.edges.filter(
+            ({ id }): boolean => id !== 'edge_task_next',
+          ),
+          createEdge('edge_stage_webhook', 'task_finance', webhook.id),
+          createEdge('edge_webhook_next', webhook.id, 'task_next'),
+        ],
+        meta: twoStage.meta,
+        nodes: [...twoStage.nodes, webhook],
+      },
+    });
+  };
+
+  /** The planner against the fixture's own transaction manager. */
+  const runPlanner = (
+    fixture: RecallFixture,
+    input: { readonly memberId: string; readonly taskId?: string },
+  ): Promise<SignerRecallPlanResult> =>
+    runInTransaction(fixture, (manager): Promise<SignerRecallPlanResult> =>
+      planSignerRecall(manager, {
+        adminReassignReason: ADMIN_REASSIGN_DELEGATION_REASON,
+        enabled: true,
+        manualTransferReason: MANUAL_TRANSFER_DELEGATION_REASON,
+        memberId: input.memberId,
+        taskId: input.taskId ?? 'task-1',
+      }),
+    );
+
+  /** Writes one more activity record after the approval; the fixture gives it the next `seq`. */
+  const appendLog = (
+    fixture: RecallFixture,
+    fields: Partial<ActivityLogEntity> & Pick<ActivityLogEntity, 'eventType'>,
+  ): Promise<unknown> =>
+    runInTransaction(fixture, (manager): Promise<ActivityLogEntity> =>
+      manager.getRepository(ActivityLogEntity).save(
+        Object.assign(new ActivityLogEntity(), {
+          actorMemberId: null,
+          instanceId: 'instance-1',
+          nodeId: null,
+          payload: {},
+          taskId: null,
+          ...fields,
+        }),
+      ),
+    );
+
+  /** Every activity record of the instance, read the way the planner reads the record. */
+  const readLogsOnRecord = (
+    fixture: RecallFixture,
+  ): Promise<readonly ActivityLogEntity[]> =>
+    runInTransaction(
+      fixture,
+      (manager): Promise<readonly ActivityLogEntity[]> =>
+        manager
+          .getRepository(ActivityLogEntity)
+          .find({ where: { instanceId: 'instance-1' } }),
+    );
+
+  /** The event types recorded for one task. */
+  const readLoggedEventTypesOfTask = async (
+    fixture: RecallFixture,
+    taskId: string,
+  ): Promise<ReadonlySet<ActivityLogEventTypeEnum>> =>
+    new Set(
+      (await readLogsOnRecord(fixture))
+        .filter((log): boolean => log.taskId === taskId)
+        .map((log): ActivityLogEventTypeEnum => log.eventType),
+    );
+
+  /** The decisions given on one task. */
+  const readDecisionsOfTask = (
+    fixture: RecallFixture,
+    taskId: string,
+  ): Promise<readonly TaskDecisionEntity[]> =>
+    runInTransaction(
+      fixture,
+      (manager): Promise<readonly TaskDecisionEntity[]> =>
+        manager.getRepository(TaskDecisionEntity).find({ where: { taskId } }),
+    );
+
+  /** The candidate rows (seats) of one task. */
+  const readSeatsOfTask = (
+    fixture: RecallFixture,
+    taskId: string,
+  ): Promise<readonly TaskCandidateEntity[]> =>
+    runInTransaction(
+      fixture,
+      (manager): Promise<readonly TaskCandidateEntity[]> =>
+        manager.getRepository(TaskCandidateEntity).find({ where: { taskId } }),
+    );
+
+  it('allows the baseline: the signer approved and nobody has touched the next stage', async (): Promise<void> => {
+    const fixture = await buildBaselineApprovedState();
+
+    const result = await runPlanner(fixture, { memberId: SIGNER });
+
+    expect(result).toMatchObject({
+      plan: {
+        cancelledTaskIds: [readNextTaskId(fixture)],
+        nextNodeId: 'task_next',
+      },
+    });
+  });
+
+  it('allows a stage on a child token of a NOTIFY split, whose webhook result arrived after the approval', async (): Promise<void> => {
+    const fixture = await buildStageAfterNotifySplitState();
+    const stageTaskId = readTaskIdAt(fixture, 'task_finance');
+    const tokens = await readTokensOnRecord(fixture);
+    const stageToken = tokens.find(
+      ({ id }): boolean => id === readLatestTask(fixture, stageTaskId)?.tokenId,
+    );
+
+    // A child token with no join on its way, and nothing else open.
+    expect(stageToken?.parentTokenId).not.toBeNull();
+    expect(tokens.filter(isOpenToken).map(({ id }): string => id)).toEqual([
+      stageToken?.id,
+    ]);
+
+    await appendLog(fixture, {
+      eventType: ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+      nodeId: 'notify_finance',
+      payload: { action: 'NOTIFY_WEBHOOK' },
+    });
+
+    await expect(
+      runPlanner(fixture, { memberId: SIGNER, taskId: stageTaskId }),
+    ).resolves.toMatchObject({
+      plan: { nextNodeId: 'task_next' },
+    });
+  });
+
+  it('allows an approval given on a seat a colleague handed over with a group-seat transfer', async (): Promise<void> => {
+    const fixture = await buildGroupSeatTransferredToSignerState();
+    const decisions = await runInTransaction(
+      fixture,
+      (manager): Promise<readonly TaskDecisionEntity[]> =>
+        manager
+          .getRepository(TaskDecisionEntity)
+          .find({ where: { taskId: 'task-1' } }),
+    );
+    const seat = (
+      await runInTransaction(
+        fixture,
+        (manager): Promise<readonly TaskCandidateEntity[]> =>
+          manager
+            .getRepository(TaskCandidateEntity)
+            .find({ where: { taskId: 'task-1' } }),
+      )
+    ).find(({ memberId }): boolean => memberId === SIGNER);
+
+    // The task carries the colleague's TRANSFERRED beside the signer's
+    // APPROVED, and the signer's seat chain ends in the manual transfer.
+    expect(
+      decisions.map(({ action, decidedByMemberId }): readonly string[] => [
+        action,
+        decidedByMemberId,
+      ]),
+    ).toEqual([
+      [TaskDecisionActionEnum.TRANSFERRED, 'member-colleague'],
+      [TaskDecisionActionEnum.APPROVED, SIGNER],
+    ]);
+    expect(seat?.status).toBe(TaskCandidateStatusEnum.COMPLETED);
+    expect(seat?.delegationChain.at(-1)).toMatchObject({
+      reason: 'MANUAL_TRANSFER',
+      ruleId: null,
+      to: SIGNER,
+    });
+
+    await expect(
+      runPlanner(fixture, { memberId: SIGNER }),
+    ).resolves.toMatchObject({
+      plan: { seat: { id: seat?.id }, nextNodeId: 'task_next' },
+    });
+  });
+
+  describe('readRecallableTaskId', (): void => {
+    it('answers the signer with the task they approved and nobody else', async (): Promise<void> => {
+      const fixture = await buildBaselineApprovedState();
+
+      await expect(
+        fixture.service.readRecallableTaskId('instance-1', SIGNER),
+      ).resolves.toBe('task-1');
+      await expect(
+        fixture.service.readRecallableTaskId('instance-1', NEXT_APPROVER),
+      ).resolves.toBeNull();
+    });
+
+    it('answers null once the next stage has been decided', async (): Promise<void> => {
+      const fixture = await buildNextStageDecidedState();
+
+      await expect(
+        fixture.service.readRecallableTaskId('instance-1', SIGNER),
+      ).resolves.toBeNull();
+    });
+
+    it('answers null when the planner refuses although the signer approval is still the latest decision', async (): Promise<void> => {
+      const fixture = await buildBaselineApprovedState();
+
+      await expect(
+        fixture.service.readRecallableTaskId('instance-1', SIGNER),
+      ).resolves.toBe('task-1');
+
+      // The next stage's holder gave an instruction: no TASK_DECIDED follows
+      // the signer's, so only the planner (R6) can tell the signer is too late.
+      await appendLog(fixture, {
+        actorMemberId: NEXT_APPROVER,
+        eventType: ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CREATED,
+        nodeId: 'task_next',
+        taskId: readNextTaskId(fixture),
+      });
+
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED,
+      });
+      await expect(
+        fixture.service.readRecallableTaskId('instance-1', SIGNER),
+      ).resolves.toBeNull();
+    });
+
+    it('answers null when the host never set signerRecallEnabled', async (): Promise<void> => {
+      const fixture = await buildApprovedState({ rootOptions: null });
+
+      await expect(
+        fixture.service.readRecallableTaskId('instance-1', SIGNER),
+      ).resolves.toBeNull();
+    });
+  });
+
+  describe('refusing', (): void => {
+    it('refuses another member of the stage: only the signer may take the approval back', async (): Promise<void> => {
+      const fixture = await buildAnyOneOfThreeApprovedState();
+
+      await expect(
+        runPlanner(fixture, { memberId: 'member-colleague' }),
+      ).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.NOT_THE_SIGNER,
+      });
+    });
+
+    it('refuses an approval the SLA timeout gave on the signer behalf', async (): Promise<void> => {
+      const fixture = await buildAutoApprovedState();
+
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.NOT_A_PERSONAL_APPROVAL,
+      });
+    });
+
+    it('refuses once the approval ended the instance', async (): Promise<void> => {
+      const fixture = await buildEndedState();
+
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.INSTANCE_NOT_RUNNING,
+      });
+    });
+
+    describe('when the case no longer stands on one single next stage', (): void => {
+      const refusesAsNotSingle = async (
+        fixture: RecallFixture,
+        taskId = 'task-1',
+        memberId = SIGNER,
+      ): Promise<void> => {
+        await expect(
+          runPlanner(fixture, { memberId, taskId }),
+        ).resolves.toEqual({
+          refusalCode: SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_NOT_SINGLE,
+        });
+      };
+
+      it('refuses when the approval forked the token into two branches', async (): Promise<void> => {
+        const fixture = await buildForkAfterStageState();
+        const tokens = await readTokensOnRecord(fixture);
+
+        // The signer's own token is gone and two new ones are open.
+        expect(tokens.find(({ id }): boolean => id === 'token-1')?.status).toBe(
+          WorkflowTokenStatusEnum.CONSUMED,
+        );
+        expect(tokens.filter(isOpenToken)).toHaveLength(2);
+        expect(
+          (await readTasksOnRecord(fixture)).filter(isOpenTask),
+        ).toHaveLength(2);
+
+        await refusesAsNotSingle(fixture);
+      });
+
+      it('refuses when the approval forked the token into a NOTIFY branch and the next stage', async (): Promise<void> => {
+        const fixture = await buildNotifySplitAfterStageState();
+        const openTokens = (await readTokensOnRecord(fixture)).filter(
+          isOpenToken,
+        );
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        // The NOTIFY branch ended on its own; one token and one task remain,
+        // but they are the fork's children, not the signer's token.
+        expect(openTokens).toHaveLength(1);
+        expect(openTokens[0]?.id).not.toBe('token-1');
+        expect(openTasks).toHaveLength(1);
+        expect(openTasks[0]?.nodeId).toBe('task_next');
+
+        await refusesAsNotSingle(fixture);
+      });
+
+      it('refuses when the sibling branch waits at the join with nothing open on it (R7 alone)', async (): Promise<void> => {
+        const fixture = await buildSiblingWaitingAtJoinState();
+        const openTokens = (await readTokensOnRecord(fixture)).filter(
+          isOpenToken,
+        );
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        // Two tokens are open, but exactly one task is: only R7 can tell.
+        expect(
+          openTokens.map(({ currentNodeId }): string => currentNodeId).sort(),
+        ).toEqual(['task_final', 'task_next']);
+        expect(openTasks.map(({ nodeId }): string => nodeId)).toEqual([
+          'task_next',
+        ]);
+
+        await refusesAsNotSingle(
+          fixture,
+          readTaskIdAt(fixture, 'task_finance'),
+        );
+      });
+
+      it('refuses when the sibling branch still has an open task', async (): Promise<void> => {
+        const fixture = await buildSiblingStillOpenState();
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        expect(openTasks.map(({ nodeId }): string => nodeId).sort()).toEqual([
+          'task_b',
+          'task_next',
+        ]);
+
+        await refusesAsNotSingle(
+          fixture,
+          readTaskIdAt(fixture, 'task_finance'),
+        );
+      });
+
+      it('refuses when the signer countersign request put an ad-hoc task beside the next stage (R8 alone)', async (): Promise<void> => {
+        const fixture = await buildCountersignedNextStageState();
+        const openTokens = (await readTokensOnRecord(fixture)).filter(
+          isOpenToken,
+        );
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        // One token, standing on N; two open tasks on it, one of them ad-hoc.
+        expect(openTokens.map(({ id }): string => id)).toEqual(['token-1']);
+        expect(openTasks.map(({ nodeId }): string => nodeId)).toEqual([
+          'task_next',
+          'task_next',
+        ]);
+        expect(
+          openTasks.filter(({ isAdhoc }): boolean => isAdhoc),
+        ).toHaveLength(1);
+        expect(openTokens[0]).toMatchObject({
+          currentNodeId: 'task_next',
+          status: WorkflowTokenStatusEnum.WAITING,
+        });
+
+        await refusesAsNotSingle(fixture);
+      });
+    });
+
+    describe('when the stage itself or the way to the next stage cannot be taken back', (): void => {
+      it('refuses when the signer branch was the last to reach the join', async (): Promise<void> => {
+        const fixture = await buildLastBranchToJoinState();
+        const stageTaskId = readTaskIdAt(fixture, 'task_finance');
+        const tokens = await readTokensOnRecord(fixture);
+        const stageTask = (await readTasksOnRecord(fixture)).find(
+          ({ id }): boolean => id === stageTaskId,
+        );
+        const stageToken = tokens.find(
+          ({ id }): boolean => id === stageTask?.tokenId,
+        );
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        // Only R10 is left to refuse: one open token, the signer's, on a child
+        // token; one open task, the join's own.
+        expect(stageToken?.parentTokenId).not.toBeNull();
+        expect(tokens.filter(isOpenToken).map(({ id }): string => id)).toEqual([
+          stageToken?.id,
+        ]);
+        expect(openTasks.map(({ nodeId }): string => nodeId)).toEqual([
+          'task_final',
+        ]);
+
+        await expect(
+          runPlanner(fixture, { memberId: SIGNER, taskId: stageTaskId }),
+        ).resolves.toEqual({
+          refusalCode: SIGNER_RECALL_ERROR_CODES.PASSED_JOIN,
+        });
+      });
+
+      const refusesAsNotSettled = [
+        [
+          'refuses when a pre-approval the signer asked for was approved on the stage',
+          buildPreApprovedStageState,
+          TaskDecisionActionEnum.APPROVED,
+        ],
+        [
+          'refuses when a pre-approval was rejected back to the open task and the signer then approved it',
+          buildPreApprovalReturnedToStageState,
+          TaskDecisionActionEnum.REJECTED,
+        ],
+      ] as const;
+
+      it.each(refusesAsNotSettled)(
+        '%s',
+        async (_name, buildState, preApproverAction): Promise<void> => {
+          const fixture = await buildState();
+          const tasks = await readTasksOnRecord(fixture);
+          const adhocTasks = tasks.filter(({ isAdhoc }): boolean => isAdhoc);
+          const decisions = await runInTransaction(
+            fixture,
+            (manager): Promise<readonly TaskDecisionEntity[]> =>
+              manager.getRepository(TaskDecisionEntity).find({}),
+          );
+
+          // The ad-hoc task is on the stage; the one-approval rule, R4a, R4b and R11 all hold:
+          // the only approval among the main tasks is the signer's (D).
+          expect(adhocTasks).toHaveLength(1);
+          expect(adhocTasks[0]).toMatchObject({
+            nodeId: 'task_finance',
+            tokenId: 'token-1',
+          });
+          expect(
+            decisions
+              .filter(({ taskId }): boolean => taskId === adhocTasks[0]?.id)
+              .map(({ action }): TaskDecisionActionEnum => action),
+          ).toEqual([preApproverAction]);
+          expect(
+            decisions
+              .filter(({ taskId }): boolean => taskId === 'task-1')
+              .map(({ action, decidedByMemberId }): readonly string[] => [
+                action,
+                decidedByMemberId,
+              ]),
+          ).toEqual([[TaskDecisionActionEnum.APPROVED, SIGNER]]);
+
+          // X is done, the signer's own seat on it is done, and no other main
+          // task of the stage holds an approval: the one-approval rule, R4a, R4b and R11 pass.
+          const mainTaskIds = tasks
+            .filter(
+              ({ isAdhoc, nodeId, tokenId }): boolean =>
+                !isAdhoc && nodeId === 'task_finance' && tokenId === 'token-1',
+            )
+            .map(({ id }): string => id);
+          const seats = await runInTransaction(
+            fixture,
+            (manager): Promise<readonly TaskCandidateEntity[]> =>
+              manager
+                .getRepository(TaskCandidateEntity)
+                .find({ where: { taskId: 'task-1' } }),
+          );
+
+          expect(tasks.find(({ id }): boolean => id === 'task-1')?.status).toBe(
+            TaskStatusEnum.COMPLETED,
+          );
+          expect(
+            seats.find(({ memberId }): boolean => memberId === SIGNER)?.status,
+          ).toBe(TaskCandidateStatusEnum.COMPLETED);
+          expect(
+            decisions
+              .filter(
+                ({ action, taskId }): boolean =>
+                  action === TaskDecisionActionEnum.APPROVED &&
+                  mainTaskIds.includes(taskId),
+              )
+              .map(({ id, taskId }): readonly string[] => [taskId, id]),
+          ).toEqual([['task-1', expect.any(String)]]);
+
+          await expect(
+            runPlanner(fixture, { memberId: SIGNER }),
+          ).resolves.toEqual({
+            refusalCode:
+              SIGNER_RECALL_ERROR_CODES.STAGE_NOT_SETTLED_BY_THIS_APPROVAL,
+          });
+        },
+      );
+    });
+
+    it('refuses a path that ran a SET_FORM_FIELD node, which already changed the form', async (): Promise<void> => {
+      const fixture = await buildSetFieldOnPathState();
+      const logs = await readLogsOnRecord(fixture);
+
+      expect(
+        logs.filter(
+          (log): boolean =>
+            log.eventType === ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED &&
+            log.payload['action'] === 'SET_FORM_FIELD',
+        ),
+      ).toHaveLength(1);
+
+      // R6 meets the execution record first (it is not an allowed record), so
+      // it names the refusal before R9 looks at the node the token walked.
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED,
+      });
+    });
+
+    describe('when somebody acted on the next stage after the approval', (): void => {
+      const actOnNextStage: ReadonlyArray<
+        readonly [string, () => Promise<RecallFixture>]
+      > = [
+        ['the next stage approved', buildNextStageDecidedState],
+        [
+          'the next stage handed its task to someone else',
+          buildNextStageTransferredState,
+        ],
+        [
+          'a sequential next stage passed to its second approver',
+          buildSequentialNextStagePassedOnState,
+        ],
+        [
+          'the next stage holder gave an ad-hoc instruction',
+          buildNextStageDirectiveState,
+        ],
+        [
+          'the next stage timeout approved on its holder behalf',
+          buildNextStageAutoApprovedState,
+        ],
+        [
+          'the next stage timeout escalated its task',
+          buildNextStageEscalatedState,
+        ],
+        [
+          'an administrator reassigned the next stage task',
+          buildNextStageReassignedState,
+        ],
+      ];
+
+      it.each(actOnNextStage)(
+        '%s',
+        async (_name, buildState): Promise<void> => {
+          const fixture = await buildState();
+
+          await expect(
+            runPlanner(fixture, { memberId: SIGNER }),
+          ).resolves.toEqual({
+            refusalCode: SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED,
+          });
+        },
+      );
+
+      it('the sequential case starts from a real hand-over: both the decision and the activation are on record', async (): Promise<void> => {
+        const fixture = await buildSequentialNextStagePassedOnState();
+
+        const loggedEventTypes = await readLoggedEventTypesOfTask(
+          fixture,
+          readNextTaskId(fixture),
+        );
+
+        expect(loggedEventTypes).toContain(
+          ActivityLogEventTypeEnum.TASK_DECIDED,
+        );
+        expect(loggedEventTypes).toContain(
+          ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
+        );
+      });
+    });
+
+    describe('what the SLA timeout and an administrator leave on the record', (): void => {
+      const readNextStageLogs = async (
+        fixture: RecallFixture,
+      ): Promise<readonly ActivityLogEntity[]> =>
+        (await readLogsOnRecord(fixture)).filter(
+          (log): boolean => log.taskId === readNextTaskId(fixture),
+        );
+
+      it('the automatic-approval case starts from a real automatic approval: the decision record says so', async (): Promise<void> => {
+        const fixture = await buildNextStageAutoApprovedState();
+        const decided = (await readNextStageLogs(fixture)).filter(
+          (log): boolean =>
+            log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+        );
+
+        expect(decided).toHaveLength(1);
+        expect(decided[0]?.payload).toMatchObject({
+          action: 'APPROVED',
+          automatic: 'SLA_AUTO_APPROVE',
+        });
+      });
+
+      it('the escalation case starts from a real escalation: a transfer whose last step is the SLA step', async (): Promise<void> => {
+        const fixture = await buildNextStageEscalatedState();
+        const decided = (await readNextStageLogs(fixture)).filter(
+          (log): boolean =>
+            log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+        );
+        const [escalatedTask] = (await readTasksOnRecord(fixture)).filter(
+          ({ delegationChain }): boolean =>
+            delegationChain.at(-1)?.['reason'] ===
+            SLA_ESCALATION_DELEGATION_REASON,
+        );
+
+        expect(decided).toHaveLength(1);
+        expect(decided[0]?.payload).toMatchObject({ action: 'TRANSFERRED' });
+        expect(escalatedTask?.nodeId).toBe('task_next');
+      });
+
+      it('the reassignment case starts from a real reassignment: TASK_REASSIGNED on the next stage task and no TASK_DECIDED', async (): Promise<void> => {
+        const fixture = await buildNextStageReassignedState();
+        const eventTypes = (await readNextStageLogs(fixture)).map(
+          ({ eventType }): ActivityLogEventTypeEnum => eventType,
+        );
+
+        expect(eventTypes).toContain(ActivityLogEventTypeEnum.TASK_REASSIGNED);
+        expect(eventTypes).not.toContain(ActivityLogEventTypeEnum.TASK_DECIDED);
+      });
+    });
+  });
+
+  describe('records and notices that arrive after the approval', (): void => {
+    it('allows a stage whose way to the next stage passes a node its entry condition skips', async (): Promise<void> => {
+      const fixture = await buildSkippedStageBetweenState();
+      const logs = await readLogsOnRecord(fixture);
+
+      // The token did walk through the skipped node, on record.
+      expect(
+        logs.some(
+          (log): boolean =>
+            log.eventType === ActivityLogEventTypeEnum.TOKEN_ADVANCED &&
+            log.nodeId === 'task_optional' &&
+            log.payload['skippedByEntryCondition'] === true &&
+            log.payload['tokenId'] === 'token-1',
+        ),
+      ).toBe(true);
+      expect(
+        (await readTasksOnRecord(fixture)).filter(
+          ({ nodeId }): boolean => nodeId === 'task_optional',
+        ),
+      ).toEqual([]);
+
+      await expect(
+        runPlanner(fixture, { memberId: SIGNER }),
+      ).resolves.toMatchObject({
+        plan: {
+          cancelledTaskIds: [readNextTaskId(fixture)],
+          nextNodeId: 'task_next',
+        },
+      });
+    });
+
+    it('allows a stage whose way to the next stage passes an exclusive gateway', async (): Promise<void> => {
+      const fixture = await buildExclusiveGatewayBetweenState();
+      const logs = await readLogsOnRecord(fixture);
+
+      // The token went through the gateway on its default branch, on record.
+      expect(
+        logs.some(
+          (log): boolean =>
+            log.eventType === ActivityLogEventTypeEnum.TOKEN_ADVANCED &&
+            log.payload['toNodeId'] === 'gateway_route' &&
+            log.payload['tokenId'] === 'token-1',
+        ),
+      ).toBe(true);
+      expect(
+        (await readTasksOnRecord(fixture))
+          .filter(isOpenTask)
+          .map(({ nodeId }): string => nodeId),
+      ).toEqual(['task_next']);
+
+      await expect(
+        runPlanner(fixture, { memberId: SIGNER }),
+      ).resolves.toMatchObject({
+        plan: {
+          cancelledTaskIds: [readNextTaskId(fixture)],
+          nextNodeId: 'task_next',
+        },
+      });
+    });
+
+    it('allows the recall after the signer cancelled their own completion notice', async (): Promise<void> => {
+      const fixture = await buildApprovedState({
+        beforeApproval: (built): Promise<unknown> =>
+          built.service.configureAdhocNotification({
+            requestedByMemberId: SIGNER,
+            target: {
+              kind: AdhocTargetKindEnum.MEMBER,
+              memberIds: ['member-observer'],
+            },
+            taskId: 'task-1',
+            type: AdhocDirectiveTypeEnum.COMPLETION_NOTIFY,
+          }),
+      });
+      const notice = fixture.savedAdhocDirectives.find(
+        ({ type }): boolean =>
+          type === AdhocDirectiveTypeEnum.COMPLETION_NOTIFY,
+      );
+
+      expect(notice?.status).toBe(AdhocDirectiveStatusEnum.PENDING);
+
+      await fixture.service.cancelAdhocDirective({
+        cancelledByMemberId: SIGNER,
+        directiveId: notice?.id ?? '',
+      });
+
+      // The cancellation is on record after the approval, by the signer.
+      const logs = await readLogsOnRecord(fixture);
+      const decidedSeq = BigInt(
+        logs.find(
+          (log): boolean =>
+            log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+        )?.seq ?? '0',
+      );
+      const cancelled = logs.filter(
+        (log): boolean =>
+          log.eventType === ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CANCELLED,
+      );
+
+      expect(cancelled).toHaveLength(1);
+      expect(BigInt(cancelled[0]?.seq ?? '0')).toBeGreaterThan(decidedSeq);
+      expect(cancelled[0]).toMatchObject({
+        actorMemberId: SIGNER,
+        payload: { directiveType: AdhocDirectiveTypeEnum.COMPLETION_NOTIFY },
+      });
+
+      await expect(
+        runPlanner(fixture, { memberId: SIGNER }),
+      ).resolves.toMatchObject({ plan: { nextNodeId: 'task_next' } });
+    });
+
+    it('refuses once the approval itself sent the stage notice', async (): Promise<void> => {
+      const fixture = await buildStageNotifySentState();
+      const notice = fixture.savedAdhocDirectives
+        .filter(
+          ({ type }): boolean => type === AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+        )
+        .at(-1);
+      const logs = await readLogsOnRecord(fixture);
+
+      // The notice was consumed by the approval and nothing but movement is on
+      // record after D, so R6 lets it through and only R14 can refuse.
+      expect(notice).toMatchObject({
+        originNodeId: 'task_finance',
+        status: AdhocDirectiveStatusEnum.CONSUMED,
+      });
+      expect(notice?.consumedAt).toBeInstanceOf(Date);
+      const decidedSeq = BigInt(
+        logs.find(
+          (log): boolean =>
+            log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+        )?.seq ?? '0',
+      );
+
+      expect(
+        logs
+          .filter((log): boolean => BigInt(log.seq) > decidedSeq)
+          .map(({ eventType }): ActivityLogEventTypeEnum => eventType),
+      ).toEqual([
+        ActivityLogEventTypeEnum.TOKEN_ADVANCED,
+        ActivityLogEventTypeEnum.TASK_CREATED,
+      ]);
+
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.STAGE_NOTIFY_SENT,
+      });
+    });
+  });
+
+  describe('on the stage the signer approved', (): void => {
+    const NOT_SETTLED =
+      SIGNER_RECALL_ERROR_CODES.STAGE_NOT_SETTLED_BY_THIS_APPROVAL;
+
+    /** The engine put the delegate on the seat, with the rule step as the tail. */
+    const expectDelegateHoldsTheSeat = (
+      seats: readonly TaskCandidateEntity[],
+    ): void => {
+      expect(seats).toHaveLength(1);
+      expect(seats[0]).toMatchObject({
+        memberId: DELEGATE,
+        status: TaskCandidateStatusEnum.COMPLETED,
+      });
+      expect(seats[0]?.delegationChain.at(-1)).toMatchObject({
+        ruleId: 'delegation-rule-1',
+        to: DELEGATE,
+      });
+    };
+
+    it('refuses the principal when their delegate gave the approval', async (): Promise<void> => {
+      const fixture = await buildApprovalGivenByDelegateState();
+      const taskId = readTaskIdAt(fixture, 'task_finance');
+      const seats = await readSeatsOfTask(fixture, taskId);
+
+      expectDelegateHoldsTheSeat(seats);
+
+      await expect(
+        runPlanner(fixture, { memberId: SIGNER, taskId }),
+      ).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.NOT_THE_SIGNER,
+      });
+    });
+
+    it('refuses the delegate too, in a real run, since the seat they hold came by a delegation rule', async (): Promise<void> => {
+      const fixture = await buildApprovalGivenByDelegateState();
+      const taskId = readTaskIdAt(fixture, 'task_finance');
+      const seats = await readSeatsOfTask(fixture, taskId);
+
+      expectDelegateHoldsTheSeat(seats);
+
+      // Without the principal check the rule step would still stop it.
+      await expect(
+        runPlanner(fixture, { memberId: DELEGATE, taskId }),
+      ).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.DELEGATED_SEAT,
+      });
+    });
+
+    it('refuses the second of two required approvals, which only settles the stage together with the first', async (): Promise<void> => {
+      const fixture = await buildEveryoneMustApproveState();
+      const decisions = await readDecisionsOfTask(fixture, 'task-1');
+
+      expect(
+        decisions
+          .map(
+            ({ action, decidedByMemberId }): string =>
+              `${decidedByMemberId}:${action}`,
+          )
+          .sort(),
+      ).toEqual([
+        `member-colleague:${TaskDecisionActionEnum.APPROVED}`,
+        `${SIGNER}:${TaskDecisionActionEnum.APPROVED}`,
+      ]);
+      expect(readLatestTask(fixture, 'task-1')?.status).toBe(
+        TaskStatusEnum.COMPLETED,
+      );
+
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: NOT_SETTLED,
+      });
+    });
+
+    it('refuses the first of two sequential approvers, whose approval only passed the task on', async (): Promise<void> => {
+      const fixture = await buildSequentialFirstSeatApprovedState();
+
+      // The task is still open and the next seat was activated on record.
+      expect(readLatestTask(fixture, 'task-1')?.status).toBe(
+        TaskStatusEnum.PENDING,
+      );
+      expect(await readLoggedEventTypesOfTask(fixture, 'task-1')).toContain(
+        ActivityLogEventTypeEnum.TASK_CANDIDATE_ACTIVATED,
+      );
+
+      // The one-approval rule cannot be what refuses: the signer's approval is the only decision
+      // on the task. R11 cannot be either: the signer's own seat is COMPLETED.
+      expect(
+        (await readDecisionsOfTask(fixture, 'task-1')).map(
+          ({ action, decidedByMemberId }): string =>
+            `${decidedByMemberId}:${action}`,
+        ),
+      ).toEqual([`${SIGNER}:${TaskDecisionActionEnum.APPROVED}`]);
+      expect(
+        (await readSeatsOfTask(fixture, 'task-1')).find(
+          ({ memberId }): boolean => memberId === SIGNER,
+        ),
+      ).toMatchObject({ status: TaskCandidateStatusEnum.COMPLETED });
+
+      await expect(runPlanner(fixture, { memberId: SIGNER })).resolves.toEqual({
+        refusalCode: NOT_SETTLED,
+      });
+    });
+
+    const lastSeatTransfers: ReadonlyArray<
+      readonly [string, () => Promise<RecallFixture>, string]
+    > = [
+      [
+        'refuses the last of three sequential approvers when the seat came by a transfer, since the first two approvals sit on the task it left',
+        (): Promise<RecallFixture> => buildSequentialLastSeatTransferredState(),
+        MANUAL_TRANSFER_DELEGATION_REASON,
+      ],
+      [
+        'refuses the same stage when the SLA timeout escalated the last seat, and says so as a stage that is not settled, not as a delegated seat',
+        (): Promise<RecallFixture> =>
+          buildSequentialLastSeatTransferredState({
+            transferReason: SLA_ESCALATION_DELEGATION_REASON,
+          }),
+        SLA_ESCALATION_DELEGATION_REASON,
+      ],
+    ];
+
+    it.each(lastSeatTransfers)(
+      '%s',
+      async (_name, buildState, tailReason): Promise<void> => {
+        const fixture = await buildState();
+        const taskId = readTransferredStageTaskId(fixture);
+        const earlierDecisions = await readDecisionsOfTask(fixture, 'task-1');
+        const [seat] = await readSeatsOfTask(fixture, taskId);
+
+        // The first two approvals and the transfer stay on the original task.
+        expect(taskId).not.toBe('task-1');
+        expect(readLatestTask(fixture, 'task-1')?.status).toBe(
+          TaskStatusEnum.TRANSFERRED,
+        );
+        expect(
+          earlierDecisions.map(({ action }): TaskDecisionActionEnum => action),
+        ).toEqual([
+          TaskDecisionActionEnum.APPROVED,
+          TaskDecisionActionEnum.APPROVED,
+          TaskDecisionActionEnum.TRANSFERRED,
+        ]);
+        // The signer's own task holds only the signer approval and a finished seat
+        // whose chain ends in the transfer.
+        expect(
+          (await readDecisionsOfTask(fixture, taskId)).map(
+            ({ action }): TaskDecisionActionEnum => action,
+          ),
+        ).toEqual([TaskDecisionActionEnum.APPROVED]);
+        expect(readLatestTask(fixture, taskId)?.status).toBe(
+          TaskStatusEnum.COMPLETED,
+        );
+        expect(seat).toMatchObject({
+          memberId: SIGNER,
+          status: TaskCandidateStatusEnum.COMPLETED,
+        });
+        expect(seat?.delegationChain.at(-1)).toMatchObject({
+          reason: tailReason,
+          to: SIGNER,
+        });
+
+        await expect(
+          runPlanner(fixture, { memberId: SIGNER, taskId }),
+        ).resolves.toEqual({ refusalCode: NOT_SETTLED });
+      },
+    );
+
+    it('refuses a single-approver stage whose seat came to the signer by an SLA escalation', async (): Promise<void> => {
+      const fixture = await buildSlaEscalatedToSignerState();
+      const taskId = readTransferredStageTaskId(fixture);
+      const [seat] = await readSeatsOfTask(fixture, taskId);
+
+      expect(taskId).not.toBe('task-1');
+      expect(seat?.delegationChain.at(-1)).toMatchObject({
+        reason: SLA_ESCALATION_DELEGATION_REASON,
+        ruleId: null,
+        to: SIGNER,
+      });
+
+      await expect(
+        runPlanner(fixture, { memberId: SIGNER, taskId }),
+      ).resolves.toEqual({
+        refusalCode: SIGNER_RECALL_ERROR_CODES.DELEGATED_SEAT,
+      });
+    });
+  });
+
+  describe('recallTaskApproval', (): void => {
+    const recall = (
+      fixture: RecallFixture,
+      overrides: {
+        readonly comment?: string;
+        readonly memberId?: string;
+        readonly taskId?: string;
+      } = {},
+    ): Promise<TaskEntity> =>
+      fixture.service.recallTaskApproval({
+        comment: overrides.comment,
+        recalledByMemberId: overrides.memberId ?? SIGNER,
+        taskId: overrides.taskId ?? 'task-1',
+      });
+
+    const captureRefusal = (run: Promise<unknown>): Promise<unknown> =>
+      run.then(
+        (): unknown => undefined,
+        (rejection: unknown): unknown => rejection,
+      );
+
+    const countCalls = (mock: unknown): number =>
+      (mock as jest.Mock).mock.calls.length;
+
+    const readLastCall = (mock: unknown): readonly unknown[] =>
+      (mock as jest.Mock).mock.calls.at(-1) ?? [];
+
+    /** Everything a recall could write, copied so that a later write cannot reach it. */
+    const snapshotWrites = async (fixture: RecallFixture): Promise<unknown> =>
+      structuredClone({
+        assignedNotifications: countCalls(
+          fixture.notificationService.createTaskAssignedNotification,
+        ),
+        decisions: await runInTransaction(
+          fixture,
+          (manager): Promise<readonly TaskDecisionEntity[]> =>
+            manager.getRepository(TaskDecisionEntity).find({}),
+        ),
+        directives: fixture.savedAdhocDirectives,
+        events: fixture.savedInstanceEvents,
+        logs: await readLogsOnRecord(fixture),
+        seats: await runInTransaction(
+          fixture,
+          (manager): Promise<readonly TaskCandidateEntity[]> =>
+            manager.getRepository(TaskCandidateEntity).find({}),
+        ),
+        supersededNotifications: countCalls(
+          fixture.notificationService.supersedeInstanceTaskNotifications,
+        ),
+        tasks: await readTasksOnRecord(fixture),
+        tokens: await readTokensOnRecord(fixture),
+      });
+
+    const readLatestSeq = (logs: readonly ActivityLogEntity[]): bigint =>
+      logs.reduce(
+        (largest, { seq }): bigint =>
+          BigInt(seq) > largest ? BigInt(seq) : largest,
+        BigInt(0),
+      );
+
+    it('cancels the next stage and gives the signer a task of their own on a new token', async (): Promise<void> => {
+      const fixture = await buildApprovedState({
+        instanceEventObserver: { onInstanceEvent: jest.fn() },
+        workflow: appendNextUserTask(
+          createLinearUserTaskWorkflow({ slaDuration: 'PT2H' }),
+        ),
+      });
+      const nextTaskId = readNextTaskId(fixture);
+      const decisionsBefore = await readDecisionsOfTask(fixture, 'task-1');
+      const [signerSeat] = await readSeatsOfTask(fixture, 'task-1');
+      const latestSeqBefore = readLatestSeq(await readLogsOnRecord(fixture));
+      const supersededBefore = countCalls(
+        fixture.notificationService.supersedeInstanceTaskNotifications,
+      );
+      const assignedBefore = countCalls(
+        fixture.notificationService.createTaskAssignedNotification,
+      );
+      const startedAt = Date.now();
+
+      const recalled = await recall(fixture, { comment: '  wrong amount  ' });
+
+      const finishedAt = Date.now();
+      const tokens = await readTokensOnRecord(fixture);
+      const oldToken = tokens.find(({ id }): boolean => id === 'token-1');
+      const newToken = tokens.find(
+        ({ id }): boolean => id === recalled.tokenId,
+      );
+      const tasks = await readTasksOnRecord(fixture);
+
+      // The token that carried the approval on is consumed; a new one waits on M.
+      expect(recalled.tokenId).not.toBe('token-1');
+      expect(oldToken?.status).toBe(WorkflowTokenStatusEnum.CONSUMED);
+      expect(newToken).toMatchObject({
+        currentNodeId: 'task_finance',
+        parentTokenId: null,
+        status: WorkflowTokenStatusEnum.WAITING,
+      });
+      expect(tokens.filter(isOpenToken).map(({ id }): string => id)).toEqual([
+        recalled.tokenId,
+      ]);
+
+      // N is cancelled with its seats; X and its decision stay as they were.
+      expect(tasks.find(({ id }): boolean => id === nextTaskId)?.status).toBe(
+        TaskStatusEnum.CANCELLED,
+      );
+      expect(
+        (await readSeatsOfTask(fixture, nextTaskId)).map(
+          ({ status }): TaskCandidateStatusEnum => status,
+        ),
+      ).toEqual([TaskCandidateStatusEnum.CANCELLED]);
+      expect(tasks.find(({ id }): boolean => id === 'task-1')?.status).toBe(
+        TaskStatusEnum.COMPLETED,
+      );
+      expect(await readDecisionsOfTask(fixture, 'task-1')).toEqual(
+        decisionsBefore,
+      );
+      expect(tasks.filter(isOpenTask).map(({ id }): string => id)).toEqual([
+        recalled.id,
+      ]);
+
+      // The new task is the signer's alone, and it is new as of this recall.
+      expect(recalled).toMatchObject({
+        assigneeMemberId: SIGNER,
+        assignmentType: TaskAssignmentTypeEnum.DIRECT_MEMBER,
+        candidateMemberIds: [SIGNER],
+        completedAt: null,
+        decisionPolicySnapshot: { type: 'SINGLE' },
+        delegationChain: [],
+        hasFillableFields: false,
+        instanceId: 'instance-1',
+        isAdhoc: false,
+        nodeId: 'task_finance',
+        openCandidateMemberIds: [SIGNER],
+        openedAt: null,
+        originalAssigneeMemberId: signerSeat?.originalMemberId,
+        status: TaskStatusEnum.PENDING,
+      });
+      expect(recalled.nodeLabel).toEqual(expect.any(String));
+      expect(recalled.createdAt.getTime()).toBeGreaterThanOrEqual(startedAt);
+      expect(recalled.createdAt.getTime()).toBeLessThanOrEqual(finishedAt);
+      expect(recalled.createdAt).toEqual(oldToken?.consumedAt);
+      expect(recalled.slaDueAt?.getTime()).toBe(
+        recalled.createdAt.getTime() + 2 * 60 * 60 * 1000,
+      );
+      expect(await readSeatsOfTask(fixture, recalled.id)).toEqual([
+        expect.objectContaining({
+          claimedAt: null,
+          decidedAt: null,
+          delegationChain: [],
+          memberId: SIGNER,
+          originalMemberId: signerSeat?.originalMemberId,
+          sequence: null,
+          sourceType: signerSeat?.sourceType,
+          status: TaskCandidateStatusEnum.PENDING,
+        }),
+      ]);
+
+      // On the record: the recall, then the new token, then the new task.
+      const newLogs = (await readLogsOnRecord(fixture)).filter(
+        ({ seq }): boolean => BigInt(seq) > latestSeqBefore,
+      );
+
+      expect(
+        newLogs.map(({ eventType }): ActivityLogEventTypeEnum => eventType),
+      ).toEqual([
+        ActivityLogEventTypeEnum.TASK_RECALLED,
+        ActivityLogEventTypeEnum.TOKEN_CREATED,
+        ActivityLogEventTypeEnum.TASK_CREATED,
+      ]);
+      expect(newLogs[0]).toMatchObject({
+        actorMemberId: SIGNER,
+        nodeId: 'task_finance',
+        payload: {
+          cancelledNodeId: 'task_next',
+          cancelledTaskIds: [nextTaskId],
+          comment: 'wrong amount',
+          decisionId: decisionsBefore[0]?.id,
+          recalledTaskId: 'task-1',
+        },
+        taskId: 'task-1',
+      });
+      // The new token and task do not exist yet when it is written.
+      expect(JSON.stringify(newLogs[0]?.payload)).not.toContain(recalled.id);
+      expect(JSON.stringify(newLogs[0]?.payload)).not.toContain(
+        recalled.tokenId,
+      );
+      expect(newLogs[1]).toMatchObject({
+        nodeId: 'task_finance',
+        payload: {
+          recalledFromNodeId: 'task_next',
+          recalledTaskId: 'task-1',
+          tokenId: recalled.tokenId,
+        },
+      });
+      expect(newLogs[2]).toMatchObject({
+        actorMemberId: SIGNER,
+        nodeId: 'task_finance',
+        payload: {
+          assigneeMemberId: SIGNER,
+          recalledTaskId: 'task-1',
+          tokenId: recalled.tokenId,
+        },
+        taskId: recalled.id,
+      });
+
+      // The host is told the stage is open again, and N's mails are withdrawn.
+      expect(fixture.savedInstanceEvents.at(-1)).toMatchObject({
+        payload: { nodeId: 'task_finance', taskIds: [recalled.id] },
+        type: 'NODE_ACTIVATED',
+      });
+      expect(
+        countCalls(
+          fixture.notificationService.supersedeInstanceTaskNotifications,
+        ),
+      ).toBe(supersededBefore + 1);
+      expect(
+        readLastCall(
+          fixture.notificationService.supersedeInstanceTaskNotifications,
+        )[0],
+      ).toMatchObject({ instanceId: 'instance-1' });
+      // It runs in the recall's own transaction, not one of its own: the
+      // withdrawal rolls back with everything else if the recall fails.
+      expect(
+        (
+          readLastCall(
+            fixture.notificationService.supersedeInstanceTaskNotifications,
+          )[0] as { readonly manager: unknown }
+        ).manager,
+      ).toBe(
+        await runInTransaction(fixture, (manager): Promise<EntityManager> =>
+          Promise.resolve(manager),
+        ),
+      );
+      // N's mails are withdrawn before the new task's own mail goes out, so
+      // the withdrawal cannot reach the signer's new notice.
+      expect(
+        (
+          fixture.notificationService
+            .supersedeInstanceTaskNotifications as unknown as jest.Mock
+        ).mock.invocationCallOrder.at(-1),
+      ).toBeLessThan(
+        (
+          fixture.notificationService
+            .createTaskAssignedNotification as unknown as jest.Mock
+        ).mock.invocationCallOrder.at(-1) as number,
+      );
+      expect(
+        countCalls(fixture.notificationService.createTaskAssignedNotification),
+      ).toBe(assignedBefore + 1);
+      expect(
+        readLastCall(
+          fixture.notificationService.createTaskAssignedNotification,
+        )[0],
+      ).toMatchObject({ task: { id: recalled.id } });
+      expect(
+        (
+          await runInTransaction(
+            fixture,
+            (manager): Promise<ApprovalInstanceEntity | null> =>
+              manager
+                .getRepository(ApprovalInstanceEntity)
+                .findOne({ where: { id: 'instance-1' } }),
+          )
+        )?.state,
+      ).toBe(ApprovalInstanceStateEnum.RUNNING);
+    });
+
+    it('the new token keeps the parent of the one it replaces', async (): Promise<void> => {
+      const fixture = await buildStageAfterNotifySplitState();
+      const stageTaskId = readTaskIdAt(fixture, 'task_finance');
+      const oldToken = (await readTokensOnRecord(fixture)).find(
+        ({ id }): boolean =>
+          id === readLatestTask(fixture, stageTaskId)?.tokenId,
+      );
+
+      expect(oldToken?.parentTokenId).not.toBeNull();
+
+      const recalled = await recall(fixture, { taskId: stageTaskId });
+
+      expect(
+        (await readTokensOnRecord(fixture)).find(
+          ({ id }): boolean => id === recalled.tokenId,
+        ),
+      ).toMatchObject({
+        currentNodeId: 'task_finance',
+        parentTokenId: oldToken?.parentTokenId,
+        status: WorkflowTokenStatusEnum.WAITING,
+      });
+    });
+
+    it('takes the instance lock before the planner reads the task again, the instance or the record', async (): Promise<void> => {
+      const fixture = await buildBaselineApprovedState();
+      // Every mock call takes the next number of one shared counter, so a
+      // call made after this marker belongs to the recall and not to the setup.
+      const marker = jest.fn();
+
+      marker();
+
+      const recallStart = marker.mock.invocationCallOrder[0] as number;
+      const afterStart = (order: number): boolean => order > recallStart;
+
+      await recall(fixture);
+
+      const lockCalls = fixture.managerQuery.mock.calls.flatMap(
+        (
+          [sql, params],
+          index,
+        ): readonly (readonly [number, readonly unknown[]])[] => {
+          const order = fixture.managerQuery.mock.invocationCallOrder[
+            index
+          ] as number;
+
+          return sql.includes('pg_advisory_xact_lock') && afterStart(order)
+            ? [[order, params]]
+            : [];
+        },
+      );
+      const taskReads =
+        fixture.transactionalTaskFindOne.mock.invocationCallOrder.filter(
+          afterStart,
+        );
+      const plannerReads = [
+        ...fixture.transactionalInstanceFindOne.mock.invocationCallOrder,
+        ...fixture.transactionalActivityLogFind.mock.invocationCallOrder,
+      ].filter(afterStart);
+
+      expect(lockCalls).toHaveLength(1);
+      expect(lockCalls[0]?.[1]).toEqual(['instance-1']);
+
+      const lockOrder = lockCalls[0]?.[0] as number;
+
+      // The task is read once to learn the instance to lock, and read again
+      // under the lock: a read made before the lock could see a decision that
+      // is still in flight.
+      expect(taskReads.length).toBeGreaterThanOrEqual(2);
+      expect(taskReads[0] as number).toBeLessThan(lockOrder);
+      expect(taskReads[1] as number).toBeGreaterThan(lockOrder);
+      expect(plannerReads.length).toBeGreaterThan(0);
+      expect(Math.min(...plannerReads)).toBeGreaterThan(lockOrder);
+    });
+
+    it('signs again after the recall and the next stage still keeps the signer out and tells its people again', async (): Promise<void> => {
+      const fixture = await buildApprovedState({
+        workflow: withNodeData(
+          appendNextUserTask(createLinearUserTaskWorkflow()),
+          'task_next',
+          {
+            approverResolver: {
+              memberIds: [SIGNER, NEXT_APPROVER],
+              type: 'DIRECT',
+            },
+            excludeNodeActors: { nodeIds: ['task_finance'], whenEmpty: 'FAIL' },
+          },
+        ),
+      });
+      const isNextStageNotice = (call: readonly unknown[]): boolean =>
+        (call[0] as { readonly task: TaskEntity }).task.nodeId === 'task_next';
+      const readNextStageNotices = (): readonly (readonly unknown[])[] =>
+        (
+          fixture.notificationService
+            .createTaskAssignedNotification as unknown as jest.Mock
+        ).mock.calls.filter(isNextStageNotice);
+
+      // Before the recall the signer is kept out of N: only the other person has it.
+      expect(readNextStageNotices()).toHaveLength(1);
+
+      const recalled = await recall(fixture);
+
+      await decideOn(fixture, {
+        action: TaskDecisionActionEnum.APPROVED,
+        decidedByMemberId: SIGNER,
+        taskId: recalled.id,
+      });
+
+      const nextTasks = (await readTasksOnRecord(fixture)).filter(
+        ({ nodeId }): boolean => nodeId === 'task_next',
+      );
+      const openNextTasks = nextTasks.filter(isOpenTask);
+
+      expect(nextTasks).toHaveLength(2);
+      expect(openNextTasks).toHaveLength(1);
+      expect(openNextTasks[0]?.id).not.toBe(readNextTaskId(fixture));
+      expect(openNextTasks[0]?.assigneeMemberId).toBe(NEXT_APPROVER);
+      expect(
+        (await readSeatsOfTask(fixture, openNextTasks[0]?.id ?? '')).map(
+          ({ memberId }): string => memberId,
+        ),
+      ).toEqual([NEXT_APPROVER]);
+      expect(readNextStageNotices()).toHaveLength(2);
+      expect(
+        readNextStageNotices().map(
+          (call): string | null =>
+            (call[0] as { readonly task: TaskEntity }).task.assigneeMemberId,
+        ),
+      ).toEqual([NEXT_APPROVER, NEXT_APPROVER]);
+    });
+
+    it('keeps a skipped stage out of the next stage exclusions again after a recall and a second approval', async (): Promise<void> => {
+      const OPTIONAL_STAGE_APPROVER = 'member-optional';
+      const EVERYONE = [SIGNER, NEXT_APPROVER, OPTIONAL_STAGE_APPROVER].sort();
+      const twoStage = appendNextUserTask(createLinearUserTaskWorkflow());
+      // M -> an optional stage its entry condition skips -> N, and N keeps out
+      // the people who approved that optional stage.
+      const fixture = await buildApprovedState({
+        // An earlier round of the optional stage that one person approved: if
+        // the skip were not noticed, N would keep that person out.
+        earlierRecords: {
+          additionalProcessTasks: [
+            createTask({
+              assigneeMemberId: OPTIONAL_STAGE_APPROVER,
+              createdAt: new Date('2026-05-03T09:00:00.000Z'),
+              id: 'task-optional-earlier',
+              nodeId: 'task_optional',
+              status: TaskStatusEnum.COMPLETED,
+              tokenId: 'token-earlier',
+            }),
+          ],
+          processActivityLogs: [
+            createSequencedActivityLog(1, {
+              eventType: ActivityLogEventTypeEnum.TASK_CREATED,
+              nodeId: 'task_optional',
+              payload: { tokenId: 'token-earlier' },
+              taskId: 'task-optional-earlier',
+            }),
+          ],
+          processTaskDecisions: [
+            createTaskDecision({
+              action: TaskDecisionActionEnum.APPROVED,
+              decidedAt: new Date('2026-05-03T10:00:00.000Z'),
+              decidedByMemberId: OPTIONAL_STAGE_APPROVER,
+              id: 'decision-optional-earlier',
+              taskId: 'task-optional-earlier',
+            }),
+          ],
+        },
+        formData: { amount: 10 },
+        workflow: withNodeData(
+          withNodeData(
+            {
+              edges: [
+                ...twoStage.edges.filter(
+                  ({ id }): boolean => id !== 'edge_task_next',
+                ),
+                createEdge(
+                  'edge_stage_optional',
+                  'task_finance',
+                  'task_optional',
+                ),
+                createEdge('edge_optional_next', 'task_optional', 'task_next'),
+              ],
+              meta: twoStage.meta,
+              nodes: [
+                ...twoStage.nodes,
+                createUserTaskNode(
+                  'task_optional',
+                  '大額加簽',
+                  OPTIONAL_STAGE_APPROVER,
+                  400,
+                  160,
+                ),
+              ],
+            },
+            'task_optional',
+            { entryCondition: 'form.amount > 1000' },
+          ),
+          'task_next',
+          {
+            approverResolver: {
+              memberIds: [SIGNER, NEXT_APPROVER, OPTIONAL_STAGE_APPROVER],
+              type: 'DIRECT',
+            },
+            excludeNodeActors: {
+              nodeIds: ['task_optional'],
+              whenEmpty: 'FAIL',
+            },
+          },
+        ),
+      });
+      const readSeatMemberIds = async (
+        taskId: string,
+      ): Promise<readonly string[]> =>
+        (await readSeatsOfTask(fixture, taskId))
+          .map(({ memberId }): string => memberId)
+          .sort();
+      const readSkips = async (): Promise<readonly ActivityLogEntity[]> =>
+        (await readLogsOnRecord(fixture)).filter(
+          (log): boolean =>
+            log.eventType === ActivityLogEventTypeEnum.TOKEN_ADVANCED &&
+            log.nodeId === 'task_optional' &&
+            log.payload['skippedByEntryCondition'] === true,
+        );
+      const firstNextTaskId = readNextTaskId(fixture);
+
+      // First round: the optional stage was skipped, so N keeps nobody out,
+      // not even the person who approved an earlier round of it.
+      expect(await readSkips()).toHaveLength(1);
+      expect(await readSeatMemberIds(firstNextTaskId)).toEqual(EVERYONE);
+
+      const recalled = await recall(fixture);
+
+      await decideOn(fixture, {
+        action: TaskDecisionActionEnum.APPROVED,
+        decidedByMemberId: SIGNER,
+        taskId: recalled.id,
+      });
+
+      const openNextTasks = (await readTasksOnRecord(fixture)).filter(
+        (task): boolean => task.nodeId === 'task_next' && isOpenTask(task),
+      );
+
+      // Second round: skipped again, and N is exactly as open as the first time.
+      expect(await readSkips()).toHaveLength(2);
+      expect(openNextTasks).toHaveLength(1);
+      expect(openNextTasks[0]?.id).not.toBe(firstNextTaskId);
+      expect(await readSeatMemberIds(openNextTasks[0]?.id ?? '')).toEqual(
+        EVERYONE,
+      );
+      expect(
+        fixture.savedTasks.filter(
+          ({ nodeId }): boolean => nodeId === 'task_optional',
+        ),
+      ).toEqual([]);
+    });
+
+    it('gives only the signer the new task when the stage asked three people and any one could settle it', async (): Promise<void> => {
+      const fixture = await buildAnyOneOfThreeApprovedState();
+
+      // Without this the recall below could be refused for another reason.
+      await expect(
+        runPlanner(fixture, { memberId: SIGNER }),
+      ).resolves.toHaveProperty('plan');
+
+      // The engine's own approval writes the decider onto a group task, so
+      // by the time a recall can happen the old task's assignee is the signer
+      // already: the new task's assignee is checked against that.
+      expect(readLatestTask(fixture, 'task-1')?.assigneeMemberId).toBe(SIGNER);
+
+      const seatsBefore = await readSeatsOfTask(fixture, 'task-1');
+      const recalled = await recall(fixture);
+
+      expect(recalled.assigneeMemberId).toBe(SIGNER);
+      expect(recalled.assignmentType).toBe(
+        TaskAssignmentTypeEnum.DIRECT_MEMBER,
+      );
+      expect(recalled.decisionPolicySnapshot).toEqual({ type: 'SINGLE' });
+      expect(
+        (await readSeatsOfTask(fixture, recalled.id)).map(
+          ({ memberId }): string => memberId,
+        ),
+      ).toEqual([SIGNER]);
+      expect(recalled.candidateMemberIds).toEqual([SIGNER]);
+      // The two who never acted keep what they had; they do not come back.
+      expect(await readSeatsOfTask(fixture, 'task-1')).toEqual(seatsBefore);
+      expect((await readTasksOnRecord(fixture)).filter(isOpenTask)).toEqual([
+        expect.objectContaining({ id: recalled.id }),
+      ]);
+      expect(
+        (await readLogsOnRecord(fixture)).find(
+          ({ eventType }): boolean =>
+            eventType === ActivityLogEventTypeEnum.TASK_RECALLED,
+        )?.payload['comment'],
+      ).toBeNull();
+    });
+
+    it('copies the seat chain of a task that was handed to the signer as a whole', async (): Promise<void> => {
+      const fixture = await buildApprovedState({
+        beforeApproval: (built): Promise<unknown> =>
+          decideOn(built, {
+            action: TaskDecisionActionEnum.TRANSFERRED,
+            decidedByMemberId: 'member-a',
+            taskId: 'task-1',
+            transferToMemberId: SIGNER,
+          }),
+        signerTaskId: (built): string => readTaskAssignedTo(built, SIGNER).id,
+        task: {
+          assigneeMemberId: 'member-a',
+          originalAssigneeMemberId: 'member-a',
+        },
+      });
+      const stageTaskId = readTransferredStageTaskId(fixture);
+      const [handedSeat] = await readSeatsOfTask(fixture, stageTaskId);
+
+      // The engine wrote a plain manual transfer step at the end of the seat.
+      expect(stageTaskId).not.toBe('task-1');
+      expect(handedSeat?.delegationChain.at(-1)).toMatchObject({
+        from: 'member-a',
+        reason: MANUAL_TRANSFER_DELEGATION_REASON,
+        ruleId: null,
+        to: SIGNER,
+      });
+
+      const recalled = await recall(fixture, { taskId: stageTaskId });
+
+      expect(recalled.delegationChain).toEqual(handedSeat?.delegationChain);
+      expect(await readSeatsOfTask(fixture, recalled.id)).toEqual([
+        expect.objectContaining({
+          delegationChain: handedSeat?.delegationChain,
+          memberId: SIGNER,
+          originalMemberId: handedSeat?.originalMemberId,
+          status: TaskCandidateStatusEnum.PENDING,
+        }),
+      ]);
+    });
+
+    it('the next stage holder who tries to decide the cancelled task is told it is not pending', async (): Promise<void> => {
+      const fixture = await buildBaselineApprovedState();
+      const nextTaskId = readNextTaskId(fixture);
+
+      await recall(fixture);
+
+      const refusal = await captureRefusal(
+        decideOn(fixture, {
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: NEXT_APPROVER,
+          taskId: nextTaskId,
+        }),
+      );
+
+      expect(refusal).toBeInstanceOf(ConflictException);
+      expect((refusal as ConflictException).message).toBe(
+        `Task ${nextTaskId} is not pending`,
+      );
+    });
+
+    describe('after a recall', (): void => {
+      const INITIATOR = 'member-001';
+      const COLLEAGUE = 'member-b';
+
+      /** The open tasks on one node. */
+      const readOpenTasksAt = async (
+        fixture: RecallFixture,
+        nodeId: string,
+      ): Promise<readonly TaskEntity[]> =>
+        (await readTasksOnRecord(fixture)).filter(
+          (task): boolean => isOpenTask(task) && task.nodeId === nodeId,
+        );
+
+      /** How many times the people of one node were told they have a task. */
+      const countNoticesAt = (fixture: RecallFixture, nodeId: string): number =>
+        (
+          fixture.notificationService
+            .createTaskAssignedNotification as unknown as jest.Mock
+        ).mock.calls.filter(
+          (call: readonly unknown[]): boolean =>
+            (call[0] as { readonly task: TaskEntity }).task.nodeId === nodeId,
+        ).length;
+
+      const approve = (
+        fixture: RecallFixture,
+        taskId: string,
+        memberId: string = SIGNER,
+      ): Promise<unknown> =>
+        decideOn(fixture, {
+          action: TaskDecisionActionEnum.APPROVED,
+          decidedByMemberId: memberId,
+          taskId,
+        });
+
+      /**
+       * The fixture hands back one fixed record for every single-row read of
+       * the activity log. A resubmission looks up the latest return that way,
+       * so the lookup is pointed at what the engine really wrote.
+       */
+      const useWrittenRecordForLookups = (fixture: RecallFixture): void => {
+        (
+          fixture.transactionalActivityLogFindOne as unknown as jest.Mock
+        ).mockImplementation(
+          async (options?: {
+            readonly order?: Readonly<Record<string, unknown>>;
+            readonly where?: Readonly<Record<string, unknown>>;
+          }): Promise<ActivityLogEntity | null> => {
+            // Only plain equality on the where side and the newest row on the
+            // order side are understood; anything else is refused loudly
+            // rather than answered as if it had been understood.
+            Object.values(options?.where ?? {}).forEach((value): void => {
+              if (
+                value !== null &&
+                !['bigint', 'boolean', 'number', 'string'].includes(
+                  typeof value,
+                )
+              ) {
+                throw new Error(
+                  'useWrittenRecordForLookups only reads equality conditions',
+                );
+              }
+            });
+
+            if (
+              options?.order !== undefined &&
+              JSON.stringify(options.order) !== JSON.stringify({ seq: 'DESC' })
+            ) {
+              throw new Error(
+                'useWrittenRecordForLookups only reads the newest row first',
+              );
+            }
+
+            return (
+              (
+                (await fixture.transactionalActivityLogFind({
+                  where: { instanceId: 'instance-1' },
+                })) as readonly ActivityLogEntity[]
+              )
+                .filter((log): boolean =>
+                  Object.entries(options?.where ?? {}).every(
+                    ([key, value]): boolean =>
+                      (log as unknown as Record<string, unknown>)[key] ===
+                      value,
+                  ),
+                )
+                .at(-1) ?? null
+            );
+          },
+        );
+      };
+
+      const resubmit = (fixture: RecallFixture): Promise<unknown> =>
+        fixture.service.resubmitApprovalInstance({
+          formDataJson: '{"amount":1200}',
+          initiatorMemberId: INITIATOR,
+          instanceId: 'instance-1',
+          title: null,
+        });
+
+      /** M lets its holder send the case back to the applicant. */
+      const withStageReturn = (
+        workflow: WorkflowDefinition,
+        resubmitStrategy: 'FROM_RETURN_POINT' | 'RESTART' = 'RESTART',
+        nodeId = 'task_finance',
+      ): WorkflowDefinition =>
+        withNodeData(workflow, nodeId, {
+          returnBehavior: {
+            allowReturn: true,
+            allowedTargets: 'INITIATOR',
+            resubmitStrategy,
+          },
+        });
+
+      it('recalls the approval the signer gave again after the next stage sent the case back to this stage', async (): Promise<void> => {
+        const fixture = await buildApprovedState({
+          workflow: withNodeData(
+            appendNextUserTask(createLinearUserTaskWorkflow()),
+            'task_next',
+            {
+              returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },
+            },
+          ),
+        });
+        const firstNextTaskId = readNextTaskId(fixture);
+
+        await decideOn(fixture, {
+          action: TaskDecisionActionEnum.RETURNED,
+          decidedByMemberId: NEXT_APPROVER,
+          taskId: firstNextTaskId,
+        });
+
+        const [secondRound] = await readOpenTasksAt(fixture, 'task_finance');
+
+        expect(secondRound?.id).not.toBe('task-1');
+
+        await approve(fixture, secondRound?.id ?? '');
+
+        const [nextAgain] = await readOpenTasksAt(fixture, 'task_next');
+
+        // The next stage has a new task that nobody has touched.
+        expect(nextAgain?.id).not.toBe(firstNextTaskId);
+
+        const recalled = await recall(fixture, { taskId: secondRound?.id });
+
+        expect(recalled).toMatchObject({
+          assigneeMemberId: SIGNER,
+          nodeId: 'task_finance',
+          status: TaskStatusEnum.PENDING,
+        });
+        expect(recalled.id).not.toBe(secondRound?.id);
+        expect((await readTasksOnRecord(fixture)).filter(isOpenTask)).toEqual([
+          expect.objectContaining({ id: recalled.id }),
+        ]);
+        expect(
+          (await readTasksOnRecord(fixture)).find(
+            ({ id }): boolean => id === nextAgain?.id,
+          )?.status,
+        ).toBe(TaskStatusEnum.CANCELLED);
+      });
+
+      it('the new task can still send the case back to the previous stage', async (): Promise<void> => {
+        const fixture = await startFromBeginning(
+          withNodeData(
+            withNodeData(createThreeStageWorkflow(), 'task_next', {
+              approverResolver: { memberIds: [SIGNER], type: 'DIRECT' },
+              returnBehavior: { allowReturn: true, allowedTargets: 'PREVIOUS' },
+            }),
+            'task_third',
+            {
+              approverResolver: { memberIds: ['member-third'], type: 'DIRECT' },
+            },
+          ),
+        );
+
+        await approveAt(fixture, 'task_finance', SIGNER);
+
+        const earlierTaskId = readTaskIdAt(fixture, 'task_finance');
+
+        await approveAt(fixture, 'task_next', SIGNER);
+
+        const stageTaskId = readTaskIdAt(fixture, 'task_next');
+        const decisionsBefore = await readDecisionsOfTask(fixture, stageTaskId);
+        const recalled = await recall(fixture, { taskId: stageTaskId });
+
+        const decision = (await decideOn(fixture, {
+          action: TaskDecisionActionEnum.RETURNED,
+          decidedByMemberId: SIGNER,
+          taskId: recalled.id,
+        })) as TaskDecisionEntity;
+
+        expect(decision).toMatchObject({
+          action: TaskDecisionActionEnum.RETURNED,
+          returnToNodeId: 'task_finance',
+          taskId: recalled.id,
+        });
+        expect(
+          (
+            await runInTransaction(
+              fixture,
+              (manager): Promise<ApprovalInstanceEntity | null> =>
+                manager
+                  .getRepository(ApprovalInstanceEntity)
+                  .findOne({ where: { id: 'instance-1' } }),
+            )
+          )?.state,
+        ).toBe(ApprovalInstanceStateEnum.RUNNING);
+        expect(
+          (await readLogsOnRecord(fixture)).filter(
+            ({ eventType }): boolean =>
+              eventType === ActivityLogEventTypeEnum.INSTANCE_RETURNED,
+          ),
+        ).toEqual([
+          expect.objectContaining({
+            nodeId: 'task_next',
+            payload: expect.objectContaining({
+              returnToNodeId: 'task_finance',
+              returnedFromNodeId: 'task_next',
+              taskId: recalled.id,
+            }),
+          }),
+        ]);
+
+        // The earlier stage is open again with a task of its own; nothing else is.
+        const openTasks = (await readTasksOnRecord(fixture)).filter(isOpenTask);
+
+        expect(openTasks.map(({ nodeId }): string => nodeId)).toEqual([
+          'task_finance',
+        ]);
+        expect(openTasks[0]?.id).not.toBe(earlierTaskId);
+        // The first approval of the stage and its task are untouched by all of this.
+        expect(readLatestTask(fixture, stageTaskId)?.status).toBe(
+          TaskStatusEnum.COMPLETED,
+        );
+        expect(await readDecisionsOfTask(fixture, stageTaskId)).toEqual(
+          decisionsBefore,
+        );
+      });
+
+      it('the new task can still reject the case', async (): Promise<void> => {
+        const fixture = await buildBaselineApprovedState();
+        const recalled = await recall(fixture);
+
+        const decision = (await decideOn(fixture, {
+          action: TaskDecisionActionEnum.REJECTED,
+          comment: 'wrong figures',
+          decidedByMemberId: SIGNER,
+          taskId: recalled.id,
+        })) as TaskDecisionEntity;
+
+        expect(decision).toMatchObject({
+          action: TaskDecisionActionEnum.REJECTED,
+          taskId: recalled.id,
+        });
+        expect(fixture.savedInstance?.state).toBe(
+          ApprovalInstanceStateEnum.REJECTED,
+        );
+        expect((await readTasksOnRecord(fixture)).filter(isOpenTask)).toEqual(
+          [],
+        );
+        expect(readLatestTask(fixture, 'task-1')?.status).toBe(
+          TaskStatusEnum.COMPLETED,
+        );
+      });
+
+      it.each<['FROM_RETURN_POINT' | 'RESTART']>([
+        ['RESTART'],
+        ['FROM_RETURN_POINT'],
+      ])(
+        'recalls an approval given in a round that began with a resubmission (%s), and a later return and resubmission still start from the right place',
+        async (strategy): Promise<void> => {
+          // Three stages with the signer on the first two, and the second one,
+          // M, able to send the case back: a resubmission that starts over
+          // and one that resumes at the return point now end up on different
+          // stages, and the recalled stage is not the first.
+          const fixture = await startFromBeginning(
+            withStageReturn(
+              withNodeData(createThreeStageWorkflow(), 'task_next', {
+                approverResolver: { memberIds: [SIGNER], type: 'DIRECT' },
+              }),
+              strategy,
+              'task_next',
+            ),
+          );
+          // Where a case lands when it is sent again: the first stage when it
+          // starts over, M itself when it resumes at the return point.
+          const landingNode =
+            strategy === 'RESTART' ? 'task_finance' : 'task_next';
+
+          useWrittenRecordForLookups(fixture);
+
+          // Round one: the signer sends the case back from M and the
+          // applicant sends it again.
+          await approveAt(fixture, 'task_finance', SIGNER);
+
+          const [firstRound] = await readOpenTasksAt(fixture, 'task_next');
+
+          await decideOn(fixture, {
+            action: TaskDecisionActionEnum.RETURNED,
+            decidedByMemberId: SIGNER,
+            taskId: firstRound?.id ?? '',
+          });
+          expect(fixture.savedInstance?.state).toBe(
+            ApprovalInstanceStateEnum.RETURNED,
+          );
+          await resubmit(fixture);
+
+          // Round two: the signer reaches M again, approves and takes the
+          // approval back.
+          expect(
+            (await readOpenTasksAt(fixture, landingNode)).map(
+              ({ nodeId }): string => nodeId,
+            ),
+          ).toEqual([landingNode]);
+
+          if (landingNode === 'task_finance') {
+            await approve(
+              fixture,
+              (await readOpenTasksAt(fixture, 'task_finance'))[0]?.id ?? '',
+            );
+          }
+
+          const [secondRound] = await readOpenTasksAt(fixture, 'task_next');
+
+          expect(secondRound?.id).not.toBe(firstRound?.id);
+          await approve(fixture, secondRound?.id ?? '');
+
+          const recalled = await recall(fixture, { taskId: secondRound?.id });
+
+          expect(recalled.nodeId).toBe('task_next');
+          expect((await readTasksOnRecord(fixture)).filter(isOpenTask)).toEqual(
+            [expect.objectContaining({ id: recalled.id })],
+          );
+
+          // Sent back and sent again once more, from the recalled task.
+          await decideOn(fixture, {
+            action: TaskDecisionActionEnum.RETURNED,
+            decidedByMemberId: SIGNER,
+            taskId: recalled.id,
+          });
+          await resubmit(fixture);
+
+          const reopened = await readOpenTasksAt(fixture, landingNode);
+
+          expect(reopened).toHaveLength(1);
+          expect([firstRound?.id, secondRound?.id, recalled.id]).not.toContain(
+            reopened[0]?.id,
+          );
+          // Nothing else is open on the case: only the one task it landed on.
+          expect(
+            (await readTasksOnRecord(fixture))
+              .filter(isOpenTask)
+              .map(({ nodeId }): string => nodeId),
+          ).toEqual([landingNode]);
+
+          const resumed = (await readLogsOnRecord(fixture)).filter(
+            ({ eventType, payload }): boolean =>
+              eventType === ActivityLogEventTypeEnum.TOKEN_CREATED &&
+              payload['resumedFromNodeId'] !== undefined,
+          );
+
+          // Only a resubmission that resumes from the return point opens a
+          // token on the stage that sent the case back: the recalled task's
+          // stage, not the stage the recall cancelled.
+          expect(
+            resumed.map(({ nodeId, payload }): readonly unknown[] => [
+              nodeId,
+              payload['resumedFromNodeId'],
+            ]),
+          ).toEqual(
+            strategy === 'FROM_RETURN_POINT'
+              ? [
+                  ['task_next', 'start'],
+                  ['task_next', 'start'],
+                ]
+              : [],
+          );
+        },
+      );
+
+      it('still keeps the signer out of the next stage when the signer also approved an earlier stage the next stage excludes', async (): Promise<void> => {
+        const fixture = await startFromBeginning(
+          withNodeData(
+            withNodeData(createThreeStageWorkflow(), 'task_next', {
+              approverResolver: { memberIds: [SIGNER], type: 'DIRECT' },
+            }),
+            'task_third',
+            {
+              approverResolver: {
+                memberIds: [SIGNER, 'member-third'],
+                type: 'DIRECT',
+              },
+              excludeNodeActors: {
+                nodeIds: ['task_finance'],
+                whenEmpty: 'FAIL',
+              },
+            },
+          ),
+        );
+
+        await approveAt(fixture, 'task_finance', SIGNER);
+        await approveAt(fixture, 'task_next', SIGNER);
+
+        const readLastStageHolders = async (): Promise<
+          readonly (string | null)[]
+        > =>
+          (await readOpenTasksAt(fixture, 'task_third')).map(
+            ({ assigneeMemberId }): string | null => assigneeMemberId,
+          );
+
+        // The earlier stage's approver is kept out the first time round.
+        expect(await readLastStageHolders()).toEqual(['member-third']);
+
+        const recalled = await recall(fixture, {
+          taskId: readTaskIdAt(fixture, 'task_next'),
+        });
+
+        expect(await readLastStageHolders()).toEqual([]);
+
+        await approve(fixture, recalled.id);
+
+        expect(await readLastStageHolders()).toEqual(['member-third']);
+        expect(
+          (
+            await readSeatsOfTask(
+              fixture,
+              (await readOpenTasksAt(fixture, 'task_third'))[0]?.id ?? '',
+            )
+          ).map(({ memberId }): string => memberId),
+        ).toEqual(['member-third']);
+      });
+
+      it.each<
+        [
+          string,
+          readonly string[],
+          Parameters<typeof buildApprovedState>[0],
+          readonly (readonly [string, string])[],
+        ]
+      >([
+        [
+          "(a) the signer's own delegation rule sends the next stage's seat to the delegate",
+          ['member-next', SIGNER],
+          {
+            delegationResolutionByMember: {
+              [SIGNER]: {
+                delegationChain: [
+                  {
+                    from: SIGNER,
+                    reason: 'ALL',
+                    ruleId: 'delegation-rule-1',
+                    to: DELEGATE,
+                  },
+                ],
+                finalAssigneeMemberId: DELEGATE,
+              },
+            },
+          },
+          [
+            ['member-next', 'member-next'],
+            [DELEGATE, SIGNER],
+          ],
+        ],
+        [
+          "(b) the signer holds the next stage as somebody's delegate",
+          ['member-next'],
+          {
+            delegationResolutionByMember: {
+              'member-next': {
+                delegationChain: [
+                  {
+                    from: 'member-next',
+                    reason: 'ALL',
+                    ruleId: 'delegation-rule-1',
+                    to: SIGNER,
+                  },
+                ],
+                finalAssigneeMemberId: SIGNER,
+              },
+            },
+          },
+          [[SIGNER, 'member-next']],
+        ],
+        [
+          '(c) the next stage is given to the signer too',
+          [SIGNER],
+          {},
+          [[SIGNER, SIGNER]],
+        ],
+      ])(
+        '%s: the recall still goes through',
+        async (
+          _label,
+          nextStageMembers,
+          options,
+          expectedSeats,
+        ): Promise<void> => {
+          // M is already open when the rule is set, so the rule only applies
+          // from the next stage on and the signer can still approve M.
+          const fixture = await buildApprovedState({
+            ...options,
+            workflow: withNodeData(
+              appendNextUserTask(createLinearUserTaskWorkflow()),
+              'task_next',
+              {
+                approverResolver: {
+                  memberIds: nextStageMembers,
+                  type: 'DIRECT',
+                },
+              },
+            ),
+          });
+          const nextTask = (await readOpenTasksAt(fixture, 'task_next'))[0];
+          const nextSeats = await readSeatsOfTask(fixture, nextTask?.id ?? '');
+
+          // Without this the recall below could go through for lack of a next stage.
+          expect(
+            nextSeats.map(
+              ({ memberId, originalMemberId }): readonly string[] => [
+                memberId,
+                originalMemberId,
+              ],
+            ),
+          ).toEqual(expectedSeats);
+          // A seat that is somebody else's by delegation says so in its chain.
+          nextSeats
+            .filter(
+              ({ memberId, originalMemberId }): boolean =>
+                memberId !== originalMemberId,
+            )
+            .forEach((seat): void => {
+              expect(seat.delegationChain).toEqual([
+                expect.objectContaining({ ruleId: 'delegation-rule-1' }),
+              ]);
+            });
+
+          const recalled = await recall(fixture);
+
+          expect(recalled.assigneeMemberId).toBe(SIGNER);
+          expect((await readTasksOnRecord(fixture)).filter(isOpenTask)).toEqual(
+            [expect.objectContaining({ id: recalled.id })],
+          );
+          expect(readLatestTask(fixture, nextTask?.id ?? '')?.status).toBe(
+            TaskStatusEnum.CANCELLED,
+          );
+        },
+      );
+
+      it('recalls again after signing again, and the next stage is told again every round', async (): Promise<void> => {
+        const fixture = await buildBaselineApprovedState();
+
+        expect(countNoticesAt(fixture, 'task_next')).toBe(1);
+
+        const firstRecall = await recall(fixture);
+
+        await approve(fixture, firstRecall.id);
+        expect(countNoticesAt(fixture, 'task_next')).toBe(2);
+
+        // The first round's recall is on the record under the old task's id.
+        const secondRecall = await recall(fixture, {
+          taskId: firstRecall.id,
+        });
+
+        expect(secondRecall.id).not.toBe(firstRecall.id);
+        expect(readLatestTask(fixture, firstRecall.id)?.status).toBe(
+          TaskStatusEnum.COMPLETED,
+        );
+        expect((await readTasksOnRecord(fixture)).filter(isOpenTask)).toEqual([
+          expect.objectContaining({ id: secondRecall.id }),
+        ]);
+
+        await approve(fixture, secondRecall.id);
+        expect(countNoticesAt(fixture, 'task_next')).toBe(3);
+        expect(
+          (await readLogsOnRecord(fixture))
+            .filter(
+              ({ eventType }): boolean =>
+                eventType === ActivityLogEventTypeEnum.TASK_RECALLED,
+            )
+            .map(({ taskId }): string | null => taskId),
+        ).toEqual(['task-1', firstRecall.id]);
+      });
+
+      it('keeps only the person who approved the new task out of the next stage when the signer handed it on', async (): Promise<void> => {
+        const fixture = await buildApprovedState({
+          workflow: withNodeData(
+            appendNextUserTask(createLinearUserTaskWorkflow()),
+            'task_next',
+            {
+              approverResolver: {
+                memberIds: [SIGNER, COLLEAGUE],
+                type: 'DIRECT',
+              },
+              excludeNodeActors: {
+                nodeIds: ['task_finance'],
+                whenEmpty: 'FAIL',
+              },
+            },
+          ),
+        });
+        const recalled = await recall(fixture);
+
+        await decideOn(fixture, {
+          action: TaskDecisionActionEnum.TRANSFERRED,
+          decidedByMemberId: SIGNER,
+          taskId: recalled.id,
+          transferToMemberId: COLLEAGUE,
+        });
+        await approve(
+          fixture,
+          readTaskAssignedTo(fixture, COLLEAGUE).id,
+          COLLEAGUE,
+        );
+
+        const [nextAgain] = await readOpenTasksAt(fixture, 'task_next');
+
+        // The first approval belongs to an older batch of the stage, so only
+        // the colleague's approval is held against the next stage.
+        expect(nextAgain?.assigneeMemberId).toBe(SIGNER);
+        expect(
+          (await readSeatsOfTask(fixture, nextAgain?.id ?? '')).map(
+            ({ memberId }): string => memberId,
+          ),
+        ).toEqual([SIGNER]);
+      });
+    });
+
+    describe('refusing', (): void => {
+      interface RefusalCase {
+        readonly build: () => Promise<RecallFixture> | RecallFixture;
+        readonly code: keyof typeof SIGNER_RECALL_ERROR_CODES;
+        readonly name: string;
+        readonly pick?: (fixture: RecallFixture) => {
+          readonly memberId?: string;
+          readonly taskId?: string;
+        };
+      }
+
+      const buildAlreadyRecalledState = async (): Promise<RecallFixture> => {
+        const fixture = await buildBaselineApprovedState();
+
+        await recall(fixture);
+
+        return fixture;
+      };
+
+      const refusals: readonly RefusalCase[] = [
+        {
+          // No `rootOptions` at all, and a task that does not exist: only a
+          // check made before the task is looked up can still say DISABLED.
+          build: (): Promise<RecallFixture> =>
+            buildApprovedState({ rootOptions: null }),
+          code: 'DISABLED',
+          name: 'DISABLED: the host never turned the feature on, even for a task that does not exist',
+          pick: (): { readonly taskId: string } => ({
+            taskId: 'task-that-does-not-exist',
+          }),
+        },
+        {
+          build: buildAnyOneOfThreeApprovedState,
+          code: 'NOT_THE_SIGNER',
+          name: 'NOT_THE_SIGNER: another candidate of the stage',
+          pick: (): { readonly memberId: string } => ({
+            memberId: 'member-colleague',
+          }),
+        },
+        {
+          build: buildAlreadyRecalledState,
+          code: 'ALREADY_RECALLED',
+          name: 'ALREADY_RECALLED: asked again before signing again',
+        },
+        {
+          build: buildAutoApprovedState,
+          code: 'NOT_A_PERSONAL_APPROVAL',
+          name: 'NOT_A_PERSONAL_APPROVAL: the SLA timeout approved',
+        },
+        {
+          build: buildEndedState,
+          code: 'INSTANCE_NOT_RUNNING',
+          name: 'INSTANCE_NOT_RUNNING: the approval ended the case',
+        },
+        {
+          build: (): Promise<RecallFixture> =>
+            buildSequentialLastSeatTransferredState(),
+          code: 'STAGE_NOT_SETTLED_BY_THIS_APPROVAL',
+          name: 'STAGE_NOT_SETTLED_BY_THIS_APPROVAL: the last seat of a sequence came by a transfer',
+          pick: (fixture): { readonly taskId: string } => ({
+            taskId: readTransferredStageTaskId(fixture),
+          }),
+        },
+        {
+          build: buildDelegatedSeatState,
+          code: 'DELEGATED_SEAT',
+          name: 'DELEGATED_SEAT: the seat came from a delegation rule (seeded)',
+        },
+        {
+          build: buildStageNotifySentState,
+          code: 'STAGE_NOTIFY_SENT',
+          name: 'STAGE_NOTIFY_SENT: the approval sent the stage notice',
+        },
+        {
+          build: buildNextStageDecidedState,
+          code: 'NEXT_STAGE_ACTED',
+          name: 'NEXT_STAGE_ACTED: the next stage approved',
+        },
+        {
+          build: buildForkAfterStageState,
+          code: 'NEXT_STAGE_NOT_SINGLE',
+          name: 'NEXT_STAGE_NOT_SINGLE: the approval forked the token',
+        },
+        {
+          build: buildWebhookOnPathState,
+          code: 'PASSED_SERVICE_TASK',
+          name: 'PASSED_SERVICE_TASK: the token passed a WEBHOOK node (seeded)',
+        },
+        {
+          build: buildLastBranchToJoinState,
+          code: 'PASSED_JOIN',
+          name: 'PASSED_JOIN: the signer branch was the last to reach the join',
+          pick: (fixture): { readonly taskId: string } => ({
+            taskId: readTaskIdAt(fixture, 'task_finance'),
+          }),
+        },
+      ];
+
+      it('covers every code', (): void => {
+        expect(
+          refusals
+            .map(({ code }): keyof typeof SIGNER_RECALL_ERROR_CODES => code)
+            .sort(),
+        ).toEqual(Object.keys(SIGNER_RECALL_ERROR_CODES).sort());
+      });
+
+      it.each(
+        refusals.map((entry): readonly [string, RefusalCase] => [
+          entry.name,
+          entry,
+        ]),
+      )('%s', async (_name, entry): Promise<void> => {
+        const fixture = await entry.build();
+        const picked = entry.pick?.(fixture) ?? {};
+        const before = await snapshotWrites(fixture);
+
+        const refusal = await captureRefusal(recall(fixture, picked));
+
+        expect(refusal).toBeInstanceOf(ConflictException);
+
+        const conflict = refusal as ConflictException;
+        const body = conflict.getResponse() as {
+          readonly message: string;
+        };
+
+        // The whole body, so a client can read `code` and `statusCode` alike.
+        expect(body).toEqual({
+          code: SIGNER_RECALL_ERROR_CODES[entry.code],
+          error: 'Conflict',
+          message: expect.any(String),
+          statusCode: 409,
+        });
+        expect(conflict.getStatus()).toBe(409);
+        expect(body.message).not.toBe('');
+        expect(body.message).not.toContain('SIGNER_RECALL_');
+        expect(body.message).not.toBe(entry.code);
+        // Nothing was written: no token, task, record or notice. (Instance
+        // events are in the snapshot too, but they only land when a host
+        // observer is on and none of this table's fixtures turns one on.)
+        expect(await snapshotWrites(fixture)).toEqual(before);
+      });
+    });
+  });
+});
+
 interface ServiceFixture {
   readonly managerQuery: jest.Mock<
     Promise<unknown>,
@@ -27324,6 +30791,7 @@ function createServiceFixture({
   let savedToken: WorkflowTokenEntity | null = null;
   let tokenSequence = 1;
   let taskSequence = 1;
+  let decisionSequence = 0;
   let processTokens: readonly WorkflowTokenEntity[] =
     processWorkflowSnapshot && seedProcessToken !== false
       ? [
@@ -28021,7 +31489,9 @@ function createServiceFixture({
             comment: entity.comment ?? null,
             decidedAt: entity.decidedAt ?? new Date('2026-05-04T09:00:00.000Z'),
             decidedByMemberId: entity.decidedByMemberId ?? 'member-finance',
-            id: entity.id ?? 'decision-1',
+            // One id per decision, as the database gives: a record that names
+            // its decision (`decisionId`) must not fit two of them.
+            id: entity.id ?? `decision-${(decisionSequence += 1)}`,
             returnToNodeId: entity.returnToNodeId ?? null,
             signatureId: entity.signatureId ?? null,
             taskId: entity.taskId ?? 'task-1',

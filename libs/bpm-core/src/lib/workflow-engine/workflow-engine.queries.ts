@@ -484,6 +484,25 @@ export class WorkflowEngineQueries {
     );
   }
 
+  @Query(() => ID, {
+    description:
+      'The id of the task whose approval the signed-in member could take ' +
+      'back right now, or null. Always null while signer recall is off. It ' +
+      'reads without the instance lock, so recallTaskApproval judges again.',
+    nullable: true,
+  })
+  async recallableTaskId(
+    @Args('instanceId', { type: () => String }) instanceId: string,
+    @BPMCurrentMemberId() currentMemberId: string,
+    @BPMCurrentAuthContext() currentAuthContext: BPMAuthContext,
+  ): Promise<string | null> {
+    return this.workflowEngineService.readRecallableTaskId(
+      instanceId,
+      currentMemberId,
+      currentAuthContext,
+    );
+  }
+
   @Query(() => [ActivityLogEntity])
   async activityLogs(
     @Args('instanceId', { type: () => String }) instanceId: string,

@@ -1852,6 +1852,62 @@ error. Without a trace, nobody else would know the instance is stuck.
   A host that reads `INSTANCE_CANCELLED` can tell it from the initiator
   withdrawing, whose payload has no such key.
 
+## Signer Recall
+
+A signer can take back an approval they just gave, while nobody has acted on
+the next stage, and sign their own stage again. It is off unless the host sets
+`signerRecallEnabled: true` on `BPMRootModule.forRoot`: taking one back changes
+the outcome of a decision already made, so the host opts in deliberately, for
+the same reason `notificationSlaTimeoutAutoApproveEnabled` is off by default.
+
+- `recallableTaskId(instanceId)` returns the id of the task whose approval the
+  signed-in member could take back right now, or `null`. It is always `null`
+  while the option is off. It reads without the instance lock, so the answer
+  can be stale when the member presses the button.
+- `recallTaskApproval(input)` takes that approval back. The signed-in member is
+  always the one recalling; the input carries only the `taskId` and an optional
+  `comment` (at most 2000 characters). The same operations exist on
+  `WorkflowEngineService` as `readRecallableTaskId` and `recallTaskApproval`.
+- A refusal is a `ConflictException` whose body is
+  `{ code, error: 'Conflict', message, statusCode: 409 }`. `code` is one of
+  `SIGNER_RECALL_ERROR_CODES` (from the shared package's `status` subpath)
+  (`SIGNER_RECALL_DISABLED`, `SIGNER_RECALL_NOT_THE_SIGNER`,
+  `SIGNER_RECALL_ALREADY_RECALLED`, `SIGNER_RECALL_NOT_A_PERSONAL_APPROVAL`,
+  `SIGNER_RECALL_INSTANCE_NOT_RUNNING`,
+  `SIGNER_RECALL_STAGE_NOT_SETTLED_BY_THIS_APPROVAL`,
+  `SIGNER_RECALL_DELEGATED_SEAT`, `SIGNER_RECALL_STAGE_NOTIFY_SENT`,
+  `SIGNER_RECALL_NEXT_STAGE_ACTED`, `SIGNER_RECALL_NEXT_STAGE_NOT_SINGLE`,
+  `SIGNER_RECALL_PASSED_SERVICE_TASK`, `SIGNER_RECALL_PASSED_JOIN`). `message`
+  is English, for logs; choose the wording a user sees from `code`. While the
+  option is off the mutation refuses with `SIGNER_RECALL_DISABLED` before it
+  looks at the task, so an unknown task id is a 409 then, not a 404.
+- A recall is allowed only when the approval settled its stage on its own, was
+  given in person (not by an SLA auto-approval, not by a delegate), the seat
+  was not moved by a delegation rule or an unrecognised hand-over, the stage's
+  own notice had not been sent, and the token went on to exactly one open user
+  task that nobody has acted on, with no service task on the way and, for a
+  child token, no join on the way. The
+  rules, their order and the reasoning are in
+  `docs/07-workflow-execution.md` section 5.6.
+
+What a recall does, in one transaction under the instance lock:
+
+- The next stage's open task is cancelled, and its token is consumed.
+- A new token and a new task for the signer alone are created on the signer's
+  stage. Nothing is resolved again, so the stage cannot come back with other
+  people on it or be skipped by its entry condition. The new token matters:
+  `excludeNodeActors` reads the approvals of a stage per (node, token), and on
+  the old token the recalled approval would still count.
+- The decision and its signature stay as they were. The activity log shows the
+  approval, a `TASK_RECALLED` record, then the new task. Form values are not
+  restored; the signer can change them when signing again.
+- Only `NODE_ACTIVATED` is emitted, pointing at the signer's stage. The next
+  stage's cancelled task has no event of its own, so on `NODE_ACTIVATED`
+  re-read that instance's tasks. A recall does not emit `INSTANCE_RETURNED`.
+- Notifications already sent (email, webhook) cannot be taken back. Pending
+  task-assigned and task-transferred notifications of the instance are
+  superseded; SLA warnings and overdue notices are not.
+
 ## Delegation Rules
 
 > The priority order and the root check below are unreleased (they landed after
@@ -1909,6 +1965,8 @@ Importing `BPMRootModule` registers GraphQL resolvers for:
 - Workflow instances, tokens, tasks, task candidates, decisions, activity logs,
   submit/process/approve/return/cancel/resubmit operations.
 - Ad-hoc directives — see [Ad-hoc Directives](#ad-hoc-directives) below.
+- Signer recall (`recallTaskApproval` mutation, `recallableTaskId` query) — see
+  [Signer Recall](#signer-recall); active only with `signerRecallEnabled`.
 - Delegation rule CRUD and transfer support.
 - Notifications, unread counts, preferences, and read status.
 - Attachments, signed download URLs, and signed preview URLs.

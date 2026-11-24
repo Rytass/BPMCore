@@ -40,6 +40,7 @@ import {
   NotificationUnreadIcon,
   PlusIcon,
   RefreshCcwIcon,
+  ReverseLeftIcon,
   ShareIcon,
   UserIcon,
 } from '@mezzanine-ui/icons';
@@ -78,6 +79,7 @@ import {
   readAttachmentDownloadUrl,
   readAttachmentPreviewUrl,
   readInstanceSignatures,
+  readRecallableTaskId,
   listWorkflowWebhookDeliveries,
   resubmitApprovalInstance,
   retryWorkflowWebhookDelivery,
@@ -104,6 +106,7 @@ import {
   readTaskDecisionsForTasks,
 } from './sections/container-helpers';
 import { useResubmitCommentDraft } from './use-resubmit-comment-draft';
+import { SignerRecallModal } from './SignerRecallModal';
 import { InstanceFormSection } from './sections/InstanceFormSection';
 import { InstanceAttachmentsSection } from './sections/InstanceAttachmentsSection';
 import {
@@ -320,6 +323,15 @@ export function InstanceDetailView({
   const [webhookDeliveries, setWebhookDeliveries] = useState<
     readonly WorkflowWebhookDeliveryRecord[]
   >([]);
+  // The task whose approval the signed-in member could take back right now;
+  // null when none, when the host has signer recall off, or when the server
+  // does not know the query.
+  const [recallableTaskId, setRecallableTaskId] = useState<string | null>(null);
+  // The task the open recall window is for. Kept apart from the one above so a
+  // reload behind the window cannot change what is being confirmed.
+  const [recallWindowTaskId, setRecallWindowTaskId] = useState<string | null>(
+    null,
+  );
   const [signatureVerification, setSignatureVerification] =
     useState<SignatureVerificationRecord | null>(null);
   const [tasks, setTasks] = useState<readonly TaskRecord[]>([]);
@@ -803,6 +815,7 @@ export function InstanceDetailView({
         nextAttachments,
         nextSignatures,
         nextWebhookDeliveries,
+        nextRecallableTaskId,
       ] = await Promise.all([
         readTaskDecisionsForTasks(nextRecord.tasks),
         readMemberProfilesForTimeline({
@@ -812,6 +825,9 @@ export function InstanceDetailView({
         listAttachments(nextRecord.instance.id),
         readInstanceSignatures(nextRecord.instance.id),
         readWebhookDeliveries(nextRecord.instance.id),
+        // Optional extra: a server that predates signer recall rejects the
+        // query, and that must not take the page down.
+        readRecallableTaskId(nextRecord.instance.id).catch((): null => null),
       ]);
       setTaskDecisions(nextTaskDecisions);
       setMemberProfiles(nextMemberProfiles);
@@ -820,6 +836,7 @@ export function InstanceDetailView({
       setSignatureVerification(nextSignatures.verification);
       setAdhocDirectives(nextAdhocDirectives);
       setWebhookDeliveries(nextWebhookDeliveries);
+      setRecallableTaskId(nextRecallableTaskId);
     } catch (requestError: unknown) {
       setError(readErrorMessage(requestError));
     } finally {
@@ -1032,6 +1049,21 @@ export function InstanceDetailView({
     }
   }
 
+  function handleRecalled(): void {
+    setRecallWindowTaskId(null);
+    void refreshInstance();
+  }
+
+  // A refusal means the recall is no longer possible, so the page reloads to
+  // stop offering it; a window closed untouched needs no reload.
+  function handleRecallWindowClosed(refused: boolean): void {
+    setRecallWindowTaskId(null);
+
+    if (refused) {
+      void refreshInstance();
+    }
+  }
+
   // A decision made in the tasks section disables the header buttons too.
   // Kept in state, not read off the ref: the ref would leave them disabled
   // once the decision settled, since nothing re-renders this view then.
@@ -1075,6 +1107,17 @@ export function InstanceDetailView({
               variant="destructive-secondary"
             >
               取消案件
+            </Button>
+          ) : null}
+          {instance && recallableTaskId ? (
+            <Button
+              disabled={combinedDeciding}
+              icon={ReverseLeftIcon}
+              iconType="leading"
+              onClick={(): void => setRecallWindowTaskId(recallableTaskId)}
+              variant="base-secondary"
+            >
+              取回重辦
             </Button>
           ) : null}
           {currentTask ? (
@@ -1401,6 +1444,11 @@ export function InstanceDetailView({
           </BPMFormField>
         </div>
       </Modal>
+      <SignerRecallModal
+        onClose={handleRecallWindowClosed}
+        onRecalled={handleRecalled}
+        taskId={recallWindowTaskId}
+      />
     </>
   );
 }

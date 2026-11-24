@@ -12,6 +12,8 @@ import {
   isNonNullType,
 } from 'graphql';
 import { validate } from 'class-validator';
+import { SIGNER_RECALL_ERROR_CODES } from '@rytass/bpm-core-shared/status';
+import { RecallTaskApprovalInput } from './dto/recall-task-approval.input';
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { WorkflowEngineMutations } from './workflow-engine.mutations';
 
@@ -71,5 +73,57 @@ describe('WorkflowEngineMutations schema', () => {
     expect(await validate(input)).toEqual([
       expect.objectContaining({ property: 'comment' }),
     ]);
+  });
+
+  // G3: the signer's note is optional and capped like the resubmission one;
+  // a task id that is not a UUID would fail the uuid lookup as a 500.
+  it('accepts an optional comment on RecallTaskApprovalInput', (): void => {
+    const inputType = schema.getType('RecallTaskApprovalInput');
+
+    expect(inputType).toBeInstanceOf(GraphQLInputObjectType);
+
+    const comment = (inputType as GraphQLInputObjectType).getFields()[
+      'comment'
+    ];
+
+    expect(comment?.type).toBe(GraphQLString);
+    expect(isNonNullType(comment?.type)).toBe(false);
+  });
+
+  it('caps the recall comment at 2000 characters', async (): Promise<void> => {
+    const input = new RecallTaskApprovalInput();
+    input.taskId = '11111111-1111-4111-8111-111111111111';
+
+    expect(await validate(input)).toEqual([]);
+
+    input.comment = 'x'.repeat(2000);
+    expect(await validate(input)).toEqual([]);
+
+    input.comment = 'x'.repeat(2001);
+    expect(await validate(input)).toEqual([
+      expect.objectContaining({ property: 'comment' }),
+    ]);
+  });
+
+  it('rejects a recall task id that is not a UUID', async (): Promise<void> => {
+    const input = new RecallTaskApprovalInput();
+    input.taskId = 'not-a-uuid';
+
+    expect(await validate(input)).toEqual([
+      expect.objectContaining({ property: 'taskId' }),
+    ]);
+  });
+
+  // A refused recall is a 409 whose code the client maps to its own wording;
+  // the mutation's description is where a GraphQL consumer finds the list.
+  it('lists every refusal code in the recallTaskApproval description', (): void => {
+    const description =
+      schema.getMutationType()?.getFields()['recallTaskApproval']
+        ?.description ?? '';
+
+    expect(Object.values(SIGNER_RECALL_ERROR_CODES)).toHaveLength(12);
+    Object.values(SIGNER_RECALL_ERROR_CODES).forEach((code): void => {
+      expect(description).toContain(code);
+    });
   });
 });

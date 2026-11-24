@@ -1470,3 +1470,54 @@ describe('stuck approval and administrator cancellation in the timeline', (): vo
     ).toBe('案件已取消');
   });
 });
+
+describe('a signer recall in the timeline', () => {
+  const recallLog = (
+    payload: Readonly<Record<string, unknown>>,
+  ): ActivityLogRecord =>
+    ({
+      actorMemberId: 'member-signer',
+      createdAt: '2026-11-24T08:00:00.000Z',
+      eventType: 'TASK_RECALLED',
+      id: 'activity-recall',
+      instanceId: 'instance-1',
+      nodeId: 'task_manager',
+      payloadJson: JSON.stringify(payload),
+      taskId: 'task-1',
+    }) as unknown as ActivityLogRecord;
+  const parts = (
+    payload: Readonly<Record<string, unknown>>,
+  ): readonly ReturnType<typeof readActivityDetailParts>[number][] =>
+    readActivityDetailParts(
+      recallLog(payload),
+      payload,
+      null,
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+    );
+
+  it('shows the recall as its own step', (): void => {
+    expect(isUserMeaningfulActivity(recallLog({}))).toBe(true);
+    expect(readActivityEventLabel('TASK_RECALLED', {})).toBe('簽核者取回重辦');
+    expect(isActivityError(recallLog({}), {})).toBe(false);
+  });
+
+  it('shows the reason the signer wrote under the recall reason label', (): void => {
+    expect(parts({ comment: '附件放錯了' })).toEqual([
+      {
+        label: '取回原因',
+        text: '附件放錯了',
+        tone: 'neutral',
+        type: 'comment',
+      },
+    ]);
+  });
+
+  // A recall without a reason logs `comment: null`.
+  it('shows nothing extra when there is no reason', (): void => {
+    expect(parts({ comment: null })).toEqual([]);
+    expect(parts({})).toEqual([]);
+  });
+});

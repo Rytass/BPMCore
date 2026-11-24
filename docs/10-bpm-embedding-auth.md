@@ -195,6 +195,7 @@ BPMCore 不再提供 mock fallback；
         useFactory: () => createHostStorageAdapter(),
       },
       expressionMissingFormFieldsAsNull: false, // 預設值，見 docs/11 §2e 與 docs/05 §5.1.2
+      signerRecallEnabled: false, // 預設值，見 docs/11 §2f
       notificationEmailEnabled: 'auto',
       notificationEmailSmtpHost: 'smtp.example.com',
       notificationEmailSmtpPort: 587,
@@ -258,7 +259,9 @@ BPM 可在案件狀態改變時寫入事件（outbox），也可在狀態寫入�
 - 事件不含 `formData`。
 - 事件型別：
   - `INSTANCE_SUBMITTED`、`INSTANCE_RESUBMITTED`：送出與退回後重送，payload 含 `actorMemberId`。
-  - `NODE_ACTIVATED`：建立待辦，payload 含 `nodeId`、`taskIds`。
+  - `NODE_ACTIVATED`：建立待辦，payload 含 `nodeId`、`taskIds`。簽核者取回（`signerRecallEnabled`，見 docs/11 §2f）也只發這一個事件，
+    `nodeId` 是回到取回者那一關，所以它**可能指向比目前進度更早的節點**。取回不發 `INSTANCE_RETURNED`；
+    下一關被取消的任務沒有對應事件，收到 `NODE_ACTIVATED` 時請重讀該案件的 tasks。
   - `INSTANCE_APPROVED`、`INSTANCE_REJECTED`、`INSTANCE_RETURNED`、`INSTANCE_CANCELLED`、`INSTANCE_EXPIRED`：案件終局或退回。
   - `TASK_AUTO_DECISION_FAILED`：SLA 自動核准被決策前檢查擋下（見下節）。
 - `actorMemberId` 是實際做決策的成員。REJECTED 與 RETURNED 若由候選人決策，值為該候選人，

@@ -70,6 +70,15 @@ describe('BPM resolver metadata', () => {
     expect(
       find('WorkflowEngineQueries', 'inactiveMembersWithOpenTasks')?.access,
     ).toBe('admin');
+    // Taking back one's own approval is the signer's act, not an
+    // administrator's: a host that maps this listing to permission rules must
+    // not be told to gate it behind the admin tier.
+    expect(find('WorkflowEngineMutations', 'recallTaskApproval')?.access).toBe(
+      'authenticated',
+    );
+    expect(find('WorkflowEngineQueries', 'recallableTaskId')?.access).toBe(
+      'authenticated',
+    );
 
     // A filter that stopped matching would leave this near zero, and a host
     // would silently get a permission map covering nothing.

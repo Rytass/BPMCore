@@ -506,6 +506,23 @@ BPMRootModule.forRoot({ expressionMissingFormFieldsAsNull: true }); // 預設 fa
 - 代價是未填欄位的 `has(form.x)` 會從 `false` 變成 `true`，模板若用 `has()` 判斷「未填」，要先改成 `form.x == null`。完整對照表見 `docs/05-conditions-cel.md` §5.1.2。
 - 補值只在評估時發生，不寫回 `form_data`。
 
+### 2f. 簽核者取回（選用）
+
+```typescript
+BPMRootModule.forRoot({ signerRecallEnabled: true }); // 預設 false
+```
+
+- 開啟後，簽核人在自己核准之後、下一關還沒有人動過時，可以取回那次核准：下一關的待簽任務取消，案件回到自己那一關，自己重新簽核。
+  不符合條件時一律拒絕（判斷規則見 `docs/07-workflow-execution.md` §5.6）。
+- 開啟前要知道三點：
+  1. 取回只發 `NODE_ACTIVATED`（回到取回者那一關）；下一關被取消的任務沒有對應事件，收到 `NODE_ACTIVATED` 時請重讀該案件的 tasks。
+  2. 已寄出的通知（email、webhook）收不回。
+  3. 預設關閉是因為取回會翻轉一個已經做成的簽核結果，這是宿主要明確開啟的流程語意。
+- 表單欄位不還原；取回者重簽時可以改值。
+- 被拒時，依 `extensions.originalError.code` 對照自己的文案；碼的常數可從 shared 套件的 `status` subpath import
+  （`SIGNER_RECALL_ERROR_CODES`）。`message` 是英文，給 log 用。
+- 開關關著時，`recallableTaskId` query 一律回 `null`；直接呼叫 `recallTaskApproval` mutation 會得到 `SIGNER_RECALL_DISABLED`。
+
 ### 3. Bootstrap（**不要** 用 `setGlobalPrefix`）
 
 ```ts
@@ -553,6 +570,8 @@ BPM 的領域錯誤是 Nest 的 `HttpException` 子類（例如
 - `message` 開頭的錯誤碼字串，例如
   `WORKFLOW_WEBHOOK_URL_NOT_ALLOWED`、`WORKFLOW_WEBHOOK_TEST_RATE_LIMITED`、
   `FORM_DATA_SOURCE_*`。`@rytass/bpm-core-react` 的畫面就是靠這些碼顯示對應文案。
+- 部分拒絕另帶 `extensions.originalError.code`（例如簽核者取回的 `SIGNER_RECALL_*`），`message` 是英文、給 log 用；
+  `statusCode` 照舊在（取回被拒是 `409`）。
 
 Apollo 預設會把**未處理**錯誤的 `message` 原樣透傳給前端，資料庫驅動的錯誤
 （例如把不是 UUID 的字串當 id 查詢時的 `invalid input syntax for type uuid: ...`）

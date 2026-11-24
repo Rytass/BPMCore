@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { Args, ID, Mutation, Resolver } from '@nestjs/graphql';
+import { SIGNER_RECALL_ERROR_CODES } from '@rytass/bpm-core-shared/status';
 import {
   BPMAdminOnly,
   BPMAuthContext,
@@ -21,6 +22,7 @@ import { DecideTaskInput } from './dto/decide-task.input';
 import { DryRunApprovalWorkflowInput } from './dto/dry-run-approval-workflow.input';
 import { ReassignMemberTasksInput } from './dto/reassign-member-tasks.input';
 import { ReassignTaskInput } from './dto/reassign-task.input';
+import { RecallTaskApprovalInput } from './dto/recall-task-approval.input';
 import { ResubmitApprovalInstanceInput } from './dto/resubmit-approval-instance.input';
 import { SubmitApprovalInstanceInput } from './dto/submit-approval-instance.input';
 import { TaskDecisionEntity } from './task-decision.entity';
@@ -98,6 +100,30 @@ export class WorkflowEngineMutations {
       // is deciding, so an approver-filled option is judged as their pick.
       { approverAuthContext: authContext },
     );
+  }
+
+  @Mutation(() => TaskEntity, {
+    description:
+      'Takes back the approval the signed-in member gave on a task: the ' +
+      "next stage's open task is cancelled and the member gets a new task of " +
+      'their own on the stage they approved. Mails and webhooks already sent ' +
+      'are not called back. A refusal throws a ConflictException ' +
+      '(`extensions.originalError.statusCode` is 409) whose ' +
+      '`extensions.originalError.code` is one of: ' +
+      `${Object.values(SIGNER_RECALL_ERROR_CODES).join(', ')}. The ` +
+      '`message` is English, for logs.',
+  })
+  async recallTaskApproval(
+    @Args('input') input: RecallTaskApprovalInput,
+    @BPMCurrentMemberId() currentMemberId: string,
+  ): Promise<TaskEntity> {
+    return this.workflowEngineService.recallTaskApproval({
+      ...(typeof input.comment === 'string' ? { comment: input.comment } : {}),
+      // Never read from the input: whoever is signed in is the one taking
+      // their own approval back, so a client cannot recall for someone else.
+      recalledByMemberId: currentMemberId,
+      taskId: input.taskId,
+    });
   }
 
   @Mutation(() => [TaskReassignmentResultObject], {
