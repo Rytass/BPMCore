@@ -1,3 +1,13 @@
+## 0.25.1 (2026-11-24)
+
+### 🩹 Fixes
+
+- **react:** label the attachment upload button in Chinese ([4e5261a6](https://github.com/Rytass/BPMCore/commit/4e5261a6))
+
+### ❤️ Thank You
+
+- Kai-Chieh Yang
+
 ## 0.25.0 (2026-11-24)
 
 ### 🚀 Features
