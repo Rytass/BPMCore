@@ -1,10 +1,17 @@
 import 'reflect-metadata';
 import { NotFoundException } from '@nestjs/common';
 import { EntityManager, FindOperator } from 'typeorm';
-import { SIGNER_RECALL_ERROR_CODES } from '@rytass/bpm-core-shared/status';
+import {
+  SIGNER_RECALL_ERROR_CODES,
+  type SignerRecallErrorCode,
+} from '@rytass/bpm-core-shared/status';
 import type { WorkflowDefinition } from '@rytass/bpm-core-shared/workflow';
 import { ActivityLogEntity } from './activity-log.entity';
 import { AdhocDirectiveEntity } from './adhoc-directive.entity';
+import {
+  AdhocDirectiveStatusEnum,
+  AdhocDirectiveTypeEnum,
+} from './adhoc.enums';
 import { ApprovalInstanceEntity } from './approval-instance.entity';
 import {
   planSignerRecall,
@@ -511,16 +518,378 @@ describe('signer recall planner', (): void => {
 
       // Nothing but movement is on record after D, so R6 lets it through and
       // only the node the token walked through can be what refuses.
+      const laterEventTypes = seed.activityLogs
+        .filter((log): boolean => BigInt(log.seq) > BigInt(10))
+        .map(({ eventType }): ActivityLogEventTypeEnum => eventType);
+
+      expect(laterEventTypes.length).toBeGreaterThan(0);
       expect(
-        seed.activityLogs.some(
-          (log) =>
-            log.eventType === ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+        laterEventTypes.every(
+          (eventType): boolean =>
+            eventType === ActivityLogEventTypeEnum.TOKEN_ADVANCED ||
+            eventType === ActivityLogEventTypeEnum.TASK_CREATED,
         ),
-      ).toBe(false);
+      ).toBe(true);
 
       await expect(plan(seed)).resolves.toEqual({
         refusalCode: SIGNER_RECALL_ERROR_CODES.PASSED_SERVICE_TASK,
       });
+    });
+  });
+
+  describe('records and notices that arrive after the approval', (): void => {
+    const OTHER_MEMBER = 'member-other';
+    const LATER_SEQ = 13;
+
+    const withLaterLog = (
+      fields: Partial<ActivityLogEntity> & Pick<ActivityLogEntity, 'eventType'>,
+    ): PlannerSeed => {
+      const baseline = seedBaselineApprovedState();
+
+      return {
+        ...baseline,
+        activityLogs: [...baseline.activityLogs, createLog(LATER_SEQ, fields)],
+      };
+    };
+
+    const createStageNotice = (
+      fields: Partial<AdhocDirectiveEntity>,
+    ): AdhocDirectiveEntity =>
+      Object.assign(new AdhocDirectiveEntity(), {
+        consumedAt: null,
+        id: 'directive-notice',
+        instanceId: INSTANCE_ID,
+        originNodeId: STAGE_NODE,
+        status: AdhocDirectiveStatusEnum.CONSUMED,
+        type: AdhocDirectiveTypeEnum.STAGE_NOTIFY,
+        ...fields,
+      });
+
+    type LateCase = readonly [
+      string,
+      () => PlannerSeed,
+      SignerRecallErrorCode | null,
+    ];
+
+    const lateCases: readonly LateCase[] = [
+      [
+        'the next stage task has an openedAt and still counts as untouched',
+        (): PlannerSeed => {
+          const baseline = seedBaselineApprovedState();
+
+          return {
+            ...baseline,
+            tasks: baseline.tasks.map((task): TaskEntity =>
+              task.id === NEXT_TASK_ID
+                ? createTask({
+                    ...task,
+                    openedAt: new Date('2026-11-20T10:05:00.000Z'),
+                  })
+                : task,
+            ),
+          };
+        },
+        null,
+      ],
+      [
+        'an SLA reminder after the approval changes nothing',
+        (): PlannerSeed =>
+          withLaterLog({
+            eventType: ActivityLogEventTypeEnum.SLA_TRIGGERED,
+            nodeId: NEXT_NODE,
+            payload: { action: 'REMIND' },
+            taskId: NEXT_TASK_ID,
+          }),
+        null,
+      ],
+      [
+        'the late result of an ad-hoc webhook an earlier stage sent',
+        (): PlannerSeed =>
+          withLaterLog({
+            eventType: ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+            nodeId: 'task_earlier',
+            payload: { action: 'ADHOC_WEBHOOK' },
+          }),
+        null,
+      ],
+      [
+        'an administrator re-ran the engine over the case',
+        (): PlannerSeed =>
+          withLaterLog({
+            actorMemberId: OTHER_MEMBER,
+            eventType: ActivityLogEventTypeEnum.ENGINE_PROCESS_REQUESTED,
+          }),
+        null,
+      ],
+      [
+        'a failed advance left only its failure record',
+        (): PlannerSeed =>
+          withLaterLog({
+            eventType: ActivityLogEventTypeEnum.ADVANCE_FAILED,
+            nodeId: NEXT_NODE,
+            taskId: NEXT_TASK_ID,
+          }),
+        null,
+      ],
+      [
+        'a countersign that could not be resolved was cancelled with no actor',
+        (): PlannerSeed =>
+          withLaterLog({
+            actorMemberId: null,
+            eventType: ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CANCELLED,
+            nodeId: NEXT_NODE,
+            payload: { directiveType: AdhocDirectiveTypeEnum.COUNTERSIGN },
+          }),
+        null,
+      ],
+      [
+        'the late result of a WEBHOOK node before the stage, off the token path',
+        (): PlannerSeed =>
+          withLaterLog({
+            eventType: ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+            nodeId: 'webhook_earlier',
+            payload: { action: 'WEBHOOK' },
+          }),
+        null,
+      ],
+      [
+        'the stage notice was sent in an earlier round, before this approval',
+        (): PlannerSeed => ({
+          ...seedBaselineApprovedState(),
+          directives: [
+            createStageNotice({
+              consumedAt: new Date(DECIDED_AT.getTime() - 60_000),
+            }),
+          ],
+        }),
+        null,
+      ],
+      [
+        'an administrator re-sent a NOTIFY node webhook',
+        (): PlannerSeed =>
+          withLaterLog({
+            actorMemberId: OTHER_MEMBER,
+            eventType: ActivityLogEventTypeEnum.WEBHOOK_DELIVERY_RETRIED,
+            nodeId: 'notify_earlier',
+            payload: { action: 'NOTIFY_WEBHOOK' },
+          }),
+        null,
+      ],
+      [
+        'somebody else cancelled a directive',
+        (): PlannerSeed =>
+          withLaterLog({
+            actorMemberId: OTHER_MEMBER,
+            eventType: ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CANCELLED,
+            payload: {
+              directiveType: AdhocDirectiveTypeEnum.COMPLETION_NOTIFY,
+            },
+          }),
+        SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED,
+      ],
+      [
+        'the signer cancelled a directive that is not a completion notice',
+        (): PlannerSeed =>
+          withLaterLog({
+            actorMemberId: SIGNER,
+            eventType: ActivityLogEventTypeEnum.ADHOC_DIRECTIVE_CANCELLED,
+            payload: { directiveType: AdhocDirectiveTypeEnum.STAGE_NOTIFY },
+          }),
+        SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED,
+      ],
+      [
+        'a SET_FORM_FIELD execution record, off the token path',
+        (): PlannerSeed =>
+          withLaterLog({
+            eventType: ActivityLogEventTypeEnum.SERVICE_TASK_EXECUTED,
+            nodeId: 'set_field_elsewhere',
+            payload: { action: 'SET_FORM_FIELD' },
+          }),
+        SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED,
+      ],
+    ];
+
+    it.each(lateCases)(
+      '%s',
+      async (_name, buildSeed, refusalCode): Promise<void> => {
+        const result = await plan(buildSeed());
+
+        if (refusalCode === null) {
+          expect(result).toMatchObject({ plan: { nextNodeId: NEXT_NODE } });
+        } else {
+          expect(result).toEqual({ refusalCode });
+        }
+      },
+    );
+
+    describe('nothing of a second instance of the same template counts', (): void => {
+      const OTHER_INSTANCE_ID = 'instance-2';
+      const OTHER_TOKEN_ID = 'token-y';
+
+      /**
+       * What a case of the same template leaves behind on the same node ids.
+       * Every id differs from the instance under test, so a query that lets
+       * these rows in cannot be mistaken for one that matched by id. The rows
+       * are the same ones whichever instance they are given to, which is how
+       * the controls below show each of them is something the planner refuses
+       * when it does belong to the instance.
+       */
+      interface Rivals {
+        readonly baits: readonly [
+          string,
+          Partial<PlannerSeed>,
+          SignerRecallErrorCode,
+        ][];
+      }
+
+      const createRivals = (owner: {
+        readonly instanceId: string;
+        readonly stageTokenId: string;
+      }): Rivals => ({
+        baits: [
+          [
+            'a stage notice sent after the approval',
+            {
+              directives: [
+                createStageNotice({
+                  consumedAt: new Date(DECIDED_AT.getTime() + 60_000),
+                  id: 'directive-rival',
+                  instanceId: owner.instanceId,
+                }),
+              ],
+            },
+            SIGNER_RECALL_ERROR_CODES.STAGE_NOTIFY_SENT,
+          ],
+          [
+            'a completed approval on the stage node',
+            {
+              candidates: [],
+              decisions: [
+                Object.assign(new TaskDecisionEntity(), {
+                  action: TaskDecisionActionEnum.APPROVED,
+                  comment: null,
+                  decidedAt: DECIDED_AT,
+                  decidedByMemberId: 'member-rival',
+                  id: 'decision-rival',
+                  returnToNodeId: null,
+                  signatureId: null,
+                  taskId: 'task-rival-x',
+                  transferToMemberId: null,
+                }),
+              ],
+              tasks: [
+                createTask({
+                  instanceId: owner.instanceId,
+                  id: 'task-rival-x',
+                  tokenId: owner.stageTokenId,
+                }),
+              ],
+            },
+            SIGNER_RECALL_ERROR_CODES.STAGE_NOT_SETTLED_BY_THIS_APPROVAL,
+          ],
+          [
+            'a completed ad-hoc task on the stage node',
+            {
+              tasks: [
+                createTask({
+                  instanceId: owner.instanceId,
+                  id: 'task-rival-adhoc',
+                  isAdhoc: true,
+                  tokenId: owner.stageTokenId,
+                }),
+              ],
+            },
+            SIGNER_RECALL_ERROR_CODES.STAGE_NOT_SETTLED_BY_THIS_APPROVAL,
+          ],
+          [
+            'a waiting token and an open task on the next stage',
+            {
+              tasks: [
+                createTask({
+                  assigneeMemberId: 'member-rival',
+                  instanceId: owner.instanceId,
+                  id: 'task-rival-n',
+                  nodeId: NEXT_NODE,
+                  status: TaskStatusEnum.PENDING,
+                  tokenId: OTHER_TOKEN_ID,
+                }),
+              ],
+              tokens: [
+                createToken({
+                  id: OTHER_TOKEN_ID,
+                  instanceId: owner.instanceId,
+                }),
+              ],
+            },
+            SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_NOT_SINGLE,
+          ],
+          [
+            'a decision made after the approval',
+            {
+              activityLogs: [
+                createLog(LATER_SEQ, {
+                  actorMemberId: 'member-rival',
+                  eventType: ActivityLogEventTypeEnum.TASK_DECIDED,
+                  instanceId: owner.instanceId,
+                  nodeId: NEXT_NODE,
+                  payload: { action: 'APPROVED', decisionId: 'decision-rival' },
+                  taskId: 'task-rival-n',
+                }),
+              ],
+            },
+            SIGNER_RECALL_ERROR_CODES.NEXT_STAGE_ACTED,
+          ],
+        ],
+      });
+
+      const withExtra = (
+        base: PlannerSeed,
+        extra: Partial<PlannerSeed>,
+      ): PlannerSeed => ({
+        ...base,
+        activityLogs: [...base.activityLogs, ...(extra.activityLogs ?? [])],
+        candidates: [...base.candidates, ...(extra.candidates ?? [])],
+        decisions: [...base.decisions, ...(extra.decisions ?? [])],
+        directives: [...base.directives, ...(extra.directives ?? [])],
+        tasks: [...base.tasks, ...(extra.tasks ?? [])],
+        tokens: [...base.tokens, ...(extra.tokens ?? [])],
+      });
+
+      it('allows the recall although the other instance has all five rows', async (): Promise<void> => {
+        const rivals = createRivals({
+          instanceId: OTHER_INSTANCE_ID,
+          stageTokenId: OTHER_TOKEN_ID,
+        });
+        const seed = rivals.baits.reduce(
+          (current, [, extra]): PlannerSeed => withExtra(current, extra),
+          seedBaselineApprovedState(),
+        );
+
+        expect(rivals.baits).toHaveLength(5);
+        await expect(plan(seed)).resolves.toMatchObject({
+          plan: { cancelledTaskIds: [NEXT_TASK_ID], nextNodeId: NEXT_NODE },
+        });
+      });
+
+      const controls = createRivals({
+        instanceId: INSTANCE_ID,
+        stageTokenId: TOKEN_ID,
+      }).baits.map(
+        ([name, extra, refusalCode]): readonly [
+          string,
+          Partial<PlannerSeed>,
+          SignerRecallErrorCode,
+        ] => [name, extra, refusalCode],
+      );
+
+      it.each(controls)(
+        'control: %s refuses the recall when it belongs to this instance',
+        async (_name, extra, refusalCode): Promise<void> => {
+          await expect(
+            plan(withExtra(seedBaselineApprovedState(), extra)),
+          ).resolves.toEqual({ refusalCode });
+        },
+      );
     });
   });
 });
