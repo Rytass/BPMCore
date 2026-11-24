@@ -128,6 +128,8 @@ export enum ActivityLogEventTypeEnum {
   TASK_DECIDED = 'TASK_DECIDED',
   /** An administrator moved an open task's seat to another member in place (task id unchanged). */
   TASK_REASSIGNED = 'TASK_REASSIGNED',
+  /** A signer took back their own approval; the next stage's open task was cancelled. */
+  TASK_RECALLED = 'TASK_RECALLED',
   TOKEN_ADVANCED = 'TOKEN_ADVANCED',
   TOKEN_CREATED = 'TOKEN_CREATED',
   /** An administrator re-queued a FAILED NOTIFY webhook delivery (ADR 18 §3.10). */

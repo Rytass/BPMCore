@@ -217,6 +217,24 @@ export interface BPMRootRuntimeOptions
   readonly memberResolver?: BPMMemberResolver;
 
   /**
+   * Lets a signer take back an approval they just gave while the next stage
+   * has not been acted on, and sign their own stage again. Default `false`:
+   * taking one back changes the outcome of a decision already made, so the
+   * host turns it on deliberately, for the same reason
+   * `notificationSlaTimeoutAutoApproveEnabled` is off by default.
+   *
+   * Know three things before turning it on:
+   *
+   * 1. A recall emits only `NODE_ACTIVATED` (back to the signer's own stage).
+   *    The next stage's cancelled task has no event of its own, so on
+   *    `NODE_ACTIVATED` re-read that instance's tasks.
+   * 2. Notifications already sent (email, webhook) cannot be taken back.
+   * 3. It is off by default because it reverses a settled approval, a flow
+   *    semantic the host should opt into explicitly.
+   */
+  readonly signerRecallEnabled?: boolean;
+
+  /**
    * Dispatcher for executable workflow service tasks, as a ready instance.
    * Replace the default `fetch` dispatcher to add auth headers, request
    * signing, retry queues, or an outbound integration bus.

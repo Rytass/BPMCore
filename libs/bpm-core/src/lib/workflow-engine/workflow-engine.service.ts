@@ -191,6 +191,7 @@ import {
 } from './instance-advance-failure';
 import { readDistinctSubmitterMemberId } from './instance-submitter';
 import { TaskDecisionEntity } from './task-decision.entity';
+import { planSignerRecall } from './signer-recall-planner';
 import { TaskCandidateEntity } from './task-candidate.entity';
 import { TaskEntity } from './task.entity';
 import {
@@ -1029,10 +1030,14 @@ export class WorkflowEngineService {
     );
     this.expressionMissingFormFieldsAsNull =
       rootOptions?.expressionMissingFormFieldsAsNull === true;
+    this.signerRecallEnabled = rootOptions?.signerRecallEnabled === true;
   }
 
   /** ADR 27 §3; see `BPMRootRuntimeOptions.expressionMissingFormFieldsAsNull`. */
   private readonly expressionMissingFormFieldsAsNull: boolean;
+
+  /** See `BPMRootRuntimeOptions.signerRecallEnabled`; off unless the host set it. */
+  private readonly signerRecallEnabled: boolean;
 
   private readonly serviceTaskDispatcher: BPMWorkflowServiceTaskDispatcher;
 
@@ -3621,6 +3626,64 @@ export class WorkflowEngineService {
       order: { createdAt: 'ASC' },
       where: { instanceId },
     });
+  }
+
+  /**
+   * The task whose approval `memberId` could take back right now, or `null`.
+   * Only the instance's latest decision can qualify, and only when it is
+   * `memberId`'s own approval and the recall rules allow it. Reads without the
+   * instance lock, so the answer can be stale by the time a recall is asked
+   * for; the recall itself judges again under the lock. Always `null` while
+   * `BPMRootRuntimeOptions.signerRecallEnabled` is off.
+   */
+  async readRecallableTaskId(
+    instanceId: string,
+    memberId: string,
+    scope?: WorkflowReadScope,
+  ): Promise<string | null> {
+    if (!this.signerRecallEnabled) {
+      return null;
+    }
+
+    await this.getApprovalInstance(instanceId, scope);
+
+    return this.approvalInstanceRepository.manager.transaction(
+      async (manager): Promise<string | null> => {
+        const logs = await manager
+          .getRepository(ActivityLogEntity)
+          .find({ where: { instanceId } });
+        const latestDecision = logs
+          .filter(
+            (log) => log.eventType === ActivityLogEventTypeEnum.TASK_DECIDED,
+          )
+          .reduce<ActivityLogEntity | null>(
+            (latest, log) =>
+              latest === null || BigInt(log.seq) > BigInt(latest.seq)
+                ? log
+                : latest,
+            null,
+          );
+
+        if (
+          latestDecision === null ||
+          latestDecision.taskId === null ||
+          latestDecision.actorMemberId !== memberId ||
+          latestDecision.payload['action'] !== TaskDecisionActionEnum.APPROVED
+        ) {
+          return null;
+        }
+
+        const result = await planSignerRecall(manager, {
+          adminReassignReason: ADMIN_REASSIGN_DELEGATION_REASON,
+          enabled: this.signerRecallEnabled,
+          manualTransferReason: MANUAL_TRANSFER_DELEGATION_REASON,
+          memberId,
+          taskId: latestDecision.taskId,
+        });
+
+        return 'plan' in result ? latestDecision.taskId : null;
+      },
+    );
   }
 
   private async readTaskActorContext(
