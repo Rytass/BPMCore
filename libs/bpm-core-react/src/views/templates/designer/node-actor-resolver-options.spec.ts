@@ -377,6 +377,277 @@ describe('readNodeActorGraphIssues', () => {
   });
 });
 
+describe('notify nodes that read earlier signers', () => {
+  const notifyNode = (
+    id: string,
+    recipients: unknown,
+    label = `知會 ${id}`,
+  ): WorkflowNode =>
+    ({
+      data: {
+        action: { channels: ['IN_APP'], recipients, type: 'NOTIFY' },
+        label,
+      },
+      id,
+      position: { x: 0, y: 0 },
+      type: 'serviceTask',
+    }) as unknown as WorkflowNode;
+  const lineWith = (
+    notify: WorkflowNode,
+    stage: WorkflowNode = taskNode('a'),
+  ): WorkflowDefinition =>
+    graph(
+      [
+        plainNode('start', 'startEvent'),
+        stage,
+        notify,
+        plainNode('end', 'endEvent'),
+      ],
+      [
+        link('start', stage.id),
+        link(stage.id, notify.id),
+        link(notify.id, 'end'),
+      ],
+    );
+
+  describe('the 關卡 picker', () => {
+    it('lists the approval stages upstream of the notify node, by label, and nothing else', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          taskNode('a'),
+          plainNode('svc', 'serviceTask'),
+          taskNode('b'),
+          notifyNode('notify', { nodeIds: [], type: 'NODE_ACTOR' }),
+          taskNode('after'),
+          plainNode('end', 'endEvent'),
+        ],
+        [
+          link('start', 'a'),
+          link('a', 'svc'),
+          link('svc', 'b'),
+          link('b', 'notify'),
+          link('notify', 'after'),
+          link('after', 'end'),
+        ],
+      );
+      const choice = readNodeActorStageChoice(definition, 'notify', []);
+
+      expect(choice.options).toEqual([
+        { id: 'a', name: '關卡 a' },
+        { id: 'b', name: '關卡 b' },
+      ]);
+      expect(choice.problems).toEqual([]);
+    });
+
+    it('leaves out a stage with an entry condition and keeps a stored one marked, with its problem', () => {
+      const definition = lineWith(
+        notifyNode('notify', { nodeIds: ['a'], type: 'NODE_ACTOR' }),
+        taskNode('a', { entryCondition: 'form.x == 1' }),
+      );
+
+      expect(
+        readNodeActorStageChoice(definition, 'notify', []).options,
+      ).toEqual([]);
+
+      const choice = readNodeActorStageChoice(definition, 'notify', ['a']);
+
+      expect(choice.selected).toEqual([
+        { id: 'a', name: '關卡 a（無法使用）' },
+      ]);
+      expect(choice.problems.join('')).toContain('設有進入條件');
+    });
+
+    it('says so when nothing upstream of the notify node can be picked', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          notifyNode('notify', { nodeIds: [], type: 'NODE_ACTOR' }),
+          plainNode('end', 'endEvent'),
+        ],
+        [link('start', 'notify'), link('notify', 'end')],
+      );
+
+      expect(
+        readNodeActorStageChoice(definition, 'notify', []).problems,
+      ).toEqual([NO_UPSTREAM_USER_TASK_HINT]);
+    });
+  });
+
+  describe('readNodeActorGraphIssues', () => {
+    it('is empty when the stage is sound, for both sources', () => {
+      expect(
+        readNodeActorGraphIssues(
+          lineWith(notifyNode('n', { nodeIds: ['a'], type: 'NODE_ACTOR' })),
+        ),
+      ).toEqual([]);
+      expect(
+        readNodeActorGraphIssues(
+          lineWith(
+            notifyNode('n', {
+              levelsUp: 1,
+              nodeIds: ['a'],
+              type: 'NODE_ACTOR_MANAGER',
+            }),
+          ),
+        ),
+      ).toEqual([]);
+    });
+
+    it('names the notify node and the problem when a stage is missing', () => {
+      expect(
+        readNodeActorGraphIssues(
+          lineWith(
+            notifyNode('n', { nodeIds: ['removed'], type: 'NODE_ACTOR' }),
+          ),
+        ),
+      ).toEqual(['知會節點「知會 n」：簽核來源的前面關卡「removed」不存在。']);
+      expect(
+        readNodeActorGraphIssues(
+          lineWith(
+            notifyNode('n', {
+              levelsUp: 1,
+              nodeIds: ['removed'],
+              type: 'NODE_ACTOR_MANAGER',
+            }),
+          ),
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('reports a stage with an entry condition, the same line the approval node gets', () => {
+      const stage = taskNode('a', { entryCondition: 'form.x == 1' });
+      const issues = readNodeActorGraphIssues(
+        lineWith(
+          notifyNode('n', { nodeIds: ['a'], type: 'NODE_ACTOR' }),
+          stage,
+        ),
+      );
+      const approval = readNodeActorGraphIssues(
+        lineWith(
+          taskNode('n', {
+            approverResolver: { nodeIds: ['a'], type: 'NODE_ACTOR' },
+            label: '知會 n',
+          }),
+          stage,
+        ),
+      );
+
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues.join('')).toContain('設有進入條件');
+      expect(
+        issues.every((issue) => issue.startsWith('知會節點「知會 n」：')),
+      ).toBe(true);
+      expect(
+        issues.map((issue) => issue.replace(/^知會節點/u, '簽核節點')),
+      ).toEqual(approval);
+    });
+
+    it('reports a stage that comes after the notify node', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          notifyNode('n', { nodeIds: ['later'], type: 'NODE_ACTOR' }),
+          taskNode('later'),
+          plainNode('end', 'endEvent'),
+        ],
+        [link('start', 'n'), link('n', 'later'), link('later', 'end')],
+      );
+      const issues = readNodeActorGraphIssues(definition);
+
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues[0]).toMatch(/^知會節點「知會 n」：/u);
+    });
+
+    it('collects the lines of approval and notify nodes together, in node order', () => {
+      const definition = graph(
+        [
+          plainNode('start', 'startEvent'),
+          taskNode('a'),
+          taskNode('me', {
+            approverResolver: { nodeIds: ['removed'], type: 'NODE_ACTOR' },
+          }),
+          notifyNode('n', { nodeIds: ['removed'], type: 'NODE_ACTOR' }),
+          plainNode('end', 'endEvent'),
+        ],
+        [
+          link('start', 'a'),
+          link('a', 'me'),
+          link('me', 'n'),
+          link('n', 'end'),
+        ],
+      );
+
+      expect(readNodeActorGraphIssues(definition)).toEqual([
+        '簽核節點「關卡 me」：簽核來源的前面關卡「removed」不存在。',
+        '知會節點「知會 n」：簽核來源的前面關卡「removed」不存在。',
+      ]);
+    });
+
+    it('falls back to the node id for an unlabelled notify node', () => {
+      expect(
+        readNodeActorGraphIssues(
+          lineWith(
+            notifyNode('n', { nodeIds: ['removed'], type: 'NODE_ACTOR' }, ''),
+          ),
+        )[0],
+      ).toMatch(/^知會節點「n」：/u);
+    });
+
+    it.each([
+      [
+        'an empty stage list (the recipients check owns that)',
+        { nodeIds: [], type: 'NODE_ACTOR' },
+      ],
+      ['指定會員', { memberIds: ['m1'], type: 'DIRECT' }],
+      [
+        'a form pick',
+        { formPath: 'owner', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+      ],
+      [
+        'a manager chain that starts from a stage (the backend does not graph-check it for a notify node)',
+        {
+          minPositionLevel: 3,
+          startFrom: { nodeIds: ['removed'], type: 'NODE_ACTOR' },
+          type: 'ORG_MANAGER_CHAIN',
+        },
+      ],
+      [
+        'stage ids that are not a list (raw JSON)',
+        { nodeIds: 'a', type: 'NODE_ACTOR' },
+      ],
+    ])('ignores %s', (_name, recipients) => {
+      expect(
+        readNodeActorGraphIssues(lineWith(notifyNode('n', recipients))),
+      ).toEqual([]);
+    });
+
+    it('ignores a notify node saved without recipients, and a service task that does not notify', () => {
+      const raw = {
+        data: {
+          action: { channels: ['IN_APP'], type: 'NOTIFY' },
+          label: 'raw',
+        },
+        id: 'raw',
+        position: { x: 0, y: 0 },
+        type: 'serviceTask',
+      } as unknown as WorkflowNode;
+      const setField = {
+        data: {
+          action: { fieldPath: 'form.x', type: 'SET_FORM_FIELD', value: '1' },
+          label: 'set',
+        },
+        id: 'set',
+        position: { x: 0, y: 0 },
+        type: 'serviceTask',
+      } as unknown as WorkflowNode;
+
+      expect(readNodeActorGraphIssues(lineWith(raw))).toEqual([]);
+      expect(readNodeActorGraphIssues(lineWith(setField))).toEqual([]);
+    });
+  });
+});
+
 describe('NODE_ACTOR_STAGE_HINT', () => {
   it('says that several picked stages use the most recent stage actually reached', () => {
     expect(NODE_ACTOR_STAGE_HINT).toContain('可複選');

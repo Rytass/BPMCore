@@ -2371,6 +2371,64 @@ export function readNotifyRecipientsIssue(
     return readOrgManagerChainIssue(recipients, '知會節點');
   }
 
+  return readNotifyNewSourceIssue(recipients);
+}
+
+/**
+ * The shape checks of the sources a notify node shares with an approval node
+ * (`FORM_MEMBER_MANAGER`, `FORM_ORG_UNIT_MANAGER`, `NODE_ACTOR`,
+ * `NODE_ACTOR_MANAGER`), worded for the notify node. Reads defensively like
+ * its neighbours: hand-written or AI-written JSON may omit any of these.
+ * Whether the form field fits and the earlier stage is on every path needs the
+ * form schema and the whole graph, so the publish lint does that.
+ */
+function readNotifyNewSourceIssue(recipients: ApproverResolver): string | null {
+  if (
+    (recipients.type === 'FORM_MEMBER_MANAGER' ||
+      recipients.type === 'FORM_ORG_UNIT_MANAGER') &&
+    (typeof recipients.formPath !== 'string' || !recipients.formPath.trim())
+  ) {
+    return '知會節點需要指定知會對象的表單欄位。';
+  }
+
+  if (
+    (recipients.type === 'FORM_MEMBER_MANAGER' ||
+      recipients.type === 'NODE_ACTOR_MANAGER') &&
+    !(Number.isInteger(recipients.levelsUp) && recipients.levelsUp >= 1)
+  ) {
+    return '知會節點需要指定有效的主管層級。';
+  }
+
+  if (
+    (recipients.type === 'NODE_ACTOR' ||
+      recipients.type === 'NODE_ACTOR_MANAGER') &&
+    (!Array.isArray(recipients.nodeIds) || recipients.nodeIds.length === 0)
+  ) {
+    return '知會節點需要指定前面的簽核關卡。';
+  }
+
+  if (
+    (recipients.type === 'FORM_MEMBER_MANAGER' ||
+      recipients.type === 'FORM_ORG_UNIT_MANAGER' ||
+      recipients.type === 'NODE_ACTOR_MANAGER') &&
+    recipients.fallback?.type === 'DIRECT' &&
+    (typeof recipients.fallback.memberId !== 'string' ||
+      !recipients.fallback.memberId.trim())
+  ) {
+    return '知會節點需要指定改派固定人。';
+  }
+
+  if (
+    (recipients.type === 'FORM_MEMBER_MANAGER' ||
+      recipients.type === 'FORM_ORG_UNIT_MANAGER' ||
+      recipients.type === 'NODE_ACTOR_MANAGER') &&
+    recipients.fallback?.type === 'POSITION' &&
+    (typeof recipients.fallback.positionId !== 'string' ||
+      !recipients.fallback.positionId.trim())
+  ) {
+    return '知會節點需要指定改派職位。';
+  }
+
   return null;
 }
 

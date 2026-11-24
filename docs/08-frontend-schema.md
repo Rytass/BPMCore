@@ -362,12 +362,16 @@ position / org id 是否真實存在。
 設計器的「關卡」選單與發布檢查共用；來源也不得重複或指到自己；
 從起點出發不經過任何來源關卡就走不到本節點（涵蓋）；兩個來源不得分在同一個平行閘道的不同出邊上；
 每個來源都必須在本節點的上游（從該來源出發走得到本節點）——排在本節點之後或沒接上流程的關卡不能當來源。
-**知會節點的收件人不開放這四種來源**（`isNotifyRecipientResolverType`），`readNotifyRecipientsIssue`
-會擋，AI 工具組寫入知會收件人時一律退回預設的直屬主管。
+知會節點的收件人也可以用這四種來源（`isNotifyRecipientResolverType` 涵蓋全部 resolver 型別）：
+`readNotifyRecipientsIssue` 對知會節點套用同一套結構規則（訊息主詞為「知會節點」），
+`NODE_ACTOR`／`NODE_ACTOR_MANAGER` 的圖檢查以知會節點為本節點；AI 工具組寫入知會收件人時與簽核節點一樣保留這四種來源。
+知會節點執行時解析不到人（欄位空白、沒有主管又沒設 `fallback`）會讓走到這個節點的送出或簽核回滾，
+與既有的主管型知會來源相同。
 
 後端 publish validation 對這四種來源另有檢查（`lintWorkflowDefinition`／`TemplateService`）：
 結構規則同上（`formPath`、`levelsUp`、`nodeIds` 存在且是簽核關卡、不含自己、fallback 欄位），
-認不得的 resolver `type` 與知會收件人用這四種來源都直接擋；`FORM_MEMBER_MANAGER` 的 `formPath`
+認不得的 resolver `type` 直接擋；知會收件人用這四種來源時套用與簽核節點相同的規則
+（問題位置是 `workflow.nodes.<id>.action.recipients.formPath`／`.nodeIds`）；`FORM_MEMBER_MANAGER` 的 `formPath`
 須指向**單選**、必填、不會被 `visibleWhen`／`hidden` 藏起來的 `member` 欄位，
 `FORM_ORG_UNIT_MANAGER` 須指向必填且不會被藏的 `org_unit` 欄位（判準與 `DYNAMIC_FORM` 同一套）；
 `NODE_ACTOR`／`NODE_ACTOR_MANAGER` 的圖檢查（`readNodeActorSourceIssues`）在結構檢查通過後執行。
@@ -557,11 +561,19 @@ interface NotifyWebhookTarget {
 - `CONTEXT` 路徑：`instance.id`、`instance.title`、`instance.templateId`、
   `instance.templateVersionId`、`initiator.memberId`、`node.id`、`node.label`，一律為字串。
 - 知會對象可為空（`DIRECT` 且 `memberIds: []`），前提是至少有一個 webhook。
-- 設計器的「知會對象來源」只編輯六種來源（指定會員、指定職位、組織任一人、組織特定職位、指定組織主管、依表單欄位指定）；`ORG_MANAGER`（發起人主管）、
-  `ORG_MANAGER_CHAIN`（主管鏈）、`EXPRESSION`（運算式）雖然引擎接受，設計器只讀：
+- 設計器的「知會對象來源」編輯七種來源，名稱與順序同「簽核來源」：指定會員、依表單欄位指定、依前面關卡的簽核者、
+  指定組織主管、組織任一人、組織特定職位、指定職位。與簽核面板相同，依畫面選擇編輯而不是 JSON 的 `type`：
+  「依表單欄位指定」與「依前面關卡的簽核者」各有一個「知會對象」下拉（欄位裡的人／關卡的簽核者＝本人，
+  或直屬／第二層／第三層主管，主管存成 `FORM_MEMBER_MANAGER`／`NODE_ACTOR_MANAGER`）；
+  「指定組織主管」的「組織」可選固定組織或表單欄位（表單欄位存成 `FORM_ORG_UNIT_MANAGER`）。
+  知會面板不顯示「只取最近一層主管」與「無主管時」：切到表單欄位時寫入 `preferClosestOrgUnit: true`（同簽核面板的預設），
+  既有的 `fallback`、`preferClosestOrgUnit` 在編輯時保留；
+  在知會面板從表單欄位切回固定組織時，`preferClosestOrgUnit` 維持切到表單欄位時的值、不會被移除（原本沒有這個設定的固定組織，來回切一次後會留下 `true`；面板不顯示這個開關），需要時改 JSON。
+  `readNodeActorGraphIssues` 也檢查知會節點，
+  發布前清單顯示「知會節點「<名稱>」：…」。
+  `ORG_MANAGER`（發起人主管）、`ORG_MANAGER_CHAIN`（主管鏈）、`EXPRESSION`（運算式）雖然引擎接受，設計器只讀：
   顯示成目前值（並附上目前的設定摘要）、開面板或改 Webhook 都不會改到 `recipients`，要在來源下拉主動改選才會覆寫。
-  引擎不允許知會用的來源（`FORM_MEMBER_MANAGER`、`FORM_ORG_UNIT_MANAGER`、`NODE_ACTOR`、
-  `NODE_ACTOR_MANAGER`）顯示成「不支援的知會來源」，儲存前必須改選。換來源只改 `recipients`，
+  本版本不認得的 `type` 顯示成「不支援的知會來源」，儲存前必須改選。換來源只改 `recipients`，
   `channels`、`template`、`webhooks` 都保留。
 - 「依表單欄位指定」的欄位與簽核節點同一套選單：列出表單所有人員選擇欄位，非必填、可能被條件隱藏或
   隱藏欄位會標警告；欄位空白時引擎會拋「找不到通知對象」並回滾送出，所以發布檢查
