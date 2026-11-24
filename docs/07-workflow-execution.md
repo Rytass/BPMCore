@@ -1545,6 +1545,10 @@ async function checkInstanceCompletion(instanceId) {
     R3 先擋，回 `INSTANCE_NOT_RUNNING`；案件仍是 `RUNNING`（例如核准後往再下一關走），由 R6 擋下，回 `NEXT_STAGE_ACTED`。
   - 同一人連按兩次：第二次鎖後看到 `TASK_RECALLED`，回 `ALREADY_RECALLED`（R12）。
   - query `recallableTaskId` 不拿鎖，可能讀到舊狀態；按下去時 mutation 會在鎖內重判。
+- **SLA 掃描的任務認領**：多個 replica 同時掃描時，每筆任務先在一個交易內取 `pg_try_advisory_xact_lock(hashtext('bpm-sla:<taskId>'))`，
+  這個交易一直開著到該筆的通知、`SLA_TRIGGERED` 與逾時動作都做完才結束，鎖隨交易釋放；沒取到就跳過，留給持有者處理。
+  逾時動作本身不在這個交易裡，引擎另開自己的交易，所以處理一筆逾時任務時同時佔用兩條連線。
+  （v0.25.4 之前這把鎖在交易外取，取到即釋放，實際上沒有擋住重複處理。）
 - **SLA 掃描與任務關閉的空窗**：掃描用另一把鎖（`bpm-sla:<taskId>`），一開始把候選任務一次撈出再逐筆處理，
   撈出的任務可能在處理前已被核准、或被取回取消。處理方式：
   - 發逾時／預警通知、寫 `SLA_TRIGGERED` 之前，先重讀任務；已不是 `PENDING`／`IN_PROGRESS` 就跳過，不發通知也不執行逾時動作。

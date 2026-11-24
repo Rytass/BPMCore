@@ -928,99 +928,13 @@ export class NotificationService {
     const results = await candidateTasks.reduce<Promise<SlaScanResult>>(
       async (resultPromise, task): Promise<SlaScanResult> => {
         const currentResult = await resultPromise;
+        const scanned = await this.withSlaTaskClaim(
+          task.id,
+          (): Promise<SlaScanResult> =>
+            this.scanSlaTask(task, now, currentResult),
+        );
 
-        if (!(await this.tryClaimSlaTask(task.id))) {
-          return currentResult;
-        }
-
-        const instance = await this.approvalInstanceRepository.findOne({
-          where: { id: task.instanceId },
-        });
-
-        if (!instance) {
-          return currentResult;
-        }
-
-        const node = readUserTaskNode(instance, task.nodeId);
-
-        if (!node?.data.sla || !task.slaDueAt) {
-          return currentResult;
-        }
-
-        if (task.slaDueAt.getTime() <= now.getTime()) {
-          const openTask = await this.readOpenSlaTask(task.id);
-
-          if (!openTask) {
-            return currentResult;
-          }
-
-          const created = await this.createSlaNotificationOnce({
-            instance,
-            node,
-            task: openTask,
-            type: NotificationTypeEnum.SLA_OVERDUE,
-          });
-
-          if (created) {
-            await this.recordSlaActivity({
-              instance,
-              node,
-              task: openTask,
-              trigger: 'OVERDUE',
-            });
-            await this.runSlaTimeoutHookUnlessTaskClosed({
-              instance,
-              node,
-              task: openTask,
-            });
-          }
-
-          return {
-            overdueCount: currentResult.overdueCount + (created ? 1 : 0),
-            warningCount: currentResult.warningCount,
-          };
-        }
-
-        const warningAt = node.data.sla.warningAt;
-
-        if (!warningAt || warningAt <= 0 || warningAt >= 1) {
-          return currentResult;
-        }
-
-        const slaStartTime = (task.slaStartedAt ?? task.createdAt).getTime();
-        const warningAtTime =
-          slaStartTime + (task.slaDueAt.getTime() - slaStartTime) * warningAt;
-
-        if (warningAtTime > now.getTime()) {
-          return currentResult;
-        }
-
-        const openTask = await this.readOpenSlaTask(task.id);
-
-        if (!openTask) {
-          return currentResult;
-        }
-
-        const created = await this.createSlaNotificationOnce({
-          instance,
-          node,
-          task: openTask,
-          type: NotificationTypeEnum.SLA_WARNING,
-        });
-
-        if (created) {
-          await this.recordSlaActivity({
-            instance,
-            node,
-            task: openTask,
-            trigger: 'WARNING',
-          });
-        }
-
-        return {
-          overdueCount: currentResult.overdueCount,
-          warningCount: currentResult.warningCount + (created ? 1 : 0),
-        };
+        return scanned ?? currentResult;
       },
       Promise.resolve({ overdueCount: 0, warningCount: 0 }),
     );
@@ -1069,17 +983,140 @@ export class NotificationService {
     }
   }
 
-  private async tryClaimSlaTask(taskId: string): Promise<boolean> {
-    if (!this.taskRepository.query) {
-      return true;
+  /**
+   * One listed task of {@link runSlaScan}: its notice, its `SLA_TRIGGERED`
+   * record and its timeout action, with the running totals updated.
+   */
+  private async scanSlaTask(
+    task: TaskEntity,
+    now: Date,
+    currentResult: SlaScanResult,
+  ): Promise<SlaScanResult> {
+    const instance = await this.approvalInstanceRepository.findOne({
+      where: { id: task.instanceId },
+    });
+
+    if (!instance) {
+      return currentResult;
     }
 
-    const rows = (await this.taskRepository.query(
-      'SELECT pg_try_advisory_xact_lock(hashtext($1)) AS claimed',
-      [`bpm-sla:${taskId}`],
-    )) as readonly { readonly claimed?: boolean }[];
+    const node = readUserTaskNode(instance, task.nodeId);
 
-    return rows[0]?.claimed !== false;
+    if (!node?.data.sla || !task.slaDueAt) {
+      return currentResult;
+    }
+
+    if (task.slaDueAt.getTime() <= now.getTime()) {
+      const openTask = await this.readOpenSlaTask(task.id);
+
+      if (!openTask) {
+        return currentResult;
+      }
+
+      const created = await this.createSlaNotificationOnce({
+        instance,
+        node,
+        task: openTask,
+        type: NotificationTypeEnum.SLA_OVERDUE,
+      });
+
+      if (created) {
+        await this.recordSlaActivity({
+          instance,
+          node,
+          task: openTask,
+          trigger: 'OVERDUE',
+        });
+        await this.runSlaTimeoutHookUnlessTaskClosed({
+          instance,
+          node,
+          task: openTask,
+        });
+      }
+
+      return {
+        overdueCount: currentResult.overdueCount + (created ? 1 : 0),
+        warningCount: currentResult.warningCount,
+      };
+    }
+
+    const warningAt = node.data.sla.warningAt;
+
+    if (!warningAt || warningAt <= 0 || warningAt >= 1) {
+      return currentResult;
+    }
+
+    const slaStartTime = (task.slaStartedAt ?? task.createdAt).getTime();
+    const warningAtTime =
+      slaStartTime + (task.slaDueAt.getTime() - slaStartTime) * warningAt;
+
+    if (warningAtTime > now.getTime()) {
+      return currentResult;
+    }
+
+    const openTask = await this.readOpenSlaTask(task.id);
+
+    if (!openTask) {
+      return currentResult;
+    }
+
+    const created = await this.createSlaNotificationOnce({
+      instance,
+      node,
+      task: openTask,
+      type: NotificationTypeEnum.SLA_WARNING,
+    });
+
+    if (created) {
+      await this.recordSlaActivity({
+        instance,
+        node,
+        task: openTask,
+        trigger: 'WARNING',
+      });
+    }
+
+    return {
+      overdueCount: currentResult.overdueCount,
+      warningCount: currentResult.warningCount + (created ? 1 : 0),
+    };
+  }
+
+  /**
+   * Runs `work` while this scan holds the task's SLA claim, or answers null
+   * when another scan (another replica) holds it. The claim is a
+   * transaction-scoped advisory lock, so it is taken in a transaction kept
+   * open until `work` settles and released when that transaction ends. Taken
+   * outside a transaction, as it used to be, it was released the moment it
+   * was granted and two replicas could run the same timeout action. `work`
+   * does not run inside this transaction: the timeout action opens the
+   * engine's own.
+   */
+  private async withSlaTaskClaim<TResult>(
+    taskId: string,
+    work: () => Promise<TResult>,
+  ): Promise<TResult | null> {
+    const manager = this.taskRepository.manager as EntityManager | undefined;
+
+    // Test doubles without a database have no manager to lock through.
+    if (!manager?.transaction) {
+      return work();
+    }
+
+    return manager.transaction(
+      async (claimManager): Promise<TResult | null> => {
+        const rows = (await claimManager.query(
+          'SELECT pg_try_advisory_xact_lock(hashtext($1)) AS claimed',
+          [`bpm-sla:${taskId}`],
+        )) as readonly { readonly claimed?: boolean }[];
+
+        if (rows[0]?.claimed === false) {
+          return null;
+        }
+
+        return work();
+      },
+    );
   }
 
   private async createSlaNotificationOnce({

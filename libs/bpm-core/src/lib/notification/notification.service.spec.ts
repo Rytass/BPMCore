@@ -1923,6 +1923,89 @@ describe('NotificationService', () => {
     });
   });
 
+  describe('claiming a task against another scan', (): void => {
+    const overdueAt = new Date('2026-05-10T09:01:00.000Z');
+
+    // Stands in for `taskRepository.manager`: each transaction answers the
+    // claim query with `claimed`, and the log records when it opened, when
+    // the engine was asked to act, and when it closed.
+    const createClaimManager = (
+      claimed: boolean,
+      log: string[],
+    ): Readonly<Record<string, unknown>> => ({
+      transaction: async (
+        work: (manager: {
+          readonly query: (
+            sql: string,
+            parameters: readonly unknown[],
+          ) => Promise<readonly { readonly claimed: boolean }[]>;
+        }) => Promise<unknown>,
+      ): Promise<unknown> => {
+        log.push('open');
+
+        try {
+          return await work({
+            query: (
+              sql: string,
+              parameters: readonly unknown[],
+            ): Promise<readonly { readonly claimed: boolean }[]> => {
+              log.push(`${sql} ${String(parameters[0])}`);
+
+              return Promise.resolve([{ claimed }]);
+            },
+          });
+        } finally {
+          log.push('close');
+        }
+      },
+    });
+
+    it('holds the claim until the timeout action has run', async (): Promise<void> => {
+      const log: string[] = [];
+      const fixture = createEscalationFixture({
+        decideTaskImpl: (): Promise<Record<string, unknown>> => {
+          log.push('decide');
+
+          return Promise.resolve({});
+        },
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+        taskManager: createClaimManager(true, log),
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).resolves.toEqual({
+        overdueCount: 1,
+        warningCount: 0,
+      });
+      expect(log).toEqual([
+        'open',
+        'SELECT pg_try_advisory_xact_lock(hashtext($1)) AS claimed bpm-sla:f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+        'decide',
+        'close',
+      ]);
+    });
+
+    it('leaves a task another scan holds alone', async (): Promise<void> => {
+      const log: string[] = [];
+      const fixture = createEscalationFixture({
+        delegationChain: [],
+        onTimeout: 'AUTO_APPROVE',
+        taskManager: createClaimManager(false, log),
+      });
+
+      await expect(fixture.service.runSlaScan(overdueAt)).resolves.toEqual({
+        overdueCount: 0,
+        warningCount: 0,
+      });
+      expect(fixture.decideTask).not.toHaveBeenCalled();
+      expect(log).toEqual([
+        'open',
+        'SELECT pg_try_advisory_xact_lock(hashtext($1)) AS claimed bpm-sla:f4fae7b0-eab0-40de-8dfa-7dfbff746980',
+        'close',
+      ]);
+    });
+  });
+
   describe('SLA auto-approve refused by the instance guard', (): void => {
     const overdueAt = new Date('2026-05-10T09:01:00.000Z');
     const instanceId = 'd6f61a56-8b12-4ab8-9424-a2f7c27874e2';
@@ -2135,6 +2218,7 @@ function createEscalationFixture({
   delegationChain,
   onTimeout = 'ESCALATE',
   readTask,
+  taskManager,
   tasks,
 }: {
   readonly decideTaskImpl?: () => Promise<Record<string, unknown>>;
@@ -2145,6 +2229,8 @@ function createEscalationFixture({
    * scan started with (a task closed while the scan was running).
    */
   readonly readTask?: (taskId: string) => TaskEntity | null;
+  /** The task repository's `manager`, through which the scan claims a task. */
+  readonly taskManager?: Readonly<Record<string, unknown>>;
   readonly tasks?: readonly TaskEntity[];
 }): {
   readonly cancelApprovalInstance: jest.Mock;
@@ -2194,6 +2280,7 @@ function createEscalationFixture({
             ? readTask(options.where.id)
             : findTaskById(tasks ?? [task], options),
         ),
+      ...(taskManager ? { manager: taskManager } : {}),
     } as unknown as Repository<TaskEntity>,
     createRepository<TaskCandidateEntity>(),
     {
