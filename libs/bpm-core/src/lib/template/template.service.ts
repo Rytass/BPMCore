@@ -34,6 +34,7 @@ import {
   WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
+  ExcludeNodeActorsIssueOptions,
   readChainContinuationSourceIssues,
   readExcludeNodeActorsIssues,
   readNodeActorSourceIssues,
@@ -64,6 +65,10 @@ import {
   readsTableInternals,
   RESERVED_PATH_SEGMENTS,
 } from '../condition/expression-ast';
+import {
+  BPM_ROOT_OPTIONS,
+  BPMRootRuntimeOptions,
+} from '../bpm/bpm-root-options';
 import {
   BPM_EXPRESSION_FUNCTION_REGISTRY,
   BPMExpressionFunctionRegistry,
@@ -185,6 +190,9 @@ export class TemplateService {
     @Optional()
     @Inject(BPM_EXPRESSION_FUNCTION_REGISTRY)
     private readonly expressionFunctionRegistry?: BPMExpressionFunctionRegistry | null,
+    @Optional()
+    @Inject(BPM_ROOT_OPTIONS)
+    private readonly rootOptions?: BPMRootRuntimeOptions | null,
   ) {}
 
   async createApprovalTemplate(
@@ -1331,7 +1339,10 @@ export class TemplateService {
       ? lintWorkflowNodeActorSources(version.workflowDefinition)
       : [];
     const excludeNodeActorsErrors = workflowResult.valid
-      ? lintWorkflowExcludeNodeActors(version.workflowDefinition)
+      ? lintWorkflowExcludeNodeActors(version.workflowDefinition, {
+          allowSkippableStages:
+            this.rootOptions?.excludeNodeActorsRequireSignedStages !== true,
+        })
       : [];
     const chainContinuationErrors = workflowResult.valid
       ? lintWorkflowChainContinuations(version.workflowDefinition)
@@ -2114,12 +2125,14 @@ function lintWorkflowNodeActorSources(
  * The graph checks behind `excludeNodeActors` (shared with the designer): every
  * listed node, on its own, is an upstream user task that is on every path to
  * the node (the position half of the `NODE_ACTOR` source rules, worded for the
- * exclusion). The listed node may be one that can be skipped: the engine reads
- * a skip as "nobody signed". Runs after the structural lint, like the
- * `NODE_ACTOR` checks.
+ * exclusion). With `allowSkippableStages` (the host default) the listed node
+ * may be one that can be skipped: the engine reads a skip as "nobody signed".
+ * A host that sets `excludeNodeActorsRequireSignedStages` refuses such a
+ * stage. Runs after the structural lint, like the `NODE_ACTOR` checks.
  */
 function lintWorkflowExcludeNodeActors(
   definition: WorkflowDefinition,
+  options: ExcludeNodeActorsIssueOptions,
 ): readonly string[] {
   return definition.nodes.flatMap((node): readonly string[] =>
     node.type === 'userTask'
@@ -2127,6 +2140,7 @@ function lintWorkflowExcludeNodeActors(
           definition,
           node.id,
           node.data.excludeNodeActors,
+          options,
         ).map(
           (issue) => `workflow.nodes.${node.id}.excludeNodeActors: ${issue}`,
         )

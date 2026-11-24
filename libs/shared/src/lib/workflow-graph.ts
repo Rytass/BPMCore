@@ -1232,6 +1232,20 @@ export function readExcludeNodeActorsShapeIssue(
     : '簽核節點的「不可與前面關卡同一人」需要指定沒有其他簽核人時的處理方式。';
 }
 
+/** Options of {@link readExcludeNodeActorsIssues}. */
+export interface ExcludeNodeActorsIssueOptions {
+  /**
+   * `true` accepts a listed stage that can be skipped or pass without a
+   * signer: the engine (from the release that added this option) reads a stage
+   * skipped the last time the case reached it as "nobody signed", so it
+   * excludes nobody. Omitted or `false` refuses such a stage, the rule every
+   * earlier release applied. The default stays strict so an engine that
+   * predates the option, calling this with three arguments, never publishes a
+   * template it would mis-read.
+   */
+  readonly allowSkippableStages?: boolean;
+}
+
 /**
  * The designer-facing issues for a node's `excludeNodeActors` setting ("this
  * stage's approver cannot be the person who approved an earlier stage");
@@ -1250,12 +1264,15 @@ export function readExcludeNodeActorsShapeIssue(
  * 4. `whenEmpty: 'SKIP_NODE'` is refused on a node whose approver fills
  *    fields in, for the same reason `excludeInitiator` is.
  *
- * A listed node may be a stage that can be skipped or pass without a signer
- * ({@link readNodeActorSourceSkipReasons} is deliberately not applied, unlike
- * for a `NODE_ACTOR` source, which has to name a signer). The engine reads what
- * a listed node did the last time the case reached it, and a skip then
- * excludes nobody, so a stage that did not run this round cannot leave an
- * earlier round's approver in the exclusion list.
+ * With `options.allowSkippableStages: true` a listed node may be a stage that
+ * can be skipped or pass without a signer ({@link readNodeActorSourceSkipReasons}
+ * is not applied, unlike for a `NODE_ACTOR` source, which has to name a
+ * signer). The engine reads what a listed node did the last time the case
+ * reached it, and a skip then excludes nobody, so a stage that did not run this
+ * round cannot leave an earlier round's approver in the exclusion list.
+ * Without it (the default) such a stage is refused, as in every earlier
+ * release: a host that wants "never the same person as an earlier stage" to
+ * hold even when that stage is skipped keeps the default.
  *
  * Why every listed node still has to be on every path: a path that bypasses
  * the listed node never reaches it, so nothing records a skip for it, and
@@ -1272,6 +1289,7 @@ export function readExcludeNodeActorsIssues(
   definition: WorkflowDefinition,
   nodeId: string,
   config: ExcludeNodeActorsConfig | undefined,
+  options: ExcludeNodeActorsIssueOptions = {},
 ): readonly string[] {
   if (config === undefined) {
     return [];
@@ -1315,13 +1333,22 @@ export function readExcludeNodeActorsIssues(
     ];
   }
 
-  const stageIssues = readSourceStagePositionIssues(
-    definition,
-    nodeId,
-    sourceNodeIds,
-    sourceNodeIds.map((id) => [id]),
-    EXCLUDE_NODE_ACTORS_STAGE_TEXTS,
-  );
+  const stageIssues =
+    options.allowSkippableStages === true
+      ? readSourceStagePositionIssues(
+          definition,
+          nodeId,
+          sourceNodeIds,
+          sourceNodeIds.map((id) => [id]),
+          EXCLUDE_NODE_ACTORS_STAGE_TEXTS,
+        )
+      : readSourceStageIssues(
+          definition,
+          nodeId,
+          sourceNodeIds,
+          sourceNodeIds.map((id) => [id]),
+          EXCLUDE_NODE_ACTORS_SIGNED_STAGE_TEXTS,
+        );
 
   if (stageIssues.length > 0) {
     return stageIssues;
@@ -1683,6 +1710,29 @@ const EXCLUDE_NODE_ACTORS_STAGE_TEXTS: SourceStagePositionTexts = {
     `有一條路徑不會經過排除對象的前面關卡 ${stageLabels.join('、')} 就走到 ${nodeLabel}，那一趟排除不到本輪的簽核者（退回重送後還會讀到上一輪的簽核者）。請改用分流，把兩關放在同一條路線上，或把那一關留在主線上、改設進入條件。`,
   notUpstream: (stageLabel, nodeLabel) =>
     `前面關卡 ${stageLabel} 不在 ${nodeLabel} 的上游，走不到這個節點，無法排除該關的簽核者。`,
+};
+
+/**
+ * The wording of {@link readExcludeNodeActorsIssues} when skippable stages are
+ * refused (`allowSkippableStages` not `true`): the position sentences, minus
+ * the "set an entry condition instead" advice, plus one per skip reason.
+ */
+const EXCLUDE_NODE_ACTORS_SIGNED_STAGE_TEXTS: SourceStageTexts = {
+  coverage: (stageLabels, nodeLabel) =>
+    `有一條路徑不會經過排除對象的前面關卡 ${stageLabels.join('、')} 就走到 ${nodeLabel}，那一趟排除不到本輪的簽核者（退回重送後還會讀到上一輪的簽核者）。請改用分流，把兩關放在同一條路線上。`,
+  notUpstream: EXCLUDE_NODE_ACTORS_STAGE_TEXTS.notUpstream,
+  skip: {
+    autoApprove: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 設有逾時自動核准，可能沒有人實際簽核；目前的設定要求排除對象的前面關卡一定有人簽核。請移除逾時自動核准，或改選其他關卡。`,
+    entryCondition: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 設有進入條件，可能被跳過；目前的設定要求排除對象的前面關卡一定有人簽核。請改用分流，把兩關放在同一條路線上。`,
+    managerChainReached: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 的主管鏈在起點本人已達簽到職等時會整關略過；目前的設定要求排除對象的前面關卡一定有人簽核。請改選其他關卡。`,
+    skipNode: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 在排除發起人後沒人時會跳過此關；目前的設定要求排除對象的前面關卡一定有人簽核。請改選其他處理方式。`,
+    skipNodeByNodeActors: (stageLabel) =>
+      `排除對象的前面關卡 ${stageLabel} 在排除前面關卡的簽核者後沒人時會跳過此關；目前的設定要求排除對象的前面關卡一定有人簽核。請改選其他處理方式。`,
+  },
 };
 
 /**

@@ -137,6 +137,11 @@ export type ExcludeInitiatorWhenEmpty =
  * a skip still excludes nobody. A stage that is not on every path is refused;
  * keep it on the main line with an entry condition, or put both stages on the
  * same route with an exclusive gateway.
+ *
+ * A host that wants the exclusion to hold even when the listed stage was
+ * skipped sets `BPMRootModule` `excludeNodeActorsRequireSignedStages`: publish
+ * then refuses a listed node that can be skipped or pass without a real
+ * signer, the rule of every release before that option.
  */
 export interface ExcludeNodeActorsConfig {
   /** The earlier user task nodes whose approvers are kept out of this node. */

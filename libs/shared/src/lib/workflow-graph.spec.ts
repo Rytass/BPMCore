@@ -2773,21 +2773,28 @@ describe('excludeNodeActors', () => {
           [link('start', 'a'), link('a', 'me'), link('me', 'end')],
         );
 
-      // The engine reads a listed node that was skipped on its last pass as
-      // "excludes nobody", so every way a node can be skipped may be listed.
-      it.each([
-        ['an entry condition', { entryCondition: 'form.x > 1' }],
+      const SKIPPABLE_STAGES: ReadonlyArray<
+        readonly [string, Readonly<Record<string, unknown>>, string]
+      > = [
+        [
+          'an entry condition',
+          { entryCondition: 'form.x > 1' },
+          '設有進入條件',
+        ],
         [
           'excludeInitiator SKIP_NODE',
           { excludeInitiator: { whenEmpty: 'SKIP_NODE' } },
+          '在排除發起人後沒人時會跳過此關',
         ],
         [
           'excludeNodeActors SKIP_NODE',
           { excludeNodeActors: exclude(['x'], 'SKIP_NODE') },
+          '在排除前面關卡的簽核者後沒人時會跳過此關',
         ],
         [
           'an SLA auto-approval',
           { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } },
+          '設有逾時自動核准',
         ],
         [
           'a manager chain that skips when its start reached the level',
@@ -2798,11 +2805,80 @@ describe('excludeNodeActors', () => {
               type: 'ORG_MANAGER_CHAIN',
             },
           },
+          '的主管鏈在起點本人已達簽到職等時會整關略過',
         ],
-      ])('accepts a listed node with %s', (_name, data) => {
-        expect(
-          readExcludeNodeActorsIssues(withListed(data), 'me', exclude(['a'])),
-        ).toEqual([]);
+      ];
+
+      // The engine reads a listed node that was skipped on its last pass as
+      // "excludes nobody", so with `allowSkippableStages` every way a node
+      // can be skipped may be listed.
+      it.each(SKIPPABLE_STAGES)(
+        'accepts a listed node with %s under allowSkippableStages',
+        (_name, data) => {
+          expect(
+            readExcludeNodeActorsIssues(
+              withListed(data),
+              'me',
+              exclude(['a']),
+              { allowSkippableStages: true },
+            ),
+          ).toEqual([]);
+        },
+      );
+
+      // Without the option (an engine that predates it calls with three
+      // arguments) or with it off (a host requiring signed stages), the same
+      // stage is refused, one line naming the reason.
+      it.each(SKIPPABLE_STAGES)(
+        'refuses a listed node with %s by default and when the option is off',
+        (_name, data, wording) => {
+          const definition = withListed(data);
+          const expected = [expect.stringContaining(wording)];
+
+          expect(
+            readExcludeNodeActorsIssues(definition, 'me', exclude(['a'])),
+          ).toEqual(expected);
+          expect(
+            readExcludeNodeActorsIssues(definition, 'me', exclude(['a']), {
+              allowSkippableStages: false,
+            }),
+          ).toEqual(expected);
+          expect(expected).toHaveLength(1);
+        },
+      );
+
+      it('drops the "set an entry condition instead" advice from the strict coverage line', () => {
+        const definition = graph(
+          [
+            plainNode('start', 'startEvent'),
+            plainNode('gw', 'exclusiveGateway'),
+            taskNode('a'),
+            taskNode('me'),
+            plainNode('end', 'endEvent'),
+          ],
+          [
+            link('start', 'gw'),
+            link('gw', 'a'),
+            link('gw', 'me'),
+            link('a', 'me'),
+            link('me', 'end'),
+          ],
+        );
+        const [strict] = readExcludeNodeActorsIssues(
+          definition,
+          'me',
+          exclude(['a']),
+        );
+        const [loose] = readExcludeNodeActorsIssues(
+          definition,
+          'me',
+          exclude(['a']),
+          { allowSkippableStages: true },
+        );
+
+        expect(strict).toContain('有一條路徑不會經過');
+        expect(strict).not.toContain('改設進入條件');
+        expect(loose).toContain('改設進入條件');
       });
 
       // The relaxation is for the exclusion only: a NODE_ACTOR source has to
@@ -3302,7 +3378,7 @@ describe('manager chain continuation and skipWhenStartReached', () => {
       ]);
     });
 
-    it('accepts such a stage for excludeNodeActors', () => {
+    it('accepts such a stage for excludeNodeActors under allowSkippableStages only', () => {
       const definition = graph(
         [
           plainNode('start', 'startEvent'),
@@ -3314,11 +3390,19 @@ describe('manager chain continuation and skipWhenStartReached', () => {
       );
 
       expect(
+        readExcludeNodeActorsIssues(
+          definition,
+          'me',
+          { nodeIds: ['a'], whenEmpty: 'FAIL' },
+          { allowSkippableStages: true },
+        ),
+      ).toEqual([]);
+      expect(
         readExcludeNodeActorsIssues(definition, 'me', {
           nodeIds: ['a'],
           whenEmpty: 'FAIL',
         }),
-      ).toEqual([]);
+      ).toEqual([expect.stringContaining('會整關略過')]);
     });
   });
 

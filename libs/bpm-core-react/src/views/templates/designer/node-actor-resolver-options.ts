@@ -233,16 +233,28 @@ function readGraphCheckedNodeIds(
 export const EXCLUDE_NODE_ACTORS_STAGE_HINT =
   '此關的簽核人不會是你選的前面關卡實際簽核的人（含其代理人），也不能被轉簽或加簽到此關；可複選，每個關卡都會排除。只能選每條路徑都會經過的關卡（不在每條路徑上的請改用分流，把兩關放在同一條路線上，或把那一關留在主線上、改設進入條件），有進入條件、可跳過、會逾時自動核准、主管鏈起點已達職等時略過的關卡也可以選：那一關最近一次被跳過、或沒有人實際核准時，它不排除任何人；退回後沒有重跑的關卡，沿用它最近一次的結果：有人簽就排除那個人，被跳過就仍不排除任何人。平行分支上的關卡不支援，請改成先後串接。';
 
+/**
+ * {@link EXCLUDE_NODE_ACTORS_STAGE_HINT} for a host that refuses a stage that
+ * can be skipped (`excludeNodeActorsRequireSignedStages`).
+ */
+export const EXCLUDE_NODE_ACTORS_SIGNED_STAGE_HINT =
+  '此關的簽核人不會是你選的前面關卡實際簽核的人（含其代理人），也不能被轉簽或加簽到此關；可複選，每個關卡都會排除。只能選每條路徑都會經過、而且一定有人實際簽核的關卡（沒有進入條件、沒設跳過此關、沒設逾時自動核准，主管鏈也沒設略過）；條件式的關卡、平行分支上的關卡都不支援，條件式的請改用分流把兩關放在同一條路線上，平行分支上的請改成先後串接。';
+
 /** Shown when no earlier stage can be picked. */
 export const NO_EXCLUDABLE_STAGE_HINT =
   '這個節點前面沒有可以選的簽核關卡，請先在它前面加入簽核節點（每條路徑都會經過；有進入條件、可跳過、會逾時自動核准、主管鏈起點已達職等時略過的關卡也可以選）';
+
+/** {@link NO_EXCLUDABLE_STAGE_HINT} under `excludeNodeActorsRequireSignedStages`. */
+export const NO_EXCLUDABLE_SIGNED_STAGE_HINT =
+  '這個節點前面沒有可以選的簽核關卡，請先在它前面加入簽核節點（每條路徑都會經過、沒有進入條件、沒設跳過此關、沒設逾時自動核准，主管鏈也沒設略過）';
 
 /**
  * The 不可與前面關卡同一人 picker: the user tasks that pass the publish
  * check on their own (`readExcludeNodeActorsIssues` with just that stage
  * listed: upstream of `nodeId` and on every path to it). A stage that can be
  * skipped is offered too: the engine reads a skip as "nobody signed" and
- * excludes nobody for it. Each listed stage has to pass alone, so unlike the
+ * excludes nobody for it; with `requireSignedStages` (the host's
+ * `excludeNodeActorsRequireSignedStages`) it is not. Each listed stage has to pass alone, so unlike the
  * `NODE_ACTOR` picker nothing is left to the selection as a whole. A stored
  * stage that does not qualify (gone, no longer upstream, or not on every path)
  * stays in the list, marked, and the selection's `problems` say why, so the
@@ -253,16 +265,20 @@ export function readExcludeNodeActorStageChoice(
   nodeId: string,
   selectedIds: readonly string[],
   whenEmpty: ExcludeInitiatorWhenEmpty,
+  requireSignedStages = false,
 ): NodeActorStageChoice {
+  const issueOptions = { allowSkippableStages: !requireSignedStages };
   const offered: readonly NodeActorOption[] = definition.nodes
     .filter(isUserTaskNode)
     .filter(
       (node) =>
         node.id !== nodeId &&
-        readExcludeNodeActorsIssues(definition, nodeId, {
-          nodeIds: [node.id],
-          whenEmpty: 'FAIL',
-        }).length === 0,
+        readExcludeNodeActorsIssues(
+          definition,
+          nodeId,
+          { nodeIds: [node.id], whenEmpty: 'FAIL' },
+          issueOptions,
+        ).length === 0,
     )
     .map((node) => ({ id: node.id, name: readNodeName(node) }));
   const stale: readonly NodeActorOption[] = selectedIds
@@ -288,12 +304,18 @@ export function readExcludeNodeActorStageChoice(
     options,
     problems:
       selectedIds.length > 0
-        ? readExcludeNodeActorsIssues(definition, nodeId, {
-            nodeIds: selectedIds,
-            whenEmpty,
-          })
+        ? readExcludeNodeActorsIssues(
+            definition,
+            nodeId,
+            { nodeIds: selectedIds, whenEmpty },
+            issueOptions,
+          )
         : options.length === 0
-          ? [NO_EXCLUDABLE_STAGE_HINT]
+          ? [
+              requireSignedStages
+                ? NO_EXCLUDABLE_SIGNED_STAGE_HINT
+                : NO_EXCLUDABLE_STAGE_HINT,
+            ]
           : [],
     selected,
   };
@@ -304,16 +326,20 @@ export function readExcludeNodeActorStageChoice(
  * the checks the backend publish lint runs (`readExcludeNodeActorsIssues`),
  * for the designer to show before publish. The shape of the setting (no stage
  * chosen, no 排除後沒有簽核人時) is left to `readExcludeNodeActorsShapeIssue`,
- * which blocks saving.
+ * which blocks saving. `requireSignedStages` mirrors the host's
+ * `excludeNodeActorsRequireSignedStages`, as in
+ * {@link readExcludeNodeActorStageChoice}.
  */
 export function readExcludeNodeActorsGraphIssues(
   definition: WorkflowDefinition,
+  requireSignedStages = false,
 ): readonly string[] {
   return definition.nodes.filter(isUserTaskNode).flatMap((node) =>
     readExcludeNodeActorsIssues(
       definition,
       node.id,
       node.data.excludeNodeActors,
+      { allowSkippableStages: !requireSignedStages },
     ).map((issue) => `簽核節點「${readNodeName(node)}」：${issue}`),
   );
 }

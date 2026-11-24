@@ -875,6 +875,14 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
   （涵蓋判斷把平行閘道當成互斥閘道看，與 `NODE_ACTOR` 是同一個限制），要改成先後串接。
   與 `NODE_ACTOR` 的差別：措辭（訊息講「排除」）、逐一檢查，以及**不套用**「不可能被跳過或沒人實簽」那一半
   （`readNodeActorSourceSkipReasons`，`NODE_ACTOR` 仍擋）；涵蓋與上游兩條是同一份程式（共用的位置檢查）。
+
+  **host 可改回嚴格**：`BPMRootModule` 設 `excludeNodeActorsRequireSignedStages: true` 時，發布檢查改回這個選項
+  出現前的規則，另外擋「可能被跳過或沒人實簽」的來源關（同 `readNodeActorSourceSkipReasons` 那五種原因）。
+  用途是「不可與前面關卡同一人」在前面關卡被跳過時也要成立的職責分離；預設寬鬆時，上一輪簽過被跳過關卡的人，
+  這一輪可以簽本節點。設計器需傳同值給 `TemplateDesignerView` 的 `excludeNodeActorsRequireSignedStages`
+  （頁面 shim 讀 `BPM_EXCLUDE_NODE_ACTORS_REQUIRE_SIGNED_STAGES=true`）。已發布的範本不會重新檢查。
+  shared 的 `readExcludeNodeActorsIssues` 本身預設嚴格（第四個參數 `allowSkippableStages: true` 才放寬），
+  所以只把 shared 升到新版、引擎仍是舊版時，舊引擎的發布檢查照樣擋下它讀錯的範本。
 - **Dry run**：前面關卡誰簽，在試跑時不知道，所以不模擬這個排除，也不會因它停止；只有同時開的
   `excludeInitiator` 照 §4.4 的規則試跑。
 

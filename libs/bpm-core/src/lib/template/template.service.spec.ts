@@ -27,6 +27,7 @@ import {
   ApprovalTemplateListStatusEnum,
   ApprovalTemplateVersionStatusEnum,
 } from './template.enums';
+import { BPMRootRuntimeOptions } from '../bpm/bpm-root-options';
 import { TemplateService } from './template.service';
 import { EMPTY_WORKFLOW_DEFINITION } from './workflow-definition.validator';
 import {
@@ -1521,6 +1522,51 @@ describe('TemplateService', () => {
         ).resolves.toMatchObject({ id: 'template-version-1' });
       },
     );
+
+    it.each([
+      [
+        'an entry condition',
+        { entryCondition: 'form.amount > 10' },
+        '排除對象的前面關卡 「補填 1」 設有進入條件，可能被跳過；目前的設定要求排除對象的前面關卡一定有人簽核',
+      ],
+      [
+        'excludeInitiator SKIP_NODE',
+        { excludeInitiator: { whenEmpty: 'SKIP_NODE' } },
+        '排除對象的前面關卡 「補填 1」 在排除發起人後沒人時會跳過此關',
+      ],
+      [
+        'an SLA auto-approval',
+        { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } },
+        '排除對象的前面關卡 「補填 1」 設有逾時自動核准',
+      ],
+    ])(
+      'rejects an earlier node with %s when the host sets excludeNodeActorsRequireSignedStages',
+      async (_name, firstNodeData, wording): Promise<void> => {
+        await expect(
+          createTableConditionPublishService({
+            rootOptions: { excludeNodeActorsRequireSignedStages: true },
+            workflowDefinition: withExclusion(
+              { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
+              firstNodeData,
+            ),
+          }).publishApprovalTemplateVersion('template-version-1'),
+        ).rejects.toThrow(
+          `workflow.nodes.task_2.excludeNodeActors: ${wording}`,
+        );
+      },
+    );
+
+    it('publishes the same stage when the host option is explicitly false (control)', async (): Promise<void> => {
+      await expect(
+        createTableConditionPublishService({
+          rootOptions: { excludeNodeActorsRequireSignedStages: false },
+          workflowDefinition: withExclusion(
+            { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
+            { entryCondition: 'form.amount > 10' },
+          ),
+        }).publishApprovalTemplateVersion('template-version-1'),
+      ).resolves.toMatchObject({ id: 'template-version-1' });
+    });
 
     it('publishes the per-item shape: two stages with entry conditions, then a node that excludes both', async (): Promise<void> => {
       // task_1 and task_2 each run only when their own item is ticked; task_3
@@ -4034,6 +4080,7 @@ function createTableConditionPublishService({
   conditionOperator,
   conditionValue,
   initiatorPolicyCel = null,
+  rootOptions,
   schema = TABLE_FORM_SCHEMA as FormDefinitionSchema,
   workflowDefinition,
 }: {
@@ -4042,6 +4089,7 @@ function createTableConditionPublishService({
   readonly conditionOperator?: string;
   readonly conditionValue?: string;
   readonly initiatorPolicyCel?: string | null;
+  readonly rootOptions?: BPMRootRuntimeOptions;
   readonly schema?: FormDefinitionSchema;
   readonly workflowDefinition?: WorkflowDefinition;
 }): TemplateService {
@@ -4177,6 +4225,8 @@ function createTableConditionPublishService({
     new ConditionService(),
     {} as unknown as FormService,
     createTemplateModuleRef(),
+    undefined,
+    rootOptions,
   );
 }
 

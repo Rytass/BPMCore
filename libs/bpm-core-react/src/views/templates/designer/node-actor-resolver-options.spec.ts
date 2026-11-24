@@ -5,9 +5,11 @@ import {
 } from '@rytass/bpm-core-shared/workflow';
 import { readNodeActorSourceIssues } from '@rytass/bpm-core-shared/workflow-graph';
 import {
+  EXCLUDE_NODE_ACTORS_SIGNED_STAGE_HINT,
   EXCLUDE_NODE_ACTORS_STAGE_HINT,
   NODE_ACTOR_STAGE_HINT,
   NO_CONTINUABLE_CHAIN_HINT,
+  NO_EXCLUDABLE_SIGNED_STAGE_HINT,
   NO_EXCLUDABLE_STAGE_HINT,
   NO_UPSTREAM_USER_TASK_HINT,
   ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT,
@@ -690,6 +692,57 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
         (option) => option.id,
       ),
     ).toEqual(['ok', 'risky']);
+
+    // A host that requires signed stages does not offer it, and a stored
+    // choice of it stays listed, marked, with the publish check's reason.
+    const strict = readExcludeNodeActorStageChoice(
+      definition,
+      'me',
+      ['risky'],
+      'FAIL',
+      true,
+    );
+
+    expect(strict.options.map((option) => option.id)).toEqual([
+      'ok',
+      'risky',
+    ]);
+    expect(strict.options[1]?.name).not.toBe('關卡 risky');
+    expect(strict.problems).toEqual([
+      expect.stringContaining('目前的設定要求排除對象的前面關卡一定有人簽核'),
+    ]);
+    expect(
+      readExcludeNodeActorStageChoice(
+        definition,
+        'me',
+        [],
+        'FAIL',
+        true,
+      ).options.map((option) => option.id),
+    ).toEqual(['ok']);
+  });
+
+  it('uses the strict empty hint when a host requires signed stages and nothing qualifies', () => {
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        taskNode('risky', { entryCondition: 'form.x > 1' }),
+        taskNode('me'),
+        plainNode('end', 'endEvent'),
+      ],
+      [link('start', 'risky'), link('risky', 'me'), link('me', 'end')],
+    );
+
+    expect(
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL', true)
+        .problems,
+    ).toEqual([NO_EXCLUDABLE_SIGNED_STAGE_HINT]);
+    expect(
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').problems,
+    ).toEqual([]);
+    expect(EXCLUDE_NODE_ACTORS_SIGNED_STAGE_HINT).not.toBe(
+      EXCLUDE_NODE_ACTORS_STAGE_HINT,
+    );
   });
 
   it('does not offer a stage that only one branch passes, and offers the stage both branches share', () => {
@@ -833,6 +886,25 @@ describe('readExcludeNodeActorsGraphIssues', () => {
     } as WorkflowDefinition;
 
     expect(readExcludeNodeActorsGraphIssues(definition)).toEqual([]);
+  });
+
+  it('reports a skippable listed stage only when a host requires signed stages', () => {
+    const definition = graph(
+      [
+        plainNode('start', 'startEvent'),
+        taskNode('a', { entryCondition: 'form.x > 1' }),
+        taskNode('me', {
+          excludeNodeActors: { nodeIds: ['a'], whenEmpty: 'FAIL' },
+        }),
+        plainNode('end', 'endEvent'),
+      ],
+      [link('start', 'a'), link('a', 'me'), link('me', 'end')],
+    );
+
+    expect(readExcludeNodeActorsGraphIssues(definition)).toEqual([]);
+    expect(readExcludeNodeActorsGraphIssues(definition, true)).toEqual([
+      expect.stringMatching(/^簽核節點「關卡 me」：.*設有進入條件/),
+    ]);
   });
 
   it('names the node and the problem when a listed stage is downstream', () => {
