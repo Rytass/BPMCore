@@ -669,12 +669,13 @@ function lintServiceTaskNodes(
 ): readonly string[] {
   return nodes
     .filter((node) => node.type === 'serviceTask')
-    .flatMap((node) => lintServiceAction(node.data.action, node.id));
+    .flatMap((node) => lintServiceAction(node.data.action, node.id, nodes));
 }
 
 function lintServiceAction(
   action: ServiceAction,
   nodeId: string,
+  nodes: readonly WorkflowNode[],
 ): readonly string[] {
   if (!action?.type) {
     return [`workflow.nodes.${nodeId}.action is required`];
@@ -689,7 +690,7 @@ function lintServiceAction(
   }
 
   if (action.type === 'NOTIFY') {
-    return lintNotifyAction(action, nodeId);
+    return lintNotifyAction(action, nodeId, nodes);
   }
 
   return [];
@@ -698,6 +699,7 @@ function lintServiceAction(
 function lintNotifyAction(
   action: Extract<ServiceAction, { readonly type: 'NOTIFY' }>,
   nodeId: string,
+  nodes: readonly WorkflowNode[],
 ): readonly string[] {
   const webhookErrors = readNotifyWebhookStructureIssues(action.webhooks).map(
     (issue) => formatNotifyWebhookIssue(issue, nodeId),
@@ -708,7 +710,7 @@ function lintNotifyAction(
     isNotifyRecipientsEmpty(action.recipients) &&
     readNotifyWebhookTargets(action).length > 0
       ? []
-      : lintNotifyRecipients(action.recipients, nodeId);
+      : lintNotifyRecipients(action.recipients, nodeId, nodes);
 
   return [...recipientErrors, ...webhookErrors];
 }
@@ -768,6 +770,7 @@ function formatNotifyWebhookIssue(
 function lintNotifyRecipients(
   recipients: ApproverResolver,
   nodeId: string,
+  nodes: readonly WorkflowNode[],
 ): readonly string[] {
   if (!recipients?.type) {
     return [`workflow.nodes.${nodeId}.action.recipients is required`];
@@ -803,8 +806,7 @@ function lintNotifyRecipients(
     return [`workflow.nodes.${nodeId}.action.recipients.orgUnitId is required`];
   }
 
-  // The sources that need a form pick or earlier signers have nothing to read
-  // on a NOTIFY node (and an unknown type has no resolver at all).
+  // A type this build does not know has no resolver at all.
   if (!isNotifyRecipientResolverType(recipients.type)) {
     return [`workflow.nodes.${nodeId}.action.recipients.type is not supported`];
   }
@@ -829,10 +831,90 @@ function lintNotifyRecipients(
     return [`workflow.nodes.${nodeId}.action.recipients.formPath is required`];
   }
 
+  // The sources a notify node shares with an approval node: the same shape
+  // rules as there (`lintApproverResolver`); the form and graph rules run in
+  // `TemplateService` once the definition has passed this lint.
+  const sharedSourceErrors = lintNotifySharedSource(recipients, nodeId, nodes);
+
+  if (sharedSourceErrors.length) {
+    return sharedSourceErrors;
+  }
+
   if (recipients.type === 'EXPRESSION' && !recipients.expression.trim()) {
     return [
       `workflow.nodes.${nodeId}.action.recipients.expression is required`,
     ];
+  }
+
+  return [];
+}
+
+/**
+ * `true` unless `value` is text with something other than whitespace. Reads
+ * parsed JSON, where a field typed as a string can hold any value, so a
+ * number or an object is reported as missing instead of throwing.
+ */
+function isBlankText(value: unknown): boolean {
+  return typeof value !== 'string' || value.trim() === '';
+}
+
+function lintNotifySharedSource(
+  recipients: ApproverResolver,
+  nodeId: string,
+  nodes: readonly WorkflowNode[],
+): readonly string[] {
+  const path = `workflow.nodes.${nodeId}.action.recipients`;
+
+  if (
+    (recipients.type === 'FORM_MEMBER_MANAGER' ||
+      recipients.type === 'FORM_ORG_UNIT_MANAGER') &&
+    isBlankText(recipients.formPath)
+  ) {
+    return [`${path}.formPath is required`];
+  }
+
+  if (
+    (recipients.type === 'FORM_MEMBER_MANAGER' ||
+      recipients.type === 'NODE_ACTOR_MANAGER') &&
+    !(Number.isInteger(recipients.levelsUp) && recipients.levelsUp >= 1)
+  ) {
+    return [`${path}.levelsUp is invalid`];
+  }
+
+  if (
+    recipients.type === 'NODE_ACTOR' ||
+    recipients.type === 'NODE_ACTOR_MANAGER'
+  ) {
+    const nodeIdsErrors = lintNodeActorNodeIds(
+      recipients.nodeIds,
+      nodeId,
+      nodes,
+      `${path}.nodeIds`,
+    );
+
+    if (nodeIdsErrors.length) {
+      return nodeIdsErrors;
+    }
+  }
+
+  if (
+    (recipients.type === 'FORM_MEMBER_MANAGER' ||
+      recipients.type === 'FORM_ORG_UNIT_MANAGER' ||
+      recipients.type === 'NODE_ACTOR_MANAGER') &&
+    recipients.fallback?.type === 'DIRECT' &&
+    isBlankText(recipients.fallback.memberId)
+  ) {
+    return [`${path}.fallback.memberId is required`];
+  }
+
+  if (
+    (recipients.type === 'FORM_MEMBER_MANAGER' ||
+      recipients.type === 'FORM_ORG_UNIT_MANAGER' ||
+      recipients.type === 'NODE_ACTOR_MANAGER') &&
+    recipients.fallback?.type === 'POSITION' &&
+    isBlankText(recipients.fallback.positionId)
+  ) {
+    return [`${path}.fallback.positionId is required`];
   }
 
   return [];

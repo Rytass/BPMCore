@@ -133,7 +133,7 @@ const APPROVER_RESOLVER_SCHEMA: JsonSchema = {
     'FORM_ORG_UNIT_MANAGER: { type, formPath, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「組織選擇」欄位，簽該組織的主管）；' +
     'FORM_MEMBER_MANAGER: { type, formPath, levelsUp, preferClosestOrgUnit?, fallback? }（formPath 指向表單上的「人員選擇」單選欄位，簽該成員往上 levelsUp 層的主管）；' +
     'NODE_ACTOR: { type, nodeIds[] }（簽核人是前面指定簽核關卡實際簽核的人，nodeIds 為那些關卡的節點 id；複選多個關卡時只取最近實際走到的那一關的簽核人，不是全部關卡的簽核人）；' +
-    'NODE_ACTOR_MANAGER: { type, nodeIds[], levelsUp, preferClosestOrgUnit?, fallback? }（前面指定關卡實際簽核的人往上 levelsUp 層的主管）。FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR_MANAGER 的 fallback 規則同上，NODE_ACTOR 沒有 fallback；這四種來源必填的 formPath／nodeIds 缺漏時不會被改成直屬主管，而是保留為未完成的設定，validate_workflow 會回報；知會節點的收件人不能用 FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR／NODE_ACTOR_MANAGER。',
+    'NODE_ACTOR_MANAGER: { type, nodeIds[], levelsUp, preferClosestOrgUnit?, fallback? }（前面指定關卡實際簽核的人往上 levelsUp 層的主管）。FORM_ORG_UNIT_MANAGER／FORM_MEMBER_MANAGER／NODE_ACTOR_MANAGER 的 fallback 規則同上，NODE_ACTOR 沒有 fallback；這四種來源必填的 formPath／nodeIds 缺漏時不會被改成直屬主管，而是保留為未完成的設定，validate_workflow 會回報；知會節點的收件人也能用這四種來源，規則與簽核節點相同（表單欄位須是必填且不會被隱藏、前面關卡須是每條路徑都會經過、一定有人簽核的簽核關卡），不符時發布檢查會回報（validate_workflow 只回報結構問題：缺 formPath／nodeIds、levelsUp 無效、fallback 空白；表單欄位與前面關卡的規則只有發布檢查會擋）。',
   properties: {
     type: {
       enum: [
@@ -1381,7 +1381,8 @@ function readNodeTypeCatalog(): unknown {
         type: 'serviceTask',
       },
       {
-        dataShape: 'label, direction(split|join), triggerMode；輸出連線需設定條件',
+        dataShape:
+          'label, direction(split|join), triggerMode；輸出連線需設定條件並保留一條預設；例外：direction 不是 split、而且只有一條出線，那條沒設條件或是預設時，引擎直接通過，不需條件與預設',
         label: WORKFLOW_NODE_TYPE_LABELS.exclusiveGateway,
         type: 'exclusiveGateway',
       },
@@ -1822,7 +1823,9 @@ function parseOrgManagerChainStart(
  * A notify node's recipients: {@link parseApproverResolver}, except that a
  * source a notify node may not use (see `isNotifyRecipientResolverType`) is
  * treated like any other shape this assistant does not know and becomes
- * {@link DEFAULT_MANAGER_RESOLVER}. `validate_workflow` and the publish lint
+ * {@link DEFAULT_MANAGER_RESOLVER}. Every source `parseApproverResolver`
+ * returns is allowed today, so this only keeps the tool in step with that
+ * table should a source be withdrawn. `validate_workflow` and the publish lint
  * stay the gate for what a hand-written definition carries.
  */
 function parseNotifyRecipients(value: unknown): ApproverResolver {

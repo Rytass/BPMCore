@@ -299,14 +299,25 @@ const KNOWN_APPROVER_RESOLVER_TYPES: Readonly<
   POSITION: true,
 };
 
-// A notify node's recipients are resolved without a running approval path, so
-// the sources that need a form pick or earlier signers are not offered there.
+// Which resolver types a notify node may use for its recipients. Today every
+// resolver type qualifies: a notify node runs after the form is submitted and
+// after every stage before it has decided, so the form picks and earlier
+// signers a `FORM_*` or `NODE_ACTOR*` source reads already exist there, and
+// the publish lint holds these sources to the same rules as on an approval
+// node (the field is required and always shown, the earlier stage is on every
+// path). The table is keyed by the union, so a new resolver type fails to
+// compile until it is listed here; it is a registration point, since the
+// `true` value cannot say "not allowed".
 const NOTIFY_RECIPIENT_RESOLVER_TYPES: Readonly<
-  Record<Exclude<ApproverResolver['type'], NewApproverResolverType>, true>
+  Record<ApproverResolver['type'], true>
 > = {
   DIRECT: true,
   DYNAMIC_FORM: true,
   EXPRESSION: true,
+  FORM_MEMBER_MANAGER: true,
+  FORM_ORG_UNIT_MANAGER: true,
+  NODE_ACTOR: true,
+  NODE_ACTOR_MANAGER: true,
   ORG_MANAGER: true,
   ORG_MANAGER_CHAIN: true,
   ORG_UNIT_MANAGER: true,
@@ -314,12 +325,6 @@ const NOTIFY_RECIPIENT_RESOLVER_TYPES: Readonly<
   ORG_UNIT_POSITION: true,
   POSITION: true,
 };
-
-type NewApproverResolverType =
-  | 'FORM_MEMBER_MANAGER'
-  | 'FORM_ORG_UNIT_MANAGER'
-  | 'NODE_ACTOR'
-  | 'NODE_ACTOR_MANAGER';
 
 // Resolvers that look a manager up, so "no manager" is a state they can reach.
 const FALLBACK_CAPABLE_RESOLVER_TYPES: Readonly<

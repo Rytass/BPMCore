@@ -41,6 +41,8 @@ import {
   ApproverResolver,
   NotifyWebhookTarget,
   WorkflowDefinition,
+  WorkflowEdge,
+  WorkflowNode,
 } from '@rytass/bpm-core-shared/workflow';
 import {
   WORKFLOW_EXPRESSION_LABELS,
@@ -1087,6 +1089,81 @@ describe('TemplateService', () => {
         publish({ formPath: 'bosses', type: 'DYNAMIC_FORM' }),
       ).resolves.toMatchObject({ id: 'template-version-1' });
     });
+
+    describe('as NOTIFY recipients', (): void => {
+      const publishNotify = (recipients: ApproverResolver): Promise<unknown> =>
+        createTableConditionPublishService({
+          schema,
+          workflowDefinition: createDynamicFormWorkflow(
+            { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
+            recipients,
+          ),
+        }).publishApprovalTemplateVersion('template-version-1');
+      const notifyPath =
+        'workflow.nodes.notify_peer.action.recipients.formPath';
+
+      it('publishes FORM_MEMBER_MANAGER on a required, single, always-visible member field', async (): Promise<void> => {
+        await expect(
+          publishNotify(memberManager('boss')),
+        ).resolves.toMatchObject({
+          id: 'template-version-1',
+        });
+      });
+
+      it('publishes FORM_ORG_UNIT_MANAGER on a required, always-visible org_unit field', async (): Promise<void> => {
+        await expect(publishNotify(orgManager('unit'))).resolves.toMatchObject({
+          id: 'template-version-1',
+        });
+      });
+
+      it.each(['missing', 'note', 'unit'])(
+        'rejects FORM_MEMBER_MANAGER on %s, which is not a member field',
+        async (formPath): Promise<void> => {
+          await expect(publishNotify(memberManager(formPath))).rejects.toThrow(
+            `${notifyPath} must reference a member (人員選擇) field of the bound form: ${formPath}`,
+          );
+        },
+      );
+
+      it('rejects FORM_MEMBER_MANAGER on a multiple member field', async (): Promise<void> => {
+        await expect(publishNotify(memberManager('bosses'))).rejects.toThrow(
+          `${notifyPath} must reference a single-person member field, not a multiple one: bosses`,
+        );
+      });
+
+      it.each(['optionalBoss', 'shownBoss', 'storedBoss'])(
+        'rejects FORM_MEMBER_MANAGER on %s, which can be left empty',
+        async (formPath): Promise<void> => {
+          await expect(publishNotify(memberManager(formPath))).rejects.toThrow(
+            `${notifyPath} must reference a required member field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+          );
+        },
+      );
+
+      it.each(['missing', 'note', 'boss'])(
+        'rejects FORM_ORG_UNIT_MANAGER on %s, which is not an org_unit field',
+        async (formPath): Promise<void> => {
+          await expect(publishNotify(orgManager(formPath))).rejects.toThrow(
+            `${notifyPath} must reference an org unit (組織選擇) field of the bound form: ${formPath}`,
+          );
+        },
+      );
+
+      it.each(['optionalUnit', 'shownUnit', 'storedUnit'])(
+        'rejects FORM_ORG_UNIT_MANAGER on %s, which can be left empty',
+        async (formPath): Promise<void> => {
+          await expect(publishNotify(orgManager(formPath))).rejects.toThrow(
+            `${notifyPath} must reference a required org unit field that no visibility rule or hidden flag can leave empty: ${formPath}`,
+          );
+        },
+      );
+
+      it('still lets a NOTIFY DYNAMIC_FORM recipient read a multiple member field (反向控制)', async (): Promise<void> => {
+        await expect(
+          publishNotify({ formPath: 'bosses', type: 'DYNAMIC_FORM' }),
+        ).resolves.toMatchObject({ id: 'template-version-1' });
+      });
+    });
   });
 
   describe('NODE_ACTOR / NODE_ACTOR_MANAGER source graph rules', (): void => {
@@ -1179,6 +1256,153 @@ describe('TemplateService', () => {
       } as WorkflowDefinition;
 
       await expect(publish(reversed)).rejects.toThrow(/不在 .* 的上游/);
+    });
+
+    describe('as NOTIFY recipients', (): void => {
+      const notifyPath = 'workflow.nodes.notify_peer.action.recipients.nodeIds';
+      const notifyNode = (recipients: ApproverResolver): WorkflowNode =>
+        ({
+          data: {
+            action: { channels: ['IN_APP'], recipients, type: 'NOTIFY' },
+            label: '通知',
+          },
+          id: 'notify_peer',
+          position: { x: 400, y: 160 },
+          type: 'serviceTask',
+        }) as WorkflowNode;
+      const edge = (source: string, target: string): WorkflowEdge =>
+        ({
+          data: {},
+          id: `edge_${source}_${target}`,
+          source,
+          target,
+          type: 'smoothstep',
+        }) as WorkflowEdge;
+      // start -> task_1 -> task_2 -> end, with the NOTIFY leaf hung off
+      // `from` (a NOTIFY node cannot have outgoing edges).
+      const withNotify = (
+        recipients: ApproverResolver,
+        from: readonly string[] = ['task_2'],
+        firstNodeData: Readonly<Record<string, unknown>> = {},
+      ): WorkflowDefinition => {
+        const base = withSecondNode(
+          { baseFromInitiator: true, levelsUp: 1, type: 'ORG_MANAGER' },
+          firstNodeData,
+        );
+
+        return {
+          ...base,
+          edges: [
+            ...base.edges,
+            ...from.map((source) => edge(source, 'notify_peer')),
+          ],
+          nodes: [...base.nodes, notifyNode(recipients)],
+        };
+      };
+
+      it.each([
+        { nodeIds: ['task_1'], type: 'NODE_ACTOR' },
+        { levelsUp: 1, nodeIds: ['task_1'], type: 'NODE_ACTOR_MANAGER' },
+      ] as const)(
+        'publishes %j when the earlier node is unskippable and upstream',
+        async (recipients): Promise<void> => {
+          await expect(
+            publish(withNotify(recipients as ApproverResolver)),
+          ).resolves.toMatchObject({ id: 'template-version-1' });
+        },
+      );
+
+      it.each([
+        { nodeIds: ['task_1'], type: 'NODE_ACTOR' },
+        { levelsUp: 1, nodeIds: ['task_1'], type: 'NODE_ACTOR_MANAGER' },
+      ] as const)(
+        'rejects %j when the earlier node can be skipped by an entry condition',
+        async (recipients): Promise<void> => {
+          const attempt = publish(
+            withNotify(recipients as ApproverResolver, ['task_2'], {
+              entryCondition: 'form.amount > 10',
+            }),
+          );
+
+          await expect(attempt).rejects.toThrow(
+            new RegExp(`${notifyPath}: .*設有進入條件，可能被跳過`),
+          );
+        },
+      );
+
+      it.each([
+        { nodeIds: ['task_1'], type: 'NODE_ACTOR' },
+        { levelsUp: 1, nodeIds: ['task_1'], type: 'NODE_ACTOR_MANAGER' },
+      ] as const)(
+        'rejects %j when another path reaches the notify node without passing the earlier node',
+        async (recipients): Promise<void> => {
+          // start -> notify_peer skips task_1 altogether.
+          await expect(
+            publish(
+              withNotify(recipients as ApproverResolver, ['task_2', 'start']),
+            ),
+          ).rejects.toThrow(new RegExp(`${notifyPath}: .*不會經過`));
+        },
+      );
+
+      it('rejects a source that is not upstream of the notify node', async (): Promise<void> => {
+        // task_2 is downstream of task_1 and notify_peer hangs off task_1, so
+        // task_2 can never have signed when the notification goes out.
+        await expect(
+          publish(
+            withNotify({ nodeIds: ['task_2'], type: 'NODE_ACTOR' }, ['task_1']),
+          ),
+        ).rejects.toThrow(new RegExp(`${notifyPath}: .*不在 .* 的上游`));
+      });
+
+      it('rejects two sources on different branches of one parallel split', async (): Promise<void> => {
+        const gateway = (
+          id: string,
+          direction: 'join' | 'split',
+        ): WorkflowNode =>
+          ({
+            data: { direction, label: id },
+            id,
+            position: { x: 0, y: 0 },
+            type: 'parallelGateway',
+          }) as WorkflowNode;
+        const base = withNotify(
+          { nodeIds: ['task_1', 'task_2'], type: 'NODE_ACTOR' },
+          ['join'],
+        );
+        const parallel = {
+          ...base,
+          edges: [
+            edge('start', 'split'),
+            edge('split', 'task_1'),
+            edge('split', 'task_2'),
+            edge('task_1', 'join'),
+            edge('task_2', 'join'),
+            edge('join', 'end'),
+            edge('join', 'notify_peer'),
+          ],
+          nodes: [
+            ...base.nodes,
+            gateway('split', 'split'),
+            gateway('join', 'join'),
+          ],
+        } as WorkflowDefinition;
+
+        await expect(publish(parallel)).rejects.toThrow(
+          new RegExp(`${notifyPath}: .*平行分支`),
+        );
+      });
+
+      it('still reports a node id that does not exist as a structural error, once', async (): Promise<void> => {
+        const attempt = publish(
+          withNotify({ nodeIds: ['ghost'], type: 'NODE_ACTOR' }),
+        );
+
+        await expect(attempt).rejects.toThrow(
+          `${notifyPath} references a missing node: ghost`,
+        );
+        await expect(attempt).rejects.not.toThrow(/不是簽核關卡|不在 /);
+      });
     });
   });
 

@@ -1981,16 +1981,19 @@ function lintWorkflowMemberReferences(
         ];
       }
 
+      // A notify node reads the form pick the same way: DYNAMIC_FORM notifies
+      // everyone picked, FORM_MEMBER_MANAGER one person's manager.
       if (
         node.type === 'serviceTask' &&
         node.data.action?.type === 'NOTIFY' &&
-        node.data.action.recipients?.type === 'DYNAMIC_FORM'
+        (node.data.action.recipients?.type === 'DYNAMIC_FORM' ||
+          node.data.action.recipients?.type === 'FORM_MEMBER_MANAGER')
       ) {
         return [
           {
             formPath: node.data.action.recipients.formPath,
             label: `workflow.nodes.${node.id}.action.recipients.formPath`,
-            single: false,
+            single: node.data.action.recipients.type === 'FORM_MEMBER_MANAGER',
           },
         ];
       }
@@ -2026,10 +2029,10 @@ function lintWorkflowMemberReferences(
 }
 
 /**
- * A `FORM_ORG_UNIT_MANAGER` approver resolver reads one organization unit id
- * from the form data at `formPath`. Same reasoning as the member references:
- * the field must exist, be an `org_unit` field, and be one the submit
- * validation guarantees a value for.
+ * A `FORM_ORG_UNIT_MANAGER` approver resolver (or notify recipient) reads one
+ * organization unit id from the form data at `formPath`. Same reasoning as the
+ * member references: the field must exist, be an `org_unit` field, and be one
+ * the submit validation guarantees a value for.
  */
 function lintWorkflowOrgUnitReferences(
   definition: WorkflowDefinition,
@@ -2042,15 +2045,13 @@ function lintWorkflowOrgUnitReferences(
   );
 
   return definition.nodes.flatMap((node): readonly string[] => {
-    if (
-      node.type !== 'userTask' ||
-      node.data.approverResolver?.type !== 'FORM_ORG_UNIT_MANAGER'
-    ) {
+    const source = readFormOrgUnitManagerSource(node);
+
+    if (source === null) {
       return [];
     }
 
-    const formPath = node.data.approverResolver.formPath;
-    const label = `workflow.nodes.${node.id}.approverResolver.formPath`;
+    const { formPath, label } = source;
 
     // A blank path is reported by the workflow definition lint already.
     if (typeof formPath !== 'string' || formPath.trim() === '') {
@@ -2074,7 +2075,39 @@ function lintWorkflowOrgUnitReferences(
 }
 
 /**
- * The graph checks behind `NODE_ACTOR` / `NODE_ACTOR_MANAGER` nodes, and the
+ * The `FORM_ORG_UNIT_MANAGER` source of an approval node or of a notify node's
+ * recipients, with the path the lint names it by; `null` for any other node.
+ */
+function readFormOrgUnitManagerSource(
+  node: WorkflowNode,
+): { readonly formPath: string; readonly label: string } | null {
+  if (
+    node.type === 'userTask' &&
+    node.data.approverResolver?.type === 'FORM_ORG_UNIT_MANAGER'
+  ) {
+    return {
+      formPath: node.data.approverResolver.formPath,
+      label: `workflow.nodes.${node.id}.approverResolver.formPath`,
+    };
+  }
+
+  if (
+    node.type === 'serviceTask' &&
+    node.data.action?.type === 'NOTIFY' &&
+    node.data.action.recipients?.type === 'FORM_ORG_UNIT_MANAGER'
+  ) {
+    return {
+      formPath: node.data.action.recipients.formPath,
+      label: `workflow.nodes.${node.id}.action.recipients.formPath`,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * The graph checks behind `NODE_ACTOR` / `NODE_ACTOR_MANAGER` nodes (an
+ * approval node's approver or a notify node's recipients), and the
  * `NODE_ACTOR` start of an `ORG_MANAGER_CHAIN` (shared with the designer):
  * every source is an unskippable, upstream, non-parallel user task and every
  * path to the node passes one.
@@ -2083,6 +2116,24 @@ function lintWorkflowNodeActorSources(
   definition: WorkflowDefinition,
 ): readonly string[] {
   return definition.nodes.flatMap((node): readonly string[] => {
+    // A notify node reads the earlier signers the same way an approval node
+    // does, so its sources meet the same graph rules.
+    if (
+      node.type === 'serviceTask' &&
+      node.data.action?.type === 'NOTIFY' &&
+      (node.data.action.recipients?.type === 'NODE_ACTOR' ||
+        node.data.action.recipients?.type === 'NODE_ACTOR_MANAGER')
+    ) {
+      return readNodeActorSourceIssues(
+        definition,
+        node.id,
+        node.data.action.recipients.nodeIds,
+      ).map(
+        (issue) =>
+          `workflow.nodes.${node.id}.action.recipients.nodeIds: ${issue}`,
+      );
+    }
+
     const resolver = node.type === 'userTask' ? node.data.approverResolver : null;
 
     // A manager chain that starts from an earlier stage reads that stage's

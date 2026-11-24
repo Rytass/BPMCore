@@ -11592,6 +11592,7 @@ describe('WorkflowEngineService', () => {
       const notifyFixture = (
         recipients: ApproverResolver,
         formData: Readonly<Record<string, unknown>> = {},
+        extra: Partial<Parameters<typeof createServiceFixture>[0]> = {},
       ): ReturnType<typeof createServiceFixture> =>
         createServiceFixture({
           currentVersionId: 'template-version-1',
@@ -11601,40 +11602,217 @@ describe('WorkflowEngineService', () => {
             recipients,
           }),
           templateVersionStatus: ApprovalTemplateVersionStatusEnum.PUBLISHED,
+          ...extra,
+        });
+      const expectNotified = (
+        fixture: ReturnType<typeof createServiceFixture>,
+        recipientMemberIds: readonly string[],
+      ): void => {
+        expect(
+          fixture.notificationService.createServiceTaskNotifications,
+        ).toHaveBeenCalledWith(expect.objectContaining({ recipientMemberIds }));
+      };
+      const expectNothingSent = (
+        fixture: ReturnType<typeof createServiceFixture>,
+      ): void => {
+        expect(
+          fixture.notificationService.createServiceTaskNotifications,
+        ).not.toHaveBeenCalled();
+      };
+
+      describe('FORM_MEMBER_MANAGER', (): void => {
+        it('notifies the manager of the person picked on the form, not the initiator manager', async (): Promise<void> => {
+          const fixture = notifyFixture(
+            { formPath: 'picked', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+            { picked: 'member-emp' },
+            memberChainOrg,
+          );
+
+          await fixture.service.processInstance('instance-1');
+
+          expectNotified(fixture, ['member-m1']);
         });
 
-      it.each<readonly [string, ApproverResolver]>([
-        ['NODE_ACTOR', { nodeIds: ['task_a'], type: 'NODE_ACTOR' }],
-        [
-          'NODE_ACTOR_MANAGER',
-          { levelsUp: 1, nodeIds: ['task_a'], type: 'NODE_ACTOR_MANAGER' },
-        ],
-        [
-          'FORM_MEMBER_MANAGER',
-          { formPath: 'picked', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
-        ],
-        [
-          'FORM_ORG_UNIT_MANAGER',
-          { formPath: 'dept', type: 'FORM_ORG_UNIT_MANAGER' },
-        ],
-      ])(
-        'refuses %s as a notify node recipient and sends nothing',
-        async (type, recipients): Promise<void> => {
-          const fixture = notifyFixture(recipients, {
-            dept: 'org-hr',
-            picked: 'member-emp',
-          });
+        it('climbs levelsUp tiers above the picked person', async (): Promise<void> => {
+          const fixture = notifyFixture(
+            { formPath: 'picked', levelsUp: 2, type: 'FORM_MEMBER_MANAGER' },
+            { picked: 'member-emp' },
+            memberChainOrg,
+          );
+
+          await fixture.service.processInstance('instance-1');
+
+          expectNotified(fixture, ['member-m2']);
+        });
+
+        it('notifies the fixed fallback person when the picked person has no manager (DIRECT)', async (): Promise<void> => {
+          const fixture = notifyFixture(
+            {
+              fallback: { memberId: 'member-admin', type: 'DIRECT' },
+              formPath: 'picked',
+              levelsUp: 1,
+              type: 'FORM_MEMBER_MANAGER',
+            },
+            { picked: 'member-m2' },
+            memberChainOrg,
+          );
+
+          await fixture.service.processInstance('instance-1');
+
+          expectNotified(fixture, ['member-admin']);
+        });
+
+        it('stops with a message that names the notify node when the picked person has no manager and nothing is set to take over (NONE)', async (): Promise<void> => {
+          const fixture = notifyFixture(
+            { formPath: 'picked', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+            { picked: 'member-m2' },
+            memberChainOrg,
+          );
 
           await expect(
             fixture.service.processInstance('instance-1'),
           ).rejects.toThrow(
-            `知會節點「財務知會」不能使用簽核人來源「${type}」當收件人`,
+            '知會節點「財務知會」 無法建立通知：找不到表單欄位「picked」所選人員的第 1 層主管，且未設定改派固定人',
           );
-          expect(
-            fixture.notificationService.createServiceTaskNotifications,
-          ).not.toHaveBeenCalled();
-        },
-      );
+          expectNothingSent(fixture);
+        });
+      });
+
+      describe('FORM_ORG_UNIT_MANAGER', (): void => {
+        const unitRecipients: ApproverResolver = {
+          formPath: 'dept',
+          preferClosestOrgUnit: true,
+          type: 'FORM_ORG_UNIT_MANAGER',
+        };
+
+        it("notifies the manager of the unit picked on the form, not the filer's own unit manager", async (): Promise<void> => {
+          const fixture = notifyFixture(
+            unitRecipients,
+            { dept: ORG_HR },
+            departmentOrg([
+              unitRule('rule-finance', ORG_FINANCE, 'member-fin-head'),
+              unitRule('rule-hr', ORG_HR, 'member-hr-head'),
+            ]),
+          );
+
+          await fixture.service.processInstance('instance-1');
+
+          expectNotified(fixture, ['member-hr-head']);
+        });
+
+        it('lets the parent unit rule take over when the picked unit has none', async (): Promise<void> => {
+          const fixture = notifyFixture(
+            unitRecipients,
+            { dept: ORG_HR },
+            departmentOrg([
+              unitRule('rule-company', ORG_COMPANY, 'member-ceo'),
+            ]),
+          );
+
+          await fixture.service.processInstance('instance-1');
+
+          expectNotified(fixture, ['member-ceo']);
+        });
+
+        it('stops with a message that names the notify node when the form holds no unit', async (): Promise<void> => {
+          const fixture = notifyFixture(
+            unitRecipients,
+            {},
+            departmentOrg([unitRule('rule-hr', ORG_HR, 'member-hr-head')]),
+          );
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(
+            '知會節點「財務知會」 依表單欄位「dept」找不到所選組織',
+          );
+          expectNothingSent(fixture);
+        });
+      });
+
+      describe('NODE_ACTOR and NODE_ACTOR_MANAGER', (): void => {
+        const at = (minute: number): Date =>
+          new Date(Date.UTC(2026, 4, 1, 0, minute));
+        // task_a was approved by member-emp (member-idle was a candidate who
+        // never acted).
+        const signedByEmp = {
+          additionalProcessTasks: [
+            createTask({
+              assigneeMemberId: null,
+              assignmentType: TaskAssignmentTypeEnum.CANDIDATE_GROUP,
+              candidateMemberIds: ['member-emp', 'member-idle'],
+              createdAt: at(0),
+              id: 't1',
+              nodeId: 'task_a',
+              status: TaskStatusEnum.COMPLETED,
+              tokenId: 'tok-1',
+            }),
+          ],
+          processTaskDecisions: [
+            createTaskDecision({
+              action: TaskDecisionActionEnum.APPROVED,
+              decidedAt: at(1),
+              decidedByMemberId: 'member-emp',
+              id: 'd1',
+              taskId: 't1',
+            }),
+          ],
+        };
+
+        it('notifies the person who actually approved the earlier node', async (): Promise<void> => {
+          const fixture = notifyFixture(
+            { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+            {},
+            { ...memberChainOrg, ...signedByEmp },
+          );
+
+          await fixture.service.processInstance('instance-1');
+
+          expectNotified(fixture, ['member-emp']);
+        });
+
+        it("notifies the signer's manager (NODE_ACTOR_MANAGER)", async (): Promise<void> => {
+          const fixture = notifyFixture(
+            { levelsUp: 1, nodeIds: ['task_a'], type: 'NODE_ACTOR_MANAGER' },
+            {},
+            { ...memberChainOrg, ...signedByEmp },
+          );
+
+          await fixture.service.processInstance('instance-1');
+
+          expectNotified(fixture, ['member-m1']);
+        });
+
+        it('stops with a message that names the notify node when nobody approved the earlier node', async (): Promise<void> => {
+          const fixture = notifyFixture(
+            { nodeIds: ['task_a'], type: 'NODE_ACTOR' },
+            {},
+            memberChainOrg,
+          );
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(
+            /知會節點「財務知會」 找不到通知對象：.*沒有實際同意的簽核紀錄/,
+          );
+          expectNothingSent(fixture);
+        });
+
+        it('stops the same way for NODE_ACTOR_MANAGER when nobody approved and nothing takes over', async (): Promise<void> => {
+          const fixture = notifyFixture(
+            { levelsUp: 1, nodeIds: ['task_a'], type: 'NODE_ACTOR_MANAGER' },
+            {},
+            memberChainOrg,
+          );
+
+          await expect(
+            fixture.service.processInstance('instance-1'),
+          ).rejects.toThrow(
+            /知會節點「財務知會」 無法建立通知：.*沒有實際同意的簽核紀錄/,
+          );
+          expectNothingSent(fixture);
+        });
+      });
 
       it('control: DYNAMIC_FORM recipients still get the notification', async (): Promise<void> => {
         const fixture = notifyFixture(

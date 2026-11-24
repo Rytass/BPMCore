@@ -6,26 +6,33 @@ import {
 import { PositionRecord } from '@rytass/bpm-core-client/organization';
 import {
   APPROVER_RESOLVER_MODE_OPTIONS,
+  ApproverResolverMode,
   ApproverResolverModeOption,
+  ApproverSubjectChoice,
+  OrgUnitManagerSource,
   buildApproverResolver,
   readApproverResolverEditorState,
+  readApproverSubjectChoice,
+  readApproverSubjectPick,
   readDefaultApproverResolver,
+  withOrgUnitSource,
 } from './approver-resolver-model';
 
 /**
- * The 知會對象 sources the designer can edit. The engine accepts more for a
- * notify node (`isNotifyRecipientResolverType`): 發起人主管, 主管鏈 and 運算式
- * stay readable and are kept as saved, but the designer does not edit them.
- *
- * Keyed by the JSON `type`, not by the approver panel's screen option: that
- * option folds FORM_MEMBER_MANAGER into 依表單欄位指定 and
- * FORM_ORG_UNIT_MANAGER into 指定組織主管, neither of which a notify node
- * may use.
+ * The 知會對象 sources the designer can edit, keyed by the screen option the
+ * 簽核來源 select uses for the same source: 依表單欄位指定 holds the person in
+ * the field or their manager (DYNAMIC_FORM / FORM_MEMBER_MANAGER), 指定組織主管
+ * a fixed or a form-field organization (ORG_UNIT_MANAGER /
+ * FORM_ORG_UNIT_MANAGER), 依前面關卡的簽核者 the earlier signer or their manager
+ * (NODE_ACTOR / NODE_ACTOR_MANAGER). The engine accepts more for a notify node
+ * (`isNotifyRecipientResolverType`): 發起人主管, 主管鏈 and 運算式 stay readable
+ * and are kept as saved, but the designer does not edit them.
  */
 export type NotifyRecipientMode = Extract<
-  ApproverResolver['type'],
+  ApproverResolverMode,
   | 'DIRECT'
   | 'DYNAMIC_FORM'
+  | 'NODE_ACTOR'
   | 'ORG_UNIT_MANAGER'
   | 'ORG_UNIT_MEMBER'
   | 'ORG_UNIT_POSITION'
@@ -37,6 +44,7 @@ const NOTIFY_RECIPIENT_EDITABLE_TYPES: Readonly<
 > = {
   DIRECT: true,
   DYNAMIC_FORM: true,
+  NODE_ACTOR: true,
   ORG_UNIT_MANAGER: true,
   ORG_UNIT_MEMBER: true,
   ORG_UNIT_POSITION: true,
@@ -60,6 +68,13 @@ export const NOTIFY_RECIPIENT_MODE_OPTIONS: readonly ApproverResolverModeOption[
   APPROVER_RESOLVER_MODE_OPTIONS.filter((option) =>
     isNotifyRecipientEditableType(option.id),
   );
+
+/**
+ * The 關卡 picker's hint for a notify node's 依前面關卡的簽核者, while the
+ * selection has no problem to report: the 簽核來源 hint, worded for 知會對象.
+ */
+export const NOTIFY_NODE_ACTOR_STAGE_HINT =
+  '知會對象取自你選的前面關卡實際簽核的人；可複選，整組要涵蓋每條路徑。複選多個關卡時，取最近實際走到的那一關的簽核人，不是全部關卡的簽核人。';
 
 /** The id of the read-only entry a source the designer does not edit is shown as. */
 export const READ_ONLY_NOTIFY_RECIPIENT_OPTION_ID = 'READ_ONLY';
@@ -109,16 +124,37 @@ export type NotifyRecipientSourceChoice = Readonly<{
 }>;
 
 /**
+ * The screen option a stored source is shown as, or `null` when the designer
+ * does not edit it (發起人主管, 主管鏈, 運算式, or a type this build does not
+ * know). The edited sources that store two JSON types share one option, the
+ * way the 簽核來源 select does it.
+ */
+function readStoredNotifyMode(
+  recipients: ApproverResolver,
+): NotifyRecipientMode | null {
+  const state = readApproverResolverEditorState(recipients);
+
+  if (state.mode === 'UNSUPPORTED') {
+    return null;
+  }
+
+  const id = state.mode === 'AS_STORED' ? state.resolver.type : state.mode;
+
+  return isNotifyRecipientEditableType(id) ? id : null;
+}
+
+/**
  * The 知會對象來源 select. A stored source the designer does not edit
- * (發起人主管, 主管鏈, 運算式, one a notify node may not use, or one a newer
- * BPMCore saved) is shown as a read-only entry that is the current value:
- * nothing is written unless the author explicitly picks another source.
+ * (發起人主管, 主管鏈, 運算式, or one a newer BPMCore saved) is shown as a
+ * read-only entry that is the current value: nothing is written unless the
+ * author explicitly picks another source.
  */
 export function readNotifyRecipientSourceChoice(
   recipients: ApproverResolver,
 ): NotifyRecipientSourceChoice {
+  const storedMode = readStoredNotifyMode(recipients);
   const editable = NOTIFY_RECIPIENT_MODE_OPTIONS.find(
-    (option) => option.id === recipients.type,
+    (option) => option.id === storedMode,
   );
 
   if (editable) {
@@ -153,7 +189,8 @@ export function readNotifyRecipientSourceChoice(
  * change nothing: no option, an id that is not an editable source (the
  * read-only entry included), or the source already stored. Re-picking the
  * shown source would otherwise rebuild a clean default and wipe what the
- * author had filled in.
+ * author had filled in. "Already stored" is the screen option, so a
+ * FORM_MEMBER_MANAGER under 依表單欄位指定 is not rebuilt either.
  */
 export function readNotifyRecipientSourcePick(
   recipients: ApproverResolver,
@@ -164,7 +201,7 @@ export function readNotifyRecipientSourcePick(
     return null;
   }
 
-  return optionId === recipients.type
+  return optionId === readStoredNotifyMode(recipients)
     ? null
     : readDefaultApproverResolver(optionId, positions);
 }
@@ -269,18 +306,77 @@ export function withNotifyPosition(
   return recipients;
 }
 
-/** Picks the member field of 依表單欄位指定 (the person in the field only). */
+/**
+ * Picks the form field of 依表單欄位指定 (the person in it, or their manager)
+ * or of 指定組織主管 with the 表單欄位 organization. A source with no form field
+ * is returned as it is.
+ */
 export function withNotifyFormPath(
   recipients: ApproverResolver,
   formPath: string,
 ): ApproverResolver {
-  if (recipients.type !== 'DYNAMIC_FORM') {
-    return recipients;
-  }
-
   const state = readApproverResolverEditorState(recipients);
 
-  return state.mode === 'DYNAMIC_FORM'
+  if (state.mode === 'DYNAMIC_FORM') {
+    return buildApproverResolver({ ...state, formPath });
+  }
+
+  return state.mode === 'ORG_UNIT_MANAGER' && state.orgSource === 'FORM_FIELD'
     ? buildApproverResolver({ ...state, formPath })
     : recipients;
+}
+
+/**
+ * Switches the 組織 of 指定組織主管 between 固定組織 and 表單欄位, the way the
+ * 簽核來源 panel does (a form-field organization starts with 只取最近一層主管
+ * on). Any other source is returned as it is.
+ */
+export function withNotifyOrgSource(
+  recipients: ApproverResolver,
+  source: OrgUnitManagerSource,
+): ApproverResolver {
+  const state = readApproverResolverEditorState(recipients);
+
+  return state.mode === 'ORG_UNIT_MANAGER' && state.orgSource !== source
+    ? buildApproverResolver(withOrgUnitSource(state, source))
+    : recipients;
+}
+
+/** Picks the earlier stages of 依前面關卡的簽核者. */
+export function withNotifyNodeIds(
+  recipients: ApproverResolver,
+  nodeIds: readonly string[],
+): ApproverResolver {
+  const state = readApproverResolverEditorState(recipients);
+
+  return state.mode === 'NODE_ACTOR'
+    ? buildApproverResolver({ ...state, nodeIds })
+    : recipients;
+}
+
+/**
+ * The 知會對象 select of 依表單欄位指定 and 依前面關卡的簽核者: the person
+ * themselves or their manager one to three levels up. `null` for a source
+ * with no such choice.
+ */
+export function readNotifySubjectChoice(
+  recipients: ApproverResolver,
+): ApproverSubjectChoice | null {
+  return readApproverSubjectChoice(readApproverResolverEditorState(recipients));
+}
+
+/**
+ * The recipients a 知會對象 pick produces, or `null` for a no-op (the shown
+ * choice picked again, the invalid-level entry, an id that is not an option).
+ */
+export function readNotifySubjectPick(
+  recipients: ApproverResolver,
+  optionId: string | null,
+): ApproverResolver | null {
+  const next = readApproverSubjectPick(
+    readApproverResolverEditorState(recipients),
+    optionId,
+  );
+
+  return next ? buildApproverResolver(next) : null;
 }

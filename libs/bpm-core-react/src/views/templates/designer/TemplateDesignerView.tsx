@@ -131,14 +131,11 @@ import {
   composeSlaDuration,
   hasConfiguredConditionEdges,
   isDecisionPolicyUnsatisfiable,
+  isExclusiveGatewaySourceEdge,
   isOrgManagerChainDecisionPolicyInvalid,
-  readApproverResolverIssue,
   readConditionOperator,
   readConditionOperatorOptionsForField,
   readDesignTimeApproverCount,
-  readExcludeInitiatorIssue,
-  readExcludeNodeActorsShapeIssue,
-  readNotifyServiceTaskIssue,
   readNotifyWebhookTargets,
   readSlaDurationParts,
 } from '@rytass/bpm-core-shared/workflow-graph';
@@ -165,6 +162,11 @@ import {
   readNodeActorStageChoice,
   readOrgManagerChainStageChoice,
 } from './node-actor-resolver-options';
+import {
+  isIncompleteConditionEdge,
+  readDesignerWorkflowIssue,
+  readEdgeCanvasLabel,
+} from './designer-workflow-issue';
 import { readMinPositionLevelOptions } from './position-level-options';
 import {
   isMembershipActiveOn,
@@ -255,10 +257,15 @@ import {
 import { readDryRunSampleFormData } from './dry-run-sample-data';
 import {
   readNotifyRecipients,
+  NOTIFY_NODE_ACTOR_STAGE_HINT,
   readNotifyRecipientSourceChoice,
   readNotifyRecipientSourcePick,
+  readNotifySubjectChoice,
+  readNotifySubjectPick,
   withNotifyFormPath,
   withNotifyIncludeDescendants,
+  withNotifyNodeIds,
+  withNotifyOrgSource,
   withNotifyOrgUnit,
   withNotifyPosition,
   withNotifyRecipients,
@@ -1295,11 +1302,11 @@ export function TemplateDesignerView({
       workflowDefinition.edges.map((edge) =>
         readFlowEdge(
           edge,
-          workflowDefinition.nodes,
+          workflowDefinition,
           selectedEdgeIds.includes(edge.id),
         ),
       ),
-    [selectedEdgeIds, workflowDefinition.edges, workflowDefinition.nodes],
+    [selectedEdgeIds, workflowDefinition],
   );
 
   const selectedFormVersionOption = useMemo(
@@ -1334,7 +1341,7 @@ export function TemplateDesignerView({
     }
   }, [controller, effectiveFormSchema]);
   const workflowIssue = useMemo(
-    (): string | null => readWorkflowDefinitionIssue(workflowDefinition),
+    (): string | null => readDesignerWorkflowIssue(workflowDefinition),
     [workflowDefinition],
   );
 
@@ -1734,7 +1741,7 @@ export function TemplateDesignerView({
       appliedFormDraft?.uiSchema ?? FORM_EDIT_EMPTY_UI_SCHEMA;
 
     try {
-      const validationIssue = readWorkflowDefinitionIssue(workflowDefinition);
+      const validationIssue = readDesignerWorkflowIssue(workflowDefinition);
       const policyIssue = readInitiatorPolicyIssue(initiatorPolicyDraft);
       const blockingPublishIssue = publish ? publishIssue : null;
 
@@ -4696,9 +4703,34 @@ export function TemplateDesignerView({
       positions,
       scopedPositions: recipientOrgScopedPositions,
     });
+    // The panel edits the screen state, as the 簽核來源 panel does: 本人／主管
+    // and 固定組織／表單欄位 are one option each.
+    const recipientState = readApproverResolverEditorState(recipients);
+    const recipientSubjectChoice = readNotifySubjectChoice(recipients);
     const recipientFormChoice =
-      recipients.type === 'DYNAMIC_FORM'
-        ? readDynamicFormFieldChoice(webhookFormSchema, recipients.formPath)
+      recipientState.mode === 'DYNAMIC_FORM'
+        ? recipientState.levelsUp === null
+          ? readDynamicFormFieldChoice(
+              webhookFormSchema,
+              recipientState.formPath,
+            )
+          : readFormMemberManagerFieldChoice(
+              webhookFormSchema,
+              recipientState.formPath,
+            )
+        : null;
+    const recipientOrgFieldChoice =
+      recipientState.mode === 'ORG_UNIT_MANAGER' &&
+      recipientState.orgSource === 'FORM_FIELD'
+        ? readFormOrgUnitFieldChoice(webhookFormSchema, recipientState.formPath)
+        : null;
+    const recipientNodeActorChoice =
+      recipientState.mode === 'NODE_ACTOR'
+        ? readNodeActorStageChoice(
+            workflowDefinition,
+            node.id,
+            recipientState.nodeIds,
+          )
         : null;
 
     // Only the recipients change: channels, template and webhooks belong to
@@ -4789,6 +4821,52 @@ export function TemplateDesignerView({
       );
     }
 
+    function renderNotifySubjectField(): ReactElement | null {
+      if (!recipientSubjectChoice) {
+        return null;
+      }
+
+      return (
+        <BPMFormField
+          hintText={
+            recipientSubjectChoice.invalid
+              ? '原本儲存的主管層級無效（需為第 1 層以上），請重新選擇；發布前必須修正。'
+              : recipientState.mode === 'NODE_ACTOR'
+                ? `選「關卡的簽核者」就是簽核者本人；選主管則往上找他的主管，不會是簽核者自己。${
+                    recipientState.levelsUp === null
+                      ? ''
+                      : '簽核者沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
+                  }`
+                : `選「欄位裡的人」就是欄位選的人；選主管則往上找他的主管，不會是欄位裡的人自己。${
+                    recipientState.mode !== 'DYNAMIC_FORM' ||
+                    recipientState.levelsUp === null
+                      ? ''
+                      : '欄位裡的人沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
+                  }`
+          }
+          label="知會對象"
+          name="notifySubject"
+          required
+        >
+          <Select
+            clearable={false}
+            onChange={(option): void => {
+              const next = readNotifySubjectPick(
+                recipients,
+                option?.id ?? null,
+              );
+
+              if (next) {
+                updateNotifyRecipients(next);
+              }
+            }}
+            options={[...recipientSubjectChoice.options]}
+            value={recipientSubjectChoice.selected}
+          />
+        </BPMFormField>
+      );
+    }
+
     return (
       <>
         {actionTypePicker}
@@ -4861,38 +4939,144 @@ export function TemplateDesignerView({
             />
           </BPMFormField>
         ) : null}
-        {recipients.type === 'DYNAMIC_FORM' ? (
-          <BPMFormField
-            hintText={
-              recipientFormChoice?.problem ??
-              '知會對象取自申請人送出表單時在該欄位選的人員。'
-            }
-            label="表單欄位"
-            name="notifyFormPath"
-            required
-          >
-            <Select
-              clearable={false}
-              onChange={(option): void =>
-                updateNotifyRecipients(
-                  withNotifyFormPath(recipients, option?.id ?? ''),
-                )
+        {recipientState.mode === 'DYNAMIC_FORM' ? (
+          <>
+            <BPMFormField
+              hintText={
+                recipientFormChoice?.problem ??
+                (recipientState.levelsUp === null
+                  ? '知會對象取自申請人送出表單時在該欄位選的人員。'
+                  : '依申請人送出表單時在該欄位選的人員，往上找他的主管；該人員沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。')
               }
-              options={[...(recipientFormChoice?.options ?? [])]}
-              placeholder="選擇人員選擇欄位"
-              value={recipientFormChoice?.selected ?? undefined}
-            />
-          </BPMFormField>
+              label="表單欄位"
+              name="notifyFormPath"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void =>
+                  updateNotifyRecipients(
+                    withNotifyFormPath(recipients, option?.id ?? ''),
+                  )
+                }
+                options={[...(recipientFormChoice?.options ?? [])]}
+                placeholder="選擇人員選擇欄位"
+                value={recipientFormChoice?.selected ?? undefined}
+              />
+            </BPMFormField>
+            {renderNotifySubjectField()}
+          </>
+        ) : null}
+        {recipientState.mode === 'NODE_ACTOR' ? (
+          <>
+            <BPMFormField
+              hintText={
+                recipientNodeActorChoice &&
+                recipientNodeActorChoice.problems.length > 0
+                  ? recipientNodeActorChoice.problems.join('；')
+                  : NOTIFY_NODE_ACTOR_STAGE_HINT
+              }
+              label="關卡"
+              name="notifyNodeIds"
+              required
+            >
+              <Select
+                clearable
+                mode="multiple"
+                onChange={(options): void =>
+                  updateNotifyRecipients(
+                    withNotifyNodeIds(
+                      recipients,
+                      options.map((option) => option.id),
+                    ),
+                  )
+                }
+                options={[...(recipientNodeActorChoice?.options ?? [])]}
+                overflowStrategy="wrap"
+                placeholder="選擇前面的簽核關卡"
+                value={[...(recipientNodeActorChoice?.selected ?? [])]}
+              />
+            </BPMFormField>
+            {renderNotifySubjectField()}
+          </>
+        ) : null}
+        {recipientState.mode === 'ORG_UNIT_MANAGER' ? (
+          <>
+            <BPMFormField
+              hintText="固定組織：每張單都找同一個組織的主管；表單欄位：找申請人在表單上選的組織的主管。"
+              label="組織"
+              name="notifyOrgUnitSource"
+              required
+            >
+              <Select
+                clearable={false}
+                onChange={(option): void => {
+                  if (!option || option.id === recipientState.orgSource) {
+                    return;
+                  }
+
+                  updateNotifyRecipients(
+                    withNotifyOrgSource(
+                      recipients,
+                      option.id === 'FORM_FIELD' ? 'FORM_FIELD' : 'FIXED',
+                    ),
+                  );
+                }}
+                options={[...ORG_UNIT_SOURCE_OPTIONS]}
+                value={readSelectOption(
+                  ORG_UNIT_SOURCE_OPTIONS,
+                  recipientState.orgSource,
+                )}
+              />
+            </BPMFormField>
+            {recipientState.orgSource === 'FIXED' ? (
+              <BPMFormField
+                hintText="依指定組織或其上層的主管解析規則決定知會對象；組織沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。"
+                label="指定組織"
+                name="notifyOrgUnitId"
+                required
+              >
+                <OrgUnitPicker
+                  name="notifyOrgUnitId"
+                  onChange={(option): void =>
+                    updateNotifyRecipients(
+                      withNotifyOrgUnit(recipients, option?.id ?? ''),
+                    )
+                  }
+                  orgUnits={orgUnits}
+                  placeholder="選擇組織"
+                  value={selectedRecipientOrgUnit}
+                />
+              </BPMFormField>
+            ) : (
+              <BPMFormField
+                hintText={
+                  recipientOrgFieldChoice?.problem ??
+                  '依申請人送出表單時在該欄位選的組織，找該組織的主管；該組織沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
+                }
+                label="表單欄位"
+                name="notifyOrgFormPath"
+                required
+              >
+                <Select
+                  clearable={false}
+                  onChange={(option): void =>
+                    updateNotifyRecipients(
+                      withNotifyFormPath(recipients, option?.id ?? ''),
+                    )
+                  }
+                  options={[...(recipientOrgFieldChoice?.options ?? [])]}
+                  placeholder="選擇組織選擇欄位"
+                  value={recipientOrgFieldChoice?.selected ?? undefined}
+                />
+              </BPMFormField>
+            )}
+          </>
         ) : null}
         {recipients.type === 'ORG_UNIT_MEMBER' ||
-        recipients.type === 'ORG_UNIT_POSITION' ||
-        recipients.type === 'ORG_UNIT_MANAGER' ? (
+        recipients.type === 'ORG_UNIT_POSITION' ? (
           <BPMFormField
-            hintText={
-              recipients.type === 'ORG_UNIT_MANAGER'
-                ? '依指定組織或其上層的主管解析規則決定知會對象；組織沒有主管、也沒有設定替代人時，流程走到這個知會節點會送出失敗。'
-                : '依指定組織目前有效會員歸屬決定知會對象。'
-            }
+            hintText="依指定組織目前有效會員歸屬決定知會對象。"
             label="組織"
             name="notifyOrgUnitId"
             required
@@ -5071,7 +5255,7 @@ export function TemplateDesignerView({
       <Modal
         cancelText="取消"
         confirmButtonProps={{
-          disabled: !edge.data.isDefault && !edge.data.condition,
+          disabled: isIncompleteConditionEdge(edge, workflowDefinition),
         }}
         confirmText="完成"
         modalType="standard"
@@ -5091,10 +5275,7 @@ export function TemplateDesignerView({
   }
 
   function renderConditionEdgeSettingsForm(edge: WorkflowEdge): ReactElement {
-    const pathLabelPreview = readEdgeCanvasLabel(
-      edge,
-      workflowDefinition.nodes,
-    );
+    const pathLabelPreview = readEdgeCanvasLabel(edge, workflowDefinition);
     const conditionFieldOptions = readConditionFieldOptions(
       selectedFormVersionOption?.schema ?? null,
     );
@@ -5112,26 +5293,31 @@ export function TemplateDesignerView({
       conditionOperatorOptions,
       edge.data.conditionOperator ?? null,
     );
-    const pathLabelIsIncomplete = !edge.data.isDefault && !edge.data.condition;
+    const pathLabelIsIncomplete = isIncompleteConditionEdge(
+      edge,
+      workflowDefinition,
+    );
     const expressionCondition =
       !edge.data.isDefault &&
       (expressionEdgeId === edge.id || isWorkflowEdgeExpressionCondition(edge));
 
     return (
       <div style={FORM_STACK_STYLE}>
-        <Typography color="text-neutral" variant="body">
-          畫布上的這條線目前會顯示「
-          <span
-            style={{
-              color: pathLabelIsIncomplete
-                ? INCOMPLETE_CONDITION_EDGE_COLOR
-                : undefined,
-            }}
-          >
-            {pathLabelPreview ?? '請設定條件'}
-          </span>
-          」。
-        </Typography>
+        {pathLabelPreview === undefined ? null : (
+          <Typography color="text-neutral" variant="body">
+            畫布上的這條線目前會顯示「
+            <span
+              style={{
+                color: pathLabelIsIncomplete
+                  ? INCOMPLETE_CONDITION_EDGE_COLOR
+                  : undefined,
+              }}
+            >
+              {pathLabelPreview}
+            </span>
+            」。
+          </Typography>
+        )}
         <Toggle
           checked={Boolean(edge.data.isDefault)}
           inputProps={{ 'aria-label': '其他情況走這條' }}
@@ -5482,6 +5668,7 @@ function readFlowNode(
         orgUnits,
         positions,
         formSchema,
+        nodes,
       ),
       approverSummary: readNodeApproverSummary(
         node,
@@ -5601,24 +5788,23 @@ function readSourceFlowNodeHandle({
 
 function readFlowEdge(
   edge: WorkflowEdge,
-  nodes: readonly WorkflowNode[],
+  definition: Pick<WorkflowDefinition, 'edges' | 'nodes'>,
   selected: boolean,
 ): FlowEdge {
-  const label = readEdgeCanvasLabel(edge, nodes);
-  const isConditionEdge = isExclusiveGatewaySourceEdge(edge, nodes);
-  const isIncompleteConditionEdge =
-    isConditionEdge && !edge.data.isDefault && !edge.data.condition;
-  const labelColor = isIncompleteConditionEdge
+  const label = readEdgeCanvasLabel(edge, definition);
+  const isConditionEdge = isExclusiveGatewaySourceEdge(edge, definition.nodes);
+  const incomplete = isIncompleteConditionEdge(edge, definition);
+  const labelColor = incomplete
     ? INCOMPLETE_CONDITION_EDGE_COLOR
     : isConditionEdge
       ? CONDITION_EDGE_COLOR
       : '#475569';
-  const labelBackgroundColor = isIncompleteConditionEdge
+  const labelBackgroundColor = incomplete
     ? '#fef2f2'
     : isConditionEdge
       ? '#eff6ff'
       : '#ffffff';
-  const labelBorderColor = isIncompleteConditionEdge
+  const labelBorderColor = incomplete
     ? INCOMPLETE_CONDITION_EDGE_COLOR
     : isConditionEdge
       ? CONDITION_EDGE_COLOR
@@ -6542,6 +6728,7 @@ function readNodeApproverLines(
   orgUnits: readonly OrgUnitRecord[],
   positions: readonly PositionRecord[],
   formSchema: FormDefinitionSchema | null,
+  nodes: readonly NodeNameRecord[],
 ): readonly string[] | null {
   if (node.type !== 'serviceTask') {
     return null;
@@ -6557,6 +6744,7 @@ function readNodeApproverLines(
             orgUnits,
             positions,
             formSchema,
+            nodes,
           ),
         ]
       : readServiceTaskMemberIds(action).map(
@@ -6649,80 +6837,6 @@ function readWorkflowViewport(
   );
 }
 
-function readWorkflowDefinitionIssue(
-  definition: WorkflowDefinition,
-): string | null {
-  const incompleteUserTaskNode = definition.nodes.find(
-    (node) =>
-      node.type === 'userTask' &&
-      Boolean(readApproverResolverIssue(node.data.approverResolver)),
-  );
-  const excludeInitiatorNode = definition.nodes.find(
-    (node) =>
-      node.type === 'userTask' &&
-      Boolean(readExcludeInitiatorIssue(node.data.excludeInitiator)),
-  );
-  const excludeNodeActorsShapeIssue =
-    definition.nodes
-      .map((node) =>
-        node.type === 'userTask'
-          ? readExcludeNodeActorsShapeIssue(node.data.excludeNodeActors)
-          : null,
-      )
-      .find((issue): issue is string => issue !== null) ?? null;
-  // Shared with the backend lint and the AI toolset so a webhook-only or a
-  // runtime-resolved (position, org unit, manager) NOTIFY node is judged the
-  // same everywhere (ADR 18 P0).
-  const notifyNodeIssue =
-    definition.nodes
-      .map((node) => readNotifyServiceTaskIssue(node))
-      .find((issue): issue is string => issue !== null) ?? null;
-  const incompleteConditionEdge = definition.edges.find(
-    (edge) =>
-      isExclusiveGatewaySourceEdge(edge, definition.nodes) &&
-      !edge.data.isDefault &&
-      !edge.data.condition,
-  );
-  const chainPolicyNode = definition.nodes.find(
-    (node) =>
-      node.type === 'userTask' &&
-      isOrgManagerChainDecisionPolicyInvalid(
-        node.data.approverResolver,
-        node.data.decisionPolicy,
-      ),
-  );
-
-  if (incompleteUserTaskNode && incompleteUserTaskNode.type === 'userTask') {
-    return readApproverResolverIssue(
-      incompleteUserTaskNode.data.approverResolver,
-    );
-  }
-
-  if (chainPolicyNode && chainPolicyNode.type === 'userTask') {
-    return `簽核節點「${chainPolicyNode.data.label}」使用「沿主管鏈簽核」時，決策方式必須是「依序簽核或全部同意」，否則任一位主管簽完就會結案。`;
-  }
-
-  if (excludeInitiatorNode && excludeInitiatorNode.type === 'userTask') {
-    return readExcludeInitiatorIssue(
-      excludeInitiatorNode.data.excludeInitiator,
-    );
-  }
-
-  if (excludeNodeActorsShapeIssue) {
-    return excludeNodeActorsShapeIssue;
-  }
-
-  if (notifyNodeIssue) {
-    return notifyNodeIssue;
-  }
-
-  if (incompleteConditionEdge) {
-    return '條件分流的每條輸出連線都需要先設定條件。';
-  }
-
-  return null;
-}
-
 function readConditionFieldOptions(
   schema: FormDefinitionSchema | null,
 ): readonly ConditionFieldOption[] {
@@ -6772,51 +6886,6 @@ function shouldConditionOperatorUseValue(
   operator: WorkflowEdgeConditionOperator,
 ): boolean {
   return CONDITION_OPERATORS_REQUIRING_VALUE.includes(operator);
-}
-
-function readEdgeCanvasLabel(
-  edge: WorkflowEdge,
-  nodes: readonly WorkflowNode[],
-): string | undefined {
-  if (edge.data.label) {
-    return edge.data.label;
-  }
-
-  if (isExclusiveGatewaySourceEdge(edge, nodes)) {
-    return readExclusiveGatewayPathLabel(edge);
-  }
-
-  if (isParallelGatewaySourceEdge(edge, nodes)) {
-    return '同時進行';
-  }
-
-  return undefined;
-}
-
-function readExclusiveGatewayPathLabel(edge: WorkflowEdge): string {
-  if (edge.data.isDefault) {
-    return '其他情況';
-  }
-
-  return '請設定條件';
-}
-
-function isExclusiveGatewaySourceEdge(
-  edge: WorkflowEdge,
-  nodes: readonly WorkflowNode[],
-): boolean {
-  return nodes.some(
-    (node) => node.id === edge.source && node.type === 'exclusiveGateway',
-  );
-}
-
-function isParallelGatewaySourceEdge(
-  edge: WorkflowEdge,
-  nodes: readonly WorkflowNode[],
-): boolean {
-  return nodes.some(
-    (node) => node.id === edge.source && node.type === 'parallelGateway',
-  );
 }
 
 function readServiceTaskMemberIds(action: ServiceAction): readonly string[] {

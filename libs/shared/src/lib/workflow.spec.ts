@@ -79,15 +79,35 @@ describe('readUnsupportedApproverResolverType', () => {
 });
 
 describe('isNotifyRecipientResolverType', () => {
-  it('accepts the nine original types and refuses the four new ones', () => {
-    expect(isNotifyRecipientResolverType('DYNAMIC_FORM')).toBe(true);
-    expect(isNotifyRecipientResolverType('ORG_MANAGER')).toBe(true);
-    expect(isNotifyRecipientResolverType('NODE_ACTOR')).toBe(false);
-    expect(isNotifyRecipientResolverType('NODE_ACTOR_MANAGER')).toBe(false);
-    expect(isNotifyRecipientResolverType('FORM_MEMBER_MANAGER')).toBe(false);
-    expect(isNotifyRecipientResolverType('FORM_ORG_UNIT_MANAGER')).toBe(false);
-    expect(isNotifyRecipientResolverType('FUTURE_TYPE')).toBe(false);
+  it.each([
+    'DIRECT',
+    'DYNAMIC_FORM',
+    'EXPRESSION',
+    'ORG_MANAGER',
+    'ORG_MANAGER_CHAIN',
+    'ORG_UNIT_MANAGER',
+    'ORG_UNIT_MEMBER',
+    'ORG_UNIT_POSITION',
+    'POSITION',
+  ])('accepts the original type %s', (type) => {
+    expect(isNotifyRecipientResolverType(type)).toBe(true);
   });
+
+  it.each([
+    'FORM_MEMBER_MANAGER',
+    'FORM_ORG_UNIT_MANAGER',
+    'NODE_ACTOR',
+    'NODE_ACTOR_MANAGER',
+  ])('accepts %s, a source it shares with an approval node', (type) => {
+    expect(isNotifyRecipientResolverType(type)).toBe(true);
+  });
+
+  it.each(['FUTURE_TYPE', 'toString', 'hasOwnProperty', ''])(
+    'still refuses a type this build does not know (%j)',
+    (type) => {
+      expect(isNotifyRecipientResolverType(type)).toBe(false);
+    },
+  );
 });
 
 describe('isFallbackCapableApproverResolverType', () => {

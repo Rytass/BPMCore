@@ -6,8 +6,10 @@ import {
   canUserTaskBeSkippedByManagerChain,
   canUserTaskHaveMultipleApprovers,
   createWorkflowNode,
+  hasConfiguredConditionEdges,
   isDecisionPolicyUnsatisfiable,
   isOrgManagerChainDecisionPolicyInvalid,
+  isPassThroughExclusiveGateway,
   isFormFieldCompatibleWithWebhookParameter,
   isNotifyRecipientsEmpty,
   isNotifyWebhookValueCompatibleWithParameter,
@@ -41,6 +43,7 @@ import {
   UserTaskNode,
   WorkflowDefinition,
   WorkflowEdge,
+  WorkflowEdgeData,
   WorkflowNode,
 } from './workflow';
 
@@ -1478,34 +1481,195 @@ describe('approver sources — form, organization and prior nodes', () => {
   });
 });
 
-describe('readNotifyRecipientsIssue — new approver sources', () => {
-  it.each([
-    ['FORM_MEMBER_MANAGER', { formPath: 'owner', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' }],
-    ['FORM_ORG_UNIT_MANAGER', { formPath: 'dept', type: 'FORM_ORG_UNIT_MANAGER' }],
+describe('readNotifyRecipientsIssue — sources shared with an approval node', () => {
+  const UNSUPPORTED =
+    '知會節點的知會對象不支援這種來源，請改選成員、職位、組織、表單欄位或運算式。';
+  const COMPLETE = [
+    [
+      'FORM_MEMBER_MANAGER',
+      { formPath: 'owner', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+    ],
+    [
+      'FORM_ORG_UNIT_MANAGER',
+      { formPath: 'dept', type: 'FORM_ORG_UNIT_MANAGER' },
+    ],
     ['NODE_ACTOR', { nodeIds: ['a'], type: 'NODE_ACTOR' }],
-    ['NODE_ACTOR_MANAGER', { levelsUp: 1, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' }],
-  ] as const)('refuses %s as a notify recipient even when complete', (_n, recipients) => {
-    expect(readNotifyRecipientsIssue(recipients as ApproverResolver)).toBe(
-      '知會節點的知會對象不支援這種來源，請改選成員、職位、組織、表單欄位或運算式。',
-    );
+    [
+      'NODE_ACTOR_MANAGER',
+      { levelsUp: 2, nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' },
+    ],
+  ] as const;
+
+  it.each(COMPLETE)('accepts a complete %s recipient', (_name, recipients) => {
+    expect(
+      readNotifyRecipientsIssue(recipients as ApproverResolver),
+    ).toBeNull();
   });
 
-  it('still accepts a DYNAMIC_FORM recipient with a path (control)', () => {
+  it.each(COMPLETE)(
+    'accepts a complete %s recipient at the node level too',
+    (_name, recipients) => {
+      expect(
+        readNotifyServiceTaskIssue(
+          definitionWithNotify(
+            notifyAction(recipients as ApproverResolver),
+          ).nodes.find((node) => node.id === 'notify') as WorkflowNode,
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it.each([
+    [
+      'a FORM_MEMBER_MANAGER without a field',
+      { formPath: ' ', levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+      '知會節點需要指定知會對象的表單欄位。',
+    ],
+    [
+      'a FORM_MEMBER_MANAGER with no formPath key',
+      { levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+      '知會節點需要指定知會對象的表單欄位。',
+    ],
+    [
+      'a FORM_ORG_UNIT_MANAGER without a field',
+      { formPath: '', type: 'FORM_ORG_UNIT_MANAGER' },
+      '知會節點需要指定知會對象的表單欄位。',
+    ],
+    [
+      'a FORM_ORG_UNIT_MANAGER with no formPath key',
+      { type: 'FORM_ORG_UNIT_MANAGER' },
+      '知會節點需要指定知會對象的表單欄位。',
+    ],
+    [
+      'a FORM_MEMBER_MANAGER with levelsUp 0',
+      { formPath: 'owner', levelsUp: 0, type: 'FORM_MEMBER_MANAGER' },
+      '知會節點需要指定有效的主管層級。',
+    ],
+    [
+      'a FORM_MEMBER_MANAGER with a fractional levelsUp',
+      { formPath: 'owner', levelsUp: 1.5, type: 'FORM_MEMBER_MANAGER' },
+      '知會節點需要指定有效的主管層級。',
+    ],
+    [
+      'a NODE_ACTOR_MANAGER with no levelsUp',
+      { nodeIds: ['a'], type: 'NODE_ACTOR_MANAGER' },
+      '知會節點需要指定有效的主管層級。',
+    ],
+    [
+      'a NODE_ACTOR without stages',
+      { nodeIds: [], type: 'NODE_ACTOR' },
+      '知會節點需要指定前面的簽核關卡。',
+    ],
+    [
+      'a NODE_ACTOR with no nodeIds key',
+      { type: 'NODE_ACTOR' },
+      '知會節點需要指定前面的簽核關卡。',
+    ],
+    [
+      'a NODE_ACTOR_MANAGER without stages',
+      { levelsUp: 1, nodeIds: [], type: 'NODE_ACTOR_MANAGER' },
+      '知會節點需要指定前面的簽核關卡。',
+    ],
+    [
+      'a FORM_MEMBER_MANAGER whose fixed-person fallback is blank',
+      {
+        fallback: { memberId: ' ', type: 'DIRECT' },
+        formPath: 'owner',
+        levelsUp: 1,
+        type: 'FORM_MEMBER_MANAGER',
+      },
+      '知會節點需要指定改派固定人。',
+    ],
+    [
+      'a FORM_ORG_UNIT_MANAGER whose fixed-person fallback is blank',
+      {
+        fallback: { memberId: '', type: 'DIRECT' },
+        formPath: 'dept',
+        type: 'FORM_ORG_UNIT_MANAGER',
+      },
+      '知會節點需要指定改派固定人。',
+    ],
+    [
+      'a NODE_ACTOR_MANAGER whose position fallback is blank',
+      {
+        fallback: { positionId: ' ', type: 'POSITION' },
+        levelsUp: 1,
+        nodeIds: ['a'],
+        type: 'NODE_ACTOR_MANAGER',
+      },
+      '知會節點需要指定改派職位。',
+    ],
+    [
+      'a FORM_MEMBER_MANAGER whose form field is not text',
+      { formPath: 123, levelsUp: 1, type: 'FORM_MEMBER_MANAGER' },
+      '知會節點需要指定知會對象的表單欄位。',
+    ],
+    [
+      'a FORM_MEMBER_MANAGER whose fixed-person fallback is not text',
+      {
+        fallback: { memberId: 42, type: 'DIRECT' },
+        formPath: 'owner',
+        levelsUp: 1,
+        type: 'FORM_MEMBER_MANAGER',
+      },
+      '知會節點需要指定改派固定人。',
+    ],
+    [
+      'a NODE_ACTOR_MANAGER whose position fallback is not text',
+      {
+        fallback: { positionId: 7, type: 'POSITION' },
+        levelsUp: 1,
+        nodeIds: ['a'],
+        type: 'NODE_ACTOR_MANAGER',
+      },
+      '知會節點需要指定改派職位。',
+    ],
+  ])('refuses %s', (_name, recipients, issue) => {
     expect(
-      readNotifyRecipientsIssue({ formPath: 'people', type: 'DYNAMIC_FORM' }),
-    ).toBeNull();
+      readNotifyRecipientsIssue(recipients as unknown as ApproverResolver),
+    ).toBe(issue);
+  });
+
+  it.each([
+    ['a fixed-person fallback', { memberId: 'm9', type: 'DIRECT' }],
+    ['a position fallback', { positionId: 'p9', type: 'POSITION' }],
+    ['no fallback', { type: 'NONE' }],
+  ] as const)(
+    'accepts %s on a complete NODE_ACTOR_MANAGER (control)',
+    (_name, fallback) => {
+      expect(
+        readNotifyRecipientsIssue({
+          fallback,
+          levelsUp: 1,
+          nodeIds: ['a'],
+          type: 'NODE_ACTOR_MANAGER',
+        } as ApproverResolver),
+      ).toBeNull();
+    },
+  );
+
+  it('still refuses a type this build does not know (control)', () => {
+    expect(
+      readNotifyRecipientsIssue({
+        type: 'FUTURE_TYPE',
+      } as unknown as ApproverResolver),
+    ).toBe(UNSUPPORTED);
   });
 
   it('reaches the node-level lint through readNotifyServiceTaskIssue', () => {
     expect(
       readNotifyServiceTaskIssue(
         definitionWithNotify(
-          notifyAction({ nodeIds: ['a'], type: 'NODE_ACTOR' }),
+          notifyAction({ nodeIds: [], type: 'NODE_ACTOR' }),
         ).nodes.find((node) => node.id === 'notify') as WorkflowNode,
       ),
-    ).toBe(
-      '知會節點的知會對象不支援這種來源，請改選成員、職位、組織、表單欄位或運算式。',
-    );
+    ).toBe('知會節點需要指定前面的簽核關卡。');
+  });
+
+  it('still accepts a DYNAMIC_FORM recipient with a path (control)', () => {
+    expect(
+      readNotifyRecipientsIssue({ formPath: 'people', type: 'DYNAMIC_FORM' }),
+    ).toBeNull();
   });
 });
 
@@ -2112,6 +2276,112 @@ describe('readNodeActorSourceIssues', () => {
       );
 
       expect(readNodeActorSourceIssues(afterJoin, 'me', ['a', 'b'])).toEqual([]);
+    });
+  });
+
+  // A notify node (a serviceTask) uses the same source rules as an approval
+  // node: the walk only needs the node's id, not its type.
+  describe('a notify node as the node that uses the source', () => {
+    const notify = plainNode('notify', 'serviceTask');
+
+    it('passes a source on the only path before the notify node', () => {
+      // start -> a -> end, with the notify leaf hung off a.
+      const line = graph(
+        [
+          plainNode('start', 'startEvent'),
+          taskNode('a'),
+          plainNode('end', 'endEvent'),
+          notify,
+        ],
+        [link('start', 'a'), link('a', 'end'), link('a', 'notify')],
+      );
+
+      expect(readNodeActorSourceIssues(line, 'notify', ['a'])).toEqual([]);
+    });
+
+    it('refuses a source that only one branch passes before the notify node', () => {
+      const branched = graph(
+        [
+          plainNode('start', 'startEvent'),
+          plainNode('choice', 'exclusiveGateway'),
+          taskNode('a'),
+          taskNode('other'),
+          notify,
+        ],
+        [
+          link('start', 'choice'),
+          link('choice', 'a'),
+          link('choice', 'other'),
+          link('a', 'notify'),
+          link('other', 'notify'),
+        ],
+      );
+
+      expect(readNodeActorSourceIssues(branched, 'notify', ['a'])).toEqual([
+        expect.stringContaining('不會經過'),
+      ]);
+    });
+
+    it('refuses a source that sits after the notify node', () => {
+      const after = graph(
+        [plainNode('start', 'startEvent'), notify, taskNode('a')],
+        [link('start', 'notify'), link('notify', 'a')],
+      );
+
+      expect(readNodeActorSourceIssues(after, 'notify', ['a'])).toEqual(
+        expect.arrayContaining([expect.stringContaining('不在')]),
+      );
+    });
+
+    it('refuses a source with an entry condition', () => {
+      const conditional = graph(
+        [
+          plainNode('start', 'startEvent'),
+          taskNode('a', { entryCondition: 'form.x > 1' }),
+          notify,
+        ],
+        [link('start', 'a'), link('a', 'notify')],
+      );
+
+      expect(readNodeActorSourceIssues(conditional, 'notify', ['a'])).toEqual([
+        expect.stringContaining('進入條件'),
+      ]);
+    });
+
+    it('refuses two sources on different branches of one parallel split', () => {
+      const parallel = graph(
+        [
+          plainNode('start', 'startEvent'),
+          plainNode('split', 'parallelGateway'),
+          taskNode('l'),
+          taskNode('r'),
+          plainNode('join', 'parallelGateway'),
+          notify,
+        ],
+        [
+          link('start', 'split'),
+          link('split', 'l'),
+          link('split', 'r'),
+          link('l', 'join'),
+          link('r', 'join'),
+          link('join', 'notify'),
+        ],
+      );
+
+      expect(readNodeActorSourceIssues(parallel, 'notify', ['l', 'r'])).toEqual(
+        [expect.stringContaining('平行分支')],
+      );
+    });
+
+    it('refuses the notify node listing itself', () => {
+      const line = graph(
+        [plainNode('start', 'startEvent'), taskNode('a'), notify],
+        [link('start', 'a'), link('a', 'notify')],
+      );
+
+      expect(
+        readNodeActorSourceIssues(line, 'notify', ['a', 'notify']),
+      ).toEqual(['簽核來源的前面關卡不可以是自己。']);
     });
   });
 });
@@ -3769,5 +4039,152 @@ describe('manager chain continuation and skipWhenStartReached', () => {
         ]);
       });
     });
+  });
+});
+
+/** `'absent'` leaves `direction` out, as a definition that skipped the type would. */
+type DirectionInput = 'absent' | 'join' | 'merge' | 'split';
+
+type PassThroughNodeType = 'exclusiveGateway' | 'parallelGateway' | 'userTask';
+
+function passThroughNode(
+  type: PassThroughNodeType,
+  direction: DirectionInput,
+): WorkflowNode {
+  return {
+    data: {
+      ...(direction === 'absent' ? {} : { direction }),
+      label: '節點',
+      triggerMode: 'AND',
+    },
+    id: 'gw',
+    position: { x: 0, y: 0 },
+    type,
+  } as unknown as WorkflowNode;
+}
+
+function passThroughEdges(
+  outgoing: readonly WorkflowEdgeData[],
+): readonly WorkflowEdge[] {
+  return outgoing.map((data, index): WorkflowEdge => ({
+    data,
+    id: `e${index + 1}`,
+    source: 'gw',
+    target: `end${index + 1}`,
+  }));
+}
+
+describe('isPassThroughExclusiveGateway', () => {
+  it.each<
+    readonly [
+      string,
+      string,
+      PassThroughNodeType,
+      DirectionInput,
+      readonly WorkflowEdgeData[],
+      boolean,
+    ]
+  >([
+    [
+      'S11a',
+      'join, one edge with no condition fields',
+      'exclusiveGateway',
+      'join',
+      [{}],
+      true,
+    ],
+    [
+      'S11b',
+      'missing direction, one edge with no condition fields',
+      'exclusiveGateway',
+      'absent',
+      [{}],
+      true,
+    ],
+    [
+      'S11c',
+      "unknown direction 'merge', one edge with no condition fields",
+      'exclusiveGateway',
+      'merge',
+      [{}],
+      true,
+    ],
+    [
+      'S11d',
+      'join, one default edge that still carries a conditionValue',
+      'exclusiveGateway',
+      'join',
+      [{ conditionValue: '100', isDefault: true }],
+      true,
+    ],
+    [
+      'S11e',
+      'join, one edge that carries only a conditionValue',
+      'exclusiveGateway',
+      'join',
+      [{ conditionValue: '100' }],
+      false,
+    ],
+    [
+      'S11f',
+      'split, one edge with no condition fields',
+      'exclusiveGateway',
+      'split',
+      [{}],
+      false,
+    ],
+    [
+      'S11g',
+      'join, two edges with no condition fields',
+      'exclusiveGateway',
+      'join',
+      [{}, {}],
+      false,
+    ],
+    ['S11h', 'join, no outgoing edge', 'exclusiveGateway', 'join', [], false],
+    [
+      'S11i',
+      'parallel gateway, join, one edge with no condition fields',
+      'parallelGateway',
+      'join',
+      [{}],
+      false,
+    ],
+    ['S11j', 'user task, one outgoing edge', 'userTask', 'absent', [{}], false],
+    [
+      'S11k',
+      'join, one edge that carries only a conditionFieldKey',
+      'exclusiveGateway',
+      'join',
+      [{ conditionFieldKey: 'amount' }],
+      false,
+    ],
+    [
+      'S11l',
+      'join, one edge that carries only a conditionOperator',
+      'exclusiveGateway',
+      'join',
+      [{ conditionOperator: 'EQUALS' }],
+      false,
+    ],
+  ])('%s — %s', (_id, _name, type, direction, outgoing, expected) => {
+    expect(
+      isPassThroughExclusiveGateway(
+        passThroughNode(type, direction),
+        passThroughEdges(outgoing),
+      ),
+    ).toBe(expected);
+  });
+});
+
+describe('hasConfiguredConditionEdges — join gateway', () => {
+  it('S12 — counts the condition on the only outgoing edge of a join gateway', () => {
+    const definition: WorkflowDefinition = {
+      edges: passThroughEdges([{ condition: 'form.amount > 100' }]),
+      meta: { schemaVersion: 1 },
+      nodes: [passThroughNode('exclusiveGateway', 'join')],
+    };
+
+    expect(hasConfiguredConditionEdges(definition)).toBe(true);
   });
 });
