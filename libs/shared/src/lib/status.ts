@@ -30,9 +30,12 @@ export type DelegationScopeType = 'ALL' | 'TEMPLATE_LIST' | 'CONDITION_BASED';
 
 /**
  * Why a signer may not take back an approval they already gave. The server
- * refuses with a 409 whose `extensions.originalError.code` is one of these
- * values; a client can map each to its own wording. Defined here so the
- * server and the React package read the same list.
+ * refuses with a `ConflictException` whose whole body is
+ * `{ code, error: 'Conflict', message, statusCode: 409 }`: over GraphQL that
+ * body is `extensions.originalError`, so `code` is one of these values and
+ * `statusCode` is 409. `message` is English, for logs; a client maps each
+ * `code` to its own wording. Defined here so the server and the React package
+ * read the same list.
  */
 export const SIGNER_RECALL_ERROR_CODES = {
   /** The host has not turned `signerRecallEnabled` on. */
