@@ -236,6 +236,41 @@ mounted, provided the backend module is up to date. The standalone
 `InstanceTasksSection` component requires the `adhocDirectives` prop
 (fetch with `listAdhocDirectives` from `@rytass/bpm-core-client/workflow`).
 
+### Signer recall on the instance detail page
+
+When the host turns on `signerRecallEnabled` in the BPMCore module options
+and the signed-in member has just approved a stage the next stage has not
+acted on yet, the page header shows **取回重辦** next to 「取消案件」. The
+button comes from the `recallableTaskId` query (`readRecallableTaskId` in
+`@rytass/bpm-core-client/workflow`): it appears when the query returns a task
+id and stays hidden when it returns `null`, when the host has the option off,
+and when the server predates the query (the page reads it on its own, so an
+old server never fails the page). It is re-read together with the instance, so
+the button shows up right after the member approves in the tasks section.
+
+The button opens a confirmation window (`SignerRecallModal`) that says the
+next stage's task will be cancelled, the case returns to the member's stage,
+and notifications already sent cannot be called back, with an optional
+**取回原因** field. The window calls `recallTaskApproval` itself:
+
+- **Success** closes the window and reloads the instance; the member's new
+  task and the approve / return buttons come back.
+- **Refused with a code** (`SIGNER_RECALL_*`, from
+  `@rytass/bpm-core-shared/status`) shows a Chinese sentence for that code
+  inside the window and turns the confirm button off, since the server has
+  already judged the recall not possible. A code this version has no sentence
+  for (one a newer server added) counts as a refusal too: the window shows
+  「取回失敗，請重新整理後再試。」 and the confirm button is off all the same.
+  The server's English `message` and the code are never shown.
+- **Any other failure** (network error, old server: no code at all) shows
+  「取回失敗，請重新整理後再試。」 and leaves the button usable for a retry.
+- Closing the window after any failed attempt reloads the instance once, so a
+  recall that is no longer possible stops being offered; closing it untouched
+  does not reload.
+
+The recall is written to the timeline as 「簽核者取回重辦」, with the reason
+under 「取回原因」. No extra wiring is needed in the host.
+
 ### Mounting BPM under a non-root URL prefix
 
 If your host already owns the `/` namespace (an ERP, an existing

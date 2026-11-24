@@ -598,6 +598,7 @@ export function isUserMeaningfulActivity(activityLog: ActivityLogRecord): boolea
     activityLog.eventType === 'INSTANCE_CANCELLED' ||
     activityLog.eventType === 'INSTANCE_EXPIRED' ||
     activityLog.eventType === 'INSTANCE_RESUBMITTED' ||
+    activityLog.eventType === 'TASK_RECALLED' ||
     activityLog.eventType === 'TASK_DECIDED' ||
     activityLog.eventType === 'SLA_TRIGGERED' ||
     activityLog.eventType === 'TASK_CANDIDATE_ACTIVATED' ||
@@ -722,6 +723,7 @@ export function readActivityEventLabel(
   }
   if (eventType === 'INSTANCE_EXPIRED') return '案件逾期，已由系統終止';
   if (eventType === 'INSTANCE_RESUBMITTED') return '申請人重新送出';
+  if (eventType === 'TASK_RECALLED') return '簽核者取回重辦';
   if (eventType === 'TOKEN_CREATED') return '流程路徑已建立';
   if (eventType === 'ENGINE_PROCESS_REQUESTED') return '流程引擎已處理';
   if (eventType === 'TOKEN_ADVANCED') return '流程已前進';
@@ -981,6 +983,15 @@ export function readActivityDetailParts(
     return [
       readCommentDescriptionPart(
         '簽核意見',
+        readStringField(payload, 'comment'),
+      ),
+    ].filter(isActivityDescriptionPart);
+  }
+
+  if (activityLog.eventType === 'TASK_RECALLED') {
+    return [
+      readCommentDescriptionPart(
+        '取回原因',
         readStringField(payload, 'comment'),
       ),
     ].filter(isActivityDescriptionPart);

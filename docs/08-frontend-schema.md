@@ -201,7 +201,7 @@ Task 相關欄位（`TaskRecord`／activity payload）：
   candidateMemberId, originalMemberId, sequence, previousMemberId, tokenId }`；
   前四個欄位與 `TASK_CREATED` 的收件人欄位同義，這個事件是 SEQUENTIAL task「現在輪到這位」
   的訊號（細節見 `07-workflow-execution.md` §4.3）。
-- activity `TASK_RECALLED`（簽核者取回自己的核准，見 `07-workflow-execution.md` §5.6）：`actorMemberId` 是取回者、
+- activity `TASK_RECALLED`（時間軸標題「簽核者取回重辦」，意見以「取回原因」顯示；簽核者取回自己的核准，見 `07-workflow-execution.md` §5.6）：`actorMemberId` 是取回者、
   `nodeId` 是取回者那一關、`taskId` 是被取回的那張任務；payload
   `{ decisionId, recalledTaskId, cancelledNodeId, cancelledTaskIds, comment }`，`comment` 沒填時是 `null`，
   不放表單值。取回者的新 token 與新任務在接著寫的 `TOKEN_CREATED`（payload 帶 `tokenId`、`recalledFromNodeId`、`recalledTaskId`）與
