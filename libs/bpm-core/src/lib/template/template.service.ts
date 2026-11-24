@@ -1341,7 +1341,7 @@ export class TemplateService {
     const excludeNodeActorsErrors = workflowResult.valid
       ? lintWorkflowExcludeNodeActors(version.workflowDefinition, {
           allowSkippableStages:
-            this.rootOptions?.excludeNodeActorsRequireSignedStages !== true,
+            this.rootOptions?.excludeNodeActorsAllowSkippableStages === true,
         })
       : [];
     const chainContinuationErrors = workflowResult.valid
@@ -2125,10 +2125,10 @@ function lintWorkflowNodeActorSources(
  * The graph checks behind `excludeNodeActors` (shared with the designer): every
  * listed node, on its own, is an upstream user task that is on every path to
  * the node (the position half of the `NODE_ACTOR` source rules, worded for the
- * exclusion). With `allowSkippableStages` (the host default) the listed node
- * may be one that can be skipped: the engine reads a skip as "nobody signed".
- * A host that sets `excludeNodeActorsRequireSignedStages` refuses such a
- * stage. Runs after the structural lint, like the `NODE_ACTOR` checks.
+ * exclusion). By default a listed node that can be skipped is refused too; a
+ * host that sets `excludeNodeActorsAllowSkippableStages` accepts it, because
+ * the engine reads a skip as "nobody signed". Runs after the structural lint,
+ * like the `NODE_ACTOR` checks.
  */
 function lintWorkflowExcludeNodeActors(
   definition: WorkflowDefinition,

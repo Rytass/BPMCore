@@ -832,7 +832,7 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
     即使它更早一次有人簽過。`NODE_ACTOR` 沒有這一條，因為它要取一個簽核人，所以仍要求來源關一定有人簽。
     「最近一次」不等於「這一輪」：該關最近一次經過時有建任務，就照上面的讀法排除那一批實際核准的人；那一批沒人實簽
     （例如逾時自動核准）就是空的，不會退回去讀更早的批。
-- **來源關必須是每條路徑都會經過的關卡（發布時檢查），但可以是有條件、可能被略過的關卡**：引擎讀的是來源關
+- **來源關必須是每條路徑都會經過的關卡（發布時檢查）；host 開啟 `excludeNodeActorsAllowSkippableStages` 時，也可以是有條件、可能被略過的關卡**：引擎讀的是來源關
   「最近一次」經過時的結果，沒有輪次邊界。最近一次被略過就當沒人簽（見上一條），所以來源關這一輪沒走到
   （進入條件不成立、被略過）時，不會讀到更早一次的簽核者；每個來源關各自都要通過位置檢查（見下方「發布檢查」）。
   能列：有進入條件（例：代墊款類別才走信管）、設了 `SKIP_NODE`、逾時自動核准、主管鏈起點已達就略過。
@@ -864,25 +864,26 @@ instance 會記錄它（`approval_instances.submitted_by_member_id`，GraphQL �
     `TARGET_IS_EXCLUDED_NODE_ACTOR`，與 `TARGET_IS_INITIATOR` 並列；接手人與被排除者的代理關係同樣適用（判斷與手動轉簽相同）。
   - **SLA 升級轉派**（帶 `transferReason`）：與 `excludeInitiator` 一樣**不檢查**。
 - **發布檢查**：`nodeIds` 非空、不重複、不含本節點、每一個都存在且是 userTask。之後**每一個來源關各自**要通過
-  （不是「列表合起來蓋住每條路徑」就算過）。來源關**不要求**一定有人簽：有進入條件、
-  `excludeInitiator.whenEmpty` 或 `excludeNodeActors.whenEmpty` 是 `SKIP_NODE`、有逾時自動核准
-  （`sla.onTimeout: 'AUTO_APPROVE'`）、主管鏈起點已達就略過，都可以發布；只檢查位置：
+  （不是「列表合起來蓋住每條路徑」就算過）。**預設**來源關要通過與 `NODE_ACTOR` 同一套的來源規則：
+  - 不可能被跳過或沒人實簽：沒有進入條件、`excludeInitiator.whenEmpty` 與 `excludeNodeActors.whenEmpty` 不是
+    `SKIP_NODE`、沒有逾時自動核准（`sla.onTimeout: 'AUTO_APPROVE'`）、主管鏈沒設起點已達就略過
+    （`readNodeActorSourceSkipReasons` 的五種原因）；
   - 從 start 不經過這一個來源關就走得到本節點 ⇒ 擋（涵蓋所有分流與「任一分支到達即觸發」的合流；涵蓋判斷把平行閘道當成互斥閘道看）；
   - 在本節點的上游（有路徑走到本節點）。
+
+  **host 可放寬**：`BPMRootModule` 設 `excludeNodeActorsAllowSkippableStages: true` 時，不套用第一條，可能被跳過的
+  來源關也能發布（被跳過時不排除任何人，見上方「誰算那一關的簽核者」）。代價是職責分離變鬆：上一輪簽過被跳過
+  關卡的人，這一輪可以簽本節點。預設不開，所以升級後行為不變。開啟的 host 要把同值傳給 `TemplateDesignerView`／
+  `TemplateComposeWizardView` 的 `excludeNodeActorsAllowSkippableStages`（頁面 shim 讀
+  `BPM_EXCLUDE_NODE_ACTORS_ALLOW_SKIPPABLE_STAGES=true`）。只有發布時讀這個選項，已發布的範本不會重新檢查。
+  shared 的 `readExcludeNodeActorsIssues` 本身也預設嚴格（第四個參數 `allowSkippableStages: true` 才放寬），
+  所以只把 shared 升到新版、引擎仍是舊版時，舊引擎的發布檢查照樣擋下它讀錯的範本。
 
   `whenEmpty` 必須是三個值之一；本節點有可由簽核人補填的欄位時不能選 `SKIP_NODE`。**不另外套用** `NODE_ACTOR`
   「兩個來源不能在平行分支的不同路線上」那一條；但平行分支上的來源關目前仍會被上面的涵蓋規則擋下
   （涵蓋判斷把平行閘道當成互斥閘道看，與 `NODE_ACTOR` 是同一個限制），要改成先後串接。
-  與 `NODE_ACTOR` 的差別：措辭（訊息講「排除」）、逐一檢查，以及**不套用**「不可能被跳過或沒人實簽」那一半
-  （`readNodeActorSourceSkipReasons`，`NODE_ACTOR` 仍擋）；涵蓋與上游兩條是同一份程式（共用的位置檢查）。
-
-  **host 可改回嚴格**：`BPMRootModule` 設 `excludeNodeActorsRequireSignedStages: true` 時，發布檢查改回這個選項
-  出現前的規則，另外擋「可能被跳過或沒人實簽」的來源關（同 `readNodeActorSourceSkipReasons` 那五種原因）。
-  用途是「不可與前面關卡同一人」在前面關卡被跳過時也要成立的職責分離；預設寬鬆時，上一輪簽過被跳過關卡的人，
-  這一輪可以簽本節點。設計器需傳同值給 `TemplateDesignerView` 的 `excludeNodeActorsRequireSignedStages`
-  （頁面 shim 讀 `BPM_EXCLUDE_NODE_ACTORS_REQUIRE_SIGNED_STAGES=true`）。已發布的範本不會重新檢查。
-  shared 的 `readExcludeNodeActorsIssues` 本身預設嚴格（第四個參數 `allowSkippableStages: true` 才放寬），
-  所以只把 shared 升到新版、引擎仍是舊版時，舊引擎的發布檢查照樣擋下它讀錯的範本。
+  與 `NODE_ACTOR` 的差別：措辭（訊息講「排除」）、逐一檢查，以及 host 可放寬「不可能被跳過或沒人實簽」那一半
+  （`NODE_ACTOR` 一律擋）；涵蓋與上游兩條是同一份程式（共用的位置檢查）。
 - **Dry run**：前面關卡誰簽，在試跑時不知道，所以不模擬這個排除，也不會因它停止；只有同時開的
   `excludeInitiator` 照 §4.4 的規則試跑。
 

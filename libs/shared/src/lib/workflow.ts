@@ -122,8 +122,8 @@ export type ExcludeInitiatorWhenEmpty =
  *
  * Every listed node has to be upstream of this node and on every path to it
  * (the publish lint checks each listed node on its own, not the list as a
- * whole). A listed node may be a stage that can be skipped or pass without a
- * real signer: an entry condition, a `SKIP_NODE` fallback, a manager chain that
+ * whole). When the host allows it (see below), a listed node may be a stage
+ * that can be skipped or pass without a real signer: an entry condition, a `SKIP_NODE` fallback, a manager chain that
  * skips when its start already qualifies, or an SLA auto-approval (the task is
  * created, but the timeout's approval is not a real signature). The engine
  * reads what a listed node did the last time the case reached it. If that was
@@ -138,10 +138,11 @@ export type ExcludeInitiatorWhenEmpty =
  * keep it on the main line with an entry condition, or put both stages on the
  * same route with an exclusive gateway.
  *
- * A host that wants the exclusion to hold even when the listed stage was
- * skipped sets `BPMRootModule` `excludeNodeActorsRequireSignedStages`: publish
- * then refuses a listed node that can be skipped or pass without a real
- * signer, the rule of every release before that option.
+ * The skippable listed node above is opt-in: publish accepts one only when
+ * the host sets `BPMRootModule` `excludeNodeActorsAllowSkippableStages`.
+ * Without it publish refuses a listed node that can be skipped or pass
+ * without a real signer, the rule of every earlier release, so the exclusion
+ * always holds.
  */
 export interface ExcludeNodeActorsConfig {
   /** The earlier user task nodes whose approvers are kept out of this node. */

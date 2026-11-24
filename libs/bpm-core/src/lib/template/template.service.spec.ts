@@ -1481,10 +1481,15 @@ describe('TemplateService', () => {
     };
     const publish = (
       workflowDefinition: WorkflowDefinition,
+      rootOptions?: BPMRootRuntimeOptions,
     ): Promise<unknown> =>
       createTableConditionPublishService({
+        rootOptions,
         workflowDefinition,
       }).publishApprovalTemplateVersion('template-version-1');
+    const ALLOW_SKIPPABLE: BPMRootRuntimeOptions = {
+      excludeNodeActorsAllowSkippableStages: true,
+    };
 
     it('publishes a node that excludes an earlier upstream node', async (): Promise<void> => {
       await expect(
@@ -1507,17 +1512,19 @@ describe('TemplateService', () => {
         { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } },
       ],
     ])(
-      'publishes an earlier node with %s: when it is skipped on its last pass it excludes nobody',
+      'publishes an earlier node with %s under excludeNodeActorsAllowSkippableStages: when it is skipped on its last pass it excludes nobody',
       async (_name, firstNodeData): Promise<void> => {
         // The engine reads a listed node that was skipped on its last pass as
-        // "excludes nobody", so the node may be listed. A NODE_ACTOR source
-        // is still refused for the same reasons (the shared spec holds that).
+        // "excludes nobody", so a host that opts in may list it. A NODE_ACTOR
+        // source is still refused for the same reasons (the shared spec holds
+        // that).
         await expect(
           publish(
             withExclusion(
               { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
               firstNodeData,
             ),
+            ALLOW_SKIPPABLE,
           ),
         ).resolves.toMatchObject({ id: 'template-version-1' });
       },
@@ -1540,33 +1547,22 @@ describe('TemplateService', () => {
         '排除對象的前面關卡 「補填 1」 設有逾時自動核准',
       ],
     ])(
-      'rejects an earlier node with %s when the host sets excludeNodeActorsRequireSignedStages',
+      'rejects an earlier node with %s by default and when the host option is false',
       async (_name, firstNodeData, wording): Promise<void> => {
-        await expect(
-          createTableConditionPublishService({
-            rootOptions: { excludeNodeActorsRequireSignedStages: true },
-            workflowDefinition: withExclusion(
-              { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
-              firstNodeData,
-            ),
-          }).publishApprovalTemplateVersion('template-version-1'),
-        ).rejects.toThrow(
-          `workflow.nodes.task_2.excludeNodeActors: ${wording}`,
+        // Upgrading changes nothing: without the opt-in, the rule every
+        // earlier release applied still holds.
+        const definition = withExclusion(
+          { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
+          firstNodeData,
         );
+        const message = `workflow.nodes.task_2.excludeNodeActors: ${wording}`;
+
+        await expect(publish(definition)).rejects.toThrow(message);
+        await expect(
+          publish(definition, { excludeNodeActorsAllowSkippableStages: false }),
+        ).rejects.toThrow(message);
       },
     );
-
-    it('publishes the same stage when the host option is explicitly false (control)', async (): Promise<void> => {
-      await expect(
-        createTableConditionPublishService({
-          rootOptions: { excludeNodeActorsRequireSignedStages: false },
-          workflowDefinition: withExclusion(
-            { excludeNodeActors: { nodeIds: ['task_1'], whenEmpty: 'FAIL' } },
-            { entryCondition: 'form.amount > 10' },
-          ),
-        }).publishApprovalTemplateVersion('template-version-1'),
-      ).resolves.toMatchObject({ id: 'template-version-1' });
-    });
 
     it('publishes the per-item shape: two stages with entry conditions, then a node that excludes both', async (): Promise<void> => {
       // task_1 and task_2 each run only when their own item is ticked; task_3
@@ -1593,7 +1589,9 @@ describe('TemplateService', () => {
         }),
       } as WorkflowDefinition;
 
-      await expect(publish(definition)).resolves.toMatchObject({
+      const published = publish(definition, ALLOW_SKIPPABLE);
+
+      await expect(published).resolves.toMatchObject({
         id: 'template-version-1',
       });
     });

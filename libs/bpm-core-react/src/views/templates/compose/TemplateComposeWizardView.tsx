@@ -30,10 +30,10 @@ export interface TemplateComposeWizardViewProps {
    */
   readonly aiAssistantAvailable?: boolean;
   /**
-   * Pass the API host's `BPMRootModule` `excludeNodeActorsRequireSignedStages`
+   * Pass the API host's `BPMRootModule` `excludeNodeActorsAllowSkippableStages`
    * value to the Step 1 designer. Default `false`.
    */
-  readonly excludeNodeActorsRequireSignedStages?: boolean;
+  readonly excludeNodeActorsAllowSkippableStages?: boolean;
 }
 
 /**
@@ -45,7 +45,7 @@ export interface TemplateComposeWizardViewProps {
  */
 export function TemplateComposeWizardView({
   aiAssistantAvailable = false,
-  excludeNodeActorsRequireSignedStages = false,
+  excludeNodeActorsAllowSkippableStages = false,
   showAiAssistant = false,
 }: TemplateComposeWizardViewProps = {}): ReactElement {
   const router = useRouterAdapter();
@@ -101,8 +101,8 @@ export function TemplateComposeWizardView({
           {wizard.currentStep === 1 ? (
             <ComposeWorkflowStep
               aiAssistantAvailable={aiAssistantAvailable}
-              excludeNodeActorsRequireSignedStages={
-                excludeNodeActorsRequireSignedStages
+              excludeNodeActorsAllowSkippableStages={
+                excludeNodeActorsAllowSkippableStages
               }
               formSchema={wizard.formSchema}
               initiatorPolicyCel={wizard.initiatorPolicyCel}

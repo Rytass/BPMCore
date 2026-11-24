@@ -5,11 +5,11 @@ import {
 } from '@rytass/bpm-core-shared/workflow';
 import { readNodeActorSourceIssues } from '@rytass/bpm-core-shared/workflow-graph';
 import {
-  EXCLUDE_NODE_ACTORS_SIGNED_STAGE_HINT,
+  EXCLUDE_NODE_ACTORS_SKIPPABLE_STAGE_HINT,
   EXCLUDE_NODE_ACTORS_STAGE_HINT,
   NODE_ACTOR_STAGE_HINT,
   NO_CONTINUABLE_CHAIN_HINT,
-  NO_EXCLUDABLE_SIGNED_STAGE_HINT,
+  NO_EXCLUDABLE_SKIPPABLE_STAGE_HINT,
   NO_EXCLUDABLE_STAGE_HINT,
   NO_UPSTREAM_USER_TASK_HINT,
   ORG_MANAGER_CHAIN_ONLY_MULTI_APPROVER_STAGES_HINT,
@@ -670,7 +670,7 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
       { excludeNodeActors: { nodeIds: ['x'], whenEmpty: 'SKIP_NODE' } },
     ],
     ['an SLA auto-approval', { sla: { duration: 'PT1H', onTimeout: 'AUTO_APPROVE' } }],
-  ])('offers a stage with %s (when it is skipped it excludes nobody)', (_name, data) => {
+  ])('offers a stage with %s only when the host allows skippable stages', (_name, data) => {
     const definition = graph(
       [
         plainNode('start', 'startEvent'),
@@ -687,20 +687,24 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
       ],
     );
 
+    // Allowed: when it is skipped it excludes nobody.
     expect(
-      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options.map(
-        (option) => option.id,
-      ),
+      readExcludeNodeActorStageChoice(
+        definition,
+        'me',
+        [],
+        'FAIL',
+        true,
+      ).options.map((option) => option.id),
     ).toEqual(['ok', 'risky']);
 
-    // A host that requires signed stages does not offer it, and a stored
-    // choice of it stays listed, marked, with the publish check's reason.
+    // By default it is not offered, and a stored choice of it stays listed,
+    // marked, with the publish check's reason.
     const strict = readExcludeNodeActorStageChoice(
       definition,
       'me',
       ['risky'],
       'FAIL',
-      true,
     );
 
     expect(strict.options.map((option) => option.id)).toEqual([
@@ -712,17 +716,13 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
       expect.stringContaining('目前的設定要求排除對象的前面關卡一定有人簽核'),
     ]);
     expect(
-      readExcludeNodeActorStageChoice(
-        definition,
-        'me',
-        [],
-        'FAIL',
-        true,
-      ).options.map((option) => option.id),
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options.map(
+        (option) => option.id,
+      ),
     ).toEqual(['ok']);
   });
 
-  it('uses the strict empty hint when a host requires signed stages and nothing qualifies', () => {
+  it('uses the default empty hint when only skippable stages are upstream, and none when they are allowed', () => {
     const definition = graph(
       [
         plainNode('start', 'startEvent'),
@@ -734,13 +734,16 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
     );
 
     expect(
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').problems,
+    ).toEqual([NO_EXCLUDABLE_STAGE_HINT]);
+    expect(
       readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL', true)
         .problems,
-    ).toEqual([NO_EXCLUDABLE_SIGNED_STAGE_HINT]);
-    expect(
-      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').problems,
     ).toEqual([]);
-    expect(EXCLUDE_NODE_ACTORS_SIGNED_STAGE_HINT).not.toBe(
+    expect(
+      readExcludeNodeActorStageChoice(LINE, 'a', [], 'FAIL', true).problems,
+    ).toEqual([NO_EXCLUDABLE_SKIPPABLE_STAGE_HINT]);
+    expect(EXCLUDE_NODE_ACTORS_SKIPPABLE_STAGE_HINT).not.toBe(
       EXCLUDE_NODE_ACTORS_STAGE_HINT,
     );
   });
@@ -779,7 +782,7 @@ describe('readExcludeNodeActorStageChoice (不可與前面關卡同一人)', () 
 
   it('keeps a stored stage that no longer qualifies, marked, and says why', () => {
     // start -> split -> (cond | other) -> merge -> me: `cond` is not on every
-    // path to `me`, so it stopped qualifying (an entry condition does not).
+    // path to `me`, so it stopped qualifying.
     const definition = graph(
       [
         plainNode('start', 'startEvent'),
@@ -888,7 +891,7 @@ describe('readExcludeNodeActorsGraphIssues', () => {
     expect(readExcludeNodeActorsGraphIssues(definition)).toEqual([]);
   });
 
-  it('reports a skippable listed stage only when a host requires signed stages', () => {
+  it('reports a skippable listed stage unless the host allows it', () => {
     const definition = graph(
       [
         plainNode('start', 'startEvent'),
@@ -901,8 +904,8 @@ describe('readExcludeNodeActorsGraphIssues', () => {
       [link('start', 'a'), link('a', 'me'), link('me', 'end')],
     );
 
-    expect(readExcludeNodeActorsGraphIssues(definition)).toEqual([]);
-    expect(readExcludeNodeActorsGraphIssues(definition, true)).toEqual([
+    expect(readExcludeNodeActorsGraphIssues(definition, true)).toEqual([]);
+    expect(readExcludeNodeActorsGraphIssues(definition)).toEqual([
       expect.stringMatching(/^簽核節點「關卡 me」：.*設有進入條件/),
     ]);
   });
@@ -1225,12 +1228,19 @@ describe('a manager chain with 起點本人已達簽到職等時略過 as a NODE
     ).not.toContain('a');
   });
 
-  it('is still offered as an excludeNodeActors stage (when it is skipped it excludes nobody)', () => {
+  it('is offered as an excludeNodeActors stage only when the host allows skippable stages', () => {
     expect(
-      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options.map(
-        (option) => option.id,
-      ),
+      readExcludeNodeActorStageChoice(
+        definition,
+        'me',
+        [],
+        'FAIL',
+        true,
+      ).options.map((option) => option.id),
     ).toEqual(['a']);
+    expect(
+      readExcludeNodeActorStageChoice(definition, 'me', [], 'FAIL').options,
+    ).toEqual([]);
   });
 
   it('is reported when it is already the source', () => {

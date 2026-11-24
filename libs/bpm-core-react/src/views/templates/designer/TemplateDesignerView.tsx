@@ -153,7 +153,7 @@ import {
 } from '../../../components/admin-pickers';
 import { BPMFormField } from '../../../components/bpm-form-field';
 import {
-  EXCLUDE_NODE_ACTORS_SIGNED_STAGE_HINT,
+  EXCLUDE_NODE_ACTORS_SKIPPABLE_STAGE_HINT,
   EXCLUDE_NODE_ACTORS_STAGE_HINT,
   NODE_ACTOR_STAGE_HINT,
   ORG_MANAGER_CHAIN_STAGE_HINT,
@@ -850,12 +850,12 @@ export interface TemplateDesignerViewProps {
    */
   readonly aiAssistantAvailable?: boolean;
   /**
-   * Pass the API host's `BPMRootModule` `excludeNodeActorsRequireSignedStages`
-   * value. Default `false`. `true` stops the 不可與前面關卡同一人 picker from
-   * offering a stage that can be skipped, and reports one already chosen,
-   * matching the publish check of a host that refuses such stages.
+   * Pass the API host's `BPMRootModule` `excludeNodeActorsAllowSkippableStages`
+   * value. Default `false`: the 不可與前面關卡同一人 picker offers only stages
+   * that always have a signer. `true` offers stages that can be skipped too,
+   * matching the publish check of a host that accepts them.
    */
-  readonly excludeNodeActorsRequireSignedStages?: boolean;
+  readonly excludeNodeActorsAllowSkippableStages?: boolean;
 }
 
 /** Resolve a React SetStateAction against the current value (no `any`). */
@@ -868,7 +868,7 @@ function resolveSetStateAction<T>(action: SetStateAction<T>, current: T): T {
 export function TemplateDesignerView({
   aiAssistantAvailable = true,
   embedded = false,
-  excludeNodeActorsRequireSignedStages = false,
+  excludeNodeActorsAllowSkippableStages = false,
   formSchemaOverride,
   initialInitiatorPolicyCel,
   initialLaunchMode,
@@ -1416,15 +1416,15 @@ export function TemplateDesignerView({
     [workflowDefinition],
   );
   // Publish-only as well: every stage of 不可與前面關卡同一人 must sit upstream
-  // and be on every path to the node (it may be one that can be skipped,
-  // unless the host requires signed stages).
+  // and be on every path to the node (and always signed, unless the host
+  // allows stages that can be skipped).
   const excludeNodeActorsPublishIssue = useMemo(
     (): string | null =>
       readExcludeNodeActorsGraphIssues(
         workflowDefinition,
-        excludeNodeActorsRequireSignedStages,
+        excludeNodeActorsAllowSkippableStages,
       )[0] ?? null,
-    [excludeNodeActorsRequireSignedStages, workflowDefinition],
+    [excludeNodeActorsAllowSkippableStages, workflowDefinition],
   );
   // Publish-only too: a manager chain that continues an earlier one needs that
   // stage to be sound, and a higher 簽到職等 than it.
@@ -3293,7 +3293,7 @@ export function TemplateDesignerView({
           node.id,
           excludeNodeActors.nodeIds,
           excludeNodeActors.whenEmpty,
-          excludeNodeActorsRequireSignedStages,
+          excludeNodeActorsAllowSkippableStages,
         )
       : null;
     // A hand-authored or AI-authored template may carry a mixed duration such
@@ -4556,8 +4556,8 @@ export function TemplateDesignerView({
               hintText={
                 excludeNodeActorChoice.problems.length > 0
                   ? excludeNodeActorChoice.problems.join('；')
-                  : excludeNodeActorsRequireSignedStages
-                    ? EXCLUDE_NODE_ACTORS_SIGNED_STAGE_HINT
+                  : excludeNodeActorsAllowSkippableStages
+                    ? EXCLUDE_NODE_ACTORS_SKIPPABLE_STAGE_HINT
                     : EXCLUDE_NODE_ACTORS_STAGE_HINT
               }
               label="不能與以下關卡同一人"

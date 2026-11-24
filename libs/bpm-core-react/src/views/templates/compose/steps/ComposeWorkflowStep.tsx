@@ -27,15 +27,15 @@ export interface ComposeWorkflowStepProps {
    */
   readonly aiAssistantAvailable?: boolean;
   /**
-   * Pass the API host's `BPMRootModule` `excludeNodeActorsRequireSignedStages`
+   * Pass the API host's `BPMRootModule` `excludeNodeActorsAllowSkippableStages`
    * value to the embedded designer. Default `false`.
    */
-  readonly excludeNodeActorsRequireSignedStages?: boolean;
+  readonly excludeNodeActorsAllowSkippableStages?: boolean;
 }
 
 export function ComposeWorkflowStep({
   aiAssistantAvailable = false,
-  excludeNodeActorsRequireSignedStages = false,
+  excludeNodeActorsAllowSkippableStages = false,
   formSchema,
   initiatorPolicyCel,
   launchMode,
@@ -53,8 +53,8 @@ export function ComposeWorkflowStep({
       <TemplateDesignerView
         aiAssistantAvailable={aiAssistantAvailable}
         embedded
-        excludeNodeActorsRequireSignedStages={
-          excludeNodeActorsRequireSignedStages
+        excludeNodeActorsAllowSkippableStages={
+          excludeNodeActorsAllowSkippableStages
         }
         formSchemaOverride={formSchema}
         initialInitiatorPolicyCel={initiatorPolicyCel}
